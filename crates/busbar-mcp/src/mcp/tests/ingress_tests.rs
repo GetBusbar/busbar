@@ -519,14 +519,10 @@ async fn the_default_origin_allowlist_is_empty_and_therefore_closed() {
 async fn without_the_config_block_the_plane_does_not_exist() {
     busbar_core::metrics::init();
     let app = TestApp::new().build();
-    let core =
-        busbar_core::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-            .1;
-    for r in core.routes() {
+    for (path, _auth) in busbar_core::base_data_route_table_view(&app) {
         assert!(
-            !r.path.starts_with("/.well-known/oauth-protected-resource"),
-            "an unconfigured deployment mounted {}",
-            r.path
+            !path.starts_with("/.well-known/oauth-protected-resource"),
+            "an unconfigured deployment mounted {path}"
         );
     }
     let router = busbar_core::build_router(app);

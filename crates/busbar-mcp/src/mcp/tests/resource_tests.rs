@@ -216,6 +216,7 @@ async fn the_public_metadata_route_is_an_exact_path_and_grants_no_neighbours() {
 /// wiki. Nothing about it is malformed. It is simply not ours.
 #[tokio::test]
 async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_would_admit_it() {
+    crate::testkit::install_test_seams();
     use base64::Engine as _;
     busbar_core::metrics::init();
     let app = TestApp::new()

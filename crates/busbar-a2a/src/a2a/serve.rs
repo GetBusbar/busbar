@@ -261,7 +261,7 @@ pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String,
 /// THE PLANE'S MOUNT, the path prefix the A2A plane's HTTP bindings are served under. Every route
 /// this plane serves over HTTP is under it, and [`busbar_core::plane::PlaneDispatch`] matches on it at a
 /// segment boundary, so `/a2ax` is somebody else's path.
-pub(crate) const MOUNT_PATH: &str = "/a2a";
+pub const MOUNT_PATH: &str = "/a2a";
 
 /// THE PATH PREFIX THE gRPC BINDING IS SERVED AT, and busbar did not choose it.
 ///
@@ -271,7 +271,7 @@ pub(crate) const MOUNT_PATH: &str = "/a2a";
 /// [`MOUNT_PATH`]. Written as a constant beside the mount it is not under, because "the A2A plane
 /// answers here too" is a fact the mount table has to be told
 /// ([`busbar_core::plane::PlaneDispatch::mount`]) or this binding's tokens go unchecked for audience.
-pub(crate) const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
+pub const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
 /// plane's mount appended, exactly as the sibling plane composes its own.

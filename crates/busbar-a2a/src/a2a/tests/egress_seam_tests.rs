@@ -13,7 +13,7 @@
 //! so a self-signed test CA cannot be reached through the seam — the same reason `egress_tests` uses
 //! plaintext). The peer-SPKI dimension is therefore `None == None` here; its byte-identity over TLS is
 //! by CONSTRUCTION — the host and the plane decode the pin through the one shared
-//! `crate::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
+//! `busbar_core::plane_host::spki::pin` (`a2a::spki::spki_pin` re-exports it), so there is no second spelling
 //! to diverge. `client_identity_offered` is asserted directly (both compute `is_some()`).
 
 use std::io::{Read, Write};
@@ -24,8 +24,8 @@ use super::{HopSpec, StreamOutcome};
 use crate::a2a::fetch::{FetchPolicy, Transport};
 use crate::a2a::relay::{ChunkFlow, RelayTransport};
 use crate::a2a::transport::ReqwestTransport;
-use crate::egress::{build_pinned_client, RefuseSecondLookup};
-use crate::proxy::{read_capped, ReadEnd};
+use busbar_core::egress::{build_pinned_client, RefuseSecondLookup};
+use busbar_core::proxy::{read_capped, ReadEnd};
 
 const LOOPBACK: &str = "127.0.0.1";
 

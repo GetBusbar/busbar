@@ -315,8 +315,8 @@ fn install_planes_after_first_read_panics() {
 // ---------------------------------------------------------------------------------------------
 
 /// A REAL MCP resource, mounting `/mcp` and binding its canonical URI as the audience.
-fn mcp_slot() -> crate::mcp::McpResource {
-    crate::mcp::McpResource::from_cfg(&crate::mcp::McpCfg {
+fn mcp_slot() -> busbar_mcp::mcp::McpResource {
+    busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::mcp::McpCfg {
         canonical_uri: "https://gw.example.com/mcp".to_string(),
         authorization_servers: vec!["https://login.example.com".to_string()],
         ..Default::default()
@@ -326,8 +326,8 @@ fn mcp_slot() -> crate::mcp::McpResource {
 
 /// A REAL A2A plane WITH a receiving side (a `public_url`), so `admission()` is `Some` and the plane
 /// mounts both `/a2a` and the gRPC service path.
-fn a2a_slot_receiving() -> std::sync::Arc<crate::a2a::plane::A2aPlane> {
-    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
+fn a2a_slot_receiving() -> std::sync::Arc<busbar_a2a::a2a::plane::A2aPlane> {
+    use busbar_a2a::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
     let mut cfg = AgentsCfg::default();
     cfg.agents.insert(
         "planner".to_string(),
@@ -349,14 +349,14 @@ fn a2a_slot_receiving() -> std::sync::Arc<crate::a2a::plane::A2aPlane> {
             hooks: Vec::new(),
         },
     );
-    crate::a2a::plane::A2aPlane::from_config(&cfg, Some("https://busbar.example"))
+    busbar_a2a::a2a::plane::A2aPlane::from_config(&cfg, Some("https://busbar.example"))
         .expect("a receiving a2a plane")
 }
 
 /// The MCP + A2A slot map a boot hands `build_dispatch`, keyed by plane key.
 fn builtin_slots<'a>(
-    mcp: &'a crate::mcp::McpResource,
-    a2a: &'a crate::a2a::plane::A2aPlane,
+    mcp: &'a busbar_mcp::mcp::McpResource,
+    a2a: &'a busbar_a2a::a2a::plane::A2aPlane,
 ) -> BTreeMap<&'static str, &'a dyn Any> {
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
     slots.insert("mcp", mcp);
@@ -722,12 +722,12 @@ fn build_dispatch_matches_the_hand_mounted_table() {
         .admit("mcp", mcp.admission())
         .mount(
             "a2a",
-            crate::a2a::serve::MOUNT_PATH,
+            busbar_a2a::a2a::serve::MOUNT_PATH,
             crate::plane::WIRE_JSONRPC,
         )
         .mount(
             "a2a",
-            crate::a2a::serve::GRPC_MOUNT_PATH,
+            busbar_a2a::a2a::serve::GRPC_MOUNT_PATH,
             crate::plane::WIRE_GRPC,
         )
         .admit("a2a", a2a.admission().expect("receiving side"));
@@ -743,7 +743,7 @@ fn build_dispatch_matches_the_hand_mounted_table() {
 /// `a2a_plane.admission().is_some()` gate on the hardcoded block.
 #[test]
 fn a_delegation_only_a2a_plane_mounts_nothing() {
-    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
+    use busbar_a2a::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
     let mut cfg = AgentsCfg::default();
     cfg.agents.insert(
         "planner".to_string(),
@@ -766,7 +766,8 @@ fn a_delegation_only_a2a_plane_mounts_nothing() {
         },
     );
     // No public_url ⇒ no receiving side ⇒ admission() is None.
-    let a2a = crate::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a delegating plane");
+    let a2a =
+        busbar_a2a::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a delegating plane");
     assert!(a2a.admission().is_none());
 
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();

@@ -176,7 +176,7 @@ pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
 /// dialect spoke to us" has to be spelled the same way on every plane or a dashboard cannot
 /// compare them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some
 /// other plane's `openai` end up in one series meaning two things.
-pub(crate) fn wire_format_names(key: &str) -> &'static [&'static str] {
+pub fn wire_format_names(key: &str) -> &'static [&'static str] {
     (plane_decl(key).wire_format_names)()
 }
 
@@ -353,7 +353,7 @@ impl PlaneDispatch {
     /// `/mcpx` is NOT under a `/mcp` mount and therefore is not audience-checked. That is
     /// deliberate in both directions — a sibling path must neither inherit the plane's grants nor
     /// its refusals.
-    pub(crate) fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
+    pub fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
         // Resolve the plane by MOUNT first — the residual is never mounted, so it never claims a
         // path and never reaches the admission map — then read that plane's bound audience by key.
         self.admissions.get(self.mounted_plane_of(path)?)
@@ -406,7 +406,7 @@ impl PlaneDispatch {
     /// the audience a token must be minted for, the base its card publishes — is one string, and
     /// deriving it from whichever binding a request happened to arrive on would give one deployment
     /// two audiences and two published endpoints.
-    pub(crate) fn mount_of(&self, key: &str) -> Option<&str> {
+    pub fn mount_of(&self, key: &str) -> Option<&str> {
         self.claims_of(key).first().map(|c| c.path.as_str())
     }
 

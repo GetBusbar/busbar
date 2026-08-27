@@ -136,6 +136,7 @@ fn a_call<'a>(
 /// `BreakerOpen` in milliseconds with the dead backend's counter unmoved.
 #[test]
 fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire() {
+    crate::testkit::install_test_seams();
     use busbar_substrate::plane_host::DispatchScope;
     // A real `EngineHost` double over a bare app: the breaker cell store IS `app.plane_breakers`, the
     // same seam the ingress admits/settles the relay through, so this exercises the production path.
@@ -206,6 +207,7 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 /// arena empty) while opening the cell, byte-identically to the legacy in-place record.
 #[test]
 fn a_shared_host_scope_settles_the_prepare_admit() {
+    crate::testkit::install_test_seams();
     use busbar_substrate::plane_host::DispatchScope;
     let app = busbar_core::test_support::TestApp::new().build();
     let host = busbar_core::plane_host::engine_host(&app);
@@ -338,16 +340,19 @@ async fn battery(binding: &str, submission: serde_json::Value) {
 
 #[tokio::test]
 async fn a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding() {
+    crate::testkit::install_test_seams();
     battery(BINDING_JSONRPC, envelope()).await;
 }
 
 #[tokio::test]
 async fn a_tripped_agent_rejects_fresh_submissions_on_the_httpjson_binding() {
+    crate::testkit::install_test_seams();
     battery(BINDING_HTTP_JSON, envelope()).await;
 }
 
 #[tokio::test]
 async fn a_tripped_agent_rejects_fresh_submissions_on_the_grpc_binding() {
+    crate::testkit::install_test_seams();
     // The v1.0 spelling, which is what the gRPC leg transcodes — the same submission the
     // client-leg battery drives this binding with.
     battery(

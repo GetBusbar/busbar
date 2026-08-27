@@ -175,6 +175,7 @@ fn assert_jsonrpc(r: &Recorded, method: &str) {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_send_message() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
         BINDING_JSONRPC,
@@ -190,6 +191,7 @@ async fn jsonrpc_client_issues_send_message() {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_send_streaming_message() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Streams(vec![format!(
             "data: {}\n\n",
@@ -217,6 +219,7 @@ async fn jsonrpc_client_issues_send_streaming_message() {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_get_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
         BINDING_JSONRPC,
@@ -233,6 +236,7 @@ async fn jsonrpc_client_issues_get_task() {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_cancel_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
         BINDING_JSONRPC,
@@ -249,6 +253,7 @@ async fn jsonrpc_client_issues_cancel_task() {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_subscribe_to_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersThenStreams(
             200,
@@ -281,6 +286,7 @@ async fn jsonrpc_client_issues_subscribe_to_task() {
 
 #[tokio::test]
 async fn http_json_client_issues_send_message() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Answers(200, backend_rest_task()),
         BINDING_HTTP_JSON,
@@ -302,6 +308,7 @@ async fn http_json_client_issues_send_message() {
 
 #[tokio::test]
 async fn http_json_client_issues_send_streaming_message() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Streams(vec![format!(
             "data: {}\n\n",
@@ -339,6 +346,7 @@ async fn http_json_client_issues_send_streaming_message() {
 
 #[tokio::test]
 async fn http_json_client_issues_get_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Answers(200, backend_rest_task()),
         BINDING_HTTP_JSON,
@@ -366,6 +374,7 @@ async fn http_json_client_issues_get_task() {
 
 #[tokio::test]
 async fn http_json_client_issues_cancel_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Answers(200, backend_rest_task()),
         BINDING_HTTP_JSON,
@@ -383,6 +392,7 @@ async fn http_json_client_issues_cancel_task() {
 
 #[tokio::test]
 async fn http_json_client_issues_subscribe_to_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersThenStreams(
             200,
@@ -515,6 +525,7 @@ fn grpc_stream_frame(state: a2a_pb::proto::TaskState) -> String {
 
 #[tokio::test]
 async fn grpc_client_issues_send_message() {
+    crate::testkit::install_test_seams();
     let h = harness_on(Outcome::Answers(200, grpc_send_answer()), BINDING_GRPC).await;
     let sent = issued_last(&h, &v10_envelope()).await;
     assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/SendMessage");
@@ -532,6 +543,7 @@ async fn grpc_client_issues_send_message() {
 
 #[tokio::test]
 async fn grpc_client_issues_get_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         in_turn(200, vec![grpc_send_answer(), grpc_task_answer()]),
         BINDING_GRPC,
@@ -553,6 +565,7 @@ async fn grpc_client_issues_get_task() {
 
 #[tokio::test]
 async fn grpc_client_issues_cancel_task() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         in_turn(200, vec![grpc_send_answer(), grpc_task_answer()]),
         BINDING_GRPC,
@@ -571,6 +584,7 @@ async fn grpc_client_issues_cancel_task() {
 
 #[tokio::test]
 async fn grpc_client_issues_send_streaming_message() {
+    crate::testkit::install_test_seams();
     let frame = grpc_stream_frame(a2a_pb::proto::TaskState::Completed);
     let h = harness_on(Outcome::Streams(vec![frame]), BINDING_GRPC).await;
     let body = serde_json::json!({
@@ -598,6 +612,7 @@ async fn grpc_client_issues_send_streaming_message() {
 
 #[tokio::test]
 async fn grpc_client_issues_subscribe_to_task() {
+    crate::testkit::install_test_seams();
     let frame = grpc_stream_frame(a2a_pb::proto::TaskState::Working);
     let h = harness_on(
         Outcome::AnswersThenStreams(200, grpc_working_answer(), vec![frame]),
@@ -627,6 +642,7 @@ async fn grpc_client_issues_subscribe_to_task() {
 /// the legs that came later is a defence with two thirds of a hole in it.
 #[tokio::test]
 async fn no_binding_leaks_the_callers_busbar_key() {
+    crate::testkit::install_test_seams();
     for (binding, outcome) in [
         (
             BINDING_JSONRPC,
@@ -662,6 +678,7 @@ async fn no_binding_leaks_the_callers_busbar_key() {
 /// apart.
 #[tokio::test]
 async fn a_binding_busbar_cannot_speak_refuses_before_the_socket() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::Answers(200, backend_ok()),
         "SOAP-1.2-OVER-CARRIER-PIGEON",
@@ -691,6 +708,7 @@ async fn a_binding_busbar_cannot_speak_refuses_before_the_socket() {
 /// upstream choosing busbar's peer, which is the rug-pull the pinning apparatus exists to refuse.
 #[tokio::test]
 async fn the_cards_interface_url_never_moves_the_hop() {
+    crate::testkit::install_test_seams();
     let h = harness_granting(
         Outcome::Answers(200, backend_rest_task()),
         false,
@@ -739,6 +757,7 @@ async fn the_cards_interface_url_never_moves_the_hop() {
 /// satisfy a test that only checked the card came back.
 #[test]
 fn both_http_bindings_discover_the_card_at_the_well_known_path() {
+    crate::testkit::install_test_seams();
     use crate::a2a::fetch::{discovery_urls, fetch_card, FetchPolicy, HttpResponse, Resolver};
     use std::cell::RefCell;
     use std::net::{IpAddr, Ipv4Addr};
@@ -844,6 +863,7 @@ fn jsonrpc_list_answer(state: &str) -> String {
 
 #[tokio::test]
 async fn jsonrpc_client_issues_list_tasks() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         in_turn(200, vec![backend_working(), jsonrpc_list_answer("working")]),
         BINDING_JSONRPC,
@@ -857,6 +877,7 @@ async fn jsonrpc_client_issues_list_tasks() {
 
 #[tokio::test]
 async fn http_json_client_issues_list_tasks() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         in_turn(
             200,
@@ -885,6 +906,7 @@ async fn http_json_client_issues_list_tasks() {
 
 #[tokio::test]
 async fn grpc_client_issues_list_tasks() {
+    crate::testkit::install_test_seams();
     let answer = as_fixture(&grpc_frame(&a2a_pb::proto::ListTasksResponse {
         tasks: vec![grpc_task(a2a_pb::proto::TaskState::Working)],
         ..Default::default()
@@ -909,6 +931,7 @@ async fn grpc_client_issues_list_tasks() {
 /// holding a relayed request open.
 #[tokio::test]
 async fn the_refreshed_state_reaches_the_callers_own_list() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         in_turn(
             200,
@@ -951,6 +974,7 @@ async fn the_refreshed_state_reaches_the_callers_own_list() {
 /// was.
 #[tokio::test]
 async fn a_backend_row_busbar_cannot_match_moves_nothing() {
+    crate::testkit::install_test_seams();
     let stranger = serde_json::json!({
         "jsonrpc": "2.0", "id": 0,
         "result": { "tasks": [
@@ -996,6 +1020,7 @@ async fn a_backend_row_busbar_cannot_match_moves_nothing() {
 /// fixture happened to answer".
 #[tokio::test]
 async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
+    crate::testkit::install_test_seams();
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
         BINDING_JSONRPC,
@@ -1151,6 +1176,7 @@ impl ChainSink {
 /// sit in a chain that verifies.
 #[tokio::test]
 async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to() {
+    crate::testkit::install_test_seams();
     // THE ONE LOCK EVERY TEST THAT ATTACHES A SINK TO THE PROCESS-WIDE `TASKS` TAKES. This test
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
@@ -1240,6 +1266,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
 /// distinguishes "busbar asked and the backend failed" from "busbar never asked".
 #[tokio::test]
 async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome() {
+    crate::testkit::install_test_seams();
     // THE ONE LOCK EVERY TEST THAT ATTACHES A SINK TO THE PROCESS-WIDE `TASKS` TAKES. This test
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason

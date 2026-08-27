@@ -3649,7 +3649,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
     // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
     // the one that survives a partial implementation of the rule.
-    let tools: crate::mcp::config::ToolsCfg = serde_yaml::from_str(
+    let tools: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
         r#"
 foo:
   url: "https://foo/"
@@ -3673,7 +3673,7 @@ other:
     );
 
     // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
-    let ok: crate::mcp::config::ToolsCfg = serde_yaml::from_str(
+    let ok: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
         r#"
 foo:
   url: "https://foo/"
@@ -3718,7 +3718,7 @@ fn failover_pools_are_absent_by_default() {
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     let mut deploy = base_deploy();
-    let mut tools = crate::mcp::config::ToolsCfg::default();
+    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
     tools.servers.insert(
         "search-eu".to_string(),
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
@@ -3743,14 +3743,14 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     let mut deploy = base_deploy();
-    let mut agents = crate::a2a::config::AgentsCfg::default();
+    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
     agents.agents.insert(
         "planner".to_string(),
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
     deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
-    let mut tools = crate::mcp::config::ToolsCfg::default();
+    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
     tools.servers.insert(
         "search-eu".to_string(),
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
@@ -3775,7 +3775,7 @@ fn a_pool_may_not_straddle_two_planes() {
 #[test]
 fn a_failover_pool_needs_two_members() {
     let mut deploy = base_deploy();
-    let mut agents = crate::a2a::config::AgentsCfg::default();
+    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
     agents.agents.insert(
         "only-one".to_string(),
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")

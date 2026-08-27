@@ -27,10 +27,11 @@
 //! against a handler that was mounted nowhere — the same shape as a store plugin whose unit tests
 //! pass while its ABI drops every write.
 
-use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
-use crate::mcp::envelope::PROTOCOL_VERSION;
-use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
+use busbar_a2a::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
+use busbar_mcp::mcp::envelope::PROTOCOL_VERSION;
+use busbar_mcp::mcp::McpCfg;
+use busbar_mcp::testkit::TestAppMcpExt as _;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 

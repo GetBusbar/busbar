@@ -434,6 +434,7 @@ planner:
 /// this tree has already paid for once.
 #[test]
 fn the_admin_write_path_and_the_file_share_one_grammar() {
+    crate::testkit::install_test_seams();
     let cases: [(&str, serde_json::Value); 4] = [
         (
             "a pin with no material",
@@ -569,14 +570,9 @@ fn the_agents_grammar_takes_the_same_allow_private_its_tools_sibling_takes() {
     assert!(opted_in.agents["echo"].allow_private);
     validate_agent("echo", &opted_in.agents["echo"]).expect("and it must survive validation");
 
-    // And the SAME KEY on the sibling plane, read from the sibling's own struct, so a rename on
-    // either plane fails here rather than being discovered by an operator whose config stopped
-    // working on one plane only.
-    let mcp: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(
-        "url: \"http://127.0.0.1:9001/mcp\"\nallow_private: true\npin:\n  mechanism: unpinned\n",
-    )
-    .expect("the `tools:` grammar spells it the same way");
-    assert!(mcp.allow_private);
+    // The CROSS-PLANE half of this invariant — that the sibling MCP plane spells `allow_private:` the
+    // SAME way — is asserted in busbar-core's own integration tests (the only place both plane crates
+    // are in the closure); a2a's own binary cannot name `busbar_mcp` (it is not a dependency).
 }
 
 // ── THE OUTBOUND CLIENT IDENTITY ─────────────────────────────────────────────────────────────────

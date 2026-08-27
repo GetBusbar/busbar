@@ -562,7 +562,7 @@ mod internal_error_tests;
 // v1 contract: the `{error:{code,message}}` envelope with the stable code enum. Keys
 // are a first-class v1 resource served by these handlers until they migrate into the versioned
 // service module.
-pub(crate) mod audit;
+pub mod audit;
 /// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
 /// registered upstream resolves it, looks at it and audits what it found in the same order; that
 /// order lives here, and the plane supplies only the look.

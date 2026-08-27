@@ -32,10 +32,10 @@ fn minimal_app() -> Arc<App> {
         // dispatch table empty, which is what every path in this fixture is asserted against.
         oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
-        // No `mcp:`/`agents:` configured — no dispatch slot for either (`crate::mcp::resource` /
-        // `crate::a2a::runtime` read their absence straight off this map). The MCP plane's
+        // No `mcp:`/`agents:` configured — no dispatch slot for either (`busbar_mcp::mcp::resource` /
+        // `busbar_a2a::a2a::runtime` read their absence straight off this map). The MCP plane's
         // always-present runtime bundle still rides here under its companion key
-        // (`crate::state::MCP_RUNTIME_SLOT`), which `crate::mcp::runtime` reads on the `finish` path.
+        // (`crate::state::MCP_RUNTIME_SLOT`), which `busbar_mcp::mcp::runtime` reads on the `finish` path.
         plane_slots: {
             let mut m: std::collections::BTreeMap<
                 &'static str,
@@ -43,19 +43,11 @@ fn minimal_app() -> Arc<App> {
             > = Default::default();
             m.insert(
                 crate::state::MCP_RUNTIME_SLOT,
-                Arc::new(crate::mcp::McpRuntime {
-                    catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
-                    servers: Default::default(),
-                    pool: Default::default(),
-                    sightings: Default::default(),
-                    roots_epochs: Default::default(),
-                    sampling_spend: Default::default(),
-                    verify: Default::default(),
-                }),
+                busbar_mcp::testkit::default_mcp_runtime(),
             );
             m
         },
-        agent_defs: std::sync::Arc::new(crate::a2a::config::AgentsCfg::default()),
+        agent_defs: std::sync::Arc::new(busbar_a2a::a2a::config::AgentsCfg::default()),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         any_pool_upstream_creds_override: false,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),

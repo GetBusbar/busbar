@@ -62,7 +62,7 @@ impl SecretResolver {
     /// A built-ins-only resolver (no plugin subsystem): `env` / `file` resolve, everything else is
     /// fail-closed. The zero-plugin resolver used by tests and any path with no registry.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn builtins_only() -> Self {
+    pub fn builtins_only() -> Self {
         Self { plugin: None }
     }
 

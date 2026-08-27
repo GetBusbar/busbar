@@ -109,7 +109,7 @@ pub(crate) const NAMESPACE_SEP: &str = "_";
 /// the spellings a document may use, and they are byte-identical before and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum McpPinMechanism {
+pub enum McpPinMechanism {
     /// A signed tool manifest verified against an operator-supplied, out-of-band issuer public key.
     PinnedPubkey,
     /// No server-side signature exists, so the pin degrades to the endpoint's certificate SPKI hash
@@ -149,7 +149,7 @@ impl McpPinMechanism {
 /// `tools.<server>.pin` — the out-of-band operator-supplied trust root.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ServerPinCfg {
+pub struct ServerPinCfg {
     /// Which root this is. REQUIRED: a pin whose mechanism is inferred is a pin whose meaning
     /// changes when the code that infers it changes.
     pub(crate) mechanism: McpPinMechanism,
@@ -359,7 +359,7 @@ pub(crate) struct PromptAllowCfg {
 /// the key is not decoration: the caller addresses its answer to it, and it is what makes one round
 /// answerable. A LIST OF ROUNDS, because a multi-round exchange is a real requirement and a single
 /// map could not express order.
-pub(crate) type AskRoundCfg = indexmap::IndexMap<String, AskEntryCfg>;
+pub type AskRoundCfg = indexmap::IndexMap<String, AskEntryCfg>;
 
 /// `tools.<server>.{tools,prompts}_allow.<name>.ask_caller[<round>].<key>` — ONE request busbar
 /// makes OF ITS OWN CALLER before it will run this capability.
@@ -387,7 +387,7 @@ pub(crate) type AskRoundCfg = indexmap::IndexMap<String, AskEntryCfg>;
 /// default: nothing here happens to a deployment that did not ask for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AskEntryCfg {
+pub struct AskEntryCfg {
     /// `elicitation/create`, `sampling/createMessage` or `roots/list` — the closed set
     /// `mrtr.mdx:184-192` names. Anything else is never sent: it names no capability a caller could
     /// have declared, and `mrtr.mdx:246` forbids sending an ask the caller has not declared.
@@ -818,7 +818,7 @@ pub struct McpServerDefCfg {
     /// Hooks attached to THIS server, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `tools.hooks:` list (LIST ⇒ ADDITIVE).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) hooks: Vec<String>,
+    pub hooks: Vec<String>,
 }
 
 /// `tools.<server>.token_exchange` — the RFC 8693 exchange busbar performs before it calls this
@@ -946,14 +946,14 @@ impl Eq for ChildEnvValue {}
 /// The top-level `tools:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ToolsCfg {
+pub struct ToolsCfg {
     /// The ALL-MCP attach list (the reserved `tools.hooks:` key). LIST ⇒ ADDITIVE.
     pub(crate) all_server_hooks: Vec<String>,
     /// The ALL-MCP `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
     pub(crate) all_server_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
-    pub(crate) servers: indexmap::IndexMap<String, McpServerDefCfg>,
+    pub servers: indexmap::IndexMap<String, McpServerDefCfg>,
 }
 
 impl ToolsCfg {
@@ -1337,7 +1337,7 @@ fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
+pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
     let at = format!("`tools.{name}`");
 
     // THE SEPARATOR RULE, and it lands on the SERVER ID ALONE. This is a real tension in the spec

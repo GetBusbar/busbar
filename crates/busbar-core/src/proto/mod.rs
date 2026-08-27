@@ -344,7 +344,7 @@ pub(crate) mod proto_codec;
 // `crate::proto::<Item>` paths WITHOUT this line textually naming a concrete-family type the freeze
 // witness would count (`StreamFraming` is on its TYPES list).
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use proto_codec::*;
+pub use proto_codec::*;
 
 /// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
 /// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,

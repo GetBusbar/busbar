@@ -1,5 +1,9 @@
 use super::*;
 use crate::test_support::EnvVarGuard;
+// The MCP plane's fixture builders (`.mcp(cfg)`, `.mcp_server(name, def)`) are an extension trait on
+// the neutral `TestApp`, provided by the externally-linked `busbar-mcp` (a test-support dev-dep) now
+// that core no longer dual-compiles the plane's source.
+use busbar_mcp::testkit::TestAppMcpExt as _;
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
@@ -1556,14 +1560,15 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
         let mut c = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
         ));
-        c.agent_defs = Box::new(agents_cfg_with_one_receiving_agent());
+        c.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
         c
     };
     let prior = build_once(cfg_with_agents(), None).expect("boot with an agents: block");
     // The plane's OWN verify gate accumulated per-subject coordination for an agent this deployment
     // once fronted (a latched drift diagnostic tracks the subject just as an in-flight verify would).
     // "retired-agent" is NOT the live "planner", so a retain against the live set must drop it.
-    let prior_plane = crate::a2a::runtime(&prior).expect("agents: configured => a2a plane present");
+    let prior_plane =
+        busbar_a2a::a2a::runtime(&prior).expect("agents: configured => a2a plane present");
     prior_plane
         .verify()
         .report("a2a", "retired-agent", true, false);
@@ -1577,7 +1582,7 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
     let kept =
         build_once(cfg_with_agents(), Some(&prior)).expect("re-apply keeping the agents: block");
     let kept_plane =
-        crate::a2a::runtime(&kept).expect("agents: still configured => a2a plane present");
+        busbar_a2a::a2a::runtime(&kept).expect("agents: still configured => a2a plane present");
     assert!(
         !kept_plane.verify().tracks_subject("retired-agent"),
         "a surviving plane must prune the carried gate entry no live agent names, not leak it"
@@ -1592,7 +1597,7 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
     )
     .expect("apply with agents removed");
     assert!(
-        crate::a2a::runtime(&removed).is_none(),
+        busbar_a2a::a2a::runtime(&removed).is_none(),
         "removing the agents: block leaves no a2a plane and no carried verify gate to leak"
     );
 }
@@ -1944,15 +1949,6 @@ async fn oversized_413_body(app: std::sync::Arc<state::App>, path: &str) -> serd
 }
 
 /// An MCP resource mounted at `/mcp`, from the same `mcp:` config shape an operator writes.
-fn mcp_cfg_at(canonical: &str) -> crate::mcp::McpCfg {
-    crate::mcp::McpCfg {
-        canonical_uri: canonical.to_string(),
-        authorization_servers: vec!["https://login.example.com".to_string()],
-        scopes_supported: Vec::new(),
-        allowed_origins: Vec::new(),
-    }
-}
-
 /// THE SHIPPED DEFECT: an oversized POST to a MOUNTED MCP plane was answered with an
 /// **OpenAI** error envelope — `{"error":{"message","type","code"}}` — because the error-shaping
 /// classifier read the PATH SHAPE only, knew nothing of the mount table, and fell through its
@@ -1964,7 +1960,9 @@ fn mcp_cfg_at(canonical: &str) -> crate::mcp::McpCfg {
 async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dialect() {
     crate::metrics::init();
     let app = crate::test_support::TestApp::new()
-        .mcp(&mcp_cfg_at("https://gateway.example.com/mcp"))
+        .mcp(&busbar_mcp::testkit::mcp_cfg_at(
+            "https://gateway.example.com/mcp",
+        ))
         .build();
 
     let v = oversized_413_body(app, "/mcp").await;
@@ -1992,7 +1990,9 @@ async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dial
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     crate::metrics::init();
     let app = crate::test_support::TestApp::new()
-        .mcp(&mcp_cfg_at("https://gateway.example.com/mcp"))
+        .mcp(&busbar_mcp::testkit::mcp_cfg_at(
+            "https://gateway.example.com/mcp",
+        ))
         .build();
 
     // UNDER the mount, at a segment boundary: claimed.
@@ -2714,35 +2714,9 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// A `agents:` entry lowering to a real, RECEIVING `A2aPlane` — the same shape
 /// `plane::tests::registry_tests::a2a_slot_receiving` uses, duplicated here rather than shared
 /// because that fixture is `pub(crate)` to `plane::tests` only.
-fn agents_cfg_with_one_receiving_agent() -> crate::a2a::config::AgentsCfg {
-    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
-    let mut cfg = AgentsCfg::default();
-    cfg.agents.insert(
-        "planner".to_string(),
-        AgentDefCfg {
-            url: "https://agent.example/planner".to_string(),
-            pin: AgentPinCfg {
-                mechanism: PinMechanism::Unpinned,
-                key: None,
-                fingerprint: None,
-            },
-            reverify_ttl: None,
-            recovery_backoff: None,
-            protocol_version: None,
-            allow_private: false,
-            upstream_credentials: None,
-            upstream_credential: None,
-            egress_scopes: Vec::new(),
-            client_identity: None,
-            hooks: Vec::new(),
-        },
-    );
-    cfg
-}
-
 /// THE POSITIVE CASE: with `mcp:` and a receiving `agents:` both configured,
 /// `App::plane_slot("mcp")`/`("a2a")` are `Some`, and downcasting each is the exact same `Arc`
-/// object the plane's neutral accessor (`crate::mcp::resource` / `crate::a2a::runtime`) reads — not a
+/// object the plane's neutral accessor (`busbar_mcp::mcp::resource` / `busbar_a2a::a2a::runtime`) reads — not a
 /// second, merely-equal construction. Both typed `App::mcp`/`App::a2a` fields are now dissolved, so
 /// this proves `build_app_from_config` builds each plane ONCE via `PlaneDecl::build` and the accessor
 /// reads that one slot object, rather than a typed-field mirror.
@@ -2753,10 +2727,12 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
     ));
     cfg.mcp = Some(std::sync::Arc::new(
-        crate::mcp::McpResource::from_cfg(&mcp_cfg_at("https://gw.example.com/mcp"))
-            .expect("valid mcp cfg"),
+        busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::testkit::mcp_cfg_at(
+            "https://gw.example.com/mcp",
+        ))
+        .expect("valid mcp cfg"),
     ) as std::sync::Arc<dyn std::any::Any + Send + Sync>);
-    cfg.agent_defs = Box::new(agents_cfg_with_one_receiving_agent());
+    cfg.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
     cfg.public_url = Some("https://busbar.example".to_string());
     // `mcp:` refuses to validate with an open (empty) data-plane `auth.chain` — close it with the
     // test-only stand-in module, which needs no signing key.
@@ -2777,19 +2753,19 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         .expect("mcp: configured => plane_slot(\"mcp\") is Some")
         .clone();
     let mcp_via_slot = mcp_slot
-        .downcast::<crate::mcp::McpResource>()
+        .downcast::<busbar_mcp::mcp::McpResource>()
         .expect("the mcp plane's slot is an McpResource");
     // `App::mcp` was dissolved: the MCP plane now reads its runtime object ONLY through the
-    // type-erased slot, via the neutral accessor `crate::mcp::resource`. The invariant this used to
+    // type-erased slot, via the neutral accessor `busbar_mcp::mcp::resource`. The invariant this used to
     // state as "typed field and slot are the same Arc" is now "the neutral accessor reads the SAME
     // object the slot holds, not a second construction".
     assert!(
         std::ptr::eq(
             std::sync::Arc::as_ptr(&mcp_via_slot),
-            crate::mcp::resource(&app).expect("mcp: configured => resource(app) is Some")
-                as *const crate::mcp::McpResource
+            busbar_mcp::mcp::resource(&app).expect("mcp: configured => resource(app) is Some")
+                as *const busbar_mcp::mcp::McpResource
         ),
-        "crate::mcp::resource must read the SAME object plane_slot(\"mcp\") holds, not a second \
+        "busbar_mcp::mcp::resource must read the SAME object plane_slot(\"mcp\") holds, not a second \
          construction"
     );
 
@@ -2798,26 +2774,26 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         .expect("a receiving agents: entry => plane_slot(\"a2a\") is Some")
         .clone();
     let a2a_via_slot = a2a_slot
-        .downcast::<crate::a2a::plane::A2aPlane>()
+        .downcast::<busbar_a2a::a2a::plane::A2aPlane>()
         .expect("the a2a plane's slot is an A2aPlane");
     // `App::a2a` was dissolved exactly like `App::mcp`: the A2A plane now reads its runtime object
-    // ONLY through the type-erased slot, via the neutral accessor `crate::a2a::runtime`. The invariant
+    // ONLY through the type-erased slot, via the neutral accessor `busbar_a2a::a2a::runtime`. The invariant
     // this used to state as "typed field and slot are the same Arc" is now "the neutral accessor reads
     // the SAME object the slot holds, not a second construction".
     assert!(
         std::ptr::eq(
             std::sync::Arc::as_ptr(&a2a_via_slot),
-            crate::a2a::runtime(&app).expect("agents: configured => runtime(app) is Some")
-                as *const crate::a2a::plane::A2aPlane
+            busbar_a2a::a2a::runtime(&app).expect("agents: configured => runtime(app) is Some")
+                as *const busbar_a2a::a2a::plane::A2aPlane
         ),
-        "crate::a2a::runtime must read the SAME object plane_slot(\"a2a\") holds, not a second \
+        "busbar_a2a::a2a::runtime must read the SAME object plane_slot(\"a2a\") holds, not a second \
          construction"
     );
 }
 
 /// THE NEGATIVE CASE (the RED-first gate): a deployment with NO `tools:`/`agents:` gets no slot
-/// for either plane — exactly the absence the neutral accessors (`crate::mcp::resource` /
-/// `crate::a2a::runtime`) already encode.
+/// for either plane — exactly the absence the neutral accessors (`busbar_mcp::mcp::resource` /
+/// `busbar_a2a::a2a::runtime`) already encode.
 /// Watched RED before `PlaneDecl::build` guarded absence (an unconditional `build` that always
 /// constructs an object regardless of `ctx.mcp_slot`/`ctx.agent_defs` makes this fail: `plane_slot`
 /// answers `Some` on a deployment that configured no plane, disagreeing with the neutral accessor's
@@ -2837,11 +2813,11 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let app = build_once(cfg, None).expect("app builds with neither plane configured");
 
     assert!(
-        crate::mcp::resource(&app).is_none(),
+        busbar_mcp::mcp::resource(&app).is_none(),
         "control: the neutral mcp accessor is None"
     );
     assert!(
-        crate::a2a::runtime(&app).is_none(),
+        busbar_a2a::a2a::runtime(&app).is_none(),
         "control: the neutral a2a accessor is None"
     );
     assert!(
@@ -2851,89 +2827,5 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     assert!(
         app.plane_slot("a2a").is_none(),
         "no agents: => no a2a slot, matching the neutral a2a accessor's own None"
-    );
-}
-
-// ── STEP 3.A.2: THE PLANE SWAP HOOK (`PlaneDecl::on_swap`) ───────────────────────────────────
-//
-// `AppHandle::swap` no longer names any one plane's types: it loops the registered decls and lets
-// each carry its engine-owned live state across the apply through `on_swap`. The MCP plane is the
-// only one with such state today — it retires the pooled stdio children of a registration the next
-// generation no longer declares, so a deleted `tools:` entry's process does not run on forever.
-
-/// A minimal VALID http `tools:` registration (its bare presence is enough to put its id in the
-/// next catalogue, which is all this test reads of it).
-fn swap_test_http_server(url: &str) -> crate::mcp::config::McpServerDefCfg {
-    crate::mcp::config::McpServerDefCfg {
-        url: url.to_string(),
-        pin: crate::mcp::config::ServerPinCfg {
-            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
-            key: Some("sha256/PEER=".to_string()),
-        },
-        command: None,
-        args: Vec::new(),
-        env: Default::default(),
-        cwd: None,
-        verify_ttl: None,
-        timeout: None,
-        tools_allow: Default::default(),
-        prompts_allow: Default::default(),
-        resources_allow: Default::default(),
-        resource_templates_allow: Default::default(),
-        transport: None,
-        aud: None,
-        grants: Default::default(),
-        roots: Vec::new(),
-        sampling: None,
-        max_input_required_rounds: None,
-        max_caller_ask_rounds: None,
-        allow_private: true,
-        token_exchange: None,
-        upstream_credentials: None,
-        hooks: Vec::new(),
-    }
-}
-
-/// A HOT-SWAP CARRIES THE MCP CONNECTION POOL AND RETIRES THE ORPHANED CHILD.
-///
-/// The NEXT snapshot declares one server (`keep`); its pool — which outlives the apply — carries a
-/// child for `keep` and one for `orphan`, a registration the next generation dropped. After the
-/// swap the pool holds only `keep`: the orphan is retired, the survivor kept. This is exactly what
-/// `App::swap` did inline before Step 3.A.2; it now flows through the MCP plane's `on_swap` hook,
-/// with `App::swap` itself naming no MCP type.
-///
-/// RED, watched: point `crate::mcp::PLANE_DECL.on_swap` at a no-op (or set it `None`) and the pool
-/// keeps BOTH children — `orphan`'s process would run on unreferenced. GREEN with the real hook.
-#[test]
-fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
-    crate::metrics::init();
-
-    // The next generation declares only `keep`, so its catalogue's server set is exactly {"keep"}.
-    let next = crate::test_support::TestApp::new()
-        .mcp_server("keep", swap_test_http_server("https://mcp.internal/keep"))
-        .build();
-
-    // The pool outlives an apply, so by swap time it holds a slot for the surviving registration AND
-    // one for a registration the operator removed. Seed both (a `slot` call creates the slot without
-    // spawning a process, which is all the retire path reads).
-    let _ = crate::mcp::runtime(&next).pool.children.slot("keep");
-    let _ = crate::mcp::runtime(&next).pool.children.slot("orphan");
-    assert_eq!(
-        crate::mcp::runtime(&next).pool.children.len(),
-        2,
-        "fixture control: the pool carries both the survivor and the orphan into the swap"
-    );
-
-    // A prior snapshot to swap away from — its identity is immaterial; `on_swap` reconciles `next`.
-    let prior = crate::test_support::TestApp::new().build();
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(prior));
-
-    handle.swap(next.clone());
-
-    assert_eq!(
-        crate::mcp::runtime(&next).pool.children.len(),
-        1,
-        "the swap retires the orphan (its registration is gone from next's catalogue) and keeps the \
-         survivor — the byte-identical behaviour App::swap gave inline, now via PlaneDecl::on_swap"
     );
 }

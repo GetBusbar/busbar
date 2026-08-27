@@ -17,8 +17,8 @@
 
 use super::*;
 use crate::a2a::task::{Direction, Task, TaskState};
-use crate::plane::store::StoreNamedTestExt;
 use busbar_api::{TaskEventRow, TaskRow};
+use busbar_core::plane::store::StoreNamedTestExt;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ struct DurableTaskStore {
     tasks: std::sync::Mutex<BTreeMap<String, TaskRow>>,
     /// The chained events as the OPAQUE stored BODIES a durable backend holds — the neutral
     /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists — keyed by `(task_id, seq)`. A typed view
-    /// is reconstructed on read via [`crate::plane::store::task_event_row_from_body`] (which also reads
+    /// is reconstructed on read via [`busbar_core::plane::store::task_event_row_from_body`] (which also reads
     /// legacy serde bodies), so "durable" here is byte-for-byte what a real store keeps.
     events: std::sync::Mutex<BTreeMap<(String, u64), Vec<u8>>>,
 }
@@ -64,7 +64,7 @@ impl DurableTaskStore {
         let body = events
             .get_mut(&(task_id.to_string(), seq))
             .expect("the event to tamper with must exist");
-        let mut row = crate::plane::store::task_event_row_from_body(task_id, body)
+        let mut row = busbar_core::plane::store::task_event_row_from_body(task_id, body)
             .expect("the event to tamper with decodes");
         edit(&mut row);
         // Rebuild the neutral body from the edited fields, KEEPING the original (now stale) `hash`.
@@ -73,13 +73,13 @@ impl DurableTaskStore {
             row.ts, row.kind, row.context_id, row.principal, row.agent_id, row.state
         )
         .into_bytes();
-        let tampered = crate::audit::journal::NeutralBody {
+        let tampered = busbar_core::audit::journal::NeutralBody {
             seq: row.seq,
             prev_hash: row.prev_hash,
             hash: row.hash,
             content,
         };
-        *body = crate::plane::store::encode(&tampered).expect("neutral body re-encodes");
+        *body = busbar_core::plane::store::encode(&tampered).expect("neutral body re-encodes");
     }
 }
 
@@ -120,24 +120,24 @@ impl busbar_api::Store for DurableTaskStore {
     // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
     fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_TASK => {
-                self.put_task(&crate::plane::store::decode(&record.body)?)
+            busbar_core::plane::store::KIND_TASK => {
+                self.put_task(&busbar_core::plane::store::decode(&record.body)?)
             }
             _ => Ok(()),
         }
     }
     fn get_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
         match kind {
-            crate::plane::store::KIND_TASK => self
+            busbar_core::plane::store::KIND_TASK => self
                 .get_task(id)?
-                .map(|r| crate::plane::store::encode(&r))
+                .map(|r| busbar_core::plane::store::encode(&r))
                 .transpose(),
             _ => Ok(None),
         }
     }
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_TASK_EVENT => self.append_event_body(record),
+            busbar_core::plane::store::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
         }
     }
@@ -147,12 +147,12 @@ impl busbar_api::Store for DurableTaskStore {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_TASK, busbar_api::PlaneSelector::All) => self
+            (busbar_core::plane::store::KIND_TASK, busbar_api::PlaneSelector::All) => self
                 .list_tasks()?
                 .iter()
-                .map(crate::plane::store::encode)
+                .map(busbar_core::plane::store::encode)
                 .collect(),
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
+            (busbar_core::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
                 Ok(self
                     .events
                     .lock()
@@ -167,7 +167,7 @@ impl busbar_api::Store for DurableTaskStore {
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
         match kind {
-            crate::plane::store::KIND_TASK => self.purge_tasks_before(before),
+            busbar_core::plane::store::KIND_TASK => self.purge_tasks_before(before),
             _ => Ok(0),
         }
     }
@@ -304,7 +304,7 @@ fn restart_and_restore(
         .host(|host| {
             h.reg.restore_from_store(
                 host,
-                crate::plane::store::PlaneStoreView::narrow(store).as_ref(),
+                busbar_core::plane::store::PlaneStoreView::narrow(store).as_ref(),
                 crate::a2a::task::readable_row,
             )
         })
@@ -433,7 +433,7 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
         "resuming from an interrupt is its own event kind, not a plain `working`"
     );
     assert_eq!(
-        crate::plane::taskstore::verify_task_event_rows(&events),
+        busbar_core::plane::taskstore::verify_task_event_rows(&events),
         Ok(()),
         "the chain verifies across the restart boundary"
     );
@@ -454,7 +454,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let n = h
         .reg
         .verify_task_chain(
-            crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_core::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -469,7 +469,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let brk = h
         .reg
         .verify_task_chain(
-            crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_core::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -478,7 +478,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     assert!(
         matches!(
             brk.kind,
-            crate::audit::ChainBreakKind::DigestMismatch { .. }
+            busbar_core::audit::ChainBreakKind::DigestMismatch { .. }
         ),
         "an in-place edit is a digest mismatch, got {:?}",
         brk.kind
@@ -528,7 +528,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
         store.tamper_event("t-paused", 2, edit);
         h.reg
             .verify_task_chain(
-                crate::plane::store::PlaneStoreView::narrow(handle).as_ref(),
+                busbar_core::plane::store::PlaneStoreView::narrow(handle).as_ref(),
                 "t-paused",
             )
             .expect("verify reads")
@@ -777,7 +777,7 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
             &self,
             record: &busbar_api::PlaneRecord,
         ) -> busbar_api::StoreResult<()> {
-            self.put_task(&crate::plane::store::decode(&record.body)?)
+            self.put_task(&busbar_core::plane::store::decode(&record.body)?)
         }
     }
 

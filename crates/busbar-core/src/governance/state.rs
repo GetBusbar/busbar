@@ -20,7 +20,7 @@ pub(crate) const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret n
 
 impl GovState {
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn new(store: Arc<dyn Store>, admin_token: Option<String>) -> StoreResult<Self> {
+    pub fn new(store: Arc<dyn Store>, admin_token: Option<String>) -> StoreResult<Self> {
         Self::new_with_signer(store, admin_token, None)
     }
 
@@ -30,7 +30,7 @@ impl GovState {
     /// auth — a signed token — so a signer is required for any real bearer verification). Hydrates
     /// the revocation denylist set from the store so a restart resumes with every revoked subject
     /// still denied.
-    pub(crate) fn new_with_signer(
+    pub fn new_with_signer(
         store: Arc<dyn Store>,
         admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
@@ -164,7 +164,7 @@ impl GovState {
     /// in-memory set so the next verify rejects it immediately. Idempotent. A store-write failure
     /// is propagated (a revoke that did not durably persist must FAIL LOUD, never report success -
     /// a "revoked" token still valid after a restart is a security hole).
-    pub(crate) fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
+    pub fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
         // THE FAN-OUT FIX (1.5.0 generic-credentials redesign): revoking a key used to be
         // denylist-only, which blocks the SIGNED-TOKEN plane (verify_token consults the denylist)
         // but does NOTHING to a row-looked-up credential like SigV4 — a revoked key's AWS
@@ -250,7 +250,7 @@ impl GovState {
     /// token `{sub, exp, kid}` for it. Returns `(binding, token)`; the token is shown ONCE. The
     /// subject id is a fresh unguessable `vk_<hex>` from the OS CSPRNG (its own bucket namespace).
     /// FAIL-CLOSED: no signer configured is an error (a key with no token is useless).
-    pub(crate) fn mint_signed(
+    pub fn mint_signed(
         &self,
         spec: NewKeySpec,
         exp: u64,
@@ -973,7 +973,7 @@ impl GovState {
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the
     /// usage read's by-model / by-key aggregations. Synchronous store read; admin-plane callers run
     /// it via `spawn_blocking`.
-    pub(crate) fn metering_for(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    pub fn metering_for(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         self.store.list_metering(bucket)
     }
 
@@ -1112,11 +1112,7 @@ impl GovState {
     /// Mint a new virtual key, persist it, refresh the cache, and return `(key, plaintext
     /// secret)`. The secret is shown to the caller ONCE here and never stored (only its hash is).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn create_key(
-        &self,
-        spec: NewKeySpec,
-        now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
+    pub fn create_key(&self, spec: NewKeySpec, now: u64) -> StoreResult<(VirtualKey, String)> {
         // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
@@ -1267,7 +1263,7 @@ impl GovState {
     /// what actually stops the credential resolving. Then report a refresh failure as
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
-    pub(crate) fn delete_key(&self, id: &str) -> StoreResult<()> {
+    pub fn delete_key(&self, id: &str) -> StoreResult<()> {
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -2276,7 +2272,7 @@ impl GovState {
 
     /// Direct handle to the backing store — for tests that seed/inspect persistence AND for the boot
     /// audit wiring (the durable audit sink + restore read the configured governance store).
-    pub(crate) fn store(&self) -> Arc<dyn Store> {
+    pub fn store(&self) -> Arc<dyn Store> {
         self.store.clone()
     }
 
@@ -2284,7 +2280,7 @@ impl GovState {
     /// store after a management-API mutation. Rebuild `by_credential` from the SAME fresh `by_id`
     /// snapshot so the two indices can never drift (a key disabled/deleted/re-minted, or a
     /// credential revoked/rotated, is reflected in both).
-    pub(crate) fn refresh(&self) -> StoreResult<()> {
+    pub fn refresh(&self) -> StoreResult<()> {
         // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
         // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
         // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.

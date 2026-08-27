@@ -283,7 +283,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
 /// `max_inbound_concurrent == 0` ⇒ NO concurrency layer (a true no-op); `> 0` wraps the whole router
 /// in a `limits::admission::InboundAdmissionLayer` as the OUTERMOST layer.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn build_router_with_limits(
+pub fn build_router_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,

@@ -15,12 +15,13 @@ pub mod migrate;
 pub(crate) mod migrate_export;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
-pub(crate) mod named_map;
+pub mod named_map;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub(crate) mod patch;
 pub mod secret;
 
-pub(crate) use groups::{GroupCfg, LimitCfg};
+pub use groups::GroupCfg;
+pub(crate) use groups::LimitCfg;
 pub use secret::SecretRef;
 
 // Re-export status_class_from_str for config validation
@@ -1909,7 +1910,7 @@ impl PoolPolicy {
 /// list must be `kind: gate`.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum HookKind {
+pub enum HookKind {
     Tap,
     Gate,
 }
@@ -1921,7 +1922,7 @@ pub(crate) enum HookKind {
 /// it is the top rung of the SAME ladder, not a separate flag. Immutable after registration.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PromptAccess {
+pub enum PromptAccess {
     #[default]
     No,
     Ro,
@@ -1944,7 +1945,7 @@ impl PromptAccess {
 /// established by the auth plugin and hooks never rewrite it. Immutable after registration.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum UserAccess {
+pub enum UserAccess {
     #[default]
     No,
     Ro,
@@ -1961,7 +1962,7 @@ impl UserAccess {
 /// lands in a later slice. Inert on a gate.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum HookStage {
+pub enum HookStage {
     Request,
     Candidate,
     Routing,
@@ -2177,7 +2178,7 @@ fn default_admin_auth() -> Vec<AuthChainEntry> {
 #[serde(deny_unknown_fields)]
 pub struct HookCfg {
     /// The hook's MODE: `tap` (fire-and-forget) or `gate` (fire-and-wait, returns a reply arm).
-    pub(crate) kind: HookKind,
+    pub kind: HookKind,
     // ── plugin reference (exactly one, required) ─────────────────────────────────────────────────
     /// The `kind: hook` PLUGIN backing this hook, by signed-manifest name or alias — resolved against
     /// the same validated plugin registry that store/auth plugins load through (fail-closed: an
@@ -2195,13 +2196,13 @@ pub struct HookCfg {
     /// and `busbar --migrate-config` rewrites `plugin:` → `module:` in a config file, so removing the
     /// alias never bricks a durable overlay.
     #[serde(rename = "module")]
-    pub(crate) plugin: String,
+    pub plugin: String,
     // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
     /// is microseconds; RAISE it for a hook plugin that does real work (a DB/network/model call).
     /// On timeout the decision is coerced to `on_error` and the request proceeds.
     #[serde(default = "default_policy_timeout_ms")]
-    pub(crate) timeout_ms: u64,
+    pub timeout_ms: u64,
     /// Fallback when a GATE times out/errors/saturates — a NAME resolved against the same registry
     /// as any hook (default `weighted` = proceed as busbar normally would). Reserved terminals:
     /// `nothing` (do not participate — a failing gate drops out and cannot displace another gate's
@@ -2212,26 +2213,26 @@ pub struct HookCfg {
     /// own `on_error` chains further, and boot validation proves every chain terminates (unknown
     /// names, taps, and cycles are boot errors).
     #[serde(default = "default_on_error")]
-    pub(crate) on_error: String,
+    pub on_error: String,
     /// PROMPT access grant: `no` (default, shape-only) | `ro` (read prompt content) | `rw` (read +
     /// may `rewrite` the body). The single trust ladder for request content; `rw` is how a gate is
     /// granted rewrite. Immutable after registration. `rw` on a tap is a config error.
     #[serde(default)]
-    pub(crate) prompt: PromptAccess,
+    pub prompt: PromptAccess,
     /// Caller-IDENTITY access grant: `no` (default) | `ro` (governance key id/name — never the secret
     /// — + body end-user field). Enables route-by-who gates. Immutable after registration.
     #[serde(default)]
-    pub(crate) user: UserAccess,
+    pub user: UserAccess,
     /// Hook ordering key (default 0). Orders the rewrite transform chain and the phase-2 decision
     /// chain (which reject surfaces; which order is "last" — see design-hooks-v2). Ascending;
     /// ties keep globals before pool gates, then config order.
     #[serde(default)]
-    pub(crate) priority: u16,
+    pub priority: u16,
     /// GATE restrict empty-intersection behavior (default `reject`, fail-closed; `weighted` is the
     /// advisory escape — the gate's restriction is skipped). Applied per gate in the phase-2
     /// reconcile.
     #[serde(default)]
-    pub(crate) on_empty: Option<PolicyOnError>,
+    pub on_empty: Option<PolicyOnError>,
     /// OPAQUE settings map pushed to the hook via the `configure` op: sent to the plugin at
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
@@ -2240,7 +2241,7 @@ pub struct HookCfg {
     // `settings:` the operator WROTE. Every admin read of it serves
     // `service::settings_keys(&…settings)`, or passes the tree through
     // `service::redact_settings_bags` first.
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: serde_json::Map<String, serde_json::Value>,
     /// The "decision observability" DECLARED-SIGNAL surface: the typed
     /// [`busbar_api::Signal`] catalog entries this hook wants computed + projected onto its own
     /// wire payload. Default empty (no signal beyond the always-on core fields) — the zero-cost
@@ -2254,10 +2255,10 @@ pub struct HookCfg {
     /// compute fn — declaring a signal here is necessary AND sufficient for it to start being
     /// computed + projected; nothing else (a code change, a recompile) is required.
     #[serde(default)]
-    pub(crate) signals: Vec<busbar_api::Signal>,
+    pub signals: Vec<busbar_api::Signal>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
     #[serde(default)]
-    pub(crate) global: bool,
+    pub global: bool,
     /// Mark this hook as THE default — the base a pool inherits when it names no hook of its own.
     /// REPLACEMENT semantics (unlike `global:`, which is an overlay ON TOP of the base): a `default`
     /// hook becomes the base, so the compiled-in backstop (`weighted`) is not used. Exactly like
@@ -2266,14 +2267,14 @@ pub struct HookCfg {
     /// ordering hook (one that returns `order`) is a meaningful default. Default false. Resolution:
     /// `hooks::resolve_pool_ordering` gives this hook to every pool whose base is unnamed.
     #[serde(default)]
-    pub(crate) default: bool,
+    pub default: bool,
     /// 1.5.3 named-hook SCOPE: the caller groups this hook fires for. A hook fires only for a request
     /// whose caller belongs to one of these groups (self OR any ancestor in the `groups:` tree — a
     /// USER is a leaf group, e.g. `user:bob`). EMPTY (the default) = ALL callers (unscoped). Populated
     /// from the top-level `hooks:` definition map's `groups:` key; consulted at firing time by
     /// [`caller_in_hook_groups`]. Immutable after registration.
     #[serde(default)]
-    pub(crate) groups: Vec<String>,
+    pub groups: Vec<String>,
     /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. This is the SOLE stage-
     /// scoping spelling in 1.6.0 (the legacy single tap `at:` key it once generalized was REMOVED —
     /// clean slate). EMPTY (the default) means the hook fires at THE FOUR CORE STAGES and only those —
@@ -2283,7 +2284,7 @@ pub struct HookCfg {
     /// same way at boot.) Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at
     /// every decision point).
     #[serde(default)]
-    pub(crate) phase: Vec<HookStage>,
+    pub phase: Vec<HookStage>,
 }
 
 impl HookCfg {
@@ -3601,7 +3602,7 @@ impl Default for ResponseHeadersCfg {
 }
 
 /// `Server-Timing: busbar` header is SUPPRESSED by default (indistinguishability); operators opt IN.
-pub(crate) const DEFAULT_RESPONSE_HEADERS_SERVER_TIMING: bool = false;
+pub const DEFAULT_RESPONSE_HEADERS_SERVER_TIMING: bool = false;
 fn default_response_headers_server_timing() -> bool {
     DEFAULT_RESPONSE_HEADERS_SERVER_TIMING
 }
@@ -4058,7 +4059,7 @@ pub(crate) const DEFAULT_POOL_IDLE_TIMEOUT_SECS: u64 = 300;
 /// in-flight count measured on a 4-core box (sustained throughput peaks near 1-2k concurrent) —
 /// far above any legitimate working set, low enough that the worst case stays bounded. Operators
 /// who want the old unlimited posture set `limits.max_inbound_concurrent: 0` explicitly.
-pub(crate) const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
+pub const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 /// Default hard-down sticky cooldown (seconds). Mirrors `store.rs`.
 pub(crate) const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).

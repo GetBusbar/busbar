@@ -64,6 +64,7 @@ fn frame(result: serde_json::Value) -> String {
 /// two.
 #[test]
 fn the_sse_reader_reassembles_events_across_arbitrary_chunk_boundaries() {
+    crate::testkit::install_test_seams();
     let mut r = SseReader::default();
     assert_eq!(
         r.feed(b"data: {\"a\":1}\n\ndata: {\"a\":2}\n\ndata: {\"a\":3}\n\n")
@@ -103,6 +104,7 @@ fn the_sse_reader_reassembles_events_across_arbitrary_chunk_boundaries() {
 /// `JSONRPC-SSE-001` and every requirement whose setup opens a stream.
 #[test]
 fn the_sse_reader_frames_every_line_ending_the_format_allows() {
+    crate::testkit::install_test_seams();
     let mut r = SseReader::default();
     let out = r.feed(b"data: {\"a\":1}\r\n\r\ndata: {\"a\":2}\r\n\r\n");
     assert_eq!(out.len(), 2, "CRLF-terminated events must frame: {out:?}");
@@ -133,6 +135,7 @@ fn the_sse_reader_frames_every_line_ending_the_format_allows() {
 /// extension must arrive at the caller as it left, not as an unexplained gap.
 #[test]
 fn a_streamed_event_carries_busbars_identity_and_an_unreadable_frame_is_passed_through() {
+    crate::testkit::install_test_seams();
     let ev = read_event(
         &frame(serde_json::json!({
             "id": "BACKEND-OWN-TASK-ID",
@@ -179,6 +182,7 @@ fn a_streamed_event_carries_busbars_identity_and_an_unreadable_frame_is_passed_t
 /// relay that submits a task and buffers the whole answer has not streamed anything.
 #[tokio::test]
 async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse() {
+    crate::testkit::install_test_seams();
     let frames = vec![
         frame(serde_json::json!({
             "id": "B1", "contextId": "BC", "kind": "status-update",
@@ -240,6 +244,7 @@ async fn a_streaming_submission_is_relayed_as_a_stream_and_written_back_as_sse()
 /// closed on one path and open on the other is exactly the asymmetry a single-path scan misses.
 #[tokio::test]
 async fn the_callers_busbar_key_is_absent_from_the_streaming_wire_too() {
+    crate::testkit::install_test_seams();
     let frames = vec![frame(serde_json::json!({
         "id": "B1", "contextId": "BC", "status": { "state": "completed" }
     }))];
@@ -266,6 +271,7 @@ async fn the_callers_busbar_key_is_absent_from_the_streaming_wire_too() {
 /// framing the backend never used.
 #[tokio::test]
 async fn a_stream_request_answered_with_one_document_comes_back_as_a_document() {
+    crate::testkit::install_test_seams();
     // `11` is the id `stream_envelope` sends, and the relay now requires the answer to name it.
     let h = harness(
         Outcome::StreamAnsweredUnary(backend_ok_for(serde_json::json!(11))),
@@ -292,6 +298,7 @@ async fn a_stream_request_answered_with_one_document_comes_back_as_a_document() 
 /// After the first event it cannot be, which is why the commitment point is where it is.
 #[tokio::test]
 async fn a_streaming_hop_that_fails_before_its_first_event_is_a_busbar_attributed_error() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Fails("connection refused".to_string()), false).await;
     let (status, _ct, body) = call_raw(&h, "planner", &stream_envelope("ctx-fail")).await;
     assert_eq!(status, 502, "{body}");
@@ -310,6 +317,7 @@ async fn a_streaming_hop_that_fails_before_its_first_event_is_a_busbar_attribute
 /// the `contextId` the resume depends on.
 #[tokio::test]
 async fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() {
+    crate::testkit::install_test_seams();
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -378,6 +386,7 @@ async fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_t
 /// the first row forever, and bill one piece of work twice.
 #[tokio::test]
 async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_opening_another() {
+    crate::testkit::install_test_seams();
     let interrupt = serde_json::json!({
         "jsonrpc": "2.0", "id": 7,
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "auth-required" } }
@@ -440,6 +449,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
 /// scoped to the presenting principal, on the same substrate `GetTask` is scoped on.
 #[tokio::test]
 async fn a_context_id_belonging_to_another_principal_does_not_resume_that_task() {
+    crate::testkit::install_test_seams();
     let interrupt = serde_json::json!({
         "jsonrpc": "2.0", "id": 7,
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "input-required" } }
@@ -477,6 +487,7 @@ async fn a_context_id_belonging_to_another_principal_does_not_resume_that_task()
 /// provenance for work already accounted for.
 #[tokio::test]
 async fn a_completed_task_is_not_resumed_by_reusing_its_context_id() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let ctx = format!("ctx-done-{}", std::process::id());
     let mut env = envelope();
@@ -510,6 +521,7 @@ async fn a_completed_task_is_not_resumed_by_reusing_its_context_id() {
 /// what the literal form below asserts.
 #[tokio::test]
 async fn a_push_callback_pointing_at_an_internal_address_is_refused_before_any_hop() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let mut env = envelope();
     env["params"]["configuration"] = serde_json::json!({
@@ -542,6 +554,7 @@ async fn a_push_callback_pointing_at_an_internal_address_is_refused_before_any_h
 /// SCHEME — a loopback callback would be refused for a different reason and prove nothing here.
 #[tokio::test]
 async fn a_plaintext_push_callback_registration_is_refused() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let mut env = envelope();
     env["params"]["configuration"] = serde_json::json!({
@@ -562,6 +575,7 @@ async fn a_plaintext_push_callback_registration_is_refused() {
 /// without it, a handler that refused every callback would look equally correct.
 #[tokio::test]
 async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
+    crate::testkit::install_test_seams();
     let interrupt = serde_json::json!({
         "jsonrpc": "2.0", "id": 7,
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "input-required" } }
@@ -600,6 +614,7 @@ async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
 /// this polls the seam's log rather than asserting immediately after the response.
 #[tokio::test]
 async fn a_registered_callback_is_delivered_to_when_the_task_reaches_a_state() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let mut env = envelope();
     env["params"]["configuration"] = serde_json::json!({
@@ -674,6 +689,7 @@ async fn loop_until(h: &Harness, url: &str) -> Option<Recorded> {
 /// output — a paused task the relay produced, put through a fresh registry the way boot does.
 #[tokio::test]
 async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_durable() {
+    crate::testkit::install_test_seams();
     let interrupt = serde_json::json!({
         "jsonrpc": "2.0", "id": 7,
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "input-required" } }
@@ -739,6 +755,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
 /// every stream the resume point exists for.
 #[tokio::test]
 async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
+    crate::testkit::install_test_seams();
     let frames = vec![
         frame(serde_json::json!({
             "id": "B1", "contextId": "BC",

@@ -104,7 +104,7 @@ mod authored {
     /// Its ONLY constructor is [`CallerAsk::from_config`]. There is deliberately no `From` impl, no
     /// `new(method, params)`, and no field that is anything but a clone of operator configuration.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(crate) struct CallerAsk {
+    pub struct CallerAsk {
         /// The server-assigned key of this entry in `inputRequests`. The operator writes it, because
         /// the conformance suite asserts one of them (`user_name`) BY NAME and because the retry
         /// addresses its answer to it.
@@ -164,7 +164,7 @@ impl CallerAsk {
 
 /// What to do with this request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AskDecision {
+pub enum AskDecision {
     /// No ask is configured, or every configured round is already answered. Dispatch normally.
     Proceed,
     /// Emit an `InputRequiredResult` carrying these asks and this sealed state.
@@ -180,7 +180,7 @@ pub(crate) enum AskDecision {
 
 /// Why busbar refused rather than asking or proceeding.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     /// The caller declared none of the capabilities this round's asks need. Refusing rather than
     /// proceeding is the empty-filter trap in the module header.
     NoDeclaredCapability {
@@ -271,7 +271,7 @@ impl std::fmt::Display for Refusal {
 
 /// The caller's side of the retry: what it answered, and the state it echoed.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Retry<'a> {
+pub struct Retry<'a> {
     /// `params.inputResponses`, if present.
     pub(crate) responses: Option<&'a serde_json::Value>,
     /// `params.requestState`, if present.
@@ -280,7 +280,7 @@ pub(crate) struct Retry<'a> {
 
 /// Everything about the request that the seal binds to.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Bind<'a> {
+pub struct Bind<'a> {
     /// The authenticated principal — the inbound key id. `mrtr.mdx:235`.
     pub(crate) principal: &'a str,
     /// `tools/call` or `prompts/get`.
@@ -307,7 +307,7 @@ pub(crate) struct Bind<'a> {
 /// host-side, so this carries the host handle rather than a `&SpentTokenLedger` an extracted plane
 /// could not hold.
 #[derive(Clone, Copy)]
-pub(crate) struct Approvals<'a> {
+pub struct Approvals<'a> {
     /// Mints and opens the sealed `requestState`. `None` is a deployment with no signing key, which
     /// refuses to ask at all rather than issue state it could not verify.
     pub(crate) sealer: Option<&'a Sealer>,
@@ -327,7 +327,7 @@ pub(crate) struct Approvals<'a> {
 /// consumed as spent. That effect lives here rather than at the call site on purpose — a caller that
 /// had to remember to record the spend is a caller that can forget, and the check and the record
 /// have to be one atomic act or two concurrent redemptions both pass it.
-pub(crate) fn decide(
+pub fn decide(
     rounds: &[AskRoundCfg],
     cap: u32,
     caller_capabilities: &serde_json::Value,

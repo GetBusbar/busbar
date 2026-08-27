@@ -636,6 +636,14 @@ impl CardTransports for LiveCardFetch {
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
 
+// BYTE-IDENTITY CONFORMANCE of busbar-core's neutral egress SEAM against this plane's own direct
+// transport — relocated from busbar-core's `egress::seam_tests` when the dual-compile was removed, so
+// it lives on the plane whose transport it holds the seam to (it names `crate::a2a::{transport,fetch,
+// relay}` internals) and reaches core's `egress`/`proxy`/`plane_host` through `busbar_core::`.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/egress_seam_tests.rs"]
+mod egress_seam_tests;
+
 // A SECOND TEST MODULE, and it is a sibling of the first rather than a section inside it because it
 // asks a different question of the same machinery: `transport_tests` proves the pin does not weaken
 // the connection, and this one proves what the connection PROVES. It reuses that file's TLS harness

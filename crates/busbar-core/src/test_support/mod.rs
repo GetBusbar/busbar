@@ -3,6 +3,13 @@
 // production build. In the feature-only build the in-crate users are absent, so the fixture set
 // reads as dead to rustc; that is the compilation mode, not rot.
 #![cfg_attr(not(test), allow(dead_code))]
+// This is the crate's TEST-FIXTURE surface (compiled only under `cfg(test)` or the `test-support`
+// feature, never in production). Its public builders legitimately name crate-internal config/state
+// types in their signatures — that is the whole point of a fixture: it hands a test the engine's real
+// inner types. Allowing `private_interfaces` here keeps those builders `pub` (reachable from a
+// dependent crate's tests — the plane suites) WITHOUT widening the engine's production config/state
+// types to `pub`. The types a dependent test must NAME to call a builder are widened individually.
+#![allow(private_interfaces)]
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
@@ -13,7 +20,7 @@
 /// fixture that mints a vkey and expects it to authenticate must run `keys` in the chain. Used by
 /// the `minimal_app()`-style governed fixtures (which set `inner.auth = keys_chain_auth()`) and,
 /// via `TestApp::keys_chain()`, by the builder fixtures.
-pub(crate) fn keys_chain_auth() -> std::sync::Arc<crate::auth::AuthMiddleware> {
+pub fn keys_chain_auth() -> std::sync::Arc<crate::auth::AuthMiddleware> {
     let cfg = crate::config::AuthCfg {
         chain: vec![crate::config::AuthChainEntry::bare(
             crate::config::KEYS_MODULE,
@@ -42,7 +49,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
-pub(crate) enum MockResponse {
+pub enum MockResponse {
     Ok {
         status: StatusCode,
         body: Value,
@@ -143,7 +150,7 @@ impl Default for MockResponse {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct MockServerState {
+pub struct MockServerState {
     responses: Mutex<Vec<MockResponse>>,
     last_auth_header: std::sync::Mutex<Option<String>>,
     last_request_body: std::sync::Mutex<Option<Vec<u8>>>,
@@ -152,10 +159,10 @@ pub(crate) struct MockServerState {
 }
 
 impl MockServerState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
-    pub(crate) fn push(&self, response: MockResponse) {
+    pub fn push(&self, response: MockResponse) {
         self.responses.lock().unwrap().push(response);
     }
     fn next_response(&self) -> Option<MockResponse> {
@@ -163,48 +170,48 @@ impl MockServerState {
     }
 
     /// Record the last seen Authorization header for testing passthrough token forwarding
-    pub(crate) fn record_auth_header(&self, header: &str) {
+    pub fn record_auth_header(&self, header: &str) {
         *self.last_auth_header.lock().unwrap() = Some(header.to_string());
     }
 
     /// Get the recorded Authorization header (for assertions in tests)
-    pub(crate) fn get_last_auth_header(&self) -> Option<String> {
+    pub fn get_last_auth_header(&self) -> Option<String> {
         self.last_auth_header.lock().unwrap().clone()
     }
 
     /// Clear the recorded Authorization header
-    pub(crate) fn clear_auth_header(&self) {
+    pub fn clear_auth_header(&self) {
         *self.last_auth_header.lock().unwrap() = None;
     }
 
     /// Record the received request path (for translation / on-the-wire assertions).
-    pub(crate) fn record_request_path(&self, path: &str) {
+    pub fn record_request_path(&self, path: &str) {
         *self.last_request_path.lock().unwrap() = Some(path.to_string());
     }
 
     /// Get the last received request path.
-    pub(crate) fn get_last_request_path(&self) -> Option<String> {
+    pub fn get_last_request_path(&self) -> Option<String> {
         self.last_request_path.lock().unwrap().clone()
     }
 
     /// Record the last received request body (for translation / on-the-wire assertions).
-    pub(crate) fn record_request_body(&self, body: &[u8]) {
+    pub fn record_request_body(&self, body: &[u8]) {
         *self.last_request_body.lock().unwrap() = Some(body.to_vec());
     }
 
     /// Get the last received request body bytes (for assertions in tests).
-    pub(crate) fn get_last_request_body(&self) -> Option<Vec<u8>> {
+    pub fn get_last_request_body(&self) -> Option<Vec<u8>> {
         self.last_request_body.lock().unwrap().clone()
     }
 
     /// Record the full set of request headers the upstream received (for indistinguishability
     /// assertions — e.g. that a health probe sends the same User-Agent/Accept as organic traffic).
-    pub(crate) fn record_request_headers(&self, headers: &axum::http::HeaderMap) {
+    pub fn record_request_headers(&self, headers: &axum::http::HeaderMap) {
         *self.last_request_headers.lock().unwrap() = Some(headers.clone());
     }
 
     /// Get a single request header value the upstream received, by name (case-insensitive).
-    pub(crate) fn get_last_request_header(&self, name: &str) -> Option<String> {
+    pub fn get_last_request_header(&self, name: &str) -> Option<String> {
         self.last_request_headers
             .lock()
             .unwrap()
@@ -215,13 +222,13 @@ impl MockServerState {
     }
 }
 
-pub(crate) struct MockServer {
+pub struct MockServer {
     addr: SocketAddr,
     handle: Option<JoinHandle<()>>,
 }
 
 impl MockServer {
-    pub(crate) async fn new(state: std::sync::Arc<MockServerState>) -> Self {
+    pub async fn new(state: std::sync::Arc<MockServerState>) -> Self {
         let app = Router::new()
             .route("/v1/messages", any(mock_handler))
             .route("/v1/chat/completions", any(mock_handler))
@@ -243,13 +250,13 @@ impl MockServer {
         }
     }
 
-    pub(crate) fn address(&self) -> SocketAddr {
+    pub fn address(&self) -> SocketAddr {
         self.addr
     }
-    pub(crate) fn base_url(&self) -> String {
+    pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
     }
-    pub(crate) async fn shutdown(self) {
+    pub async fn shutdown(self) {
         if let Some(handle) = self.handle {
             handle.abort();
         }
@@ -510,7 +517,7 @@ async fn mock_handler(
 // `allow(dead_code)`: this is a test DSL — not every setter is exercised by every revision of the
 // suite; keeping the full, symmetric builder surface is intentional.
 #[allow(dead_code)]
-pub(crate) struct LaneSpec {
+pub struct LaneSpec {
     model: String,
     provider: String,
     base_url: String,
@@ -542,7 +549,7 @@ pub(crate) struct LaneSpec {
 
 #[allow(dead_code)]
 impl LaneSpec {
-    pub(crate) fn new(model: &str, protocol: crate::proto::Protocol, base_url: &str) -> Self {
+    pub fn new(model: &str, protocol: crate::proto::Protocol, base_url: &str) -> Self {
         Self {
             model: model.into(),
             provider: "test-provider".into(),
@@ -570,80 +577,80 @@ impl LaneSpec {
             sem: None,
         }
     }
-    pub(crate) fn provider(mut self, p: &str) -> Self {
+    pub fn provider(mut self, p: &str) -> Self {
         self.provider = p.into();
         self
     }
-    pub(crate) fn max(mut self, n: usize) -> Self {
+    pub fn max(mut self, n: usize) -> Self {
         self.max = n;
         self
     }
-    pub(crate) fn api_key(mut self, k: &str) -> Self {
+    pub fn api_key(mut self, k: &str) -> Self {
         self.api_key = k.into();
         self
     }
-    pub(crate) fn error_map(mut self, m: std::collections::HashMap<String, String>) -> Self {
+    pub fn error_map(mut self, m: std::collections::HashMap<String, String>) -> Self {
         self.error_map = m;
         self
     }
-    pub(crate) fn context_max(mut self, n: usize) -> Self {
+    pub fn context_max(mut self, n: usize) -> Self {
         self.context_max = Some(n);
         self
     }
-    pub(crate) fn path(mut self, p: &str) -> Self {
+    pub fn path(mut self, p: &str) -> Self {
         self.path = Some(p.into());
         self
     }
-    pub(crate) fn path_base(mut self, p: &str) -> Self {
+    pub fn path_base(mut self, p: &str) -> Self {
         self.path_base = Some(p.into());
         self
     }
-    pub(crate) fn auth(mut self, a: &str) -> Self {
+    pub fn auth(mut self, a: &str) -> Self {
         self.auth = Some(a.into());
         self
     }
-    pub(crate) fn health(mut self, h: crate::config::HealthCfg) -> Self {
+    pub fn health(mut self, h: crate::config::HealthCfg) -> Self {
         self.health = Some(h);
         self
     }
-    pub(crate) fn default_max_tokens(mut self, n: u32) -> Self {
+    pub fn default_max_tokens(mut self, n: u32) -> Self {
         self.default_max_tokens = Some(n);
         self
     }
-    pub(crate) fn upstream_model(mut self, n: &str) -> Self {
+    pub fn upstream_model(mut self, n: &str) -> Self {
         self.upstream_model = Some(n.into());
         self
     }
     /// Mark the lane as budget-limited with `n` remaining requests (sets `limited = true`).
-    pub(crate) fn budget(mut self, n: i64) -> Self {
+    pub fn budget(mut self, n: i64) -> Self {
         self.limited = true;
         self.budget = n;
         self
     }
-    pub(crate) fn cooldown_until(mut self, t: u64) -> Self {
+    pub fn cooldown_until(mut self, t: u64) -> Self {
         self.cooldown_until = t;
         self
     }
-    pub(crate) fn streak(mut self, n: u32) -> Self {
+    pub fn streak(mut self, n: u32) -> Self {
         self.streak = n;
         self
     }
-    pub(crate) fn dead(mut self, reason: &str) -> Self {
+    pub fn dead(mut self, reason: &str) -> Self {
         self.dead = true;
         self.dead_reason = reason.into();
         self
     }
-    pub(crate) fn ok(mut self, n: u64) -> Self {
+    pub fn ok(mut self, n: u64) -> Self {
         self.ok = n;
         self
     }
-    pub(crate) fn err(mut self, n: u64) -> Self {
+    pub fn err(mut self, n: u64) -> Self {
         self.err = n;
         self
     }
     /// Override the lane's permit semaphore with a shared handle the test retains, so it can
     /// observe permit acquisition/release across the request lifetime.
-    pub(crate) fn sem(mut self, sem: std::sync::Arc<tokio::sync::Semaphore>) -> Self {
+    pub fn sem(mut self, sem: std::sync::Arc<tokio::sync::Semaphore>) -> Self {
         self.sem = Some(sem);
         self
     }
@@ -830,7 +837,7 @@ pub struct TestApp {
 
 #[allow(dead_code)]
 impl TestApp {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -919,7 +926,7 @@ impl TestApp {
     /// substrate `CardIssuer`. The A2A test-kit stamps it onto its plane so a fixture that configures
     /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
     /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
-    /// `pub(crate)` governance accessor.
+    /// `pub` governance accessor.
     pub fn a2a_card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
         self.governance.as_ref().and_then(|g| g.a2a_card_issuer())
     }
@@ -1013,27 +1020,27 @@ impl TestApp {
     /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.
     /// The fixture for the restart-to-apply signal — a config apply that ADDS a
     /// path the router never registered at boot.
-    pub(crate) fn no_plugin_routes(mut self) -> Self {
+    pub fn no_plugin_routes(mut self) -> Self {
         self.no_plugin_routes = true;
         self
     }
 
     /// Install a hook plugin-resolution env (for hook-transport resolution tests). Defaults to an
     /// empty registry (a hook's `plugin:` ref resolves to `None`, i.e. gate-absent).
-    pub(crate) fn hook_env(mut self, env: crate::hooks::HookEnv) -> Self {
+    pub fn hook_env(mut self, env: crate::hooks::HookEnv) -> Self {
         self.hook_env = Some(env);
         self
     }
 
     /// Point the plugin surface at a specific directory (for the Admin API plugin catalog / install /
     /// remove / reload tests). Defaults to `plugins` when unset.
-    pub(crate) fn plugins_dir(mut self, path: std::path::PathBuf) -> Self {
+    pub fn plugins_dir(mut self, path: std::path::PathBuf) -> Self {
         self.plugins_dir = Some(path);
         self
     }
     /// Set the whole `plugins.*` posture (for install re-verification tests). Defaults to the
     /// strict disabled default.
-    pub(crate) fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
+    pub fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
         self
     }
@@ -1041,17 +1048,13 @@ impl TestApp {
     /// Give the snapshot DISK TRUTH — the `config.yaml` / `providers.yaml` paths a rebuild reads.
     /// Without these the app is EPHEMERAL and every rebuild-from-disk path takes its no-disk branch,
     /// so the failure modes of the rebuild itself are unreachable from a test.
-    pub(crate) fn disk_paths(
-        mut self,
-        config: std::path::PathBuf,
-        providers: std::path::PathBuf,
-    ) -> Self {
+    pub fn disk_paths(mut self, config: std::path::PathBuf, providers: std::path::PathBuf) -> Self {
         self.disk_paths = Some((config, providers));
         self
     }
 
     /// Enable config-overlay persistence at `path` (for testing runtime-change durability).
-    pub(crate) fn overlay_path(mut self, path: std::path::PathBuf) -> Self {
+    pub fn overlay_path(mut self, path: std::path::PathBuf) -> Self {
         self.overlay_path = Some(path);
         self.explicit_no_overlay = false;
         self
@@ -1060,33 +1063,33 @@ impl TestApp {
     /// 1.5.3: build a LOCKED app (`config.locked: true` at runtime) — no overlay backend, so every
     /// config mutation is refused. Overrides the durable-by-default overlay `build()` otherwise
     /// provides. The only supported way for a test to reach `overlay_path: None`.
-    pub(crate) fn no_overlay(mut self) -> Self {
+    pub fn no_overlay(mut self) -> Self {
         self.overlay_path = None;
         self.explicit_no_overlay = true;
         self
     }
     /// Register a hook definition in the `hooks:` registry (for the Admin API v1 hooks read surface).
-    pub(crate) fn hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
+    pub fn hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
         self.hook_registry.insert(name.into(), cfg);
         self
     }
     /// Register a BASE-config-defined hook (registry AND `base_hook_names`) so the API's base-hook
     /// read-only guards (register/put/patch/delete return 409) can be exercised.
-    pub(crate) fn base_hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
+    pub fn base_hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
         self.hook_registry.insert(name.into(), cfg);
         self.base_hook_names.insert(name.into());
         self
     }
     /// Register a `groups:` entry into the App's group registry (the Admin-API groups read/mutation
     /// surface). Marks it a BASE (config-file) group, so the base-shadow 409 guard sees it.
-    pub(crate) fn group(mut self, name: &str, cfg: crate::config::GroupCfg) -> Self {
+    pub fn group(mut self, name: &str, cfg: crate::config::GroupCfg) -> Self {
         self.groups_registry.insert(name.into(), cfg);
         self.base_group_names.insert(name.into());
         self
     }
     /// Seed an `identity-providers:` DEFINITION into the App's effective named map (the read side of
     /// the generic named-map admin CRUD). Mirror whatever the fixture's on-disk config.yaml declares.
-    pub(crate) fn identity_provider(
+    pub fn identity_provider(
         mut self,
         name: &str,
         cfg: crate::config::IdentityProviderCfg,
@@ -1096,13 +1099,13 @@ impl TestApp {
     }
     /// Seed an `export:` DEFINITION into the App's effective named map — the exporter twin of
     /// [`TestApp::identity_provider`].
-    pub(crate) fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
+    pub fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
         self.export_defs.insert(name.into(), cfg);
         self
     }
     /// Declare a `tool_pools:` failover pool over already-seeded `mcp_server` registrations —
     /// exactly the operator's grammar: ordered members, optional `repeatable:` operations.
-    pub(crate) fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
+    pub fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
         self.tool_pools.insert(
             name.into(),
             crate::failover::CandidatePoolCfg {
@@ -1113,7 +1116,7 @@ impl TestApp {
         self
     }
     /// The `agent_pools:` twin of [`TestApp::tool_pool`], over `agent_def` registrations.
-    pub(crate) fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
+    pub fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
         self.agent_pools.insert(
             name.into(),
             crate::failover::CandidatePoolCfg {
@@ -1129,7 +1132,7 @@ impl TestApp {
     /// the exact production invariant (both rebuilt together on every apply). NOT marked base, so
     /// the mint auto-provision path can create a `user:<sub>` leaf under one of these without the
     /// base-shadow 409 misfiring. Overwrites any `.cost(...)` set earlier.
-    pub(crate) fn groups_tree(
+    pub fn groups_tree(
         mut self,
         groups: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
@@ -1140,16 +1143,16 @@ impl TestApp {
         self
     }
     /// Add a name to the `global_hooks:` list (globally-wired hooks).
-    pub(crate) fn global_hook(mut self, name: &str) -> Self {
+    pub fn global_hook(mut self, name: &str) -> Self {
         self.global_hooks.push(name.into());
         self
     }
-    pub(crate) fn lane(mut self, spec: LaneSpec) -> Self {
+    pub fn lane(mut self, spec: LaneSpec) -> Self {
         self.lanes.push(spec);
         self
     }
     /// Define a pool over lane indices: `members` is `(lane_index, weight)` pairs.
-    pub(crate) fn pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
+    pub fn pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
         self.pools.insert(name.into(), weighted(members));
         self
     }
@@ -1157,13 +1160,13 @@ impl TestApp {
     /// key — it used to be `auth.upstream_credentials`) — driving the egress credential-selection
     /// path. `Own` = the old `mode: none`; `Passthrough` = the old `mode: passthrough`. Per-pool
     /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
-    pub(crate) fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
+    pub fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
         self.upstream_credentials = uc;
         self
     }
     /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
     /// to reach the admin surface on a fixture that has no governance to hold an operator token.
-    pub(crate) fn admin_chain(mut self, modules: Vec<String>) -> Self {
+    pub fn admin_chain(mut self, modules: Vec<String>) -> Self {
         self.admin_chain = Some(modules);
         self
     }
@@ -1172,11 +1175,7 @@ impl TestApp {
     /// `admin_chain` and `role_bindings.<name>` key off), marking the chain as plugin-backed so the
     /// admin auth middleware OFFLOADS it off the reactor — the seam the 1.5.2 admin-plane OIDC
     /// offload test drives. `has_plugin` is forced true.
-    pub(crate) fn admin_module(
-        mut self,
-        name: &str,
-        module: Box<dyn crate::auth::AuthModule>,
-    ) -> Self {
+    pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(|| crate::auth::AdminAuthChain {
@@ -1189,7 +1188,7 @@ impl TestApp {
     }
 
     /// Set the built App's `public_url:` (the hosted-login base origin).
-    pub(crate) fn public_url(mut self, url: &str) -> Self {
+    pub fn public_url(mut self, url: &str) -> Self {
         self.public_url = Some(url.to_string());
         self
     }
@@ -1203,7 +1202,7 @@ impl TestApp {
     /// deployment that cannot exist. The signing key is left unset, so the plane generates the
     /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
     /// surface does not depend on which key signs.
-    pub(crate) fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
+    pub fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
         let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
             .expect("test oauth_as config must be valid");
         let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
@@ -1222,10 +1221,7 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub(crate) fn mcp_durable_store(
-        mut self,
-        store: std::sync::Arc<dyn busbar_api::Store>,
-    ) -> Self {
+    pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
         self.mcp_durable_store = Some(store);
         self
     }
@@ -1233,7 +1229,7 @@ impl TestApp {
     /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
     /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
     /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
-    pub(crate) fn login_method(
+    pub fn login_method(
         mut self,
         name: &str,
         module: Box<dyn busbar_api::AuthPlugin>,
@@ -1265,7 +1261,7 @@ impl TestApp {
         self
     }
 
-    pub(crate) fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
+    pub fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
         self.auth = Some(a);
         self
     }
@@ -1273,7 +1269,7 @@ impl TestApp {
     /// verifier). This is what makes a data-plane request REQUIRE and resolve a virtual key: since
     /// 1.5.2 vkey enforcement is driven by the chain shape, not the admin token. Pair with
     /// `.governance(gov)` for the enforcing-vkey e2e posture.
-    pub(crate) fn keys_chain(mut self) -> Self {
+    pub fn keys_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare(
                 crate::config::KEYS_MODULE,
@@ -1289,7 +1285,7 @@ impl TestApp {
     /// non-empty credential and is audience-blind, which is what a real `kind: auth` plugin is
     /// forced to be by the module ABI. Use it wherever the thing under test is whether CORE refuses
     /// something a chain module would have admitted.
-    pub(crate) fn idp_chain(mut self) -> Self {
+    pub fn idp_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
             ..crate::config::AuthCfg::default_none()
@@ -1304,44 +1300,44 @@ impl TestApp {
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
     /// Set the resolved token-mint policy (`auth.policy:`) on the built `App` (default: empty, no
     /// caps). Used by tests exercising `MintPolicy::check_mint` enforcement at `POST /keys`.
-    pub(crate) fn mint_policy(mut self, policy: crate::admin::MintPolicy) -> Self {
+    pub fn mint_policy(mut self, policy: crate::admin::MintPolicy) -> Self {
         self.mint_policy = Some(policy);
         self
     }
 
-    pub(crate) fn role_bindings(mut self, rb: crate::config::RoleBindings) -> Self {
+    pub fn role_bindings(mut self, rb: crate::config::RoleBindings) -> Self {
         self.role_bindings = Some(rb);
         self
     }
     /// Install a resolved cost model (rate card / budget groups / flat fee) for tests exercising
     /// the derived-spend enforcement. Default: `CostModel::flat(1)` - no rate card, no groups,
     /// the production default 1-cent flat fee.
-    pub(crate) fn cost(mut self, c: crate::cost::CostModel) -> Self {
+    pub fn cost(mut self, c: crate::cost::CostModel) -> Self {
         self.cost = Some(std::sync::Arc::new(c));
         self
     }
 
-    pub(crate) fn governance(mut self, g: std::sync::Arc<crate::governance::GovState>) -> Self {
+    pub fn governance(mut self, g: std::sync::Arc<crate::governance::GovState>) -> Self {
         self.governance = Some(g);
         self
     }
-    pub(crate) fn failover(mut self, f: crate::config::FailoverCfg) -> Self {
+    pub fn failover(mut self, f: crate::config::FailoverCfg) -> Self {
         self.failover_cfg = Some(f);
         self
     }
-    pub(crate) fn pool_runtime(mut self, name: &str, rt: crate::state::PoolRuntime) -> Self {
+    pub fn pool_runtime(mut self, name: &str, rt: crate::state::PoolRuntime) -> Self {
         self.pool_runtime.insert(name.into(), rt);
         self
     }
-    pub(crate) fn fallback_pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
+    pub fn fallback_pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
         self.fallback_pools.insert(name.into(), weighted(members));
         self
     }
-    pub(crate) fn on_exhausted(mut self, name: &str, oe: crate::config::OnExhausted) -> Self {
+    pub fn on_exhausted(mut self, name: &str, oe: crate::config::OnExhausted) -> Self {
         self.on_exhausted_cfgs.insert(name.into(), oe);
         self
     }
-    pub(crate) fn build(self) -> std::sync::Arc<crate::state::App> {
+    pub fn build(self) -> std::sync::Arc<crate::state::App> {
         self.build_with_store().0
     }
 
@@ -1352,7 +1348,7 @@ impl TestApp {
     /// test-only breaker-cell manipulation (`HealthState::cell`/`cell_open`, real Open/HalfOpen
     /// state, not achievable through the trait's own methods) needs the typed handle to the SAME
     /// store instance the built `App` uses, not a second independent one.
-    pub(crate) fn build_with_store(
+    pub fn build_with_store(
         mut self,
     ) -> (
         std::sync::Arc<crate::state::App>,
@@ -1620,7 +1616,7 @@ impl TestApp {
 /// `needs`. `None` when the cdylib is not built (the caller skips). Uses the unsigned +
 /// `allow_unsigned` path (tests can't sign with the embedded first-party key) — still the full
 /// scan/trust/load pipeline. Shared by the admin + resolution tests that need a hook to actually load.
-pub(crate) fn test_hook_env(
+pub fn test_hook_env(
     aliases: &[&str],
     needs: busbar_plugin_sign::HookNeeds,
 ) -> Option<crate::hooks::HookEnv> {
@@ -1631,7 +1627,7 @@ pub(crate) fn test_hook_env(
 /// `settings_schema` — needed to exercise `GET /plugins/{name}/schema`'s describe→manifest
 /// fallback (a real loaded hook whose live `describe` answers `schema: null` still has a real
 /// manifest baseline to fall back to).
-pub(crate) fn test_hook_env_with_schema(
+pub fn test_hook_env_with_schema(
     aliases: &[&str],
     needs: busbar_plugin_sign::HookNeeds,
     settings_schema: Option<&str>,
@@ -1728,7 +1724,7 @@ pub(crate) fn test_hook_env_with_schema(
 /// resolves-to-wrong-kind check only ever reads `manifest.kind`, never `dlopen`s the wrong-kind
 /// entry). Lets a test reach `probe_transport`'s "resolves, but to a non-hook kind" arm, which
 /// `test_hook_env` alone cannot produce (every plugin it packs is `kind: "hook"`).
-pub(crate) fn test_hook_env_with_wrong_kind_plugin(
+pub fn test_hook_env_with_wrong_kind_plugin(
     hook_alias: &str,
     wrong_kind_alias: &str,
 ) -> Option<crate::hooks::HookEnv> {
@@ -1830,7 +1826,7 @@ pub(crate) fn test_hook_env_with_wrong_kind_plugin(
 /// pool/lane label values so parallel tests can't contribute to the matched sample. Matching is by
 /// exact metric name (the char after the name must open the label set / value, so a name never
 /// matches a longer neighbor it happens to prefix).
-pub(crate) fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
     crate::metrics::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
     crate::metrics::render()
@@ -1867,7 +1863,7 @@ fn weighted(members: &[(usize, u32)]) -> Vec<crate::state::WeightedLane> {
 /// a path back and never reaches for `create_dir_all` itself.
 ///
 /// `name` must already be unique per test AND per thread; this does not make it so.
-pub(crate) fn scratch_dir(name: &str) -> std::path::PathBuf {
+pub fn scratch_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(name);
     std::fs::create_dir_all(&dir).expect("create the test scratch directory");
     dir
@@ -1876,7 +1872,7 @@ pub(crate) fn scratch_dir(name: &str) -> std::path::PathBuf {
 pub mod warn_capture;
 
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
-pub(crate) mod plugin_store;
+pub mod plugin_store;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

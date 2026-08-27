@@ -274,8 +274,8 @@ pub(crate) fn carried_a2a_gates(
 /// TEST-ONLY: every production reader reaches the runtime through the neutral host seam
 /// (`runtime_arc`/`runtime_arc_of` over an `EngineHost`); this `&App` form now survives solely for
 /// the in-crate tests that assert plane presence/absence off a built `App`.
-#[cfg(all(test, feature = "test-support"))]
-pub(crate) fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
+#[cfg(feature = "test-support")]
+pub fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
@@ -533,34 +533,34 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
     })
 }
 
-pub(crate) mod admin_view;
+pub mod admin_view;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
-pub(crate) mod config;
+pub mod config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
 pub(crate) mod grpc;
 pub(crate) mod idmap;
-pub(crate) mod inbound;
+pub mod inbound;
 pub(crate) mod jws;
 pub(crate) mod local;
 pub(crate) mod meter;
 /// THE HOPS BUSBAR ORIGINATES ITSELF, on verbs `local` also answers: the callback substitution and
 /// the task-list poll. One relay, one egress gate, one framing lookup — see the module header.
 pub(crate) mod originate;
-pub(crate) mod pin;
-pub(crate) mod plane;
+pub mod pin;
+pub mod plane;
 /// BUSBAR'S OWN CALLBACK, the one it registers with a BACKEND so the backend never learns the
 /// caller's. The substitution [`pushdeliver`] delivers the other half of.
 pub(crate) mod pushback;
 pub(crate) mod pushdeliver;
-pub(crate) mod pushnotify;
+pub mod pushnotify;
 /// THE RECEIVING HOT PATH. Not `ingress` any more, and the rename is the statement: the ingress
 /// SEQUENCE is `busbar_core::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
 /// was left when it moved out — this plane's method vocabulary, its verb dispatch and its refusal
 /// wording.
-pub(crate) mod receive;
+pub mod receive;
 pub(crate) mod registry;
 pub(crate) mod relay;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
@@ -576,14 +576,14 @@ pub(crate) mod words;
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
 pub(crate) use busbar_substrate::trust::reverify;
-pub(crate) mod serve;
+pub mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;
-pub(crate) mod task;
+pub mod task;
 /// PUBLIC re-export of the A2A task codec so the composition root (`main`) can bind it to the neutral
 /// `busbar_substrate::plane_host::TaskCodec` seam via `install_task_codec` — the one public a2a symbol
 /// the binary names for this seam, mirroring how it names `busbar_core::egress::seam::CoreHostlessEgress`.
 pub use task::A2aTaskCodec;
 pub(crate) mod transport;
-pub(crate) mod verbs;
+pub mod verbs;
 pub(crate) mod verify;

@@ -137,7 +137,7 @@ pub(crate) enum Outcome {
 /// Why busbar refused to carry a logical dispatch to completion. Every arm is busbar-attributed:
 /// the caller is told busbar declined, never handed the upstream's ask to answer itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     /// The operator granted this server nothing for this kind of ask. THE DEFAULT ANSWER.
     Ungranted { server: String, kind: String },
     /// The hard cap on input-required rounds was reached — refused past it, never merely warned.

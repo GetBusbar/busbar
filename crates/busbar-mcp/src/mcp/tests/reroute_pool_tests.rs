@@ -305,3 +305,50 @@ async fn a_client_fault_answer_never_penalizes_the_member() {
     );
     assert_eq!(peer_b.mcp_hits(), 0);
 }
+
+/// A HOT-SWAP CARRIES THE MCP CONNECTION POOL AND RETIRES THE ORPHANED CHILD.
+///
+/// The NEXT snapshot declares one server (`keep`); its pool — which outlives the apply — carries a
+/// child for `keep` and one for `orphan`, a registration the next generation dropped. After the
+/// swap the pool holds only `keep`: the orphan is retired, the survivor kept. This flows through the
+/// MCP plane's `on_swap` hook, with `busbar_core::state::AppHandle::swap` itself naming no MCP type.
+///
+/// RELOCATED from busbar-core's `tests/tests.rs` when the dual-compile was removed: it reaches the
+/// MCP connection pool's crate-private internals (`runtime(app).pool.children`), which stay
+/// crate-private, so the test lives on the plane it exercises rather than widening those to `pub`.
+#[test]
+fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
+    busbar_core::metrics::init();
+
+    // The next generation declares only `keep`, so its catalogue's server set is exactly {"keep"}.
+    let next = TestApp::new()
+        .mcp_server(
+            "keep",
+            crate::testkit::swap_test_http_server("https://mcp.internal/keep"),
+        )
+        .build();
+
+    // The pool outlives an apply, so by swap time it holds a slot for the surviving registration AND
+    // one for a registration the operator removed. Seed both (a `slot` call creates the slot without
+    // spawning a process, which is all the retire path reads).
+    let _ = crate::mcp::runtime(&next).pool.children.slot("keep");
+    let _ = crate::mcp::runtime(&next).pool.children.slot("orphan");
+    assert_eq!(
+        crate::mcp::runtime(&next).pool.children.len(),
+        2,
+        "fixture control: the pool carries both the survivor and the orphan into the swap"
+    );
+
+    // A prior snapshot to swap away from — its identity is immaterial; `on_swap` reconciles `next`.
+    let prior = TestApp::new().build();
+    let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(prior));
+
+    handle.swap(next.clone());
+
+    assert_eq!(
+        crate::mcp::runtime(&next).pool.children.len(),
+        1,
+        "the swap retires the orphan (its registration is gone from next's catalogue) and keeps the \
+         survivor — the byte-identical behaviour App::swap gave inline, now via PlaneDecl::on_swap"
+    );
+}

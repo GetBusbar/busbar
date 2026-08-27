@@ -45,22 +45,22 @@ use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 /// the whole chain; prevention is shipping the log off-box to a SIEM).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct AuditEntry {
+pub struct AuditEntry {
     /// Monotonic sequence number (1-based), unique within a process lifetime.
-    pub(crate) seq: u64,
+    pub seq: u64,
     /// Unix seconds when the mutation was attempted.
-    pub(crate) ts: u64,
+    pub ts: u64,
     /// The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).
-    pub(crate) action: String,
+    pub action: String,
     /// The resource acted on (e.g. `hook:compress`). Never a secret.
-    pub(crate) resource: String,
+    pub resource: String,
     /// Stable outcome token: `applied` (mutation committed) | `rejected` (validation/conflict, nothing
     /// changed).
-    pub(crate) outcome: String,
+    pub outcome: String,
     /// WHO: the authenticated principal id that attempted the mutation (`admin` for the operator
     /// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
     /// explicit open admin posture). Attribution, never a credential.
-    pub(crate) principal: String,
+    pub principal: String,
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
     pub(crate) prev_hash: String,
@@ -171,7 +171,7 @@ pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_
 /// admin ring and the plane audit-log ring name ONE cap; re-exported here so
 /// `crate::admin::audit::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
 /// exist") still resolves.
-pub(crate) use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
+pub use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
 
 /// The in-memory admin audit ring. `record_by` is append-only + bounded (FIFO prune of the oldest — a
 /// hot cache of the recent tail); `list` returns most-recent-first. It holds NO durable state: the
@@ -179,7 +179,7 @@ pub(crate) use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
 /// which serves the durable write, the `GET /audit` read, and the boot restore + verify. This ring is
 /// ephemeral by construction, started fresh on every boot. Interior-mutable so it can be a shared
 /// global.
-pub(crate) struct AuditLog {
+pub struct AuditLog {
     entries: std::sync::Mutex<std::collections::VecDeque<AuditEntry>>,
     seq: std::sync::atomic::AtomicU64,
 }
@@ -250,8 +250,8 @@ impl AuditLog {
     /// Export the retained ring, oldest first. TEST-ONLY: the durable seam is production's restore
     /// source; this backs the in-process restart-simulation tests (a fresh `AuditLog` re-seeded from
     /// this process's ring) alongside `load`, and the proxy/egress audit-trail assertions.
-    #[cfg(test)]
-    pub(crate) fn export(&self) -> Vec<AuditEntry> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn export(&self) -> Vec<AuditEntry> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         q.iter().cloned().collect()
     }
@@ -321,7 +321,7 @@ impl AuditLog {
 }
 
 /// The process-wide admin audit log. Const-constructed, so no lazy init needed.
-pub(crate) static AUDIT: AuditLog = AuditLog::new();
+pub static AUDIT: AuditLog = AuditLog::new();
 
 #[cfg(test)]
 #[path = "tests/audit_tests.rs"]

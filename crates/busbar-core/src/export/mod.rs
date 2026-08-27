@@ -21,7 +21,7 @@
 
 pub(crate) mod file;
 pub(crate) mod projection;
-pub(crate) mod prometheus;
+pub mod prometheus;
 pub(crate) mod webhook;
 
 use crate::config::ExportCfg;

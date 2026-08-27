@@ -4650,7 +4650,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // plane attaches its own typed success-body (and, for A2A, request-body) schemas onto the paths
     // its `openapi()` fragment inserted above, using the SAME shared `gen`/`req_gen` — so the plane
     // types register into `#/components/schemas` exactly as the inline `typed!`/`body!` calls used to,
-    // and this document is byte-identical while this function names no `crate::mcp`/`crate::a2a` view
+    // and this document is byte-identical while this function names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view
     // type. Folded in `plane_decls()` order (MCP then A2A), matching the source order those calls had.
     for decl in crate::plane::registry::plane_decls() {
         if let Some(schemas) = decl.openapi_schemas {

@@ -44,7 +44,7 @@ use busbar_substrate::diag_warn;
 use busbar_substrate::diagnostics::A2A_REVERIFY_CADENCE_UNPARSED;
 
 /// THE PLANE. Built once per config generation; `None` when this deployment fronts no agents.
-pub(crate) struct A2aPlane {
+pub struct A2aPlane {
     /// busbar's public base origin, carried so the card-serving path has ONE reading of it. `None`
     /// is a serving-time refusal ([`super::serve::ServeError::BadPublicUrl`]) rather than a boot
     /// failure: an operator may configure `agents:` for the DELEGATING direction alone, and
@@ -205,31 +205,15 @@ impl A2aPlane {
     // transports across an apply); the fresh-gate `from_config` shorthand has callers only under
     // `test`/`test-support` (every A2A test, and the `TestApp` fixture), so it reads dead without them.
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-    pub(crate) fn from_config(cfg: &AgentsCfg, public_url: Option<&str>) -> Option<Arc<Self>> {
-        // In the dual-compile / test-support build there is no composition root to install the neutral
-        // `TaskCodec` seam (the `busbar` binary's `main` does that in production), so a plane test would
-        // otherwise drive the TASKS engine with an uninstalled codec — its transitions/floor/restore
-        // fragments are A2A domain logic reached only through this seam. Install it here, idempotently
-        // (`OnceLock`), from the test/fixture entry point every A2A test builds a plane through —
-        // mirroring how the MCP plane installs the hostless-egress seam in its own test path.
+    pub fn from_config(cfg: &AgentsCfg, public_url: Option<&str>) -> Option<Arc<Self>> {
+        // In the test-support build there is no composition root to install the neutral A2A seams the
+        // binary's `main` installs in production (the `TaskCodec`, the `TaskReader` backing, the
+        // parse-time section-list provider, the self-enveloping admin-verb backing). Install them here,
+        // idempotently, from the fixture entry point every A2A plane build runs through. Extracted to
+        // `testkit::install_test_seams` so the SAME installs also run for a test that drives the global
+        // TASKS host WITHOUT building a plane through this path (see that fn).
         #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
-        busbar_substrate::plane_host::install_task_codec(&super::task::A2aTaskCodec);
-        // Same reason: the test/fixture build has no composition root, so bind core's `TaskReader`
-        // backing here too, idempotently, so the plane's `HostCtx`-free task reads resolve.
-        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
-        busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
-        // And the parse-time section-list provider, so a plane built here validates its `hooks:`
-        // cross-plane references against the real fold rather than the empty pre-bind list.
-        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
-        busbar_substrate::plane::config::install_plane_sections(
-            busbar_core::plane::config::config_sections,
-        );
-        // And the self-enveloping verb backing, so `approve` renders its `Prebuilt` envelope + audit
-        // through the real core helpers in a plane test with no composition root.
-        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
-        busbar_substrate::admin_verbs::install_plane_admin_envelope(
-            &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
-        );
+        crate::testkit::install_test_seams();
         Self::from_config_carrying(
             cfg,
             public_url,
@@ -297,7 +281,7 @@ impl A2aPlane {
     /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
     /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
     /// `McpRuntime::verify`.
-    pub(crate) fn verify(&self) -> &Arc<busbar_substrate::trust::VerifyGate> {
+    pub fn verify(&self) -> &Arc<busbar_substrate::trust::VerifyGate> {
         &self.verify
     }
 
@@ -535,7 +519,7 @@ impl A2aPlane {
     /// card advertises. A caller reads the audience to ask for off the card busbar served it, so the
     /// two must be one derivation — an independently configured audience is a confused-deputy gap
     /// that opens the first time somebody edits one of the two.
-    pub(crate) fn admission(&self) -> Option<busbar_substrate::plane::PlaneAdmission> {
+    pub fn admission(&self) -> Option<busbar_substrate::plane::PlaneAdmission> {
         let public = self.public_url.as_deref()?;
         Some(busbar_substrate::plane::PlaneAdmission {
             audience: super::serve::canonical_uri(public).ok()?,

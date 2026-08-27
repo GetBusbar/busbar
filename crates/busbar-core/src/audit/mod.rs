@@ -401,7 +401,7 @@ pub struct ChainBreak {
     /// The record's claimed sequence number.
     pub(crate) seq: u64,
     /// The scope the chain is scoped to (the principal id, the task id, …).
-    pub(crate) scope: String,
+    pub scope: String,
     /// The stream's own words, carried so the message names WHICH log an operator has to go and
     /// look at without this type being generic over the record.
     pub(crate) labels: &'static ChainLabels,

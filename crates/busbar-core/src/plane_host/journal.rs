@@ -229,7 +229,7 @@ fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
 /// ledger for the duration it holds `TASKS_SINK_LOCK`, leaving the chain POSITIONS untouched (a
 /// re-register would reset every position and race the no-sink registration the working-set tests
 /// share). A no-op if the stream is not registered.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn set_stream_sink_for_test(
     kind_id: u32,
     store: Option<Arc<dyn crate::plane::store::PlaneStore>>,

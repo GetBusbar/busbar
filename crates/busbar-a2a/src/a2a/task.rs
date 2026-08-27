@@ -392,7 +392,7 @@ pub(crate) fn plan_transition(
 /// `restore_from_store` made inline with `Task::from_row`, moved to the a2a side so core names no
 /// codec. The terminal/active split is core's ([`busbar_core::plane::taskstore`]'s neutral token check),
 /// applied only after this predicate confirms the token is one this binary knows.
-pub(crate) fn readable_row(row: &busbar_api::TaskRow) -> Result<(), String> {
+pub fn readable_row(row: &busbar_api::TaskRow) -> Result<(), String> {
     Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -430,3 +430,10 @@ impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/task_tests.rs"]
 mod task_tests;
+
+// THE DURABLE TASK SET's tests — relocated from busbar-core's `plane::taskstore` tests when the
+// dual-compile was removed: they exercise core's `taskstore` (through `busbar_core::plane::taskstore`)
+// with THIS plane's `crate::a2a::task` row types, so they live on the plane that owns the row.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/taskstore_tests.rs"]
+mod taskstore_tests;

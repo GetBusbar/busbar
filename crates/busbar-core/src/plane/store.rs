@@ -62,7 +62,7 @@ pub use busbar_substrate::plane::store::{PlaneStore, PlaneStoreView};
 // test-only named-vocabulary extension (`StoreNamedTestExt`) and the `task_event`/`call` read-back
 // helpers below now that the narrowing adapter moved to the substrate; gate their import to test
 // builds so it is not an unused import under `-D warnings`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use busbar_api::{PlaneSelector, Store};
 
 // ── THE KIND↔CONCEPT MAPPING (the 14→8 table's row-per-concept, made concrete) ─────────────────
@@ -189,7 +189,7 @@ pub fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> {
 /// `content` is the pre-framed suffix `|ts|kind|context_id|principal|agent_id|state`), so a chain read
 /// back through it `verify_chain`-passes byte-identically. `request_id` is never in the digest and is
 /// absent from the neutral body, so it comes back empty.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskEventRow> {
     use crate::audit::journal::NeutralBody;
     if let Ok(nb) = decode::<NeutralBody>(body) {
@@ -212,7 +212,7 @@ pub fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskE
     decode::<TaskEventRow>(body)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
 pub trait StoreNamedTestExt: Store {
     fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
@@ -273,7 +273,7 @@ pub trait StoreNamedTestExt: Store {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl<T: Store + ?Sized> StoreNamedTestExt for T {}
 
 #[cfg(test)]

@@ -427,8 +427,8 @@ pub(crate) fn mcp_call_record_from_body(
 /// test-ext — verifies them through the SAME reframe/digest production reads a persisted chain with.
 /// The scope, and the digest's inclusion of it, come from each row's own `principal`, exactly as the
 /// deleted `McpCallRecord::scope_of`/`digest_fields` did.
-#[cfg(test)]
-pub(crate) fn verify_call_rows(rows: &[McpCallRecord]) -> Result<(), ChainBreak> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn verify_call_rows(rows: &[McpCallRecord]) -> Result<(), ChainBreak> {
     let records: Vec<PlaneJournalRecord> = rows
         .iter()
         .map(|r| {
@@ -728,7 +728,7 @@ impl PlaneCallLog {
     /// NO PRODUCTION CALLER. A diagnostic on the host-side chain position, kept because the position is
     /// the one piece of state the store does not own and the tests assert the append ordering through it.
     #[allow(dead_code)]
-    pub(crate) fn next_seq(&self, principal: &str) -> u64 {
+    pub fn next_seq(&self, principal: &str) -> u64 {
         crate::plane_host::journal::journal_next_seq_scoped(self.kind_id, principal)
     }
 
@@ -970,7 +970,7 @@ impl CallTestHarness {
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
         self.host(|host| self.log.compact(host, before))
     }
-    pub(crate) fn next_seq(&self, principal: &str) -> u64 {
+    pub fn next_seq(&self, principal: &str) -> u64 {
         self.log.next_seq(principal)
     }
     pub(crate) fn len(&self) -> usize {
@@ -996,7 +996,7 @@ impl CallTestHarness {
 /// no-sink app so the working-set / global-`CALLS` tests mint sequences without racing to re-register
 /// (a re-register resets every position). A chain-asserting test aims this stream at its own store
 /// with [`aim_global_call_sink`] while it holds the process-wide call-log test lock.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn global_call_host_app() -> &'static Arc<crate::state::App> {
     static APP: std::sync::OnceLock<Arc<crate::state::App>> = std::sync::OnceLock::new();
     APP.get_or_init(|| {
@@ -1008,8 +1008,8 @@ fn global_call_host_app() -> &'static Arc<crate::state::App> {
 
 /// TEST ONLY: ensure the process-wide `call` stream is registered ONCE (no-sink) — for a front-door
 /// integration harness whose app is not booted through `mcp_hydrate`. Idempotent (never re-registers).
-#[cfg(test)]
-pub(crate) fn ensure_global_call_stream_registered() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn ensure_global_call_stream_registered() {
     let _ = global_call_host_app();
 }
 
@@ -1021,8 +1021,8 @@ pub(crate) fn with_global_call_host<R>(f: impl FnOnce(HostCtx) -> R) -> R {
 
 /// TEST ONLY: aim (or detach, with `None`) the process-wide `call` stream's durable sink — for a
 /// chain-asserting global-`CALLS` test.
-#[cfg(test)]
-pub(crate) fn aim_global_call_sink(store: Option<Arc<dyn PlaneStore>>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn aim_global_call_sink(store: Option<Arc<dyn PlaneStore>>) {
     let _ = global_call_host_app();
     crate::plane_host::journal::set_stream_sink_for_test(KIND_ID_CALL, store);
 }

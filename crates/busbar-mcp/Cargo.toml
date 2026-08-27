@@ -122,3 +122,12 @@ test-support = [
 [dev-dependencies]
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
+# dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
+reqwest = { workspace = true, features = ["json"] }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+busbar-store-memory = { path = "../store-memory" }
+busbar-secret-ref = { path = "../secret-ref" }
+busbar-plugin-sign = { path = "../plugin-sign" }

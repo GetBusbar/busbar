@@ -42,6 +42,7 @@ fn own(principal: &str, task_id: &str) {
 /// re-serialization. That is the common path and it is the one that must not touch the payload.
 #[test]
 fn a_request_naming_no_known_task_is_not_rewritten_at_all() {
+    crate::testkit::install_test_seams();
     assert!(translate_request(
         &json!({
             "jsonrpc": "2.0", "id": 1, "method": "GetTask",
@@ -58,6 +59,7 @@ fn a_request_naming_no_known_task_is_not_rewritten_at_all() {
 /// THE DEFECT, in one test: busbar hands a caller its own task id, and must be able to resolve it.
 #[test]
 fn the_id_busbar_issued_is_translated_back_to_the_one_the_backend_knows() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-planner";
     own(me, "a2a-planner-busbar");
     remember("a2a-planner-busbar", "backend-019ff");
@@ -82,6 +84,7 @@ fn the_id_busbar_issued_is_translated_back_to_the_one_the_backend_knows() {
 /// `task_id`). All three spellings translate, or the push-config verbs stay broken.
 #[test]
 fn every_spelling_of_the_task_member_is_translated() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-spellings";
     own(me, "busbar-t");
     remember("busbar-t", "backend-t");
@@ -103,6 +106,7 @@ fn every_spelling_of_the_task_member_is_translated() {
 /// must not re-order the map, or one chatty task evicts every other one.
 #[test]
 fn re_recording_the_same_pair_does_not_churn_the_map() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-stable";
     own(me, "stable-busbar");
     remember("stable-busbar", "stable-backend");
@@ -127,6 +131,7 @@ fn re_recording_the_same_pair_does_not_churn_the_map() {
 /// same id busbar did needs no translation and must not occupy a slot.
 #[test]
 fn a_degenerate_pair_is_not_recorded() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-degenerate";
     own(me, "y");
     own(me, "same");
@@ -153,6 +158,7 @@ fn a_degenerate_pair_is_not_recorded() {
 /// until the conformance rig's fronted agent could leave a task open across turns.
 #[test]
 fn the_task_id_inside_a_message_is_translated() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-turn";
     own(me, "busbar-turn-1");
     remember("busbar-turn-1", "backend-turn-1");
@@ -189,6 +195,7 @@ fn the_task_id_inside_a_message_is_translated() {
 /// reached for every member called `id` would corrupt an identity this map knows nothing about.
 #[test]
 fn a_messages_own_id_member_is_left_alone() {
+    crate::testkit::install_test_seams();
     let me = "key-idmap-message-id";
     own(me, "busbar-not-a-message-id");
     remember("busbar-not-a-message-id", "backend-x");
@@ -210,6 +217,7 @@ fn a_messages_own_id_member_is_left_alone() {
 /// goes out names a task the backend cannot know about and the two answers are one answer.
 #[test]
 fn get_task_is_translated_for_its_owner_and_for_nobody_else() {
+    crate::testkit::install_test_seams();
     let owner = "key-get-owner";
     let intruder = "key-get-intruder";
     own(owner, "a2a-conformance-get-owned");
@@ -243,6 +251,7 @@ fn get_task_is_translated_for_its_owner_and_for_nobody_else() {
 /// principal's running work.
 #[test]
 fn cancel_task_is_translated_for_its_owner_and_for_nobody_else() {
+    crate::testkit::install_test_seams();
     let owner = "key-cancel-owner";
     let intruder = "key-cancel-intruder";
     own(owner, "a2a-conformance-cancel-owned");
@@ -267,6 +276,7 @@ fn cancel_task_is_translated_for_its_owner_and_for_nobody_else() {
 /// which of the three names a caller reached for — one unscoped spelling is the whole defect back.
 #[test]
 fn no_spelling_of_the_task_member_crosses_the_boundary() {
+    crate::testkit::install_test_seams();
     let owner = "key-spell-owner";
     let intruder = "key-spell-intruder";
     own(owner, "a2a-spell-owned");
@@ -290,6 +300,7 @@ fn no_spelling_of_the_task_member_crosses_the_boundary() {
 /// APPENDED to it. The owner continues its own conversation; nobody else can join it.
 #[test]
 fn the_second_turns_task_id_cannot_be_pointed_at_another_principals_conversation() {
+    crate::testkit::install_test_seams();
     let owner = "key-turn-owner";
     let intruder = "key-turn-intruder";
     own(owner, "a2a-turn-owned");
@@ -324,6 +335,7 @@ fn the_second_turns_task_id_cannot_be_pointed_at_another_principals_conversation
 /// the one that composes a request out of the answer.
 #[test]
 fn an_empty_principal_can_address_nothing() {
+    crate::testkit::install_test_seams();
     let owner = "key-empty-owner";
     own(owner, "a2a-empty-owned");
     remember("a2a-empty-owned", "backend-empty-owned");

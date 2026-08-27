@@ -44,7 +44,7 @@ use std::sync::Arc;
 ///
 /// This does not BUILD the artifact, deliberately: shelling out to cargo from inside a test would
 /// contend for the target-directory lock the running `cargo test` already holds.
-pub(crate) fn example_store_cdylib() -> PathBuf {
+pub fn example_store_cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let profile_dir = exe
         .parent()
@@ -123,7 +123,7 @@ fn newest_source_under(root: &Path, built: std::time::SystemTime) -> Option<Path
 
 /// A PRIVATE durable file for one test, and the plugin config that selects the fixture's on-disk
 /// mode. Per-test and per-thread, so the parallel harness cannot make two tests share a ledger.
-pub(crate) fn durable_cfg(tag: &str) -> (PathBuf, String) {
+pub fn durable_cfg(tag: &str) -> (PathBuf, String) {
     let dir = super::scratch_dir(&format!(
         "busbar-durable-store-{}-{tag}-{:?}",
         std::process::id(),
@@ -137,7 +137,7 @@ pub(crate) fn durable_cfg(tag: &str) -> (PathBuf, String) {
 
 /// Open the plugin over the ABI. Each call is a fresh `dlopen` + `busbar_open` — a restart, or a
 /// second node of a fleet, depending on what the caller is asking about.
-pub(crate) fn open_plugin(cfg: &str) -> Arc<dyn Store> {
+pub fn open_plugin(cfg: &str) -> Arc<dyn Store> {
     let path = example_store_cdylib();
     Arc::from(
         busbar_plugin_loader::load_store(&path, cfg)

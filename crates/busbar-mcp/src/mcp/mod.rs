@@ -208,7 +208,7 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// `resource_of` twin below.
 #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
+pub fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<McpResource>()
             .expect("the mcp plane's dispatch slot is an McpResource")
@@ -745,15 +745,15 @@ pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
 /// where an MCP registration is resolved from, what looking at one means, and the two derived reads
 /// (`changes`, `health`) that contact nothing. `connect` itself is
 /// [`busbar_substrate::admin_verbs::connect_reply`], written once for every plane.
-pub(crate) mod admin_view;
+pub mod admin_view;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
 /// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
-pub(crate) mod callerask;
+pub mod callerask;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
 /// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
 /// module header.
-pub(crate) mod catalogue;
+pub mod catalogue;
 /// The CLIENT direction: busbar calling OUT to external MCP tool servers. The other half of
 /// the same governance boundary this module's front door opens — same revision, same trust
 /// lifecycle, same scope kinds, opposite initiator.
@@ -793,7 +793,7 @@ tokio::task_local! {
     /// Absent outside `ingress`'s scope, where every access is a deliberate no-op.
     pub(crate) static UPSTREAM_PROGRESS: std::sync::Arc<std::sync::Mutex<ProgressChannel>>;
 }
-pub(crate) mod config;
+pub mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison. On-demand now, driven by
 /// verify-on-call ([`busbar_substrate::trust::verify`]) rather than a boot-time sweep.
@@ -803,9 +803,9 @@ pub(crate) mod connect;
 /// ingress SEQUENCE is `busbar_substrate::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
 /// in here is a statement about the ENVELOPE — `params._meta`, the mirrored routing headers, the
 /// protocol version — which is what its own header said it was all along.
-pub(crate) mod envelope;
+pub mod envelope;
 pub(crate) mod inputreq;
-pub(crate) mod method;
+pub mod method;
 /// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
 /// structured results a MUST for the server that published it, and on this plane that server is
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
@@ -853,17 +853,17 @@ pub struct McpCfg {
     ///
     /// The MOUNT PATH is derived from this rather than configured separately, so the path a client
     /// posts to and the identifier its token is bound to cannot drift apart.
-    pub(crate) canonical_uri: String,
+    pub canonical_uri: String,
     /// RFC 9728 `authorization_servers`: the issuer identifiers of the authorization servers that
     /// may mint tokens for this resource — in practice, the operator's IdP. At least one is
     /// REQUIRED, because this list is the entire content of the answer a credential-less client came
     /// for; an empty one advertises a resource nobody can obtain a token for.
     #[serde(default)]
-    pub(crate) authorization_servers: Vec<String>,
+    pub authorization_servers: Vec<String>,
     /// RFC 9728 `scopes_supported`: the scope values this resource understands. Advisory metadata —
     /// authorization is decided by the caller's grant, never by what this list says.
     #[serde(default)]
-    pub(crate) scopes_supported: Vec<String>,
+    pub scopes_supported: Vec<String>,
     /// Browser origins accepted on the MCP ingress, for the `2026-07-28` `Origin` MUST.
     ///
     /// EMPTY IS THE DEFAULT AND IT MEANS "no browser origin is accepted", which is the safe posture
@@ -872,7 +872,7 @@ pub struct McpCfg {
     /// listed it. The threat is DNS rebinding — a page on an attacker's origin resolving a name to
     /// busbar's loopback address and driving the tool plane with the user's ambient credentials.
     #[serde(default)]
-    pub(crate) allowed_origins: Vec<String>,
+    pub allowed_origins: Vec<String>,
 }
 
 /// The VALIDATED MCP resource: `McpCfg` after every derivation and refusal has already happened, so
@@ -881,7 +881,7 @@ pub struct McpCfg {
 /// Built once at boot. A config that cannot produce one does not boot — an MCP plane that is
 /// half-configured is worse than one that is absent, because it answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct McpResource {
+pub struct McpResource {
     /// The canonical URI verbatim, as configured. THE audience.
     canonical_uri: String,
     /// The path component of `canonical_uri`, normalised to a leading and no trailing slash. The
@@ -902,7 +902,7 @@ pub(crate) struct McpResource {
 /// Why an `mcp:` block was refused at boot. Every arm names the field and what a correct value looks
 /// like: a boot refusal that does not say what to type is a boot refusal the operator works around.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum McpCfgError {
+pub enum McpCfgError {
     /// `canonical_uri` was empty or absent.
     MissingCanonicalUri,
     /// `canonical_uri` was not an absolute `http`/`https` URI.
@@ -970,7 +970,7 @@ const PROTECTED_RESOURCE_WELL_KNOWN: &str = "/.well-known/oauth-protected-resour
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an
     /// operator finds out from a process that will not start, not from an agent that cannot connect.
-    pub(crate) fn from_cfg(cfg: &McpCfg) -> Result<Self, McpCfgError> {
+    pub fn from_cfg(cfg: &McpCfg) -> Result<Self, McpCfgError> {
         let uri = cfg.canonical_uri.trim();
         if uri.is_empty() {
             return Err(McpCfgError::MissingCanonicalUri);
@@ -1014,7 +1014,7 @@ impl McpResource {
     }
 
     /// The ingress mount path (`/mcp` for `https://host/mcp`).
-    pub(crate) fn mount_path(&self) -> &str {
+    pub fn mount_path(&self) -> &str {
         &self.mount_path
     }
 
@@ -1053,7 +1053,7 @@ impl McpResource {
 
     /// The plane admission facts this resource contributes to the dispatch table: the audience a
     /// token must carry here, and where a refused caller is told to go.
-    pub(crate) fn admission(&self) -> busbar_substrate::plane::PlaneAdmission {
+    pub fn admission(&self) -> busbar_substrate::plane::PlaneAdmission {
         busbar_substrate::plane::PlaneAdmission {
             audience: self.canonical_uri().to_string(),
             resource_metadata: self.metadata_url().to_string(),

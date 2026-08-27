@@ -1,6 +1,7 @@
 use crate::governance::{GovState, MemoryStore, NewKeySpec};
 use crate::test_support::warn_capture::WarnCapture;
 use crate::test_support::TestApp;
+use busbar_mcp::testkit::TestAppMcpExt as _;
 use std::sync::Arc;
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
@@ -12432,10 +12433,10 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_named_map_errors().await;
     // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
     // condition witnessed only by a sibling test is witnessed nowhere.
-    crate::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;
+    busbar_mcp::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;
     // And the A2A plane's, for the same reason — the two trust surfaces are the same shape and the
     // witness obligation is the same obligation.
-    crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors().await;
+    busbar_a2a::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,

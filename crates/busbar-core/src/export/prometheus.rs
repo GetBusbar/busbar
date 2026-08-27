@@ -26,7 +26,7 @@ pub(crate) const METRICS_PATH: &str = "/metrics";
 /// The built-in prometheus dispatcher. Zero-sized: it holds no state — the registry it renders is the
 /// process-global recorder ([`crate::metrics`]) and the scrape-time gauges are refreshed from the
 /// live `App` handed to [`PrometheusExport::handle_http_with_app`] per scrape.
-pub(crate) struct PrometheusExport;
+pub struct PrometheusExport;
 
 impl PluginHttpDispatch for PrometheusExport {
     /// The app-less arm (never reached in production — the route table always dispatches WITH the app

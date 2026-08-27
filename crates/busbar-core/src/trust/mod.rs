@@ -40,11 +40,11 @@ pub mod verify;
 /// The verify-on-call gate type, re-exported so an EXTRACTED plane crate (busbar-mcp) names
 /// `busbar_substrate::trust::VerifyGate` while the in-core A2A plane keeps `crate::trust::verify::
 /// VerifyGate`. Each plane OWNS its own coalescer on its per-generation runtime object (MCP folds it
-/// into `crate::mcp::McpRuntime`, reached via `ctx.slot`; A2A rides it on the `App`).
+/// into `busbar_mcp::mcp::McpRuntime`, reached via `ctx.slot`; A2A rides it on the `App`).
 pub use verify::VerifyGate;
 
 /// THE RE-VERIFICATION CADENCE — relocated to substrate in Phase-B B1. A thin core module (`trust/
 /// reverify.rs`, rather than a bare `use`) so `crate::trust::reverify::*` resolves unchanged AND the
-/// core-only re-verification tests, which name `crate::a2a::pin`, keep their home in core. An
+/// core-only re-verification tests, which name `busbar_a2a::a2a::pin`, keep their home in core. An
 /// explicit `mod reverify` shadows the glob-imported substrate `reverify` above.
 pub mod reverify;

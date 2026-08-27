@@ -60,7 +60,7 @@
 // appender yet. Gated with its users (the TASKS engine + host journal, all `plane-a2a`): with the
 // plane off they are compiled out and this re-export would otherwise read unused.
 #[cfg(feature = "plane-a2a")]
-pub(crate) use busbar_substrate::audit::vocab::{
+pub use busbar_substrate::audit::vocab::{
     EV_ARTIFACT, EV_DELEGATED, EV_PUSH_DELIVERED, EV_PUSH_FAILED, EV_PUSH_REFUSED, EV_SUBMITTED,
 };
 

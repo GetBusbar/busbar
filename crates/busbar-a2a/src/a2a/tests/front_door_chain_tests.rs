@@ -60,6 +60,7 @@ async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()
 /// gave back, which is the only place a tamper could ever have been made.
 #[tokio::test]
 async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to() {
+    crate::testkit::install_test_seams();
     let (ledger, _guard) = with_ledger().await;
 
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
@@ -118,6 +119,7 @@ async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wr
 /// requires the verifier to say so.
 #[tokio::test]
 async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
+    crate::testkit::install_test_seams();
     let (ledger, _guard) = with_ledger().await;
 
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;

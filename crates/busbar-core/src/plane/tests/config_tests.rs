@@ -71,9 +71,9 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
     for section in config_sections() {
         let hook = format!("{section}.some-hook");
 
-        let a2a = crate::a2a::config::validate_agent("x", &agent_with_hook(&hook))
+        let a2a = busbar_a2a::a2a::config::validate_agent("x", &agent_with_hook(&hook))
             .expect_err(&format!("the `agents:` plane must refuse `{hook}`"));
-        let mcp = crate::mcp::config::validate_server("x", &server_with_hook(&hook))
+        let mcp = busbar_mcp::mcp::config::validate_server("x", &server_with_hook(&hook))
             .expect_err(&format!("the `tools:` plane must refuse `{hook}`"));
 
         let a2a_body = a2a
@@ -235,8 +235,8 @@ fn every_refusal_arm_has_a_sentence_of_its_own() {
 
 /// A minimal, otherwise-VALID `agents:` entry carrying one hook reference — so the only thing that
 /// can fail the validator is the hook.
-fn agent_with_hook(hook: &str) -> crate::a2a::config::AgentDefCfg {
-    serde_yaml::from_str::<crate::a2a::config::AgentsCfg>(
+fn agent_with_hook(hook: &str) -> busbar_a2a::a2a::config::AgentDefCfg {
+    serde_yaml::from_str::<busbar_a2a::a2a::config::AgentsCfg>(
         "x:\n  url: \"https://a2a.vendor/x\"\n  pin: { mechanism: unpinned }\n",
     )
     .expect("the fixture entry must parse")
@@ -250,8 +250,8 @@ fn agent_with_hook(hook: &str) -> crate::a2a::config::AgentDefCfg {
 }
 
 /// The same, for the `tools:` plane.
-fn server_with_hook(hook: &str) -> crate::mcp::config::McpServerDefCfg {
-    serde_yaml::from_str::<crate::mcp::config::ToolsCfg>(
+fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
+    serde_yaml::from_str::<busbar_mcp::mcp::config::ToolsCfg>(
         "x:\n  url: \"https://mcp.internal/x\"\n  pin: { mechanism: unpinned }\n",
     )
     .expect("the fixture entry must parse")

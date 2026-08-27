@@ -56,7 +56,7 @@ use busbar_substrate::ingress::protocol::CoreRefusal;
 /// compatibility shim. `2025-11-25` and earlier are stateful: they have an `initialize` handshake,
 /// protocol sessions and a GET stream, all of which this revision deleted, and building them means
 /// building session machinery this release can otherwise skip entirely.
-pub(crate) const PROTOCOL_VERSION: &str = "2026-07-28";
+pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// Every revision busbar will accept, echoed to a client that asked for one we do not implement so
 /// it can pick a mutually supported one and retry. Exactly one entry today; the shape is plural

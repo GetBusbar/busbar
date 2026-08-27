@@ -50,7 +50,7 @@ pub enum NamedMapSection {
 impl NamedMapSection {
     /// Every section, in route/mount order. The router, the OpenAPI generator and the overlay
     /// applier all iterate THIS — so a new variant is live everywhere the moment it is added.
-    pub(crate) const ALL: &'static [NamedMapSection] = &[
+    pub const ALL: &'static [NamedMapSection] = &[
         NamedMapSection::IdentityProviders,
         NamedMapSection::Export,
         NamedMapSection::Tools,
@@ -59,7 +59,7 @@ impl NamedMapSection {
 
     /// The config key AND the admin path segment — they are deliberately the same string, so the API
     /// mirrors the config grammar exactly (`export:` ⇄ `/export`).
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             NamedMapSection::IdentityProviders => "identity-providers",
             NamedMapSection::Export => "export",
@@ -69,7 +69,7 @@ impl NamedMapSection {
     }
 
     /// The RELATIVE (post-`ADMIN_PREFIX`) collection path — `"/" + key()`.
-    pub(crate) fn path_root(self) -> &'static str {
+    pub fn path_root(self) -> &'static str {
         match self {
             NamedMapSection::IdentityProviders => "/identity-providers",
             NamedMapSection::Export => "/export",
@@ -98,14 +98,14 @@ impl NamedMapSection {
     /// living here: the requirement is a per-section property in this table rather than a hardcoded
     /// rule in the handler, for the same reason [`NamedMapSection::has_trust_ceiling`] is — the
     /// handler stays generic and the asymmetry stays visible where a reader can find it.
-    pub(crate) fn requires_module(self) -> bool {
+    pub fn requires_module(self) -> bool {
         !matches!(self, NamedMapSection::Tools | NamedMapSection::Agents)
     }
 
     /// Whether this section's definitions carry a `max_admin_scope` TRUST CEILING — the one
     /// security-relevant asymmetry between the sections, kept as a predicate so the generic handler
     /// stays generic (see `admin::v1::json::named_map`'s ceiling guard).
-    pub(crate) fn has_trust_ceiling(self) -> bool {
+    pub fn has_trust_ceiling(self) -> bool {
         matches!(self, NamedMapSection::IdentityProviders)
     }
 
@@ -329,7 +329,7 @@ impl NamedMapSection {
 
     /// `Ok(())` iff `def` parses into this section's typed config — the write-path validation twin of
     /// [`NamedMapSection::parse_def`], which it delegates to so there is only ever one grammar.
-    pub(crate) fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
+    pub fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
         self.parse_def(name, def).map(|_| ())
     }
 

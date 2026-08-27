@@ -1,6 +1,7 @@
 use super::*;
 use axum::http::header::CONTENT_TYPE;
 use busbar_api::ScopeRef;
+use busbar_mcp::testkit::TestAppMcpExt as _;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
@@ -2351,7 +2352,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
-        .mcp(&crate::mcp::McpCfg {
+        .mcp(&busbar_mcp::mcp::McpCfg {
             canonical_uri: MCP_CANONICAL.to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
             scopes_supported: Vec::new(),

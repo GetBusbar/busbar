@@ -6,6 +6,7 @@
 use super::*;
 use crate::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 use crate::test_support::TestApp;
+use busbar_mcp::testkit::TestAppMcpExt as _;
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -107,10 +108,10 @@ fn build_with_hook_makes_an_mcp_attach_live() {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
-    let server = crate::mcp::config::McpServerDefCfg {
+    let server = busbar_mcp::mcp::config::McpServerDefCfg {
         url: "https://mcp.internal/fs".to_string(),
-        pin: crate::mcp::config::ServerPinCfg {
-            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
+        pin: busbar_mcp::mcp::config::ServerPinCfg {
+            mechanism: busbar_mcp::mcp::config::McpPinMechanism::CertSpki,
             key: Some("sha256/PIN==".to_string()),
         },
         verify_ttl: None,

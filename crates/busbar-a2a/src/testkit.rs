@@ -19,6 +19,26 @@ use std::sync::Arc;
 /// The A2A plane's scratch key — the same string as `PLANE_DECL.key`.
 const SCRATCH_KEY: &str = "a2a";
 
+/// INSTALL THE A2A CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production — the
+/// neutral `TaskCodec`, core's `TaskReader` backing, the parse-time section-list provider, and the
+/// self-enveloping admin-verb backing. All four are idempotent `OnceLock`/set-once installs. Called
+/// from `A2aPlane::from_config` (so every plane build installs them) AND directly by A2A tests that
+/// drive the process-wide `TASKS` host WITHOUT building a plane (idmap/local/verify/…): those reach
+/// core's `taskstore::with_global_task_host`, whose reads resolve through the installed `TaskReader`.
+pub fn install_test_seams() {
+    busbar_substrate::plane_host::install_task_codec(&crate::a2a::task::A2aTaskCodec);
+    busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
+    busbar_substrate::plane::config::install_plane_sections(
+        busbar_core::plane::config::config_sections,
+    );
+    busbar_substrate::admin_verbs::install_plane_admin_envelope(
+        &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
+    );
+    // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
+    // same thing the finalizer does for plane-building tests.
+    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+}
+
 /// The A2A plane's accumulated fixture state, mutated across the fluent chain and consumed once by
 /// [`finalize`] at build time.
 #[derive(Default)]
@@ -80,6 +100,36 @@ fn finalize(app: &mut TestApp) {
             app.admit_plane(crate::PLANE_DECL.key, admission);
         }
     }
+}
+
+/// An `agents:` config with ONE receiving agent (`planner`), for busbar-core's cross-plane
+/// integration tests (they set it on `RootCfg::agent_defs` and boot through `build_app_from_config`).
+/// Lives here because the `AgentsCfg`/`AgentDefCfg` fields are crate-private; core names only the
+/// returned `AgentsCfg`.
+pub fn agents_cfg_with_one_receiving_agent() -> AgentsCfg {
+    use crate::a2a::config::{AgentPinCfg, PinMechanism};
+    let mut cfg = AgentsCfg::default();
+    cfg.agents.insert(
+        "planner".to_string(),
+        AgentDefCfg {
+            url: "https://agent.example/planner".to_string(),
+            pin: AgentPinCfg {
+                mechanism: PinMechanism::Unpinned,
+                key: None,
+                fingerprint: None,
+            },
+            reverify_ttl: None,
+            recovery_backoff: None,
+            protocol_version: None,
+            allow_private: false,
+            upstream_credentials: None,
+            upstream_credential: None,
+            egress_scopes: Vec::new(),
+            client_identity: None,
+            hooks: Vec::new(),
+        },
+    );
+    cfg
 }
 
 /// The A2A plane's fixture builder methods, as an extension of the neutral `TestApp`. Every method

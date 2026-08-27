@@ -279,14 +279,14 @@ impl PlaneBreakers {
 
     /// The raw FSM state of one target's cell, for tests and operator surfaces. Pure projection —
     /// no probe CAS.
-    #[cfg(test)]
-    pub(crate) fn state(&self, key: &str) -> super::BreakerState {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state(&self, key: &str) -> super::BreakerState {
         self.state_at(key, 0)
     }
 
     /// [`Self::state`] for a pooled member's cell.
-    #[cfg(test)]
-    pub(crate) fn state_at(&self, key: &str, lane: usize) -> super::BreakerState {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state_at(&self, key: &str, lane: usize) -> super::BreakerState {
         self.health.breaker_state_snapshot_in(key, lane)
     }
 
@@ -299,8 +299,8 @@ impl PlaneBreakers {
     /// `unix` in the gate, not just `test`: its one caller is `mcp/tests/stdio_dispatch_tests.rs`,
     /// which is `#![cfg(unix)]` (the fixture spawns a real child process to crash-loop), so on a
     /// Windows test build this method has no caller at all and `-D warnings` makes that dead code.
-    #[cfg(all(test, unix))]
-    pub(crate) fn reset(&self, key: &str) {
+    #[cfg(all(any(test, feature = "test-support"), unix))]
+    pub fn reset(&self, key: &str) {
         use std::sync::atomic::Ordering;
         let cell = self.health.cell(key, 0);
         let _tx = crate::store::lock_recover(cell.transition_lock());
@@ -314,8 +314,8 @@ impl PlaneBreakers {
     /// FORCE one target's cell Open until `until` — the test-only inverse of [`Self::reset`], for
     /// batteries whose subject is what a dispatch does when a member is ALREADY tripped (the pinned
     /// A2A task refusal) without having to burn real failures to get there.
-    #[cfg(test)]
-    pub(crate) fn force_open(&self, key: &str, lane: usize, until: u64) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn force_open(&self, key: &str, lane: usize, until: u64) {
         use std::sync::atomic::Ordering;
         let cell = self.health.cell(key, lane);
         let _tx = crate::store::lock_recover(cell.transition_lock());

@@ -7,4 +7,4 @@
 //! busbar-core; re-exported here so every in-core `crate::governance::signing::…` path resolves
 //! unchanged. Pure crypto, no `App`/`Store`.
 
-pub(crate) use busbar_substrate::governance::signing::*;
+pub use busbar_substrate::governance::signing::*;

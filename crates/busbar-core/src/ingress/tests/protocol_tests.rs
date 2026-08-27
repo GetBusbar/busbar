@@ -98,7 +98,7 @@ impl ResourceMetadata for ZetaWords {
         // A third plane resolves its own facts off the snapshot exactly as the two real ones do.
         // This one keys off `mcp` only so the test can turn the plane off and on; what is being
         // measured is that the HANDLER is not written here, not where the facts come from.
-        crate::mcp::resource(app)?;
+        busbar_mcp::mcp::resource(app)?;
         Some(Metadata {
             resource: std::borrow::Cow::Borrowed("https://zeta.example/rpc"),
             authorization_servers: &[],

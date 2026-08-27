@@ -5146,8 +5146,8 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
 // `validate_unified_pool_names` is the guard that keeps that name-only resolution unambiguous.
 
 /// A minimal `tools:` registry holding one server id, for the collision tests below.
-fn tools_with(id: &str) -> crate::mcp::config::ToolsCfg {
-    let mut td = crate::mcp::config::ToolsCfg::default();
+fn tools_with(id: &str) -> busbar_mcp::mcp::config::ToolsCfg {
+    let mut td = busbar_mcp::mcp::config::ToolsCfg::default();
     td.servers.insert(
         id.to_string(),
         serde_yaml::from_str("{url: 'https://x.example/mcp', pin: {mechanism: unpinned}}")

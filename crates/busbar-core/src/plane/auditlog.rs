@@ -258,7 +258,7 @@ pub(crate) struct AuditRestored {
 /// THE ADMIN AUDIT LOG'S DURABLE SEAM WRAPPER. A thin wrapper over the generic host-side journal (the
 /// seq-authority, position cache and store-resume all live there now); this keeps only the admin RECORD
 /// and the operator vocabulary its restore emits.
-pub(crate) struct PlaneAuditLog {
+pub struct PlaneAuditLog {
     /// The host-side durable stream this log's chain is addressed by. Production is always
     /// [`KIND_ID_AUDIT`]; a TEST constructs a log over a FRESH id so parallel tests never share one
     /// process-global chain.
@@ -277,7 +277,7 @@ pub(crate) struct PlaneAuditLog {
 /// [`crate::admin::audit::AUDIT`] and [`crate::calllog::CALLS`], and for the same reason: a
 /// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
-pub(crate) static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
+pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
     std::sync::LazyLock::new(PlaneAuditLog::new);
 
 impl Default for PlaneAuditLog {
@@ -323,7 +323,7 @@ impl PlaneAuditLog {
     /// skip `offset`, then take `limit`. `None` filters match everything. Copied VERBATIM from
     /// [`crate::admin::audit::AuditLog::list_filtered`] — THE read surface `GET /audit` serves,
     /// byte-identical to the legacy ring it replaced.
-    pub(crate) fn list_filtered(
+    pub fn list_filtered(
         &self,
         offset: usize,
         limit: usize,

@@ -369,7 +369,3 @@ impl HostlessEgress for CoreHostlessEgress {
         })
     }
 }
-
-#[cfg(all(test, feature = "plane-a2a"))]
-#[path = "seam_tests.rs"]
-mod seam_tests;

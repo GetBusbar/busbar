@@ -181,6 +181,7 @@ fn register(task_id: &str) {
 /// address check that would otherwise catch this URL for a different reason.
 #[test]
 fn a_plaintext_callback_is_refused_and_no_policy_reaches_the_delivery_guard() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-plaintext-policy";
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
     let mut task = task_with_callback(id, TaskState::Completed);
@@ -206,6 +207,7 @@ fn a_plaintext_callback_is_refused_and_no_policy_reaches_the_delivery_guard() {
 /// a completed task with a registered callback results in a POST to the caller's webhook.
 #[test]
 fn a_completed_task_with_a_callback_is_delivered() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-base";
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -240,6 +242,7 @@ fn a_completed_task_with_a_callback_is_delivered() {
 /// rather than over a named one, because the hazard is the header nobody thought of.
 #[test]
 fn a_delivery_for_a_config_with_no_authentication_carries_no_header_but_the_content_type() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-nocred";
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 202);
@@ -268,6 +271,7 @@ fn a_delivery_for_a_config_with_no_authentication_carries_no_header_but_the_cont
 /// 9110 spells it, which is what a receiver checks.
 #[test]
 fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-auth";
     register(id);
     pushdeliver::remember_auth(
@@ -302,6 +306,7 @@ fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
 /// produces.
 #[test]
 fn re_registering_without_authentication_stops_the_credential_being_sent() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-auth-withdrawn";
     register(id);
     pushdeliver::remember_auth(
@@ -334,6 +339,7 @@ fn re_registering_without_authentication_stops_the_credential_being_sent() {
 /// remaining use — the same bound `pin_for_test` exists to assert for the address pin.
 #[test]
 fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-auth-forgotten";
     register(id);
     pushdeliver::remember_auth(
@@ -356,6 +362,7 @@ fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
 /// this asserts.
 #[test]
 fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
+    crate::testkit::install_test_seams();
     let auth = pushdeliver::DeliveryAuth {
         scheme: "Bearer".to_string(),
         credentials: "a-secret-nobody-should-log".to_string(),
@@ -371,6 +378,7 @@ fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
 /// A task with no callback is the overwhelmingly common case and must cost a socket to nobody.
 #[test]
 fn a_task_with_no_callback_delivers_nothing() {
+    crate::testkit::install_test_seams();
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
     let task = Task::submitted("t-none", "ctx-1", "key-1", Direction::Inbound, 100).unwrap();
     assert_eq!(deliver_hosted(&seam, &task), Err(PushRefusal::NoCallback));
@@ -387,6 +395,7 @@ fn a_task_with_no_callback_delivers_nothing() {
 /// thing standing between the attacker and busbar's instance credentials is this check.
 #[test]
 fn a_callback_that_became_internal_after_registration_is_refused_at_delivery() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-rebind";
     register(id);
 
@@ -412,6 +421,7 @@ fn a_callback_that_became_internal_after_registration_is_refused_at_delivery() {
 /// degraded to NO check is the failure mode a fallback path is for.
 #[test]
 fn the_rebind_is_still_refused_when_no_pin_survives_the_restart() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-rebind-restart";
     pushdeliver::forget(id); // no `register` — this is the boot-from-store case
     let (seam, log) = seam_answering(&[METADATA], 200);
@@ -430,6 +440,7 @@ fn the_rebind_is_still_refused_when_no_pin_survives_the_restart() {
 /// caller for that function anywhere in the tree.
 #[test]
 fn a_wholesale_move_to_another_public_address_is_held_rather_than_followed() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-drift";
     register(id);
     let (seam, log) = seam_answering(&[MOVED_TO], 200);
@@ -450,6 +461,7 @@ fn a_wholesale_move_to_another_public_address_is_held_rather_than_followed() {
 /// switch that turns push notifications off.
 #[test]
 fn an_overlapping_answer_is_a_legitimate_dns_change_and_still_delivers() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-widened";
     register(id);
     let (seam, log) = seam_answering(&[MOVED_TO, AT_REGISTRATION], 200);
@@ -465,6 +477,7 @@ fn an_overlapping_answer_is_a_legitimate_dns_change_and_still_delivers() {
 /// resolver.
 #[test]
 fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-unresolved";
     register(id);
     let (seam, log) = seam_answering(&[], 200);
@@ -484,6 +497,7 @@ fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
 /// store past the registration-time guard.
 #[test]
 fn a_plaintext_callback_is_refused_at_delivery() {
+    crate::testkit::install_test_seams();
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
     let mut task = task_with_callback("t-deliver-plaintext", TaskState::Completed);
     task.push_callback = Some("http://hook.caller.test/notify".to_string());
@@ -505,6 +519,7 @@ fn a_plaintext_callback_is_refused_at_delivery() {
 /// a broken URL.
 #[test]
 fn a_receiver_that_answers_500_is_a_refusal_that_names_the_status() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-500";
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 500);
@@ -522,6 +537,7 @@ fn a_receiver_that_answers_500_is_a_refusal_that_names_the_status() {
 /// tell whether to fix DNS, fix the receiver, or look at an attack.
 #[test]
 fn every_refusal_says_which_rule_refused() {
+    crate::testkit::install_test_seams();
     for (refusal, needle) in [
         (PushRefusal::NoCallback, "no push callback"),
         (
@@ -554,6 +570,7 @@ fn every_refusal_says_which_rule_refused() {
 /// by something a caller controls the rate of.
 #[test]
 fn the_terminal_delivery_drops_its_pin() {
+    crate::testkit::install_test_seams();
     let id = "t-deliver-bounded";
     register(id);
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -594,6 +611,7 @@ fn the_terminal_delivery_drops_its_pin() {
 /// been told about.
 #[test]
 fn the_push_notification_body_is_a_stream_response_carrying_the_task_and_not_a_json_rpc_envelope() {
+    crate::testkit::install_test_seams();
     let task = task_with_callback("a2a-planner-PUSHED", TaskState::Completed);
     let body = pushdeliver::notification_body(&task);
     let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
@@ -688,6 +706,7 @@ fn kinds_of(
 /// firing is indistinguishable from its absence.
 #[tokio::test]
 async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chain() {
+    crate::testkit::install_test_seams();
     let id = "t-chain-refused";
     let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
     register(id);
@@ -725,6 +744,7 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
 /// unconditionally.
 #[tokio::test]
 async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chain() {
+    crate::testkit::install_test_seams();
     let id = "t-chain-delivered";
     let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
     register(id);
@@ -753,6 +773,7 @@ async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chai
 /// that happened inside the caller's infrastructure.
 #[tokio::test]
 async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refused() {
+    crate::testkit::install_test_seams();
     let id = "t-chain-failed";
     let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
     register(id);

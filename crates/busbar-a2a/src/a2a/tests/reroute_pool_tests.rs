@@ -156,6 +156,7 @@ async fn reroute_battery(h: Harness, submission: serde_json::Value) {
 /// THE EQUALITY-CELL INSTRUMENT (`failover-reroute × a2a-client`), JSON-RPC binding.
 #[tokio::test]
 async fn a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched() {
+    crate::testkit::install_test_seams();
     reroute_battery(pool_harness(401).await, envelope()).await;
 }
 
@@ -163,6 +164,7 @@ async fn a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stay
 /// mechanism serves the v1.0 verb set with nothing re-decided.
 #[tokio::test]
 async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding() {
+    crate::testkit::install_test_seams();
     let h = pool_harness_answering(401, grpc_send_answer()).await;
     let card = a_card_on(BINDING_GRPC);
     h.plane.with_registrations_mut(|regs| {
@@ -195,6 +197,7 @@ async fn a_tripped_pool_primary_reroutes_a_fresh_submission_on_the_grpc_binding(
 ///     failover is an admission-time choice, never a migration.
 #[tokio::test]
 async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_the_verb() {
+    crate::testkit::install_test_seams();
     let h = pool_harness(401).await;
 
     // Trip A, then submit: accepted at B (the reroute), with busbar's task id in the answer.
@@ -259,6 +262,7 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
 /// the submission is `rejected` with an id, the refusal says why, and B is never dispatched to.
 #[tokio::test]
 async fn a_member_approved_under_a_different_card_fingerprint_is_refused_never_dispatched() {
+    crate::testkit::install_test_seams();
     let h = pool_harness(401).await;
     // Re-approve B under a drifted fingerprint: the operator's same-deployment claim is now false.
     h.plane.with_registrations_mut(|regs| {
@@ -305,6 +309,7 @@ async fn a_member_approved_under_a_different_card_fingerprint_is_refused_never_d
 /// next submission still dispatches to it.
 #[tokio::test]
 async fn a_client_fault_answer_never_penalizes_the_agent() {
+    crate::testkit::install_test_seams();
     let h = pool_harness(400).await;
 
     let (_, _, _) = submit(&h, "planner-a", &envelope()).await;

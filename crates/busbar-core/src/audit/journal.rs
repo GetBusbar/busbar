@@ -176,7 +176,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide journal leaves it
     /// as it found it. No production caller: detaching a live deployment's sink mid-run would silently
     /// stop persisting evidence, the exact failure this module exists to prevent.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn clear_sink_for_test(&self) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }

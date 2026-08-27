@@ -24,6 +24,18 @@ use std::sync::Arc;
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.
 const SCRATCH_KEY: &str = "mcp";
 
+/// INSTALL THE MCP CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production: register
+/// the MCP plane in the process registry (so `config_sections()` / cross-plane refusal / plane
+/// resolution see it) and bind the parse-time section-list provider. Idempotent. Called from the MCP
+/// finalizer (every plane-building test) AND directly by MCP config/admin tests that validate documents
+/// WITHOUT building a plane (they reach the same `config_sections()` fold).
+pub fn install_test_seams() {
+    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_substrate::plane::config::install_plane_sections(
+        busbar_core::plane::config::config_sections,
+    );
+}
+
 /// The MCP plane's accumulated fixture state, mutated across the fluent builder chain and consumed
 /// once by [`finalize`] at build time. Named only inside busbar-mcp.
 #[derive(Default)]
@@ -52,10 +64,10 @@ fn scratch(app: &mut TestApp) -> &mut McpScratch {
 /// BUILD-TIME FINALIZER: consume the accumulated [`McpScratch`] and install the real MCP plane through
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build` used to do inline.
 fn finalize(app: &mut TestApp) {
-    // Register this plane in the process registry the way production's composition root does, so the
-    // fixture registry (config sections, cross-plane refusal, plane resolution) matches a shipped
-    // "busbar with MCP" binary.
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    // Register this plane + bind the section-list provider the way production's composition root does,
+    // so the fixture registry (config sections, cross-plane refusal, plane resolution) matches a
+    // shipped "busbar with MCP" binary.
+    install_test_seams();
     let scratch = app.take_plane_scratch::<McpScratch>(SCRATCH_KEY);
 
     // THE MCP ENDPOINT (dispatch) resource, when `.mcp(cfg)` configured one. Mount + admission come
@@ -145,6 +157,67 @@ impl TestAppMcpExt for TestApp {
     fn with_mcp_sightings(mut self, cache: Arc<CatalogueCache>) -> Self {
         scratch(&mut self).sightings = Some(cache);
         self
+    }
+}
+
+/// The DEFAULT per-generation MCP runtime, type-erased — for busbar-core's ingress tests that
+/// hand-assemble an `App` and need to seat the always-present `MCP_RUNTIME_SLOT` object without naming
+/// `McpRuntime` (its fields are crate-private).
+pub fn default_mcp_runtime() -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(McpRuntime {
+        catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
+        servers: Default::default(),
+        pool: Default::default(),
+        sightings: Default::default(),
+        roots_epochs: Default::default(),
+        sampling_spend: Default::default(),
+        verify: Default::default(),
+    })
+}
+
+/// A minimal `mcp:` endpoint config at `canonical`, for busbar-core's cross-plane integration tests
+/// (they build the `McpResource`/`plane_slot` through `build_app_from_config`). Lives here because the
+/// `McpCfg` fields are crate-private; core names only the returned `McpCfg`.
+pub fn mcp_cfg_at(canonical: &str) -> McpCfg {
+    McpCfg {
+        canonical_uri: canonical.to_string(),
+        authorization_servers: vec!["https://login.example.com".to_string()],
+        scopes_supported: Vec::new(),
+        allowed_origins: Vec::new(),
+    }
+}
+
+/// A minimal VALID http `tools:` registration at `url` — its bare presence is enough to put its id in
+/// the next catalogue. For core's plane-swap integration test; the `McpServerDefCfg` fields are
+/// crate-private, so the constructor lives on the plane.
+pub fn swap_test_http_server(url: &str) -> McpServerDefCfg {
+    McpServerDefCfg {
+        url: url.to_string(),
+        pin: crate::mcp::config::ServerPinCfg {
+            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
+            key: Some("sha256/PEER=".to_string()),
+        },
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+        verify_ttl: None,
+        timeout: None,
+        tools_allow: Default::default(),
+        prompts_allow: Default::default(),
+        resources_allow: Default::default(),
+        resource_templates_allow: Default::default(),
+        transport: None,
+        aud: None,
+        grants: Default::default(),
+        roots: Vec::new(),
+        sampling: None,
+        max_input_required_rounds: None,
+        max_caller_ask_rounds: None,
+        allow_private: true,
+        token_exchange: None,
+        upstream_credentials: None,
+        hooks: Vec::new(),
     }
 }
 

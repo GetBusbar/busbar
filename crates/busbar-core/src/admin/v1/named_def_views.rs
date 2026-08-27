@@ -53,9 +53,9 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
 }
 
 // The `agents:` projection (`agent_def_view`/`agent_def_views`/`agent_def_view_opt`) MOVED into the
-// A2A plane (`crate::a2a::admin_view`), reached through the plane's `named_def_list`/`named_def_get`
-// seam — so this core module names no `crate::a2a` config type. The `tools:` projection lives the
-// same way in `crate::mcp::admin_view`.
+// A2A plane (`busbar_a2a::a2a::admin_view`), reached through the plane's `named_def_list`/`named_def_get`
+// seam — so this core module names no `busbar_a2a::a2a` config type. The `tools:` projection lives the
+// same way in `busbar_mcp::mcp::admin_view`.
 
 /// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly
 /// FLAGGED (`unparseable`). Such an entry is stored in the overlay but dropped at every rebuild, so

@@ -355,7 +355,7 @@ pub(crate) fn config_sections_from(
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
 /// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
 /// operator attaches a control to everything.
-pub(crate) fn validate_section_hooks(
+pub fn validate_section_hooks(
     at: &str,
     hooks: &[String],
     sections: &[&'static str],

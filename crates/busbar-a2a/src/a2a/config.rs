@@ -106,7 +106,7 @@ pub(crate) const REFUSE_PASSTHROUGH_SECTION: &str =
 /// an admin response or an audit row is comparing the same strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PinMechanism {
+pub enum PinMechanism {
     /// The card is SIGNED and verified against an operator-supplied, out-of-band JWS issuer key.
     JwsIssuerKey,
     /// The card is UNSIGNED; authenticity is bound to the card endpoint's certificate SPKI hash.
@@ -176,7 +176,7 @@ pub(crate) struct ClientIdentityCfg {
 /// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AgentPinCfg {
+pub struct AgentPinCfg {
     /// Which root this is. Required: a pin whose mechanism is inferred is a pin whose meaning
     /// changes when the code that infers it changes.
     pub(crate) mechanism: PinMechanism,
@@ -268,7 +268,7 @@ pub struct AgentDefCfg {
     /// Hooks attached to THIS agent, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `agents.hooks:` list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) hooks: Vec<String>,
+    pub hooks: Vec<String>,
 }
 
 /// The top-level `agents:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
@@ -282,7 +282,7 @@ pub struct AgentsCfg {
     pub(crate) all_agent_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
-    pub(crate) agents: indexmap::IndexMap<String, AgentDefCfg>,
+    pub agents: indexmap::IndexMap<String, AgentDefCfg>,
 }
 
 impl<'de> Deserialize<'de> for AgentsCfg {
@@ -447,7 +447,7 @@ impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
 /// [`busbar_core::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
 /// different grammars — which is the exact defect that let the API persist a definition the file
 /// would have refused, and then drop it at the next rebuild with a log line.
-pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
+pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     let at = format!("`agents.{name}`");
 
     if def.url.trim().is_empty() {

@@ -314,7 +314,7 @@ impl AuthMiddleware {
                 // this shape in the tree, no test can tell an audience check that runs from one
                 // that does not: a keys-only chain refuses a foreign token anyway, for a different
                 // reason, and every assertion about the plane boundary passes vacuously.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 "test-idp-module" => chain.push((entry.name.clone(), Box::new(TestIdpModule))),
                 other => {
                     // A `kind: auth` PLUGIN: resolve + open over the signed hybrid ABI (same trust
@@ -889,10 +889,10 @@ impl AuthModule for TestGroupsModule {
 /// TEST-ONLY data-plane module standing in for an operator's OIDC auth plugin: it identifies ANY
 /// non-empty credential and asks nothing about audience, exactly as the plugin ABI forces a real one
 /// to. See the `test-idp-module` chain arm for why the tree needs one.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct TestIdpModule;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AuthModule for TestIdpModule {
     fn name(&self) -> &'static str {
         "test-idp-module"
@@ -2060,7 +2060,7 @@ pub mod audience;
 /// Relocated to the neutral substrate (`busbar_substrate::auth::challenge`) — pure `axum::http` +
 /// `serde_json`, no core reach — so a plane crate names it without depending on core; re-exported
 /// here so `crate::auth::challenge::{refuse, ChallengeError}` still resolves for its in-core callers.
-pub(crate) use busbar_substrate::auth::challenge;
+pub use busbar_substrate::auth::challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
 /// GovState-backed impl, and the verdict→mint decision the `POST /auth/token` handler drives.

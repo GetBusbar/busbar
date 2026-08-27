@@ -94,6 +94,7 @@ async fn error_code(response: axum::response::Response) -> i64 {
 /// answer it.
 #[test]
 fn exactly_these_methods_are_answered_locally() {
+    crate::testkit::install_test_seams();
     for m in [
         "ListTasks",
         "tasks/list",
@@ -133,6 +134,7 @@ fn exactly_these_methods_are_answered_locally() {
 /// about the method name.
 #[test]
 fn the_push_verbs_carry_the_dialect_that_named_them() {
+    crate::testkit::install_test_seams();
     assert_eq!(
         local::verb_of("CreateTaskPushNotificationConfig"),
         Some(LocalVerb::CreatePushConfig(Dialect::V10))
@@ -150,6 +152,7 @@ fn the_push_verbs_carry_the_dialect_that_named_them() {
 /// cannot be what is doing the work.
 #[tokio::test]
 async fn list_tasks_returns_only_this_callers_rows() {
+    crate::testkit::install_test_seams();
     let mine = "key-list-mine";
     let theirs = "key-list-theirs";
     open(mine, "lt-mine-1", "ctx-shared", TaskState::Working, 1_000);
@@ -182,6 +185,7 @@ async fn list_tasks_returns_only_this_callers_rows() {
 /// Most recently updated first, and the state is the PROTOCOL's spelling rather than the store's.
 #[tokio::test]
 async fn list_tasks_is_newest_first_and_speaks_the_wire_state() {
+    crate::testkit::install_test_seams();
     let me = "key-list-order";
     open(me, "lt-old", "ctx-order", TaskState::Working, 1_000);
     open(me, "lt-new", "ctx-order", TaskState::Completed, 2_000);
@@ -201,6 +205,7 @@ async fn list_tasks_is_newest_first_and_speaks_the_wire_state() {
 /// terminates on this member, so omitting it on the final page is how the loop becomes infinite.
 #[tokio::test]
 async fn list_tasks_pages_by_cursor_and_ends_with_an_empty_token() {
+    crate::testkit::install_test_seams();
     let me = "key-list-page";
     for (i, id) in ["lt-p1", "lt-p2", "lt-p3"].iter().enumerate() {
         open(
@@ -254,6 +259,7 @@ async fn list_tasks_pages_by_cursor_and_ends_with_an_empty_token() {
 /// them would be busbar filling a slot with something it does not have.
 #[tokio::test]
 async fn list_tasks_publishes_only_what_busbar_holds() {
+    crate::testkit::install_test_seams();
     let me = "key-list-shape";
     open(me, "lt-shape", "ctx-shape", TaskState::Completed, 1_000);
     let listed = result(local::list_tasks(
@@ -283,6 +289,7 @@ async fn list_tasks_publishes_only_what_busbar_holds() {
 /// events are the backend's and inventing them is the failure this whole module is bounded to avoid.
 #[test]
 fn subscribing_to_a_live_task_is_relayed() {
+    crate::testkit::install_test_seams();
     let me = "key-sub-live";
     open(me, "sub-live", "ctx-sub", TaskState::Working, 1_000);
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-live" }));
@@ -296,6 +303,7 @@ fn subscribing_to_a_live_task_is_relayed() {
 /// there is nothing further to subscribe to.
 #[tokio::test]
 async fn subscribing_to_a_terminal_task_is_refused() {
+    crate::testkit::install_test_seams();
     let me = "key-sub-done";
     open(me, "sub-done", "ctx-sub", TaskState::Completed, 1_000);
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-done" }));
@@ -309,6 +317,7 @@ async fn subscribing_to_a_terminal_task_is_refused() {
 /// opened a stream — a caller handed a live subscription to work that does not exist.
 #[tokio::test]
 async fn subscribing_to_an_unknown_or_foreign_task_is_task_not_found() {
+    crate::testkit::install_test_seams();
     let me = "key-sub-unknown";
     let other = "key-sub-owner";
     open(other, "sub-foreign", "ctx-sub", TaskState::Working, 1_000);
@@ -389,6 +398,7 @@ const HOOK: &str = "https://hook.caller.test/notify";
 /// after the delete. The backend agent is never asked, and there is no backend in this test to ask.
 #[tokio::test]
 async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
+    crate::testkit::install_test_seams();
     let me = "key-push-crud";
     open(me, "push-crud", "ctx-push", TaskState::Completed, 1_000);
 
@@ -490,6 +500,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
 /// retry failed for doing exactly what the first attempt already achieved.
 #[tokio::test]
 async fn deleting_an_absent_config_is_idempotent() {
+    crate::testkit::install_test_seams();
     let me = "key-push-idem";
     open(me, "push-idem", "ctx-push", TaskState::Completed, 1_000);
     let response = local::delete_push_config(
@@ -510,6 +521,7 @@ async fn deleting_an_absent_config_is_idempotent() {
 /// is how one of them becomes the way around the other.
 #[tokio::test]
 async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
+    crate::testkit::install_test_seams();
     let me = "key-push-ssrf";
     open(me, "push-ssrf", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
@@ -549,6 +561,7 @@ async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
 /// delivery path, and the read verb does NOT hand it back.
 #[tokio::test]
 async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_back() {
+    crate::testkit::install_test_seams();
     let me = "key-push-auth";
     open(me, "push-auth", "ctx-push", TaskState::Completed, 1_000);
     let created = local::create_push_config(
@@ -601,6 +614,7 @@ async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_ba
 /// the caller's logs, the proxy's logs and busbar's own error path.
 #[tokio::test]
 async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_secret() {
+    crate::testkit::install_test_seams();
     let me = "key-push-noscheme";
     open(me, "push-noscheme", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
@@ -639,6 +653,7 @@ async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_s
 /// `authentication`.
 #[tokio::test]
 async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it() {
+    crate::testkit::install_test_seams();
     let me = "key-push-token";
     open(me, "push-token", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
@@ -665,6 +680,7 @@ async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it
 /// not make.
 #[tokio::test]
 async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
+    crate::testkit::install_test_seams();
     let me = "key-push-second";
     open(me, "push-second", "ctx-push", TaskState::Completed, 1_000);
     let first = local::create_push_config(
@@ -703,6 +719,7 @@ async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
 /// a caller reading another tenant's task outcomes at a URL it chose.
 #[tokio::test]
 async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
+    crate::testkit::install_test_seams();
     let owner = "key-push-owner";
     let intruder = "key-push-intruder";
     open(owner, "push-owned", "ctx-push", TaskState::Completed, 1_000);
@@ -755,6 +772,7 @@ async fn observable(response: axum::response::Response) -> (u16, serde_json::Val
 /// is a task to have one.
 #[tokio::test]
 async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    crate::testkit::install_test_seams();
     let owner = "key-cfgget-owner";
     let intruder = "key-cfgget-intruder";
     open(
@@ -831,6 +849,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
 /// an empty list for a task that exists and a refusal for a task that does not are distinguishable.
 #[tokio::test]
 async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    crate::testkit::install_test_seams();
     let owner = "key-cfglist-owner";
     let intruder = "key-cfglist-intruder";
     open(
@@ -901,6 +920,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
 /// row as well as on the answer.
 #[tokio::test]
 async fn delete_push_config_cannot_disarm_another_principals_callback() {
+    crate::testkit::install_test_seams();
     let owner = "key-cfgdel-owner";
     let intruder = "key-cfgdel-intruder";
     open(
@@ -984,6 +1004,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
 /// boundary from a verb that refuses everybody.
 #[tokio::test]
 async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    crate::testkit::install_test_seams();
     let owner = "key-sub-both-owner";
     let intruder = "key-sub-both-intruder";
     open(owner, "sub-both", "ctx-sub-both", TaskState::Working, 1_000);
@@ -1028,6 +1049,7 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
 /// document that version's client cannot read.
 #[tokio::test]
 async fn the_v0_3_spelling_is_answered_in_the_v0_3_shape() {
+    crate::testkit::install_test_seams();
     let me = "key-push-v03";
     open(me, "push-v03", "ctx-push", TaskState::Completed, 1_000);
     let created = result(
@@ -1080,6 +1102,7 @@ async fn the_v0_3_spelling_is_answered_in_the_v0_3_shape() {
 /// coverage ends at J with nobody noticing.
 #[test]
 fn every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names() {
+    crate::testkit::install_test_seams();
     const INVENTORY: &str = include_str!("../../../../../qa/method-inventory.json");
     let doc: serde_json::Value = serde_json::from_str(INVENTORY).expect("the inventory parses");
     let methods = doc["methods"].as_array().expect("a methods array");

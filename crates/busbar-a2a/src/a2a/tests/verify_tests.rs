@@ -569,9 +569,9 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
                 )
             })
     };
-    let reverify_src = read("src/trust/reverify.rs");
-    let config_src = read("../busbar-a2a/src/a2a/config.rs");
-    let verify_src = read("../busbar-a2a/src/a2a/verify.rs");
+    let reverify_src = read("../busbar-core/src/trust/reverify.rs");
+    let config_src = read("src/a2a/config.rs");
+    let verify_src = read("src/a2a/verify.rs");
     // THE OTHER PLANE'S BOUND, held to the identical rule, PLUS THE SHARED GATE BOTH PLANES NOW RUN.
     // MCP has a `verify_ttl:` and a fetch of its own, and both drive the SAME `due`. A knob that
     // slowed detection or delayed a quarantine would be exactly as dangerous there, and a ratchet
@@ -584,7 +584,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
     let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
     let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
-    let shared_verify_src = read("src/trust/verify.rs");
+    let shared_verify_src = read("../busbar-core/src/trust/verify.rs");
 
     let code = |s: &str| -> String {
         s.lines()

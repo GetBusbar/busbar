@@ -132,7 +132,7 @@ fn now_for_test() -> u64 {
 // `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy and the two
 // consumer-facing recovery floors so every `crate::store::…` name resolves unchanged;
 // `PROBE_RETRY_FLOOR_MS` moved with its only reader (`recovery_hint_ms`) and stays substrate-private.
-pub(crate) use busbar_substrate::store::{
+pub use busbar_substrate::store::{
     BreakerState, Unavailable, AT_CAPACITY_RECOVERY_FLOOR_MS, SHED_RETRY_FLOOR_MS,
 };
 

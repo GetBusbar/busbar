@@ -70,6 +70,7 @@ fn a_key(id: &str, agents: Option<&[&str]>) -> busbar_api::VirtualKey {
 /// without ever contacting the backend, and every other test on this plane stayed green.
 #[tokio::test]
 async fn an_admitted_call_is_actually_submitted_to_the_backend_agent() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "the admitted call must be served: {body}");
@@ -94,6 +95,7 @@ async fn an_admitted_call_is_actually_submitted_to_the_backend_agent() {
 /// belonging to somebody else.
 #[tokio::test]
 async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), true).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -131,6 +133,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
 /// green against a relay that sent nothing at all.
 #[tokio::test]
 async fn the_scan_finds_the_leased_credential_that_is_legitimately_forwarded() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), true).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -164,6 +167,7 @@ async fn the_scan_finds_the_leased_credential_that_is_legitimately_forwarded() {
 /// past. A single-configuration scan would have shipped it.
 #[tokio::test]
 async fn with_no_leased_credential_the_hop_carries_no_credential_at_all() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -193,6 +197,7 @@ async fn with_no_leased_credential_the_hop_carries_no_credential_at_all() {
 /// `submitted` forever, and the operator's first evidence is a support ticket.
 #[tokio::test]
 async fn a_backend_failure_is_a_busbar_attributed_error_and_not_a_silent_empty_task() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Fails("connection refused".to_string()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(
@@ -225,6 +230,7 @@ async fn a_backend_failure_is_a_busbar_attributed_error_and_not_a_silent_empty_t
 /// the transport error would turn a backend's own 500 into a green Task.
 #[tokio::test]
 async fn a_non_success_status_from_the_backend_is_a_busbar_attributed_error_too() {
+    crate::testkit::install_test_seams();
     let h = harness(
         Outcome::Answers(503, r#"{"error":"the agent is down"}"#.to_string()),
         false,
@@ -247,6 +253,7 @@ async fn a_non_success_status_from_the_backend_is_a_busbar_attributed_error_too(
 /// through would hand the caller a handle that resolves to nothing.
 #[tokio::test]
 async fn the_backends_reply_comes_back_under_busbars_own_task_identity() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -293,6 +300,7 @@ async fn the_backends_reply_comes_back_under_busbars_own_task_identity() {
 /// kept, which is the whole reason the task is opened before the outcome is known.
 #[tokio::test]
 async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Fails("connection refused".to_string()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
@@ -319,6 +327,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
 /// recomputes it.
 #[tokio::test]
 async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -355,6 +364,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
 /// on the ledger, which is where an operator reads it.
 #[tokio::test]
 async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
+    crate::testkit::install_test_seams();
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -414,6 +424,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
 /// socket.
 #[tokio::test]
 async fn the_backend_name_is_resolved_exactly_once_and_the_judged_address_is_pinned() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -443,6 +454,7 @@ async fn the_backend_name_is_resolved_exactly_once_and_the_judged_address_is_pin
 /// hold. The two rules are different claims and this is the second one.
 #[tokio::test]
 async fn a_caller_with_no_grant_on_an_agent_causes_no_hop_and_no_lease_toward_it() {
+    crate::testkit::install_test_seams();
     // Granted `planner` and NOT `payments`. Both are registered, approved and have a credential
     // configured — so the only thing standing between this caller and busbar's `payments`
     // credential is the grant.
@@ -477,6 +489,7 @@ async fn a_caller_with_no_grant_on_an_agent_causes_no_hop_and_no_lease_toward_it
 /// removed the gate and left `authorize` would still be caught here.
 #[test]
 fn the_egress_gate_refuses_a_caller_that_holds_no_grant_on_the_target() {
+    crate::testkit::install_test_seams();
     let key = a_key("k-1", Some(&["planner"]));
 
     let granted = crate::a2a::creds::authorise_egress(&key, "planner", 1_000)
@@ -509,6 +522,7 @@ fn the_egress_gate_refuses_a_caller_that_holds_no_grant_on_the_target() {
 /// resolving it — which means a row's EXISTENCE is not the check.
 #[test]
 fn a_key_that_is_not_live_obtains_no_egress_grant() {
+    crate::testkit::install_test_seams();
     // A WILDCARD principal (`allowed_scopes: None`) that is DISABLED: it would be granted every
     // agent if it were live, so this isolates the liveness half of the gate.
     let mut key = a_key("k-2", None);
@@ -528,6 +542,7 @@ fn a_key_that_is_not_live_obtains_no_egress_grant() {
 /// the gate while looking correct at a call site.
 #[test]
 fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
+    crate::testkit::install_test_seams();
     let key = a_key("k-3", Some(&["planner"]));
     let grant =
         crate::a2a::creds::authorise_egress(&key, "planner", 1_000).expect("planner authorises");
@@ -561,6 +576,7 @@ fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
 /// the registration from a resolver the relay is obliged to call on its way past.
 #[tokio::test]
 async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
 
     // THE DEMOTION, applied through the plane's own registry — the same mutation a re-verification
@@ -645,6 +661,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
 /// landed by comparing status codes.
 #[tokio::test]
 async fn an_already_demoted_registration_is_refused_at_admission_with_the_same_status() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     h.plane.with_registrations_mut(|regs| {
         for reg in regs.iter_mut() {
@@ -708,6 +725,7 @@ fn framed(url: &reqwest::Url, body: &[u8], streaming: bool) -> crate::a2a::relay
 /// quietly stops covering a new field is the exact false green the whole shape exists to prevent.
 #[test]
 fn every_field_of_the_outbound_request_is_scanned() {
+    crate::testkit::install_test_seams();
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
     let body_bytes = b"{\"params\":{\"text\":\"BODYMARK\"}}";
     let req = crate::a2a::relay::build_request(
@@ -755,6 +773,7 @@ fn every_field_of_the_outbound_request_is_scanned() {
 /// source has to be added here to exist.
 #[test]
 fn the_relayed_request_carries_only_constants_and_the_lease() {
+    crate::testkit::install_test_seams();
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
 
     let bare =
@@ -788,6 +807,7 @@ fn the_relayed_request_carries_only_constants_and_the_lease() {
 /// rather than reading the secret out around the side.
 #[test]
 fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
+    crate::testkit::install_test_seams();
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
     let lease = a_lease("researcher", 1_000);
     let wrong = crate::a2a::relay::build_request(
@@ -833,6 +853,7 @@ impl crate::a2a::relay::DelegationGate for AlwaysDelegable {
 /// by the card fetch, and the refusal names the address rather than merely reporting a failure.
 #[test]
 fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
+    crate::testkit::install_test_seams();
     struct Internal;
     impl Resolver for Internal {
         fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
@@ -916,6 +937,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
 /// through busbar's own table, so nothing the backend wrote reaches the caller even inside `data`.
 #[tokio::test]
 async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and_not_its_words() {
+    crate::testkit::install_test_seams();
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -970,6 +992,7 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
 /// true statement: busbar could not make sense of what the backend answered.
 #[tokio::test]
 async fn a_backend_code_the_specification_does_not_define_is_not_passed_through() {
+    crate::testkit::install_test_seams();
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -1010,6 +1033,7 @@ async fn a_backend_code_the_specification_does_not_define_is_not_passed_through(
 /// the half that is still falsifiable: the registration's own policy decides, in both directions.
 #[test]
 fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
+    crate::testkit::install_test_seams();
     struct Loopback;
     impl Resolver for Loopback {
         fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
@@ -1154,6 +1178,7 @@ fn task_named_by(body: &serde_json::Value) -> String {
 /// The second is the exact failure the function's own doc comment says it exists to prevent.
 #[test]
 fn the_identity_substitution_finds_the_task_inside_a_v1_result_wrapper() {
+    crate::testkit::install_test_seams();
     // v1.0: the payload is wrapped.
     let mut wrapped = serde_json::json!({
         "task": {
@@ -1202,6 +1227,7 @@ fn the_identity_substitution_finds_the_task_inside_a_v1_result_wrapper() {
 /// and the key is namespaced so it cannot collide with the backend's own.
 #[test]
 fn the_matched_skill_travels_in_metadata_rather_than_as_an_invented_member() {
+    crate::testkit::install_test_seams();
     let mut result =
         serde_json::json!({ "task": { "id": "x", "status": { "state": "completed" } } });
     crate::a2a::relay::rewrite_identity(&mut result, "t", "c", Some("plan"));
@@ -1221,6 +1247,7 @@ fn the_matched_skill_travels_in_metadata_rather_than_as_an_invented_member() {
 /// rows disagreed with the answer it had just handed the caller.
 #[test]
 fn the_reported_state_is_read_from_either_vocabulary_and_either_shape() {
+    crate::testkit::install_test_seams();
     for (payload, expected) in [
         (
             serde_json::json!({ "task": { "status": { "state": "TASK_STATE_COMPLETED" } } }),
@@ -1263,6 +1290,7 @@ fn the_reported_state_is_read_from_either_vocabulary_and_either_shape() {
 /// to correlate events, and it named the backend's task.
 #[test]
 fn a_streamed_update_event_is_rewritten_inside_its_wrapper_and_by_its_own_member_name() {
+    crate::testkit::install_test_seams();
     for wrapper in ["statusUpdate", "artifactUpdate"] {
         let mut ev = serde_json::json!({
             wrapper: {
@@ -1297,6 +1325,7 @@ fn a_streamed_update_event_is_rewritten_inside_its_wrapper_and_by_its_own_member
 /// `messageId` would rewrite the caller's own correlation handle.
 #[test]
 fn a_message_payload_keeps_its_own_identifier_and_is_never_given_a_task_id_member() {
+    crate::testkit::install_test_seams();
     let mut result = serde_json::json!({
         "message": { "messageId": "caller-message", "role": "agent", "taskId": "backend-task" }
     });
@@ -1320,6 +1349,7 @@ fn a_message_payload_keeps_its_own_identifier_and_is_never_given_a_task_id_membe
 /// the mapping — it was that nothing recorded one and nothing consulted it.
 #[tokio::test]
 async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_backends_own_id() {
+    crate::testkit::install_test_seams();
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -1421,6 +1451,7 @@ async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_back
 /// series for, and the one a test that only ever drove refusals would leave unproven.
 #[tokio::test]
 async fn an_admitted_agent_task_lands_in_the_plane_request_series() {
+    crate::testkit::install_test_seams();
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     // `outcome="ok"` on this plane is only reachable through the whole admit → meter → egress-gate
     // → relay path, so no refusal in any concurrently-running test can produce it by accident.

@@ -207,7 +207,7 @@ fn reframe_task_event(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecor
 /// test-ext — verifies them through the SAME reframe/digest production reads a persisted chain with.
 /// The scope, and the digest's inclusion of it, come from each row's own `task_id`, exactly as the
 /// deleted `TaskEventRow::scope_of`/`digest_fields` did.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn verify_task_event_rows(rows: &[TaskEventRow]) -> Result<(), crate::audit::ChainBreak> {
     let records: Vec<PlaneJournalRecord> = rows
         .iter()
@@ -253,7 +253,7 @@ fn is_terminal_state(state: &str) -> bool {
 
 /// Why a scoped read was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Denied {
+pub enum Denied {
     /// The task does not exist, OR it exists and belongs to somebody else. ONE variant, on purpose:
     /// see the module doc. The caller renders 403 either way, before any task data is assembled.
     NotYours,
@@ -263,21 +263,21 @@ pub(crate) enum Denied {
 /// "restored" count, because they mean different things to an operator and a single number hides the
 /// two that are bad news.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Rehydrated {
+pub struct Rehydrated {
     /// Active or interrupted tasks brought back and resumable.
-    pub(crate) active: usize,
+    pub active: usize,
     /// Terminal tasks seen and deliberately not loaded into the working set. They stay in the store
     /// for the provenance window; they are not in-flight and nothing resumes them.
-    pub(crate) terminal: usize,
+    pub terminal: usize,
     /// Rows that would not parse (an unknown state or direction, a missing identity). NOT silently
     /// dropped: a skipped row is an in-flight task that ceased to exist across a deploy, which is
     /// the exact failure this store exists to prevent, so it is counted and logged.
-    pub(crate) unreadable: usize,
+    pub unreadable: usize,
     /// Tasks whose persisted provenance chain FAILED to verify. Tamper evidence. The task is still
     /// restored — refusing to restore it would let anyone who can write to the store delete a task
     /// by corrupting one of its events — but the break is reported and the chain continues from the
     /// broken tail rather than being silently re-based onto it.
-    pub(crate) chain_breaks: Vec<ChainBreak>,
+    pub chain_breaks: Vec<ChainBreak>,
 }
 
 /// The in-flight task registry. No `Debug`: the journal holds a `dyn PlaneStore` (not `Debug` — a
@@ -334,7 +334,7 @@ pub static TASKS: std::sync::LazyLock<TaskRegistry> = std::sync::LazyLock::new(T
 /// It lives here rather than in either test file because the two batteries that need it — the A2A
 /// front door's and the push-delivery path's — are mounted from different modules, and two locks
 /// over one global is the same thing as no lock.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// TEST ONLY: a fresh, process-unique `task_event` stream id, well above the production ids (1/2) and
@@ -405,7 +405,7 @@ pub(crate) fn test_app_over(store: Arc<dyn busbar_api::Store>) -> Arc<crate::sta
 /// without each racing to re-register (a re-register resets every chain position). A chain-asserting
 /// test aims this same stream at its own ledger with [`aim_global_task_sink`] while it holds
 /// [`TASKS_SINK_LOCK`] — a sink swap, never a re-register, so positions are left intact.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn global_task_host_app() -> &'static Arc<crate::state::App> {
     static APP: std::sync::OnceLock<Arc<crate::state::App>> = std::sync::OnceLock::new();
     APP.get_or_init(|| {
@@ -419,22 +419,22 @@ fn global_task_host_app() -> &'static Arc<crate::state::App> {
 /// ONCE (no-sink) — for a front-door INTEGRATION harness whose app is not booted through the real
 /// `a2a_hydrate`, so the relay's `TASKS.submit`/`transition` mint sequences. Idempotent (never
 /// re-registers, so it never resets a chain position a concurrent test is mid-write on).
-#[cfg(test)]
-pub(crate) fn ensure_global_task_stream_registered() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn ensure_global_task_stream_registered() {
     let _ = global_task_host_app();
 }
 
 /// TEST ONLY: run `f` with a host over the shared global-[`TASKS`] app (registration ensured). The
 /// chain append addresses the process-wide [`KIND_ID_TASK_EVENT`] stream; a working-set test leaves it
 /// no-sink and only needs a minted `Seq`, a chain test has aimed it at its ledger.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn with_global_task_host<R>(f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
     crate::plane_host::with_dispatch_scope(global_task_host_app(), |h, _| f(h))
 }
 
 /// TEST ONLY: aim (or detach, with `None`) the process-wide `task_event` stream's durable sink — for a
 /// chain-asserting global-[`TASKS`] test holding [`TASKS_SINK_LOCK`].
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
     let _ = global_task_host_app();
     crate::plane_host::journal::set_stream_sink_for_test(KIND_ID_TASK_EVENT, store);
@@ -442,7 +442,7 @@ pub fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
 
 /// What went wrong servicing a task mutation.
 #[derive(Debug)]
-pub(crate) enum TaskStoreError {
+pub enum TaskStoreError {
     /// The task id is not in the working set.
     NoSuchTask(String),
     /// The A2A CODEC refused the row or the move — carried as its already-rendered message so the
@@ -504,7 +504,7 @@ impl TaskRegistry {
     /// Attach the configured governance store as the DURABLE SINK for the `task` row upserts. Called
     /// once at boot, beside the `task_event` stream registration (which attaches its own sink from the
     /// same `app.governance`). With no sink the registry is a RAM cache — the `store: memory` posture.
-    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
+    pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
@@ -512,7 +512,7 @@ impl TaskRegistry {
     /// [`TASKS`] leaves the registry as it found it. There is no production caller and there must not
     /// be: detaching a live deployment's durable sink mid-run would silently stop persisting task
     /// evidence, which is the failure this whole module exists to prevent.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn clear_sink_for_test(&self) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -522,7 +522,7 @@ impl TaskRegistry {
     ///
     /// Terminal tasks are counted and left in the store: they are not in flight, and loading them
     /// would grow the working set without bound over a deployment's life for no resume value.
-    pub(crate) fn restore_from_store(
+    pub fn restore_from_store(
         &self,
         host: HostCtx,
         store: &dyn PlaneStore,
@@ -615,7 +615,7 @@ impl TaskRegistry {
     /// The durable write happens BEFORE the task is announced as accepted. A task acknowledged to a
     /// caller but not yet persisted is precisely the task a crash loses while the caller believes it
     /// is running.
-    pub(crate) fn submit(
+    pub fn submit(
         &self,
         host: HostCtx,
         row: &TaskRow,
@@ -655,7 +655,7 @@ impl TaskRegistry {
     /// leaves the working set agreeing with the store rather than ahead of it. Being ahead is the
     /// worse of the two: it makes the process believe a transition happened that a restart will
     /// then un-happen.
-    pub(crate) fn transition<F>(
+    pub fn transition<F>(
         &self,
         host: HostCtx,
         task_id: &str,
@@ -919,7 +919,7 @@ impl TaskRegistry {
 
     /// SCOPED READ. The authorization gate for `GetTask`: a caller sees its own tasks and nothing
     /// else, and cannot tell a foreign id from a nonexistent one.
-    pub(crate) fn get_scoped(&self, principal: &str, task_id: &str) -> Result<TaskRow, Denied> {
+    pub fn get_scoped(&self, principal: &str, task_id: &str) -> Result<TaskRow, Denied> {
         // An EMPTY principal never matches, even against a row that somehow carried one. The a2a codec
         // refuses to construct a `Task` with an empty principal, so this is belt-and-braces against a
         // future caller that reaches here with an unauthenticated identity: an empty-equals-empty
@@ -951,7 +951,7 @@ impl TaskRegistry {
 
     /// UNSCOPED read — for the retention sweep and the operator surface, never for a caller.
     /// Named so that a call site using it for a caller read is visible in review.
-    pub(crate) fn get_unscoped(&self, task_id: &str) -> Option<TaskRow> {
+    pub fn get_unscoped(&self, task_id: &str) -> Option<TaskRow> {
         self.tasks().get(task_id).map(|e| e.row.clone())
     }
 
@@ -1057,14 +1057,10 @@ impl busbar_substrate::plane_host::TaskReader for CoreTaskReader {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/taskstore_tests.rs"]
-mod taskstore_tests;
-
 // THE READ-BACK HALF, shared by every battery that asserts on this chain. Mounted here, beside the
 // registry whose sink it stands in for, so the two batteries that attach it to the process-wide
 // `TASKS` (the front door's and the push-delivery path's) use ONE double — a second double is a
 // second thing that can stop matching what a real backend does.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "tests/event_ledger.rs"]
 pub mod event_ledger;

@@ -618,7 +618,7 @@ pub(crate) struct RotatedCredential {
 // The mint-parameter struct (`NewKeySpec`) — pure auth data, no `App`/`Store` — moved to the neutral
 // substrate so a plane crate names it without reaching into busbar-core; re-exported here so every
 // `crate::governance::NewKeySpec` construction site is unchanged.
-pub(crate) use busbar_substrate::governance::NewKeySpec;
+pub use busbar_substrate::governance::NewKeySpec;
 
 pub(crate) mod revocation;
 pub mod signing;
@@ -922,8 +922,12 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+// `Store` is re-exported `pub` (the extracted A2A plane's own tests name `busbar_core::governance::Store`
+// for their in-test store doubles); the rest stay crate-internal. All are already public in `busbar_api`,
+// so this widens no NEW type — it only makes the existing path nameable from a test-support dependent.
+pub use busbar_api::Store;
 pub(crate) use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, StoreError,
     StoreResult, TierTokens, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
@@ -940,7 +944,7 @@ pub(crate) use busbar_api::ScopeRef;
 // The metering-bucket time base (`METERING_BUCKET_SECS` + the `metering_bucket` floor fn below) is
 // pure arithmetic — moved to the neutral substrate so a plane crate names it without reaching into
 // busbar-core; both re-exported here so every `crate::governance::…` caller is unchanged.
-pub(crate) use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
+pub use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
 
 /// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
 /// in-memory across every `record_metering` call that lands on this key before the next flush.
@@ -1148,7 +1152,7 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 // The RAM store is the always-on DEFAULT governance backend (and the universal test double). The
 // SQLite backend is no longer compiled in — it is a dynamic-library plugin loaded at boot (see
 // crate::main's store selection + busbar-plugin-loader).
-pub(crate) use busbar_store_memory::MemoryStore;
+pub use busbar_store_memory::MemoryStore;
 
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
 /// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off

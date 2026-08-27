@@ -26,7 +26,7 @@ use busbar_api::{StoreResult, TaskEventRow, TaskRow};
 
 /// Holds task rows and chained task events for the life of one test process.
 #[derive(Default)]
-pub(crate) struct EventLedger {
+pub struct EventLedger {
     tasks: Mutex<BTreeMap<String, TaskRow>>,
     /// The chained events, keyed by `(task_id, seq)` so a read-back comes out in chain order and a
     /// re-write at the same sequence overwrites (a real backend's primary key). The value is the
@@ -37,12 +37,12 @@ pub(crate) struct EventLedger {
 }
 
 impl EventLedger {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Every event this ledger holds for one task, oldest first — reconstructed from the stored bodies.
-    pub(crate) fn events_for(&self, task_id: &str) -> Vec<TaskEventRow> {
+    pub fn events_for(&self, task_id: &str) -> Vec<TaskEventRow> {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())

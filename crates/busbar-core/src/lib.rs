@@ -235,7 +235,14 @@ pub use router::{
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]
-pub(crate) use router::{base_data_router, build_router_with_limits};
+pub(crate) use router::base_data_router;
+// `build_router_with_limits` is a curated `pub` test-support seam (the extracted MCP plane's own
+// subscribe/ingress tests build a limited router directly); production keeps it crate-internal.
+#[cfg(not(any(test, feature = "test-support")))]
+#[allow(unused_imports)]
+pub(crate) use router::build_router_with_limits;
+#[cfg(any(test, feature = "test-support"))]
+pub use router::build_router_with_limits;
 
 /// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
 /// mounts for `app`, built through the very same `router::base_data_router` production calls (off the

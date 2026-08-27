@@ -331,8 +331,8 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
 fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     for (plane, path, wire) in [
         ("mcp", "/mcp", WIRE_JSONRPC),
-        ("a2a", crate::a2a::serve::MOUNT_PATH, WIRE_JSONRPC),
-        ("a2a", crate::a2a::serve::GRPC_MOUNT_PATH, WIRE_GRPC),
+        ("a2a", busbar_a2a::a2a::serve::MOUNT_PATH, WIRE_JSONRPC),
+        ("a2a", busbar_a2a::a2a::serve::GRPC_MOUNT_PATH, WIRE_GRPC),
     ] {
         assert!(
             wire_format_names(plane).contains(&wire),

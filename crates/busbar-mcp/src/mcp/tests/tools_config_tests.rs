@@ -319,6 +319,7 @@ fn an_unknown_key_is_refused_rather_than_ignored() {
 /// one path only shows up here as a difference rather than as a test nobody wrote.
 #[test]
 fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
+    crate::testkit::install_test_seams();
     use busbar_core::config::named_map::NamedMapSection;
 
     // (name, definition document). Half must be accepted, half refused; which is which is decided by
@@ -623,6 +624,7 @@ fn an_empty_or_padded_publish_as_is_refused_by_the_per_server_value_rules() {
 /// `publish_as:` exactly as `config.yaml` does, because both reach `validate_server`.
 #[test]
 fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does() {
+    crate::testkit::install_test_seams();
     let def = serde_json::json!({
         "url": "https://x/",
         "pin": { "mechanism": "unpinned" },

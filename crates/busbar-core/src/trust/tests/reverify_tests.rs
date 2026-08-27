@@ -9,8 +9,8 @@
 
 use super::super::{Observation, TrustState};
 use super::*;
-use crate::a2a::pin::{approve_registration, CardPin};
 use crate::trust::{Approval, Sighting};
+use busbar_a2a::a2a::pin::{approve_registration, CardPin};
 use std::collections::BTreeMap;
 
 fn policy() -> Policy {

@@ -209,7 +209,7 @@ fn a2a_task_chain_boot_verifies_from_frozen_bytes() {
     let rehydrated = h
         .host(|host| {
             h.reg
-                .restore_from_store(host, &store, crate::a2a::task::readable_row)
+                .restore_from_store(host, &store, busbar_a2a::a2a::task::readable_row)
         })
         .expect("store read");
     assert!(

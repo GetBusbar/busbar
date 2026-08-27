@@ -44,7 +44,7 @@ use busbar_substrate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
 /// separate field, so a registration cannot claim `jws_issuer_key` while carrying a transport pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CardPin {
+pub enum CardPin {
     /// A SIGNED card: the operator-supplied out-of-band JWS verification key, plus the canonical
     /// fingerprint of the card it signed.
     JwsIssuerKey {
@@ -188,7 +188,7 @@ impl busbar_substrate::trust::declared::Declares for CardPin {
 /// Why an A2A approval was refused. The plane-neutral refusals pass through unchanged; this adds
 /// exactly the one A2A rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ApproveError {
+pub enum ApproveError {
     /// The pin on offer is [`CardPin::Unpinned`], so approving would lock the registration to no
     /// identity at all and every later observation would "match". A capped registration is
     /// inspectable and never delegable.
@@ -216,7 +216,7 @@ impl std::fmt::Display for ApproveError {
 /// they supplied one, otherwise whatever the endpoint presented), and not merely on what the
 /// endpoint offered. Checking the offered value would let an operator override an unpinned
 /// observation with an unpinned override and still land approved.
-pub(crate) fn approve_registration(
+pub fn approve_registration(
     approval: &mut Approval<CardPin>,
     sighting: &Sighting<CardPin>,
     pin_override: Option<CardPin>,

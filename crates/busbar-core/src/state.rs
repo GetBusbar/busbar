@@ -593,7 +593,7 @@ pub struct App {
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a
     /// prebuilt table rather than a per-request derivation.
-    pub(crate) planes: Arc<crate::plane::PlaneDispatch>,
+    pub planes: Arc<crate::plane::PlaneDispatch>,
     /// THE TYPE-ERASED PLANE SLOT MAP, keyed by plane key (`"mcp"`, `"a2a"`, …) — the app-state seam
     /// an extracted plane crate contributes its runtime object through, without core naming that
     /// object's type. `PlaneDecl::claims`/`admission` already read a plane's object through exactly
@@ -884,7 +884,7 @@ pub struct AppHandle {
 }
 
 impl AppHandle {
-    pub(crate) fn new(app: Arc<App>) -> Self {
+    pub fn new(app: Arc<App>) -> Self {
         Self {
             current: std::sync::RwLock::new(app),
         }
@@ -916,7 +916,7 @@ impl AppHandle {
     /// operator reads to say so. Doing it here, once, over the registered decls rather than by naming
     /// each plane's concrete types makes it impossible for a future swap site to forget AND keeps this
     /// method free of any one plane's types — the reconciliation lives beside the plane it belongs to.
-    pub(crate) fn swap(&self, next: Arc<App>) {
+    pub fn swap(&self, next: Arc<App>) {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already). Read under a
         // read lock that is released before the write lock below is taken.

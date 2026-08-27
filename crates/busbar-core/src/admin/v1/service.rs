@@ -1065,7 +1065,7 @@ impl AdminService {
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
             // Both plane sections read their registrations through the plane's `named_def_list` seam,
-            // so this arm names no `crate::mcp`/`crate::a2a` view or registry type; the empty vec for
+            // so this arm names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view or registry type; the empty vec for
             // a plane compiled out is the seam's own `None`.
             NamedMapSection::Tools | NamedMapSection::Agents => {
                 plane_named_def_list(section, &self.app)

@@ -10,6 +10,7 @@
 //! exactness is asserted here rather than assumed from reading [`super::observe`].
 
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
+use busbar_mcp::testkit::TestAppMcpExt as _;
 
 /// A pool name used by NOTHING else in this binary. The test process shares one global recorder and
 /// runs tests in parallel, so an exact-delta assertion has to be made on a label set no other test
@@ -32,7 +33,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
             "http://127.0.0.1:1",
         ))
         .pool(POOL, &[(0, 1)])
-        .mcp(&crate::mcp::McpCfg {
+        .mcp(&busbar_mcp::mcp::McpCfg {
             canonical_uri: "https://gateway.example.com/mcp".to_string(),
             authorization_servers: vec!["https://login.example.com".to_string()],
             scopes_supported: Vec::new(),

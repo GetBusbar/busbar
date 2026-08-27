@@ -34,10 +34,10 @@
 //! at all, which is precisely how ten store methods were dropped at this seam earlier in the same
 //! release.
 
-use crate::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
-use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
 use crate::plane::approvals::Sealer;
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
+use busbar_mcp::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
+use busbar_mcp::mcp::config::{AskEntryCfg, AskRoundCfg};
 
 /// THE FLEET-SHARED SECRET. One key for every node below — that is the premise, not a shortcut: it
 /// is what makes an approval minted on one node openable on another, and therefore what makes the
