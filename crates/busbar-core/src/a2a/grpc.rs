@@ -128,10 +128,6 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
     // reassembling it costs nothing. The method is POST — the only method this route is mounted for.
     // The rebuilt request is stamped HTTP/2: the real request arrived over h2(c) (gRPC needs it) and
     // an `http::Request::builder` otherwise defaults to HTTP/1.1, which tonic rejects.
-    let _handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
     let gov = ctx
         .gov
         .expect("the a2a grpc route is RouteAuth::Key, so the middleware attached a gov ctx");

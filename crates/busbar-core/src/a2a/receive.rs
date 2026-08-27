@@ -337,10 +337,6 @@ pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     // S7 neutral seam: `RouteAuth::Key`, so the auth middleware resolved and attached `gov`/
     // `principal` BEFORE this handler ran — surfaced on `ctx`, never re-derived here. `Wire` is the
     // same three headers the extractor read, off `ctx.headers`.
-    let _handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
     let gov = ctx
         .gov
         .expect("the a2a plane_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");
@@ -711,10 +707,6 @@ pub(super) fn no_receiving_side() -> Response {
 pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: `RouteAuth::Key`. Same shape as `plane_rpc` plus the `{agent_id}` capture,
     // read by name off `ctx.path_params`.
-    let _handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
     let gov = ctx
         .gov
         .expect("the a2a agent_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");

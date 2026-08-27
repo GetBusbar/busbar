@@ -324,17 +324,14 @@ fn reframe_frames(buf: &[u8]) -> Vec<u8> {
 /// is the same three headers the extractor read, off `ctx.headers`. Consuming `engine`/`gov`/
 /// `principal` here leaves `ctx.body`/`ctx.path_params`/`ctx.uri` for the caller to read.
 fn rest_key_ctx(
-    engine: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    _engine: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     gov: Option<busbar_api::PlaneRequestCtx>,
     principal: Option<busbar_api::AuthPrincipal>,
     headers: &axum::http::HeaderMap,
 ) -> (busbar_api::PlaneRequestCtx, busbar_api::AuthPrincipal, Wire) {
-    // The downcast is retained as the route-wiring assertion it always was — the live app it would
-    // load is no longer threaded now that the shared sequence closes its own request out through the
-    // host, so the loaded snapshot is dropped rather than returned.
-    let _handle: std::sync::Arc<crate::state::AppHandle> = engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
+    // The engine handle is no longer named here: the shared sequence closes its own request out
+    // through the neutral `ctx.host` seam, so this key-ctx neither loads the app nor asserts the
+    // handle's concrete type — the plane names no `crate::state` type on this path.
     let gov =
         gov.expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a gov ctx");
     let principal = principal
