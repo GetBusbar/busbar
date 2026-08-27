@@ -4071,8 +4071,11 @@ pub(crate) const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 pub(crate) const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).
 pub(crate) const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
-/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). Mirrors `proxy engine`.
-pub(crate) const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize = 256 * 1024;
+/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). The literal lives ONCE, in
+/// the neutral `busbar_substrate::proxy` (which owns the process-global this seeds), so core's serde
+/// default and the substrate accessor a plane reads can never drift apart.
+pub(crate) const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
+    busbar_substrate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
 /// token-endpoint reads already apply (`egress_auth::read_capped_token_response`,
 /// `proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB

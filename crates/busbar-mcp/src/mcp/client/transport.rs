@@ -95,7 +95,7 @@ impl HttpTransport {
             .await
             .map_err(TransportError::Refused)?;
 
-        let cap = busbar_core::proxy::max_upstream_buffered_bytes();
+        let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
         // OWNED inputs for the blocking hop — the seam's `HopSpec` borrows these, and `leg` (with its
         // pool triggers and the `UPSTREAM_PROGRESS` task-local) must NOT cross into `spawn_blocking`,
         // so the SSE frame handling stays async-side below where `leg` is live.

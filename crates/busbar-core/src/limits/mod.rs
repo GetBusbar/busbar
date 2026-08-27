@@ -65,6 +65,7 @@ pub(crate) static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 #[cfg(test)]
 pub(crate) fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
+    mirror_upstream_error_cap(Some(resolved));
 }
 
 /// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
@@ -97,6 +98,7 @@ impl InstallGuard {
         let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
         let prior = slot.clone();
         *slot = Some(resolved.clone());
+        mirror_upstream_error_cap(Some(resolved));
         Self {
             prior,
             committed: false,
@@ -113,6 +115,7 @@ impl Drop for InstallGuard {
     fn drop(&mut self) {
         if !self.committed {
             *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
+            mirror_upstream_error_cap(self.prior.as_ref());
         }
     }
 }
@@ -120,6 +123,18 @@ impl Drop for InstallGuard {
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
 fn get() -> Option<LimitsResolved> {
     INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Mirror the upstream-error-body cap into the neutral `busbar_substrate::proxy` process global, so a
+/// plane crate (busbar-mcp) reads the SAME value core's `upstream_error_body_max_bytes()` returns
+/// without reaching into `busbar-core`. Called after EVERY mutation of `INSTALLED` (install, reload,
+/// and the `InstallGuard` rollback) with that same slot's value, resolving the `None`/uninstalled
+/// case to the historical default exactly as the accessor does — the two can never diverge.
+fn mirror_upstream_error_cap(slot: Option<&LimitsResolved>) {
+    let cap = slot
+        .map(|l| l.upstream_error_body_max_bytes)
+        .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
+    busbar_substrate::proxy::set_max_upstream_buffered_bytes(cap);
 }
 
 /// The egress translate-body cap (bytes). COUPLED to ingress `request_body_max_bytes`: one knob

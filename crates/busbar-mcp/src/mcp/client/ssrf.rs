@@ -80,7 +80,7 @@ impl SsrfPolicy {
             allow_private: self.allow_private,
             allow_plaintext: false,
             max_redirects: 0,
-            max_body_bytes: busbar_core::proxy::max_upstream_buffered_bytes(),
+            max_body_bytes: busbar_substrate::proxy::max_upstream_buffered_bytes(),
             timeout: DISPATCH_CONNECT_TIMEOUT,
         }
     }

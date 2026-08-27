@@ -13,6 +13,39 @@
 pub mod sse;
 
 use bytes::Bytes;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Historical default cap on a buffered upstream ERROR / verbatim-relay body (bytes) — 256 KiB, the
+/// value read before any operator config is installed (unit tests, pre-boot). Owned HERE, in the
+/// neutral substrate, and re-exported by core's `config` as `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`
+/// so the number has ONE definition: core's `limits` installs the resolved value into the process
+/// global below, and a plane crate reads it back through [`max_upstream_buffered_bytes`] without
+/// reaching into `busbar-core` (whose `LimitsResolved`/`config` types are not neutral).
+pub const UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT: usize = 256 * 1024;
+
+/// Process-global cap on a buffered upstream ERROR body (bytes). Seeded to the historical default so
+/// an UNINSTALLED read (unit tests, pre-boot) is byte-identical to core's `limits` fallback; core's
+/// `limits::install`/`InstallGuard` overwrite it with the operator-resolved value on every apply and
+/// restore it on a rejected apply, so the value here always tracks core's installed
+/// `LimitsResolved::upstream_error_body_max_bytes`. Read PER upstream-error-body buffer (not per
+/// byte), so a `Relaxed` atomic is ample — no accessor orders anything against this load.
+static UPSTREAM_ERROR_BODY_MAX_BYTES: AtomicUsize =
+    AtomicUsize::new(UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT);
+
+/// Read the installed cap on a buffered upstream ERROR / verbatim-relay body (bytes). The neutral
+/// twin of core's `proxy::max_upstream_buffered_bytes()`: same process-global value, named from a
+/// plane crate without reaching into `busbar-core`. Falls back to
+/// [`UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT`] until core installs the resolved limits.
+pub fn max_upstream_buffered_bytes() -> usize {
+    UPSTREAM_ERROR_BODY_MAX_BYTES.load(Ordering::Relaxed)
+}
+
+/// Install the resolved upstream-error-body cap process-wide. Called ONLY by core's `limits`
+/// install/reload/rollback path with the value it also installs into its own `LimitsResolved` slot,
+/// so the two never diverge; there is no other writer.
+pub fn set_max_upstream_buffered_bytes(bytes: usize) {
+    UPSTREAM_ERROR_BODY_MAX_BYTES.store(bytes, Ordering::Relaxed);
+}
 
 /// Read an upstream response body, buffering at most `cap` bytes. Streams chunks with a running byte
 /// counter rather than `r.bytes()` (which would buffer the entire — possibly multi-gigabyte — body
