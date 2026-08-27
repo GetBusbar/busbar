@@ -105,7 +105,7 @@ fn the_codes_and_statuses_are_the_specifications_own() {
 fn an_id_that_was_never_sent_is_null_rather_than_absent() {
     // JSON-RPC 2.0 section 5: a response to a request whose id could not be determined carries `id:
     // null`, and the member is PRESENT rather than omitted. The id itself is now decided by
-    // `crate::ingress::jsonrpc::read` — the reader both planes share — so what is left for this
+    // `busbar_substrate::ingress::jsonrpc::read` — the reader both planes share — so what is left for this
     // plane, and what this asserts, is that the null renders onto the wire at all.
     assert_eq!(body(&Value::Null, A2aError::Parse, "x")["id"], Value::Null);
 }

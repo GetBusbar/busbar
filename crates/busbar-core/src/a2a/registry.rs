@@ -6,7 +6,7 @@
 //! ## This is a RECORD, not a second state machine
 //!
 //! The trust state, the changes queue and the dispatch gate are [`crate::trust`], reached through
-//! the [`crate::trust::Approval`] this record CARRIES. Nothing here re-derives any of them.
+//! the [`busbar_substrate::trust::Approval`] this record CARRIES. Nothing here re-derives any of them.
 //! `tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own` reads this file, among
 //! the plane's others, and fails on a re-declaration — so the discipline is machine-checked rather
 //! than remembered.
@@ -192,7 +192,7 @@ impl AgentRegistration {
     /// Whether this registration is a candidate for the DELEGATION CATALOGUE at all: approved, and
     /// therefore neither pending, quarantined, suspended nor in error.
     ///
-    /// Scope is the ordered gate's ([`crate::trust::validate`]) and capability matching is
+    /// Scope is the ordered gate's ([`busbar_substrate::trust::validate`]) and capability matching is
     /// [`judge`]'s; this is only the trust half, and it is the same derivation the gate makes.
     pub(crate) fn is_delegable(&self) -> bool {
         self.trust_state() == TrustState::Approved
@@ -208,7 +208,7 @@ impl AgentRegistration {
 // ## THE WALK IS CORE'S AND THE GATE IS CORE'S. THIS PLANE SUPPLIES AN ITEM TYPE.
 //
 // [`crate::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
-// hand it to the ordered gate, keep the entitled subset, render it — and [`crate::trust::validate`]
+// hand it to the ordered gate, keep the entitled subset, render it — and [`busbar_substrate::trust::validate`]
 // owns the entitlement decision. This file supplies the four things a plane owes them: the item
 // (`AgentRegistration`, the record this module already was), the grants it requires, its structural
 // fitness and refusal words, and its wire form. The catalogue module this plane kept of its own is
@@ -228,7 +228,7 @@ impl AgentRegistration {
 // 4. **Not suspended.** Folded into (1) rather than checked twice: `Suspended` outranks every other
 //    state in the lifecycle, so a suspended registration is not `Approved` and is already out.
 //
-// FILTERS 1, 2 AND 4 ARE ONE CALL to [`crate::trust::validate::validate_request`], made from
+// FILTERS 1, 2 AND 4 ARE ONE CALL to [`busbar_substrate::trust::validate::validate_request`], made from
 // [`CatalogueItem::admit`] below. Only filter 3 is this file's, because only filter 3 is about this
 // wire format's document. THIS PLANE ASKS THE FULL ORDERED GATE — identity, grant, artifact,
 // generation — because on A2A a listing IS an admission: an agent that is not `Approved` is not a
@@ -497,7 +497,7 @@ pub(crate) fn delegation_catalogue<'a>(
 ///
 /// This is the data-exposure surface the extended card is: the naive implementation unions every
 /// fronted agent's `skills[]` and hands every authenticated caller the whole inventory. Rendering
-/// through [`crate::catalogue::rendered`] makes that shape unreachable — an item is rendered only
+/// through [`busbar_substrate::catalogue::rendered`] makes that shape unreachable — an item is rendered only
 /// after core has decided the caller may see it, and there is no path here that renders first.
 pub(crate) fn entitled_agents<'a>(
     caller: &Caller<'_>,

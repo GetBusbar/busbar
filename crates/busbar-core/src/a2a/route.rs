@@ -8,7 +8,7 @@
 //! The rules, stated once here and inherited by `receive`:
 //!
 //! - A FRESH submission to a pooled agent goes through the ONE candidate loop
-//!   ([`crate::failover::walk`] over the pool's members, pin-checked against the approved card
+//!   ([`busbar_substrate::failover::walk`] over the pool's members, pin-checked against the approved card
 //!   fingerprints, admitted through the one breaker), so a tripped primary reroutes to its
 //!   verified twin BEFORE anything reaches a socket and the caller never learns.
 //! - An ADDRESSED or RESUMED task is PINNED to the member that accepted it — the task id names
@@ -20,12 +20,12 @@
 //!   behaviour.
 
 use super::relay::RelayBreaker;
-use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED,
-    A2A_POOL_NOT_INTERCHANGEABLE,
-};
+use crate::diagnostics::{diag_debug, diag_error, diag_warn};
 use crate::state::App;
 use axum::response::{IntoResponse as _, Response};
+use busbar_substrate::diagnostics::{
+    A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
+};
 use std::sync::Arc;
 
 /// One `agent_pools:` member as the walk sees it — this plane's whole cost of inheriting the

@@ -88,7 +88,8 @@ use axum::response::Response;
 
 use super::rpcerror::A2aError;
 use super::task::{Task, TaskState};
-use crate::diagnostics::{diag_debug, diag_error, A2A_PUSH_CONFIG_UNRECORDED};
+use crate::diagnostics::{diag_debug, diag_error};
+use busbar_substrate::diagnostics::A2A_PUSH_CONFIG_UNRECORDED;
 
 /// WHICH SPELLING OF THE PUSH-CONFIG VERBS A CALLER USED, because the two dialects disagree about
 /// the SHAPE of a config and not merely about the method name.

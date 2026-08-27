@@ -115,7 +115,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_relayed_wire() {
     // Belt and braces on the same haystack: not even the token's claims segment may leave.
     let payload_segment = h
         .bearer
-        .trim_start_matches(crate::governance::signing::TOKEN_PREFIX)
+        .trim_start_matches(busbar_substrate::governance::signing::TOKEN_PREFIX)
         .split('.')
         .next()
         .expect("a token has a first segment")
@@ -376,7 +376,9 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
     let rows = h
         .gov
         .store()
-        .list_metering(crate::governance::metering_bucket(crate::store::now()))
+        .list_metering(crate::governance::metering_bucket(
+            busbar_substrate::store::now(),
+        ))
         .expect("metering reads back");
     let mine: Vec<_> = rows.iter().filter(|r| r.provider == "a2a").collect();
     assert_eq!(

@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::a2a::card;
-use crate::trust::Observation;
+use busbar_substrate::trust::Observation;
 use serde_json::json;
 use std::collections::BTreeMap;
 

@@ -131,7 +131,7 @@ pub(crate) struct PinnedCallback {
 ///
 /// The tear-out went the other way too — the three ranges this copy had and the shared predicate
 /// did not (`0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`) moved INTO
-/// [`crate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
+/// [`busbar_substrate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
 /// ordering is the whole discipline: widen the shared predicate to the union, then delete the copy.
 pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
     busbar_substrate::net_guard::ip_is_internal(ip)

@@ -4,7 +4,7 @@
 //! THE A2A PLANE'S IDENTITY PIN, and the one plane-specific rule the plane-neutral machine must not
 //! learn.
 //!
-//! [`CardPin`] is this plane's [`crate::trust::PinnedArtifact`]. Everything else about approval,
+//! [`CardPin`] is this plane's [`busbar_substrate::trust::PinnedArtifact`]. Everything else about approval,
 //! drift, quarantine, suspension and the dispatch gate is [`crate::trust`], unchanged and
 //! un-forked. A2A supplies an artifact; it does not supply a second state machine.
 //!
@@ -127,7 +127,7 @@ impl PinnedArtifact for CardPin {
 
 /// READING AN OPERATOR'S `agents.<name>.pin:` INTO THIS PLANE'S ARTIFACT — the whole of what A2A
 /// writes for it. The sequence, and the refusal of a present-but-blank key, are
-/// [`crate::trust::declared`]'s.
+/// [`busbar_substrate::trust::declared`]'s.
 ///
 /// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
 /// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is

@@ -653,10 +653,11 @@ async fn a_task_in_the_registry(
     // swap, not a re-register, so the working-set tests' shared registration (and every position) is
     // left intact — and attach the row-upsert sink.
     crate::plane::taskstore::aim_global_task_sink(Some(
-        crate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+        busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
     ));
-    crate::plane::taskstore::TASKS
-        .set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
+    crate::plane::taskstore::TASKS.set_sink(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+    );
     let task = task_with_callback(task_id, state);
     crate::plane::taskstore::with_global_task_host(|host| {
         crate::plane::taskstore::TASKS

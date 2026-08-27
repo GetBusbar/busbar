@@ -18,7 +18,7 @@
 //!
 //! The tempting shape is to skip recording when verification fails and leave the last good sighting
 //! in place. That reads, from every operator-facing surface, as an agent that is still fine. So a
-//! refusal is recorded as [`crate::trust::Sighting::Failed`] with the reason, which derives `Error`
+//! refusal is recorded as [`busbar_substrate::trust::Sighting::Failed`] with the reason, which derives `Error`
 //! and serves nothing — and, because `reverify::settle` deliberately does not clear the drift clock
 //! on a failed contact, an upstream cannot age its own quarantine out by refusing connections.
 //!
@@ -329,7 +329,7 @@ pub(crate) fn reverify_once(
     operator_sync: bool,
 ) -> Pass {
     // Route the freshness decision through the WIRED `verify_decide_q` host SLOT (over the `host`
-    // handle), rather than the compiled-in `verify_decide_due` veneer or `crate::trust::reverify::due`
+    // handle), rather than the compiled-in `verify_decide_due` veneer or `busbar_substrate::trust::reverify::due`
     // directly. The slot marshals the full `Due` REASON onto its neutral `VerifyDecision` mirror and
     // `verify_decide_due_via` reconstructs it — BYTE-IDENTICAL to the veneer for every input, so the
     // audit `Pass{due}` bytes are unchanged. `operator_sync` OUTRANKS the timer and is decided in the
@@ -490,7 +490,7 @@ impl super::verbs::CardObserver for RegistrationProbe<'_> {
 // ══ THE PLANE'S HALF: the FETCH verify-on-call runs on the delegation path ═══════════════════════
 //
 // [`reverify_once`] above is the pass. The single-flight, the freshness bound and the fail-closed
-// ordering are `crate::trust::verify`'s, once, for every plane; what is here is the only part that is
+// ordering are `busbar_substrate::trust::verify`'s, once, for every plane; what is here is the only part that is
 // genuinely this plane's — the transport the pass fetches the card over. There is NO scheduler and no
 // tick: `super::plane::A2aPlane::reverify_agent` calls `reverify_once` from the request path when
 // `super::receive::verify_agent_on_call` finds the recorded observation older than `verify_ttl`.

@@ -695,7 +695,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
     let rehydrated = crate::plane::taskstore::with_global_task_host(|host| {
         fresh.restore_from_store(
             host,
-            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
         )
     })
     .expect("the rehydrate completes");

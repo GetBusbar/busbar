@@ -1160,10 +1160,11 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) and attach the row-upsert sink.
     crate::plane::taskstore::aim_global_task_sink(Some(
-        crate::plane::store::PlaneStoreView::narrow(sink.clone()),
+        busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     ));
-    crate::plane::taskstore::TASKS
-        .set_sink(crate::plane::store::PlaneStoreView::narrow(sink.clone()));
+    crate::plane::taskstore::TASKS.set_sink(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
+    );
 
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
@@ -1224,9 +1225,11 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     );
 
     crate::plane::taskstore::aim_global_task_sink(None);
-    crate::plane::taskstore::TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-    ));
+    crate::plane::taskstore::TASKS.set_sink(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(
+            busbar_store_memory::MemoryStore::new(),
+        )),
+    );
 }
 
 /// THE OTHER HALF, and the one an operator cares about more: a hop that FAILED is chained too, and
@@ -1246,10 +1249,11 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) and attach the row-upsert sink.
     crate::plane::taskstore::aim_global_task_sink(Some(
-        crate::plane::store::PlaneStoreView::narrow(sink.clone()),
+        busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     ));
-    crate::plane::taskstore::TASKS
-        .set_sink(crate::plane::store::PlaneStoreView::narrow(sink.clone()));
+    crate::plane::taskstore::TASKS.set_sink(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
+    );
 
     // A backend that answers a transport-level failure to the hop busbar issues.
     let h = harness_on(
@@ -1307,7 +1311,9 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
     crate::plane::taskstore::aim_global_task_sink(None);
-    crate::plane::taskstore::TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-    ));
+    crate::plane::taskstore::TASKS.set_sink(
+        busbar_substrate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(
+            busbar_store_memory::MemoryStore::new(),
+        )),
+    );
 }

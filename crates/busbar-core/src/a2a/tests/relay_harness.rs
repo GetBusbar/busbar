@@ -429,7 +429,7 @@ pub(super) fn approve(reg: &mut AgentRegistration) {
 /// The same, against a card that declares a binding.
 pub(super) fn approve_card(reg: &mut AgentRegistration, card: serde_json::Value) {
     let digests = crate::a2a::card::skill_digests(&card).expect("digests");
-    let sighting = crate::trust::Sighting::Seen(crate::trust::Observation {
+    let sighting = busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
         pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
             issuer_key: "KEY".to_string(),
             card_fingerprint: "sha256/CARD".to_string(),
@@ -587,8 +587,8 @@ pub(super) async fn harness_full(
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
 ) -> Harness {
-    use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec};
+    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     crate::metrics::init();
 
     let store: Arc<dyn crate::governance::Store> =
@@ -615,11 +615,11 @@ pub(super) async fn harness_full(
                 ..Default::default()
             },
             2_000_000_000,
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), crate::store::now(), None)
+        .verify(plain.as_str(), busbar_substrate::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all

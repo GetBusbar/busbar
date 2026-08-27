@@ -31,7 +31,7 @@ use crate::state::App;
 /// Every message below is BYTE-IDENTICAL to the one this plane sent before the sequence moved to
 /// core, with ONE exception, and it is an ADDITION rather than a change: `ForbiddenOrigin` had no
 /// wording on this plane at all, because this plane had no `Origin` check. See
-/// `crate::ingress::protocol::origin_admitted`.
+/// `busbar_substrate::ingress::protocol::origin_admitted`.
 #[derive(Default)]
 pub(crate) struct A2aWords;
 

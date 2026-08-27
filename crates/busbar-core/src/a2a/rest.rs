@@ -25,7 +25,7 @@
 //!
 //! ## The transport is a VALUE here, and it is never asked its identity
 //!
-//! [`crate::transport::Transport::HttpJson`] is passed into `invoke` and used as a LABEL. There is
+//! [`busbar_substrate::transport::Transport::HttpJson`] is passed into `invoke` and used as a LABEL. There is
 //! no `if transport ==` anywhere on this path, and there is no place for one: which framing applies
 //! is settled by WHICH HANDLER THE ROUTER PICKED, before any code runs. That is what the framing
 //! seam is for — a cell of the matrix is selected by lookup, never by a branch in the agnostic core
@@ -173,8 +173,8 @@ fn json_scalar(raw: &str) -> Value {
 /// the answer.
 async fn compose_and_invoke(
     app: std::sync::Arc<crate::state::App>,
-    gov: crate::governance::PlaneRequestCtx,
-    principal: crate::auth::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
     wire: Wire,
     method: &str,
     params: Value,
@@ -325,13 +325,13 @@ fn reframe_frames(buf: &[u8]) -> Vec<u8> {
 /// `principal` here leaves `ctx.body`/`ctx.path_params`/`ctx.uri` for the caller to read.
 fn rest_key_ctx(
     engine: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    gov: Option<crate::governance::PlaneRequestCtx>,
-    principal: Option<crate::auth::AuthPrincipal>,
+    gov: Option<busbar_api::PlaneRequestCtx>,
+    principal: Option<busbar_api::AuthPrincipal>,
     headers: &axum::http::HeaderMap,
 ) -> (
     std::sync::Arc<crate::state::App>,
-    crate::governance::PlaneRequestCtx,
-    crate::auth::AuthPrincipal,
+    busbar_api::PlaneRequestCtx,
+    busbar_api::AuthPrincipal,
     Wire,
 ) {
     let handle: std::sync::Arc<crate::state::AppHandle> = engine

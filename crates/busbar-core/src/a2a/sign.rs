@@ -14,7 +14,7 @@
 //! ## THE KEY IS DERIVED FROM THE TOKEN SIGNING KEY. IT IS NOT THE TOKEN SIGNING KEY
 //!
 //! busbar already holds exactly one long-lived ed25519 secret: the one
-//! [`crate::governance::signing::TokenSigner`] mints virtual-key tokens with. Reusing it verbatim
+//! [`busbar_substrate::governance::signing::TokenSigner`] mints virtual-key tokens with. Reusing it verbatim
 //! here was the obvious move and it is the wrong one, for a reason that is specific rather than
 //! hygienic:
 //!

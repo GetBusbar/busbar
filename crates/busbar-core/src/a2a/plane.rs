@@ -26,7 +26,7 @@
 //!
 //! Every registration is built by `AgentRegistration::registered`, which is the fail-closed floor:
 //! `Pending`, no pin approved, no card cached, nothing delegable. A pin an operator DECLARED in
-//! config is deliberately NOT lifted into an approval here — [`crate::trust::declared`] can read
+//! config is deliberately NOT lifted into an approval here — [`busbar_substrate::trust::declared`] can read
 //! one off [`super::config::AgentPinCfg::declaration`], but an approval is a statement about a
 //! document that was actually SEEN, and turning a
 //! config value into one at boot would approve a card nobody has fetched. The `connect` verb
@@ -40,7 +40,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
 use super::registry::AgentRegistration;
-use crate::diagnostics::{diag_warn, A2A_REVERIFY_CADENCE_UNPARSED};
+use crate::diagnostics::diag_warn;
+use busbar_substrate::diagnostics::A2A_REVERIFY_CADENCE_UNPARSED;
 
 /// THE PLANE. Built once per config generation; `None` when this deployment fronts no agents.
 pub(crate) struct A2aPlane {
@@ -62,7 +63,7 @@ pub(crate) struct A2aPlane {
     /// any instant.
     registrations: RwLock<Vec<AgentRegistration>>,
     /// THE GENERATION THIS REGISTRY IS AT, taken from the process-wide monotonic source in
-    /// [`crate::trust::validate`] and re-taken on every mutation.
+    /// [`busbar_substrate::trust::validate`] and re-taken on every mutation.
     ///
     /// It is what makes an in-flight request unable to outlive the approval it was admitted under.
     /// Admission records this value; the gate immediately before the socket re-reads it; a move is a
@@ -316,7 +317,7 @@ impl A2aPlane {
     /// RE-VERIFY ONE FRONTED AGENT'S CARD ON THE DELEGATION PATH — this plane's FETCH for verify-on-call.
     ///
     /// The single-flight, the freshness bound and the fail-closed ordering are
-    /// [`crate::trust::verify`]'s, once, for every plane; what is here is this plane's fetch: the same
+    /// [`busbar_substrate::trust::verify`]'s, once, for every plane; what is here is this plane's fetch: the same
     /// signed-card read, verification against the operator's out-of-band root, and settle that
     /// [`super::verify::reverify_once`] performs — over the per-agent transport that carries THIS
     /// registration's client certificate (`cards`), under the registry write lock. Blocking (a card
@@ -348,7 +349,7 @@ impl A2aPlane {
             self.with_registrations(|regs| regs.iter().find(|r| r.agent_id == agent_id).cloned())?;
         let transport = transports.for_agent(agent_id);
         // FETCH + VERIFY + SETTLE on a CLONE, entirely UNLOCKED. While this blocks, no reader is blocked
-        // on us. Single-flight (`crate::trust::verify`) already guarantees at most one of these per agent
+        // on us. Single-flight (`busbar_substrate::trust::verify`) already guarantees at most one of these per agent
         // at a time, so nothing else is mutating this registration's accumulation concurrently.
         let mut working = original.clone();
         let pass = super::verify::reverify_once(

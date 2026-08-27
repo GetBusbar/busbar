@@ -37,7 +37,7 @@ use crate::a2a::config::{AgentPinCfg, PinMechanism};
 use crate::a2a::fetch::FetchPolicy;
 use crate::a2a::pin::{approve_registration, ApproveError, CardPin};
 use crate::a2a::verify::{verify_document, Handshake, VerifyRefusal};
-use crate::trust::{Approval, Observation, Sighting};
+use busbar_substrate::trust::{Approval, Observation, Sighting};
 
 /// A CA, a leaf it signed, and — computed independently of the certificate — the pin that leaf's
 /// key must produce.

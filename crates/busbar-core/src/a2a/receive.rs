@@ -39,16 +39,17 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
-use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, A2A_AGENT_BINDING_UNSPEAKABLE,
-    A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED, A2A_INBOUND_TASK_UNOPENED,
-    A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED, A2A_OUTBOUND_CRED_UNLEASED,
-    A2A_OWN_CARD_BUILD_FAILED, A2A_PUSH_NOTIFY_UNDELIVERED, A2A_REFUSE_SERVE_CARD,
-    A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
-    A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
-};
+use crate::diagnostics::{diag_debug, diag_error, diag_warn};
 use crate::plane::taskstore;
 use crate::state::App;
+use busbar_substrate::diagnostics::{
+    A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED,
+    A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED,
+    A2A_OUTBOUND_CRED_UNLEASED, A2A_OWN_CARD_BUILD_FAILED, A2A_PUSH_NOTIFY_UNDELIVERED,
+    A2A_REFUSE_SERVE_CARD, A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED,
+    A2A_RELAYED_SUBMISSION_FAILED, A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY,
+    A2A_STREAM_RELAY_INCOMPLETE,
+};
 
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";
@@ -101,14 +102,14 @@ pub(super) fn path_param(params: &[(String, String)], name: &str) -> String {
 /// the chain and hands this handler no resolved identity — matching the old open handler.
 pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     use crate::ingress::protocol::ResourceMetadata as _;
-    use crate::ingress::protocol::{CoreRefusal, Words as _};
+    use busbar_substrate::ingress::protocol::{CoreRefusal, Words as _};
     let handle: Arc<crate::state::AppHandle> = ctx
         .engine
         .downcast::<crate::state::AppHandle>()
         .expect("the a2a route engine handle is an AppHandle");
     let app = handle.load();
     match A2aWords::document(&app) {
-        Some(doc) => crate::ingress::protocol::metadata(&doc),
+        Some(doc) => busbar_substrate::ingress::protocol::metadata(&doc),
         None => A2aWords.refuse(CoreRefusal::MetadataUnavailable),
     }
 }
@@ -428,7 +429,7 @@ pub(crate) struct Wire {
     /// the specification defines as `0.3` rather than as a refusal.
     version: Option<String>,
     /// The caller's `Origin`, when it sent one. Read here rather than judged here: the verdict is
-    /// `crate::ingress::protocol::origin_admitted`'s, once, for every JSON-RPC plane.
+    /// `busbar_substrate::ingress::protocol::origin_admitted`'s, once, for every JSON-RPC plane.
     origin: Option<String>,
 }
 
@@ -776,8 +777,8 @@ use Target::{FromCatalogue, Named};
 
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
-/// `transport` is the leg the request arrived on — [`crate::transport::Transport::JsonRpc`],
-/// [`crate::transport::Transport::HttpJson`] or [`crate::transport::Transport::Grpc`] — and it is
+/// `transport` is the leg the request arrived on — [`busbar_substrate::transport::Transport::JsonRpc`],
+/// [`busbar_substrate::transport::Transport::HttpJson`] or [`busbar_substrate::transport::Transport::Grpc`] — and it is
 /// carried as a VALUE, never compared. It is read in exactly one place, the metric label at the end
 /// of this function, and the reason it has to be carried at all is a consequence the second binding
 /// made unavoidable: `plane::observe` can only name the binding a DOOR declares, and two of this
@@ -787,8 +788,8 @@ use Target::{FromCatalogue, Named};
 /// only from a conformance suite's stdout.
 pub(super) async fn invoke(
     app: Arc<App>,
-    gov: crate::governance::PlaneRequestCtx,
-    principal: crate::auth::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
     transport: busbar_substrate::transport::Transport,
@@ -823,8 +824,8 @@ pub(super) async fn invoke(
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
     app: Arc<App>,
-    gov: crate::governance::PlaneRequestCtx,
-    principal: crate::auth::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
     body: axum::body::Bytes,
@@ -841,7 +842,7 @@ async fn invoke_inner(
     // BEFORE THE JSON PARSE, because the order IS the behaviour: a request with a wrong media type
     // usually also carries a body that is not JSON, and a gate placed after the parse answers
     // `Parse` (-32700) forever and never reaches -32005. The caller is then told to fix its body
-    // when the thing to fix is a header. `crate::ingress::protocol::serve` runs step 3 — this
+    // when the thing to fix is a header. `busbar_substrate::ingress::protocol::serve` runs step 3 — this
     // value — before its own parse for exactly that reason; it is the one pre-parse step that is
     // genuinely a protocol's.
     //
@@ -917,8 +918,8 @@ async fn invoke_inner(
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
     app: Arc<App>,
-    gov: crate::governance::PlaneRequestCtx,
-    principal: crate::auth::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
     target: Target,
     a2a_version: &'static str,
     envelope: serde_json::Value,
@@ -1612,7 +1613,7 @@ async fn admitted(
     // out on the hop — masked, in the configured-credential case, by the leased header overwriting
     // it, which is why the no-credential twin exists in `tests/relay_tests.rs`.
     //
-    // Milliseconds, because a lease is minted and checked in milliseconds while `crate::store::now`
+    // Milliseconds, because a lease is minted and checked in milliseconds while `busbar_substrate::store::now`
     // counts seconds. Converted once, here, rather than at each of the call sites that would
     // otherwise each have to remember.
     let now_ms = now.saturating_mul(1_000);
@@ -1828,7 +1829,7 @@ pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
 /// single-flight, fail-closed, BEFORE the relay's live trust gate compares it.
 ///
-/// The single-flight, the freshness bound and the fail-closed ordering are [`crate::trust::verify`]'s,
+/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_substrate::trust::verify`]'s,
 /// once, for every plane; this plane's FETCH is [`super::plane::A2aPlane::reverify_agent`] — the
 /// signed-card read and verification against the operator's out-of-band root, on a blocking thread. A
 /// failed re-verification records `Error`, which the relay preamble's `still_delegable` gate then

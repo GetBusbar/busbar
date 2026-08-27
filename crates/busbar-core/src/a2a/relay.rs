@@ -34,7 +34,7 @@
 //! ## 2. THE NAME IS RESOLVED ONCE, BY THE GUARD, AND THE JUDGED ADDRESS IS WHAT CONNECTS
 //!
 //! This module does not open its own client. It reuses [`super::fetch::guard_hop`], and through it
-//! [`crate::net_guard::resolve_and_pin`] — the same
+//! [`busbar_substrate::net_guard::resolve_and_pin`] — the same
 //! guard the card fetch goes through — and hands the surviving address to the transport, which pins
 //! it. A relay that handed the URL to `reqwest` and let the client resolve the host would reinstate
 //! the second lookup, which is the whole of DNS rebinding, and would pass every test that does not
@@ -83,7 +83,7 @@
 //! path answered the caller under busbar's own `ctx.rpc_id`, while the streamed path passed the
 //! BACKEND's id through verbatim, so on a stream the backend chose the value busbar's caller
 //! correlated on. The unary path was right. Both now read the envelope through
-//! [`crate::ingress::jsonrpc::read_response`] — the same reader the MCP client direction uses, and
+//! [`busbar_substrate::ingress::jsonrpc::read_response`] — the same reader the MCP client direction uses, and
 //! the response-side sibling of the request reader both ingresses share — and an answer that names
 //! a different request is [`RelayRefusal::Uncorrelated`], never a result.
 
@@ -134,7 +134,7 @@ pub(crate) trait RelayTransport: Send + Sync {
     ) -> Result<StreamHead, String>;
 }
 
-/// What the chunk sink says about continuing — the neutral host-owned [`crate::egress::ChunkFlow`],
+/// What the chunk sink says about continuing — the neutral host-owned [`busbar_substrate::egress::ChunkFlow`],
 /// re-exported under this plane's historical name. A sink whose receiver has gone away asks the hop
 /// to STOP rather than being written to forever: a caller that disconnected mid-stream must not
 /// leave busbar holding a blocking thread against an upstream that is happy to keep talking.
@@ -142,7 +142,7 @@ pub(crate) use busbar_substrate::egress::ChunkFlow;
 
 pub(crate) use busbar_substrate::egress::StreamHead;
 /// The head of a streaming reply: what the backend answered before any body arrived — the neutral
-/// host-owned [`crate::egress::StreamHead`], re-exported under this plane's historical name so the
+/// host-owned [`busbar_substrate::egress::StreamHead`], re-exported under this plane's historical name so the
 /// relay call sites read unchanged. It lives in [`crate::egress`] because the streaming round trip
 /// is the same one whatever framing sits on top of it.
 pub(crate) use busbar_substrate::proxy::sse::{sse_data, SseReader};
@@ -237,7 +237,7 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) policy: &'a FetchPolicy,
     /// The caller's request, VERBATIM. busbar is content-blind on this plane.
     pub(crate) body: &'a [u8],
-    /// THE `id` THIS HOP IS ANSWERING, established by [`crate::ingress::jsonrpc::read`] at the
+    /// THE `id` THIS HOP IS ANSWERING, established by [`busbar_substrate::ingress::jsonrpc::read`] at the
     /// ingress: a string or a number, never `null` and never absent.
     ///
     /// It is the id the BACKEND's answer must carry, and it is that only because `body` above goes
@@ -1779,7 +1779,7 @@ fn relay_once(
 
 /// Read one JSON-RPC answer off a completed body, AS THE ANSWER TO `rpc_id`.
 ///
-/// The envelope rules are [`crate::ingress::jsonrpc::read_response`]'s — the same reader the MCP
+/// The envelope rules are [`busbar_substrate::ingress::jsonrpc::read_response`]'s — the same reader the MCP
 /// client direction uses, and the response-side sibling of the request reader both ingresses share.
 /// Before it this function read `error` and `result` straight off the value: no `jsonrpc` member
 /// check, and the `id` member never read at all, so a backend could answer this hop with the reply

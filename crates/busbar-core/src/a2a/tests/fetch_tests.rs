@@ -826,7 +826,7 @@ fn allow_private_never_opens_a_cloud_metadata_target() {
 }
 
 /// `allow_private` ADMITS PLAINTEXT, because that is what the word means on the `tools:` plane
-/// (both planes ask `crate::net_guard::judge_scheme`, which refuses `http://` with exactly
+/// (both planes ask `busbar_substrate::net_guard::judge_scheme`, which refuses `http://` with exactly
 /// `!https && !plaintext_admissible()`), and a
 /// loopback agent that could only be reached over TLS is a knob that does not do its job.
 #[test]

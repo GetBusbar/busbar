@@ -69,8 +69,8 @@
 /// the JSON-RPC envelope (which a door refusal is shaped in), HTTP+JSON, and the gRPC service.
 /// `serve::servable_bindings` reads this list to decide what a served card may advertise, and its
 /// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
-pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
-    crate::plane::registry::PlaneDecl {
+pub(crate) const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
+    busbar_substrate::plane::registry::PlaneDecl {
         key: "a2a",
         config_section: "agents",
         scope_kinds: &["agent"],
@@ -163,7 +163,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
     };
 
 /// VALIDATE ONE `agents:` NAMED-DEFINITION DOCUMENT — the A2A plane's half of
-/// [`crate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`busbar_substrate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
 /// [`crate::a2a::config::AgentDefCfg`] (`deny_unknown_fields`, refusing a typo'd key HERE exactly as
 /// the file refuses it) and applies the same value rules boot applies through the identical
 /// [`crate::a2a::config::validate_agent`]. Naming `crate::a2a` types HERE is correct: this is the A2A
@@ -176,26 +176,26 @@ fn a2a_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 }
 
 /// PARSE THE `agents:` SECTION through the A2A plane's own `Deserialize` — the
-/// [`crate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its
+/// [`busbar_substrate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its
 /// `agents:` field without naming [`crate::a2a::config::AgentsCfg`]. The `serde_yaml::Value`
 /// intermediate carries no source position, so the plane's own `split_section` / passthrough refusals
 /// reach the operator by their SENTENCE, the `at line`/`column` suffix aside.
 fn a2a_parse_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn crate::plane::config::PlaneCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
         .map_err(|e| e.to_string())
 }
 
-/// [`crate::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
+/// [`busbar_substrate::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
 /// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
-fn a2a_default_section() -> Box<dyn crate::plane::config::PlaneCfg> {
+fn a2a_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
     Box::<crate::a2a::config::AgentsCfg>::default()
 }
 
 /// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
-/// [`crate::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
+/// [`busbar_substrate::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
 /// removes the `agents:` block the live set is EMPTY, so retain drops every carried flight/latch
 /// instead of leaking one per removed agent. Byte-identical to the old inline `appbuild` arm.
 fn a2a_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
@@ -276,12 +276,14 @@ pub(crate) fn runtime_arc_of(
 /// the plane-narrowed `Arc<dyn PlaneStore>` (task/provenance methods only), never the `Store` that
 /// also carries `append_audit`. With `store: memory` `ctx.store` is `None` and in-flight tasks are
 /// ephemeral BY DESIGN, exactly as the audit ring is.
-use crate::diagnostics::{
-    diag_error, diag_warn, A2A_TASK_CHAIN_VERIFY_FAILED, A2A_TASK_ROWS_UNREADABLE,
-    A2A_TASK_STATE_UNREAD,
+use crate::diagnostics::{diag_error, diag_warn};
+use busbar_substrate::diagnostics::{
+    A2A_TASK_CHAIN_VERIFY_FAILED, A2A_TASK_ROWS_UNREADABLE, A2A_TASK_STATE_UNREAD,
 };
 
-pub(crate) fn a2a_hydrate(ctx: &dyn crate::plane::registry::PlaneBootCtx) -> Result<(), String> {
+pub(crate) fn a2a_hydrate(
+    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+) -> Result<(), String> {
     // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
     // reach the phase fields (`store`, `app`) that name core-live types — byte-identical to the old
     // `&BootCtx` arm.
@@ -354,7 +356,9 @@ pub(crate) fn a2a_hydrate(ctx: &dyn crate::plane::registry::PlaneBootCtx) -> Res
 /// transport to BOTH the delegation hop (the plane's relay seam) and verify-on-call (the app's
 /// `a2a_cards`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
 /// re-fetched, and one that is delegated to is re-verified on the call path within its `verify_ttl`.
-pub(crate) fn a2a_start(ctx: &dyn crate::plane::registry::PlaneBootCtx) -> Result<(), String> {
+pub(crate) fn a2a_start(
+    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+) -> Result<(), String> {
     // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
     // reach the phase fields (`handle`, `card_issuer`) that name core-live types.
     let ctx = ctx

@@ -70,8 +70,9 @@ use super::reverify::{self, Due, Ledger, Policy};
 use crate::admin::planeverbs::{self, PlaneTrust};
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
-use crate::diagnostics::{diag_error, A2A_CARD_FETCH_PANICKED};
+use crate::diagnostics::diag_error;
 use busbar_substrate::admin_verbs::{AdminReply, AdminReqCtx, PlaneVerbError};
+use busbar_substrate::diagnostics::A2A_CARD_FETCH_PANICKED;
 use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
 /// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
@@ -288,7 +289,7 @@ pub(crate) fn sync(
     // The operator `sync` verb ALWAYS re-checks: `reverify::due(.., operator_sync = true)` is
     // unconditionally `Due::OperatorSync`. Route it through the same host seam the background job uses
     // (`plane_host::trust::verify_decide_due`, `operator_sync = true`) rather than reaching
-    // `crate::trust::reverify::due` directly, so the a2a plane no longer touches the reverify primitive.
+    // `busbar_substrate::trust::reverify::due` directly, so the a2a plane no longer touches the reverify primitive.
     let due = crate::plane_host::trust::verify_decide_due(
         ledger.last_checked_ms,
         policy.ttl_ms,
@@ -534,7 +535,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     let principal = ctx
         .principal
         .clone()
-        .unwrap_or(crate::auth::AuthPrincipal(None));
+        .unwrap_or(busbar_api::AuthPrincipal(None));
     let name = ctx.name.clone();
     // THE 404 BEFORE THE BODY. An unknown agent must answer the same way whether or not the caller
     // sent something parseable, or the shape of the error becomes an existence oracle. This verb builds

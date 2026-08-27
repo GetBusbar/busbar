@@ -5,7 +5,7 @@
 //! surface, projected HERE so core admin (`admin::v1::service`, `admin::v1::named_def_views`) reads a
 //! registered agent through the plane's view seam and names no `crate::a2a` config type. The MCP-plane
 //! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
-//! [`crate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
+//! [`busbar_substrate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
 
 use crate::admin::v1::contract::NamedDefView;
 
@@ -72,7 +72,7 @@ pub(crate) fn get(
 }
 
 /// Attach the A2A trust verbs' typed schemas — the A2A half of
-/// [`crate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `A2aTrustView` (response) and
+/// [`busbar_substrate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `A2aTrustView` (response) and
 /// `ApproveReq` (request body) into the SHARED generators and attaches their `$ref`s onto the paths
 /// this plane's `openapi()` fragment inserted, byte-identically to the inline `typed!`/`body!` calls
 /// it replaced (same types, same order, same generators).

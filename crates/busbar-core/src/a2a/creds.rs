@@ -58,7 +58,7 @@
 //!
 //! ## The record holds a HANDLE, never the secret
 //!
-//! [`OutboundCredential`] carries a [`crate::config::SecretRef`] — the module plus its settings —
+//! [`OutboundCredential`] carries a [`busbar_api::SecretRef`] — the module plus its settings —
 //! and the secret is resolved at delegation time. It is never in the registration record, never in
 //! the Agent Card, and never in a debug rendering: [`Lease`] has a hand-written `Debug` for exactly
 //! the reason `VirtualKey` and `CredentialSecret` do.
@@ -74,8 +74,8 @@
 use busbar_api::VirtualKey;
 
 use crate::config::secret::SecretResolver;
-use crate::config::SecretRef;
-use crate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
+use busbar_api::SecretRef;
+use busbar_substrate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
 /// WHICH OF THIS PLANE'S GRANTS a refusal is about. ONE variant, because this plane requires one
 /// grant — and it is an enum rather than nothing so that a second A2A requirement would be a compile
@@ -121,7 +121,7 @@ impl EgressSubject for AgentEgress<'_> {
 /// holds no grant" acts differently from one reading "the secret did not resolve".
 ///
 /// THE WORDING IS THIS PLANE'S and the DECISION is core's: these are core's
-/// [`crate::egress_auth::gate::EgressRefusal`] wearing A2A's sentences, produced by the total
+/// [`busbar_substrate::egress_auth::gate::EgressRefusal`] wearing A2A's sentences, produced by the total
 /// conversion below.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AgentEgressDenied {
@@ -176,10 +176,10 @@ impl std::fmt::Display for AgentEgressDenied {
 /// PROOF THAT THE INBOUND PRINCIPAL IS ITSELF AUTHORISED FOR THIS BACKEND AGENT.
 ///
 /// Core's witness, carrying this plane's subject. The whole value of the type is that it cannot be
-/// built anywhere but [`crate::egress_auth::gate::authorise`] — its field is private to core's gate
+/// built anywhere but [`busbar_substrate::egress_auth::gate::authorise`] — its field is private to core's gate
 /// module, so NO module in the crate (this one included) can construct one — and the mint functions
 /// take one by reference. A future delegating call site that forgot the grant check does not compile.
-pub(crate) type EgressGrant<'a> = crate::egress_auth::gate::EgressGrant<AgentEgress<'a>>;
+pub(crate) type EgressGrant<'a> = busbar_substrate::egress_auth::gate::EgressGrant<AgentEgress<'a>>;
 
 /// The agent this grant is for, read off core's witness. An EXTENSION TRAIT rather than an inherent
 /// `impl` because [`EgressGrant`] became `busbar-substrate`'s type in Phase-B B1, and an inherent
@@ -198,7 +198,7 @@ impl EgressGrantExt for EgressGrant<'_> {
     }
 }
 
-/// THE EGRESS GATE FOR THIS PLANE: [`crate::egress_auth::gate::authorise`] with A2A's grant kind and
+/// THE EGRESS GATE FOR THIS PLANE: [`busbar_substrate::egress_auth::gate::authorise`] with A2A's grant kind and
 /// A2A's wording, and nothing else.
 ///
 /// The question it asks — may busbar spend a credential on this backend agent ON BEHALF OF THIS
@@ -212,7 +212,7 @@ pub(crate) fn authorise_egress<'a>(
     agent_id: &'a str,
     now: u64,
 ) -> Result<EgressGrant<'a>, AgentEgressDenied> {
-    crate::egress_auth::gate::authorise(caller, AgentEgress { agent_id }, now)
+    busbar_substrate::egress_auth::gate::authorise(caller, AgentEgress { agent_id }, now)
         .map_err(AgentEgressDenied::from)
 }
 

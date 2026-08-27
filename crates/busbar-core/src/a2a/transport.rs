@@ -57,7 +57,7 @@
 //! engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
 //! request hot path. The blocking is handled at the call site — `ingress::invoke` enters this seam
 //! through `spawn_blocking`, so no axum worker is held for a backend agent's think time. The CLIENT
-//! is no longer per hop: this transport now holds a [`crate::egress::PinnedClientPool`] keyed by the
+//! is no longer per hop: this transport now holds a [`busbar_substrate::egress::PinnedClientPool`] keyed by the
 //! judged `(host, pinned address)`, so a repeated hop to an already-judged target reuses the
 //! connection. That reuse is safe precisely because the key is the PINNED address and the pooled
 //! client still refuses a second lookup — reuse only ever reaches the address the guard already
@@ -73,7 +73,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::egress::seam::{self, HopSpec};
+use crate::egress::seam;
+use busbar_substrate::egress::seam::HopSpec;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
@@ -178,7 +179,7 @@ pub(crate) type ClientIdentities = BTreeMap<String, reqwest::Identity>;
 ///
 /// The PEM bytes come through [`crate::tls::read_pem`] — the same function busbar's own inbound
 /// listener loads its cert and key with — so there is exactly one place in the tree that turns a
-/// [`crate::config::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
+/// [`busbar_api::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
 /// read. The cert and the key are concatenated because that is the single buffer
 /// `reqwest::Identity::from_pem` takes; the pairing is checked there, by the TLS stack, rather than
 /// by a second parser here.
@@ -227,7 +228,7 @@ pub(crate) fn resolve_client_identities(
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
     /// The resolver a plane-supplied client would have been given. VESTIGIAL under the seam (Design A):
-    /// the hop now runs host-side, where the host installs its own [`crate::egress::RefuseSecondLookup`]
+    /// the hop now runs host-side, where the host installs its own [`busbar_substrate::egress::RefuseSecondLookup`]
     /// and — because every hop carries the already-judged pinned address — performs NO lookup at all. It
     /// is kept only so the test constructor that asserts "the client did not perform a second lookup"
     /// still stands one up; the assertion holds precisely because nothing consults it.

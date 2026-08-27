@@ -127,10 +127,12 @@ async fn serve(
         crate::governance::GovState::new_with_signer(
             Arc::new(crate::governance::MemoryStore::new()),
             Some(TOKEN.to_string()),
-            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
-                &[9u8; 32],
-                crate::governance::signing::DEFAULT_KID,
-            )),
+            Some(
+                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                    &[9u8; 32],
+                    busbar_substrate::governance::signing::DEFAULT_KID,
+                ),
+            ),
         )
         .unwrap(),
     );

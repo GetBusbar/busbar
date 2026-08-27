@@ -42,9 +42,11 @@ async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()
     // for the duration of the lock — a sink swap, not a re-register, so positions stay intact — and
     // attach the row-upsert sink.
     crate::plane::taskstore::aim_global_task_sink(Some(
-        crate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+        busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
     ));
-    TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
+    TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        ledger.clone(),
+    ));
     (ledger, guard)
 }
 

@@ -62,7 +62,7 @@ const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 /// do not yet emit would be a table somebody re-derives wrongly later.
 ///
 /// `InvalidRequest` USED to be on that list and no longer is: the ingress now runs every body past
-/// `crate::ingress::jsonrpc::read` before admission, so an envelope that is JSON and is not a
+/// `busbar_substrate::ingress::jsonrpc::read` before admission, so an envelope that is JSON and is not a
 /// JSON-RPC request is refused here, on this plane's own wire, with this code. Being content-blind
 /// about a caller's `params` never meant being blind to the ENVELOPE those params arrive in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -420,7 +420,7 @@ pub(crate) fn respond(id: &Value, err: A2aError, message: impl Into<String>) -> 
 // THE CALLER'S `id` IS NOT READ HERE. This module used to own an `id_of` that recovered it with
 // `envelope.get("id").cloned().unwrap_or(Value::Null)` — the very `unwrap_or` that collapsed a
 // request whose id is `null` into a NOTIFICATION, which is the defect the shared reader exists to
-// close. The id now arrives already decided by `crate::ingress::jsonrpc::read`: `Envelope::Request`
+// close. The id now arrives already decided by `busbar_substrate::ingress::jsonrpc::read`: `Envelope::Request`
 // carries an id that is a string or a number by construction, and `Invalid` carries the `Null` that
 // JSON-RPC 2.0 section 5 mandates when the id could not be determined. This plane renders what the
 // reader decided; a second reading of `id` here would be a second answer to a question already

@@ -35,7 +35,7 @@
 //!
 //! Layer 2 above is one step of a four-step sequence — identity, grant, artifact, generation — that
 //! every request on every plane passes through, and that sequence is
-//! [`crate::trust::validate::validate_request`]. This file used to write three of those steps out by
+//! [`busbar_substrate::trust::validate::validate_request`]. This file used to write three of those steps out by
 //! hand, as did the catalogue and the pre-socket relay gate, and nothing owned the order between
 //! them; a fourth path that forgot one would have been a silent hole with no failing test, because
 //! there was no site whose job the sequence was.

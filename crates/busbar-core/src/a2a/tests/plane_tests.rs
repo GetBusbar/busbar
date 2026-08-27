@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::a2a::config::{AgentDefCfg, PinMechanism};
-use crate::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 fn cfg_with(agents: &[(&str, AgentDefCfg)]) -> AgentsCfg {
     let mut out = AgentsCfg::default();
@@ -73,7 +73,7 @@ fn a_section_carrying_only_the_reserved_keys_is_still_no_plane() {
     // plane an operator never asked for.
     let cfg = AgentsCfg {
         all_agent_hooks: vec!["audit".to_string()],
-        all_agent_upstream_credentials: Some(crate::auth::UpstreamCreds::Own),
+        all_agent_upstream_credentials: Some(busbar_api::UpstreamCreds::Own),
         agents: Default::default(),
     };
     assert!(A2aPlane::from_config(&cfg, None).is_none());
@@ -216,7 +216,7 @@ fn egress_scopes_and_the_leased_credential_travel_from_config_to_the_registratio
 /// the socket took effect on the NEXT request and the in-flight one went out under an approval that
 /// had already been replaced.
 ///
-/// `LiveGate` now reaches the one ordered validator in `crate::trust::validate` and hands it both
+/// `LiveGate` now reaches the one ordered validator in `busbar_substrate::trust::validate` and hands it both
 /// generations. This drives the real gate through the real plane.
 ///
 /// RED, WATCHED: with `LiveGate::still_delegable` passing `Generations::at_admission(live)` instead
@@ -233,13 +233,14 @@ fn an_in_flight_dispatch_admitted_under_generation_n_is_refused_at_n_plus_1() {
     // this test is measuring. Without this the refusal below would be `not_serving` whatever the
     // generation did, and the test would pass on a plane with no generation check at all.
     plane.with_registrations_mut(|regs| {
-        regs[0].sighting = crate::trust::Sighting::Seen(crate::trust::Observation {
-            pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
-                issuer_key: "MCowBQYDK2VwAyEAKEY".to_string(),
-                card_fingerprint: "sha256/CARD".to_string(),
-            }),
-            capabilities: std::collections::BTreeMap::new(),
-        });
+        regs[0].sighting =
+            busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+                pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
+                    issuer_key: "MCowBQYDK2VwAyEAKEY".to_string(),
+                    card_fingerprint: "sha256/CARD".to_string(),
+                }),
+                capabilities: std::collections::BTreeMap::new(),
+            });
         let sighting = regs[0].sighting.clone();
         crate::a2a::pin::approve_registration(&mut regs[0].approval, &sighting, None)
             .expect("approve");

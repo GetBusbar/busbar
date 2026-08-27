@@ -88,7 +88,8 @@
 //! busbar's `securityRequirements` would publish the backend's auth posture beside busbar's — the
 //! exact leak the replacement exists to prevent, surviving under the other name.
 
-use crate::diagnostics::{diag_debug, A2A_EXTENDED_CARD_AGENT_OMITTED};
+use crate::diagnostics::diag_debug;
+use busbar_substrate::diagnostics::A2A_EXTENDED_CARD_AGENT_OMITTED;
 use serde_json::{json, Map, Value};
 
 use super::card::CardError;

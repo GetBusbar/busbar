@@ -37,7 +37,7 @@
 //!
 //! [`ClientIdentityCfg`] is a SIBLING of `pin:`, not a field inside it, because the two describe
 //! opposite ends of the same handshake and only one of them is a trust root. Its `cert:` and `key:`
-//! are ordinary [`crate::config::SecretRef`]s — the same spelling `tls.cert:` uses for busbar's
+//! are ordinary [`busbar_api::SecretRef`]s — the same spelling `tls.cert:` uses for busbar's
 //! INBOUND identity — so key material is referenced and never written here, and it resolves through
 //! the one resolver every other secret in the config goes through.
 //!
@@ -48,7 +48,7 @@
 //! operator believing a control is attached that is not.
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
-// [`AgentPinCfg::declaration`], the projection [`crate::trust::declared`] reads this plane's pin
+// [`AgentPinCfg::declaration`], the projection [`busbar_substrate::trust::declared`] reads this plane's pin
 // through. The `connect`/`approve` verbs it was waiting for are now mounted
 // (`super::verbs`), and they deliberately do NOT consult it: an approval locks the pin that was
 // OBSERVED and verified against the operator's out-of-band root, and the operator attests to it by
@@ -125,7 +125,7 @@ impl PinMechanism {
     /// are meaningless without material, and the fourth is meaningless WITH it.
     ///
     /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
-    /// question [`crate::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// question [`busbar_substrate::trust::declared`] asks of a mechanism, so the reader that builds the
     /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
     /// means.
     pub(crate) fn is_a_root(self) -> bool {
@@ -154,7 +154,7 @@ impl PinMechanism {
 ///
 /// ## The two fields are SECRET REFERENCES, exactly as `tls:` spells them
 ///
-/// `cert:` and `key:` are [`crate::config::SecretRef`]s — `{module, settings}` with the `env` / `file`
+/// `cert:` and `key:` are [`busbar_api::SecretRef`]s — `{module, settings}` with the `env` / `file`
 /// sugar — which is the CLEAN-CONFIG rule the whole config surface already obeys and the same
 /// spelling `tls.cert:` / `tls.key:` use for busbar's INBOUND identity. There is deliberately no way
 /// to write PEM bytes here: a private key inlined in config is a private key in every config dump,
@@ -168,9 +168,9 @@ pub(crate) struct ClientIdentityCfg {
     /// PEM certificate chain busbar presents, leaf first. Public material, still a reference:
     /// operators keep a chain and its key in the same place, and splitting the spelling would be an
     /// invitation to inline the other one.
-    pub(crate) cert: crate::config::SecretRef,
+    pub(crate) cert: busbar_api::SecretRef,
     /// PEM private key for `cert:` — PKCS#8, PKCS#1 or SEC1. NEVER the key itself.
-    pub(crate) key: crate::config::SecretRef,
+    pub(crate) key: busbar_api::SecretRef,
 }
 
 /// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
@@ -241,7 +241,7 @@ pub(crate) struct AgentDefCfg {
     ///
     /// WHAT IT NEVER PERMITS, and this is the half that makes the knob safe to have: a
     /// CLOUD-METADATA endpoint. `169.254.169.254` and its family are refused whether this is set or
-    /// not — see [`crate::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
+    /// not — see [`busbar_substrate::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
     /// `allow_private` that reached IMDS would be a configuration flag that hands out cloud
     /// credentials.
     ///
@@ -255,7 +255,7 @@ pub(crate) struct AgentDefCfg {
     /// plane so the vocabulary is learned once; a plane that cannot honor a VALUE says so rather
     /// than accepting it and doing something else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The LEASED outbound credential busbar presents to this agent: a secret-store handle
     /// plus its lease policy. Never the secret, never the caller's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,7 +279,7 @@ pub(crate) struct AgentsCfg {
     /// own `hooks:` are appended to this, deduped by name.
     pub(crate) all_agent_hooks: Vec<String>,
     /// The ALL-AGENTS `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
-    pub(crate) all_agent_upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub(crate) all_agent_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
     pub(crate) agents: indexmap::IndexMap<String, AgentDefCfg>,
@@ -305,7 +305,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // about this plane's VALUES: `passthrough` is meaningless to an agent busbar fronts. It is
         // checked at the section level as well as per entry because a section default applies to
         // agents that never spell the key — precisely the set an entry-level check cannot see.
-        if section.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
+        if section.upstream_credentials == Some(busbar_api::UpstreamCreds::Passthrough) {
             return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
         }
 
@@ -317,18 +317,18 @@ impl<'de> Deserialize<'de> for AgentsCfg {
     }
 }
 
-impl crate::plane::config::PlaneCfg for AgentsCfg {
+impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg {
     /// The A2A plane's secret references: each agent's LEASED outbound delegation credential
     /// (`agents.<name>.upstream_credential.secret`) and both halves of its outbound client identity
     /// (`agents.<name>.client_identity.cert` / `.key`). Moved here VERBATIM from the core
     /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
     /// secret/not-secret decision on every new field lives beside the fields it guards.
-    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
         // EXHAUSTIVE, no `..`, at both levels: adding a field to `AgentsCfg`, `AgentDefCfg`,
         // `OutboundCredential` or `ClientIdentityCfg` fails to build with `E0027 pattern does not
         // mention field` until somebody decides, here, whether it carries a secret. That force used to
         // live in `config_validate::secret_refs`; it moved with the sweep.
-        let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+        let mut refs: Vec<(String, &busbar_api::SecretRef)> = Vec::new();
         let AgentsCfg {
             // The all-agents attach list and credential MODE carry no reference: a hook name is a bare
             // name into the top-level `hooks:` map, and the mode is a `Copy` selector.
@@ -402,8 +402,8 @@ impl crate::plane::config::PlaneCfg for AgentsCfg {
         Ok(())
     }
 
-    fn container_gates(&self) -> crate::plane::config::ContainerGateInputs {
-        crate::plane::config::ContainerGateInputs {
+    fn container_gates(&self) -> busbar_substrate::plane::config::ContainerGateInputs {
+        busbar_substrate::plane::config::ContainerGateInputs {
             section_hooks: self.all_agent_hooks.clone(),
             containers: self
                 .agents
@@ -429,7 +429,7 @@ impl crate::plane::config::PlaneCfg for AgentsCfg {
         self
     }
 
-    fn clone_box(&self) -> Box<dyn crate::plane::config::PlaneCfg> {
+    fn clone_box(&self) -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
         Box::new(self.clone())
     }
 
@@ -506,7 +506,7 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
     // credential upstream", and a busbar key handed to a third-party vendor is a working busbar
     // credential belonging to somebody else. Refused at parse, on this plane only, because the
     // word is reserved on every plane and only the VALUE is inapplicable here.
-    if def.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
+    if def.upstream_credentials == Some(busbar_api::UpstreamCreds::Passthrough) {
         return Err(format!("{at}: {REFUSE_PASSTHROUGH_SECTION}"));
     }
     if let Some(cred) = def.upstream_credential.as_ref() {
@@ -550,7 +550,7 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
     // written in this file.
     let sections = crate::plane::config::config_sections();
     for hook in &def.hooks {
-        crate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
+        busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }
     Ok(())
 }
@@ -578,8 +578,8 @@ pub(crate) fn policy_for(
 
 impl AgentPinCfg {
     /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
-    /// question asked of it is [`crate::trust::declared`]'s, and this plane's answers are its
-    /// [`crate::trust::declared::Declares`] impl in [`super::pin`].
+    /// question asked of it is [`busbar_substrate::trust::declared`]'s, and this plane's answers are its
+    /// [`busbar_substrate::trust::declared::Declares`] impl in [`super::pin`].
     pub(crate) fn declaration(
         &self,
     ) -> busbar_substrate::trust::declared::Declaration<'_, PinMechanism> {

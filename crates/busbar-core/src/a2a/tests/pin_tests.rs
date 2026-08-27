@@ -4,7 +4,7 @@
 //! The A2A identity pin, and the one A2A rule that is NOT in the plane-neutral machine.
 
 use super::*;
-use crate::trust::{Observation, TrustState};
+use busbar_substrate::trust::{Observation, TrustState};
 use std::collections::BTreeMap;
 
 fn caps() -> BTreeMap<String, String> {

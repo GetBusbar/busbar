@@ -182,8 +182,8 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
 /// "this call was admitted" a fact the type carries rather than one a handler has to re-derive.
 struct Busbar {
     app: Arc<crate::state::App>,
-    gov: crate::governance::PlaneRequestCtx,
-    principal: crate::auth::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
 }
 
 impl Busbar {

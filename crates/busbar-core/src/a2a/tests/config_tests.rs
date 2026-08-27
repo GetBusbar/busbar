@@ -23,10 +23,10 @@ use crate::config::named_map::NamedMapSection;
 
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
 /// these tests read as the boot path does: the projection is this plane's grammar's
-/// (`AgentPinCfg::declaration`), the sequence is `crate::trust::declared`'s, and the artifact is
+/// (`AgentPinCfg::declaration`), the sequence is `busbar_substrate::trust::declared`'s, and the artifact is
 /// this plane's `Declares` impl in `a2a::pin`.
 fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
-    crate::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
+    busbar_substrate::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
 }
 
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
@@ -172,7 +172,7 @@ fn a_root_without_a_fingerprint_is_pending_not_invalid() {
 
 /// THE NARROWING the shared reader brought to THIS plane.
 ///
-/// Before `crate::trust::declared` owned the sequence, this plane's own reader took
+/// Before `busbar_substrate::trust::declared` owned the sequence, this plane's own reader took
 /// `key.unwrap_or_default()` and would have built a `JwsIssuerKey { issuer_key: "" }` out of a
 /// present-but-blank key; the sibling plane's reader refused one. `validate_agent` refuses it at
 /// boot, so nothing REACHABLE changed — and that is exactly the point: the reader no longer depends
@@ -321,7 +321,7 @@ planner:
     assert_eq!(cfg.all_agent_hooks, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(
         cfg.all_agent_upstream_credentials,
-        Some(crate::auth::UpstreamCreds::Own)
+        Some(busbar_api::UpstreamCreds::Own)
     );
     assert_eq!(cfg.agents.len(), 1, "the knobs are not agents");
 }
@@ -501,9 +501,9 @@ fn an_entry_round_trips_through_its_document_form() {
         recovery_backoff: Some("1h".to_string()),
         protocol_version: Some("1.0".to_string()),
         allow_private: true,
-        upstream_credentials: Some(crate::auth::UpstreamCreds::Own),
+        upstream_credentials: Some(busbar_api::UpstreamCreds::Own),
         upstream_credential: Some(crate::a2a::creds::OutboundCredential {
-            secret: crate::config::SecretRef::env("VENDOR_TOKEN"),
+            secret: busbar_api::SecretRef::env("VENDOR_TOKEN"),
             placement: crate::a2a::creds::CredentialPlacement::Header("x-api-key".to_string()),
             lease_ttl_ms: 60_000,
         }),
@@ -512,8 +512,8 @@ fn an_entry_round_trips_through_its_document_form() {
         // material: a `client_identity:` an admin PATCH silently dropped would leave a registration
         // unable to complete a handshake it completed a moment earlier.
         client_identity: Some(crate::a2a::config::ClientIdentityCfg {
-            cert: crate::config::SecretRef::env("BUSBAR_CLIENT_CERT"),
-            key: crate::config::SecretRef::env("BUSBAR_CLIENT_KEY"),
+            cert: busbar_api::SecretRef::env("BUSBAR_CLIENT_CERT"),
+            key: busbar_api::SecretRef::env("BUSBAR_CLIENT_KEY"),
         }),
         hooks: vec!["dispatch-order".to_string()],
     };

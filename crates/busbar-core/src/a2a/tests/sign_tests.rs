@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use super::*;
 use crate::a2a::jws::{self, IssuerKey, JwsError, B64URL};
 use crate::a2a::serve::rewrite_card;
-use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+use busbar_substrate::governance::signing::{TokenSigner, DEFAULT_KID};
 
 const BACKEND: &str = "https://internal-planner.corp.example/a2a";
 const PUBLIC: &str = "https://gateway.example.com";

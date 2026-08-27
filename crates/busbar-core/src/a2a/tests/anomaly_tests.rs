@@ -10,7 +10,7 @@
 //! the reason string, because those are how a well-meaning default becomes an outage.
 
 use super::*;
-use crate::trust::{Approval, Sighting, TrustState};
+use busbar_substrate::trust::{Approval, Sighting, TrustState};
 
 fn thresholds() -> Thresholds {
     Thresholds {
@@ -218,7 +218,7 @@ fn the_reported_numbers_belong_to_the_signal_that_tripped() {
 #[test]
 fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {
     use crate::a2a::pin::{approve_registration, CardPin};
-    use crate::trust::Observation;
+    use busbar_substrate::trust::Observation;
     use std::collections::BTreeMap;
 
     let pin = CardPin::JwsIssuerKey {

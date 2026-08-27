@@ -129,7 +129,7 @@ async fn reroute_battery(h: Harness, submission: serde_json::Value) {
     assert!(
         matches!(
             h.app.plane_breakers.state_at("agent:planner", 0),
-            crate::store::BreakerState::Open { .. }
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "A's trip is recorded on the pool cell at A's lane"
     );
@@ -227,9 +227,11 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
 
     // (b) Trip B (the pinned member) and ask again: the verb is REFUSED with the breaker's own
     // rendering — and NOT rerouted to A, whose recorder must not move.
-    h.app
-        .plane_breakers
-        .force_open("agent:planner", 1, crate::store::now().saturating_add(600));
+    h.app.plane_breakers.force_open(
+        "agent:planner",
+        1,
+        busbar_substrate::store::now().saturating_add(600),
+    );
     let a_hits = hits(&h, "backend.agent.test");
     let b_hits = hits(&h, "backend-b.agent.test");
     let (sr, headers, br) = submit(&h, "planner-a", &get).await;
@@ -263,14 +265,15 @@ async fn a_member_approved_under_a_different_card_fingerprint_is_refused_never_d
             if reg.agent_id == "planner-b" {
                 let digests =
                     crate::a2a::card::skill_digests(&super::relay_harness::a_card()).expect("d");
-                let sighting = crate::trust::Sighting::Seen(crate::trust::Observation {
-                    pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
-                        issuer_key: "KEY".to_string(),
-                        card_fingerprint: "sha256/A-DIFFERENT-CARD".to_string(),
-                    }),
-                    capabilities: digests,
-                });
-                reg.approval = crate::trust::Approval::registered();
+                let sighting =
+                    busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+                        pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
+                            issuer_key: "KEY".to_string(),
+                            card_fingerprint: "sha256/A-DIFFERENT-CARD".to_string(),
+                        }),
+                        capabilities: digests,
+                    });
+                reg.approval = busbar_substrate::trust::Approval::registered();
                 crate::a2a::pin::approve_registration(&mut reg.approval, &sighting, None)
                     .expect("approve");
                 reg.sighting = sighting;
@@ -307,7 +310,7 @@ async fn a_client_fault_answer_never_penalizes_the_agent() {
     assert!(
         matches!(
             h.app.plane_breakers.state_at("agent:planner", 0),
-            crate::store::BreakerState::Closed
+            busbar_substrate::store::BreakerState::Closed
         ),
         "a 400 is the request's fault, never the member's"
     );

@@ -157,7 +157,7 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     assert!(
         matches!(
             breakers.state(&PlaneBreakers::agent_key("planner")),
-            crate::store::BreakerState::Open { .. }
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "the agent's cell must be Open after a definitive backend failure"
     );
@@ -220,7 +220,7 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     assert!(
         matches!(
             breakers.state(&key),
-            crate::store::BreakerState::Open { .. }
+            busbar_substrate::store::BreakerState::Open { .. }
         ),
         "the settle folded the 401 through the same record_signal disposition and opened the cell"
     );
@@ -239,7 +239,10 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
         "no shared scope → the local holds the probe, nothing registered"
     );
     assert!(
-        matches!(fresh.state(&key), crate::store::BreakerState::Open { .. }),
+        matches!(
+            fresh.state(&key),
+            busbar_substrate::store::BreakerState::Open { .. }
+        ),
         "the legacy path still records and opens the cell"
     );
 }
