@@ -201,12 +201,12 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// downcast never fails: the mcp slot is always an `McpResource` (`PLANE_DECL::build`).
 ///
 /// `&App`-typed and named `busbar_core::state::App`, so it compiles ONLY where busbar-core is in the
-/// closure and reachable: the dual-compile into busbar-core's OWN test binary (`not(busbar_mcp_native)`
+/// closure and reachable: the dual-compile into busbar-core's OWN test binary (`feature = "test-support"`
 /// under `test`, where its test fixtures call it) and a standalone `test-support` build (which pulls
 /// busbar-core as an optional dep). The default standalone build — where busbar-core is not a
 /// dependency at all — compiles it out entirely; production reaches the resource through the neutral
 /// `resource_of` twin below.
-#[cfg(any(all(test, not(busbar_mcp_native)), feature = "test-support"))]
+#[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
@@ -317,7 +317,7 @@ impl McpRuntime {
 // in the closure: the dual-compile into core's own test binary and a standalone `test-support` build.
 // The default standalone build compiles it out; production reads the runtime through the neutral
 // `runtime_slots` twin.
-#[cfg(any(all(test, not(busbar_mcp_native)), feature = "test-support"))]
+#[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
     app.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
@@ -842,7 +842,7 @@ use serde::{Deserialize, Serialize};
 /// route table. A gateway that is not an MCP server should not answer as one.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct McpCfg {
+pub struct McpCfg {
     /// The RFC 8707 resource indicator for this deployment: the canonical, absolute URI that names
     /// busbar's MCP endpoint, and therefore the exact `aud` value every inbound token must carry.
     ///
@@ -1094,7 +1094,7 @@ fn normalise_path(path: &str) -> String {
     format!("/{trimmed}")
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
 
@@ -1102,6 +1102,6 @@ mod config_tests;
 // be STARTED for one to be taken at all, and the demoted upstream that must stop being ADVERTISED
 // and not merely stop being dispatchable. Hung here rather than under `connect` or `method` because
 // it spans both and the boot path besides.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/quarantine_boot_tests.rs"]
 mod quarantine_boot_tests;

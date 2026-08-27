@@ -212,6 +212,6 @@ pub(crate) fn translate_request(envelope: &serde_json::Value, principal: &str) -
     serde_json::to_vec(&out).ok()
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/idmap_tests.rs"]
 mod idmap_tests;

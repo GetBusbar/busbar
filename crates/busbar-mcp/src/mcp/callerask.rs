@@ -564,13 +564,13 @@ fn declared(capabilities: &serde_json::Value, key: &str) -> bool {
     capabilities.get(key).is_some_and(|v| !v.is_null())
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/callerask_tests.rs"]
 mod callerask_tests;
 
 // THE GATE JUDGED FROM OUTSIDE IT: one approval, presented twice, against a real upstream that
 // records what it was told to do. Separate from the file above because nothing in it may reach into
 // the decision — the claim is about what a caller can make happen, not about which arm answered.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/confirm_once_tests.rs"]
 mod confirm_once_tests;

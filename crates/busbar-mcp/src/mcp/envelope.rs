@@ -772,11 +772,11 @@ pub(in crate::mcp) fn error_response(
         .into_response()
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/ingress_tests.rs"]
 mod ingress_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/request_meta_tests.rs"]
 mod request_meta_tests;
 
@@ -784,27 +784,27 @@ mod request_meta_tests;
 // the claim spans BOTH planes — the sibling file is `a2a/tests/envelope_id_tests.rs`, asserting the
 // same three properties against the same shared reader, and two files with one name is what makes
 // "does this hold on the other plane too?" a question with an obvious answer.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/envelope_id_tests.rs"]
 mod envelope_id_tests;
 
 // The RESPONSE FRAMING battery. Mounted from the INGRESS rather than from [`super::sse`] on purpose:
 // every test in it drives a real socket and asserts on what a CLIENT received, which is a statement
 // about this handler's last step, not about the framing helper in isolation.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sse_tests.rs"]
 mod sse_tests;
 
 // The CONTENT battery — binary resources, resource templates, typed prompt content and the
 // missing-client-capability refusal. Mounted here for the same reason `sse_tests` is: every case in
 // it drives a real socket and judges what a CLIENT received.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/content_tests.rs"]
 mod content_tests;
 
 // A1.3 — the resource routing key. Mounted here because its headline case drives a real socket for
 // the same reason the two above do: the claim is about what a CLIENT can address, and the four
 // official scenarios that were failing sent exactly that request.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/resource_uri_tests.rs"]
 mod resource_uri_tests;

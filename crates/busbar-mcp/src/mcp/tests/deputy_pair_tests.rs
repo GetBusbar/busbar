@@ -37,6 +37,7 @@ use super::upstream_support::{
     call, contains, encodings, exchanging_server, gov_with_scopes, key_with_scopes, mcp_cfg,
     wildcard_key, Behaviour, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
@@ -298,8 +299,8 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         .build();
     // This end-to-end case asserts the CREDENTIAL LEG over the real wire, not verify-on-call: mark
     // the server just-verified so the gate reuses the snapshot (the mock upstream answers `tools/call`
-    // but not a verifiable `tools/list`). See `busbar_core::test_support::prefresh_mcp_sightings`.
-    busbar_core::test_support::prefresh_mcp_sightings(&app);
+    // but not a verifiable `tools/list`). See `crate::testkit::prefresh_mcp_sightings`.
+    crate::testkit::prefresh_mcp_sightings(&app);
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -43,6 +43,6 @@
 // two places for an audience to be spelled differently, which is the one defect this file's header
 // says would make every correctly-behaved client in the world obtain a token this server refuses.
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/resource_tests.rs"]
 mod resource_tests;

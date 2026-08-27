@@ -214,7 +214,7 @@ pub fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskE
 
 #[cfg(test)]
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
-pub(crate) trait StoreNamedTestExt: Store {
+pub trait StoreNamedTestExt: Store {
     fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
         self.upsert_plane_record(&task_record(task)?)
     }

@@ -902,6 +902,6 @@ fn collect_mentions(v: &Value, backend_host: &str, ours: &str, out: &mut Vec<Str
     walk(v, backend_host, ours, "$", out);
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/serve_tests.rs"]
 mod serve_tests;

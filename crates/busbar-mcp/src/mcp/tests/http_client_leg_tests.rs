@@ -46,6 +46,7 @@ use crate::mcp::client::catalogue::LiveSightings;
 use crate::mcp::client::issue::{issue, Issued};
 use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::upstream::{authorise_verb, Authorised, SetupRefusal};
+use crate::testkit::TestAppMcpExt;
 use busbar_api::VirtualKey;
 use busbar_core::test_support::TestApp;
 use busbar_substrate::trust::validate::Generations;

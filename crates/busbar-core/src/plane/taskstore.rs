@@ -208,9 +208,7 @@ fn reframe_task_event(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecor
 /// The scope, and the digest's inclusion of it, come from each row's own `task_id`, exactly as the
 /// deleted `TaskEventRow::scope_of`/`digest_fields` did.
 #[cfg(test)]
-pub(crate) fn verify_task_event_rows(
-    rows: &[TaskEventRow],
-) -> Result<(), crate::audit::ChainBreak> {
+pub fn verify_task_event_rows(rows: &[TaskEventRow]) -> Result<(), crate::audit::ChainBreak> {
     let records: Vec<PlaneJournalRecord> = rows
         .iter()
         .map(|r| {
@@ -293,7 +291,7 @@ pub(crate) struct Rehydrated {
 /// is seeded into the working set and its host-side chain at submit/restore and forgotten from both at
 /// terminal eviction/compaction. The host-side journal is uncapped (`usize::MAX`) — a task table is
 /// bounded by its own lifecycle (terminal eviction + retention), not by an LRU.
-pub(crate) struct TaskRegistry {
+pub struct TaskRegistry {
     tasks: Mutex<HashMap<String, Entry>>,
     /// The durable sink for the `task` ROW upserts (see [`task_record`]). NOT the event chain — that
     /// chain's seq-authority + position cache is the host-side DurableStream's now. Attached at boot
@@ -321,8 +319,7 @@ impl Default for TaskRegistry {
 /// the same reason: a config apply must not destroy in-flight tasks. An operator editing a pool
 /// weight and applying it would otherwise take every running task with it, which is a far larger
 /// blast radius than the change they made.
-pub(crate) static TASKS: std::sync::LazyLock<TaskRegistry> =
-    std::sync::LazyLock::new(TaskRegistry::new);
+pub static TASKS: std::sync::LazyLock<TaskRegistry> = std::sync::LazyLock::new(TaskRegistry::new);
 
 /// TEST ONLY: the one lock every test that attaches a sink to the process-wide [`TASKS`] takes.
 ///
@@ -338,7 +335,7 @@ pub(crate) static TASKS: std::sync::LazyLock<TaskRegistry> =
 /// front door's and the push-delivery path's — are mounted from different modules, and two locks
 /// over one global is the same thing as no lock.
 #[cfg(test)]
-pub(crate) static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// TEST ONLY: a fresh, process-unique `task_event` stream id, well above the production ids (1/2) and
 /// the `plane_host::journal` test range (base 10_000) and the MCP `call` test range (base 200_000), so
@@ -431,16 +428,14 @@ pub(crate) fn ensure_global_task_stream_registered() {
 /// chain append addresses the process-wide [`KIND_ID_TASK_EVENT`] stream; a working-set test leaves it
 /// no-sink and only needs a minted `Seq`, a chain test has aimed it at its ledger.
 #[cfg(test)]
-pub(crate) fn with_global_task_host<R>(
-    f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R,
-) -> R {
+pub fn with_global_task_host<R>(f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
     crate::plane_host::with_dispatch_scope(global_task_host_app(), |h, _| f(h))
 }
 
 /// TEST ONLY: aim (or detach, with `None`) the process-wide `task_event` stream's durable sink — for a
 /// chain-asserting global-[`TASKS`] test holding [`TASKS_SINK_LOCK`].
 #[cfg(test)]
-pub(crate) fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
+pub fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
     let _ = global_task_host_app();
     crate::plane_host::journal::set_stream_sink_for_test(KIND_ID_TASK_EVENT, store);
 }
@@ -472,7 +467,7 @@ impl std::fmt::Display for TaskStoreError {
 }
 
 impl TaskRegistry {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -518,7 +513,7 @@ impl TaskRegistry {
     /// be: detaching a live deployment's durable sink mid-run would silently stop persisting task
     /// evidence, which is the failure this whole module exists to prevent.
     #[cfg(test)]
-    pub(crate) fn clear_sink_for_test(&self) {
+    pub fn clear_sink_for_test(&self) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -1072,4 +1067,4 @@ mod taskstore_tests;
 // second thing that can stop matching what a real backend does.
 #[cfg(test)]
 #[path = "tests/event_ledger.rs"]
-pub(crate) mod event_ledger;
+pub mod event_ledger;

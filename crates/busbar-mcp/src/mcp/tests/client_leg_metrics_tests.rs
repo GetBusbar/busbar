@@ -38,6 +38,7 @@
 //! what makes "this series exists" a statement about THIS leg.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::testkit::TestAppMcpExt;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";

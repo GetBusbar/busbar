@@ -256,6 +256,6 @@ pub(crate) fn sha256_tagged(bytes: &[u8]) -> String {
     format!("sha256/{}", B64.encode(Sha256::digest(bytes)))
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/card_tests.rs"]
 mod card_tests;

@@ -214,6 +214,6 @@ fn actual_type(v: &Value) -> &'static str {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/outputschema_tests.rs"]
 mod outputschema_tests;

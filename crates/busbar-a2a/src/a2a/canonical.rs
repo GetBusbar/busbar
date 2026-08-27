@@ -158,6 +158,6 @@ fn ecmascript_number(f: f64) -> String {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/canonical_tests.rs"]
 mod canonical_tests;

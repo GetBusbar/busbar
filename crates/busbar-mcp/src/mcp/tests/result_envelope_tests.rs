@@ -27,6 +27,7 @@
 
 use crate::mcp::envelope::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 use crate::mcp::McpCfg;
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {

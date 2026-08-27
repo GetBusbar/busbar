@@ -2687,14 +2687,14 @@ fn error(
     super::envelope::error_response(status, id, code, message, data)
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/method_tests.rs"]
 mod method_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/result_envelope_tests.rs"]
 mod result_envelope_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/prompt_args_tests.rs"]
 mod prompt_args_tests;

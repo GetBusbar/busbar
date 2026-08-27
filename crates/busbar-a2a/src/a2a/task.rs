@@ -427,6 +427,6 @@ impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/task_tests.rs"]
 mod task_tests;

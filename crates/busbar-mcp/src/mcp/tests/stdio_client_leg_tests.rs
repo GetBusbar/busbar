@@ -36,6 +36,7 @@ use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, Transport,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

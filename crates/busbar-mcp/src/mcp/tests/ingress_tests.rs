@@ -11,6 +11,7 @@
 
 use crate::mcp::envelope::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 use crate::mcp::McpCfg;
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

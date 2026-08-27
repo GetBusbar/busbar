@@ -25,6 +25,7 @@
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ServerPinCfg, ServerRequestGrants,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::state::{App, AppHandle};
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;

@@ -14,6 +14,7 @@
 //! born `Pending` is previewed, the fingerprint a human saw is echoed back, and only then does the
 //! agent serve. Each half alone would leave the other unproven.
 
+use crate::testkit::TestAppA2aExt;
 use std::sync::Arc;
 
 use base64::Engine as _;

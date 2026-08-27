@@ -24,6 +24,7 @@
 //!   the upstream asked.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
 use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use std::sync::Arc;

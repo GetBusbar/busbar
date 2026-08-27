@@ -199,7 +199,7 @@ pub(crate) struct AgentPinCfg {
 /// wrong one is a field an admin write can silently rewrite history through.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin an agent.
-pub(crate) struct AgentDefCfg {
+pub struct AgentDefCfg {
     /// The real remote A2A endpoint. Never client-visible: callers reach it through busbar.
     pub(crate) url: String,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is
@@ -274,7 +274,7 @@ pub(crate) struct AgentDefCfg {
 /// The top-level `agents:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct AgentsCfg {
+pub struct AgentsCfg {
     /// The ALL-AGENTS attach list (the reserved `agents.hooks:` key). LIST ⇒ ADDITIVE: an agent's
     /// own `hooks:` are appended to this, deduped by name.
     pub(crate) all_agent_hooks: Vec<String>,
@@ -593,6 +593,6 @@ impl AgentPinCfg {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/config_tests.rs"]
 mod config_tests;

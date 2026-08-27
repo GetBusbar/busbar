@@ -24,13 +24,19 @@
 // THE PLANE'S TEST-ONLY RESIDUAL SURFACE (the trust verbs `connect` did not bring — `sync`,
 // `suspend`, `resume` — push-notification DELIVERY, and the task-read verbs) has NO production caller;
 // it is exercised only by the plane tests, which run in `busbar-core`'s dual-compile binary and are
-// gated OUT of THIS crate's own test binary (`not(busbar_a2a_native)`). So in the `busbar_a2a_native`
+// gated OUT of THIS crate's own test binary (`feature = "test-support"`). So in the `not(feature = "test-support")`
 // test build those items read as dead — not because they are unused, but because their only consumers
 // were configured out. Allow it there ONLY: production (`not(test)`) and core's dual-compile
-// (`not(busbar_a2a_native)`) keep the full per-file dead-code discipline the plane's modules rely on.
-#![cfg_attr(all(test, busbar_a2a_native), allow(dead_code))]
+// (`feature = "test-support"`) keep the full per-file dead-code discipline the plane's modules rely on.
+#![cfg_attr(all(test, not(feature = "test-support")), allow(dead_code))]
 
 pub mod a2a;
+
+/// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
+/// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
+/// is the seam that lets core drop the `#[path]` dual-compile of `src/a2a` for its own tests.
+#[cfg(feature = "test-support")]
+pub mod testkit;
 
 /// A2A'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_a2a::PLANE_DECL`). See [`a2a`] for the declaration.

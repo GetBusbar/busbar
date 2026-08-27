@@ -437,6 +437,6 @@ pub(crate) fn mint_from(
     })
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/creds_tests.rs"]
 mod creds_tests;

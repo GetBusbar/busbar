@@ -349,7 +349,7 @@ impl OutboundRelayRequest {
     ///
     /// `cfg(test)` because it has exactly one consumer and it is that scan. Shipping it would be
     /// shipping a function whose only purpose is to concatenate a credential into one buffer.
-    #[cfg(all(test, not(busbar_a2a_native)))]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(self.http_method.as_bytes());
@@ -674,11 +674,11 @@ pub(crate) fn framing_for(word: &str) -> Option<&'static dyn OutboundFraming> {
 /// THE JSON-RPC FRAMING AS A VALUE, for tests that need one to hand to [`build_request`] or to a
 /// [`RelayCall`].
 ///
-/// `#[cfg(all(test, not(busbar_a2a_native)))]` deliberately. Production never reaches for "the default": [`binding_of`] reads a
+/// `#[cfg(all(test, feature = "test-support"))]` deliberately. Production never reaches for "the default": [`binding_of`] reads a
 /// word off the registration's card and [`framing_for`] resolves it, and a production `default_…`
 /// beside those two would be a third answer to "which binding is this hop" that no card ever
 /// authorised — which is exactly the shape a fail-open acquires.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn default_framing() -> &'static dyn OutboundFraming {
     &JsonRpcFraming
 }
@@ -2268,35 +2268,35 @@ fn relay_stream_once(
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop
 // matching what the production router does, and the defect this area exists to catch is invisible
 // to any test that does not go through `busbar_core::build_router`.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_harness.rs"]
 mod relay_harness;
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_tests.rs"]
 mod relay_tests;
 
 // KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, all three bindings, through
 // the same harness/router as the batteries above. It hangs here because the mount is `prepare`.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/breaker_fastfail_tests.rs"]
 mod breaker_fastfail_tests;
 
 // KILL-THE-UPSTREAM-MID-POOL — the failover seam mounted at admission time: `agent_pools:`
 // reroute of fresh submissions, task pinning, the card-fingerprint pin rule, and the client-fault
 // disposition, against twin recorded backends through the real router.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_stream_tests.rs"]
 mod relay_stream_tests;
 
 // THIS PLANE'S CLIENT LEG ON `/metrics`. Mounted here for the same reason the blocks below are: it
 // needs `relay_harness`, because the claim is about a hop that went out through the production
 // ingress and a series emitted with no backend to reach would prove only that a macro increments.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_leg_metrics_tests.rs"]
 mod relay_leg_metrics_tests;
 
@@ -2304,7 +2304,7 @@ mod relay_leg_metrics_tests;
 // belongs by subject, for the one reason that outweighs tidiness: it needs `relay_harness`, and the
 // harness comment two blocks up is the whole argument against standing up a second one. Its sibling
 // is `mcp/tests/envelope_id_tests.rs`; the two assert the same list against the same reader.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/envelope_id_tests.rs"]
 mod envelope_id_tests;
 
@@ -2313,7 +2313,7 @@ mod envelope_id_tests;
 // can stop matching what the production router does. Its sibling on the MCP client direction is the
 // correlation block at the end of `mcp/client/tests/transport_tests.rs`, which reads the same two
 // facts off a real loopback socket.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/response_id_tests.rs"]
 mod response_id_tests;
 
@@ -2321,7 +2321,7 @@ mod response_id_tests;
 // line rather than out of the caller's envelope, and therefore the two this content-blind plane
 // answers for ITSELF. Mounted here for the same reason as the two blocks above: the claim is that a
 // refusal happens BEFORE any hop, and only the shared harness can see whether a hop happened.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/wire_headers_tests.rs"]
 mod wire_headers_tests;
 
@@ -2330,7 +2330,7 @@ mod wire_headers_tests;
 // harness's recording seam is the only thing that can see whether one was composed. A test that
 // asserted only on the status code would pass just as happily against a gate that fires after the
 // backend has already been asked.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
 
@@ -2341,12 +2341,12 @@ mod hook_gate_tests;
 // the official TCK's stdout — a real instrument, and the right one, but one that lives outside this
 // repository and that `cargo test` cannot run; the eleven JSON-RPC cells had no in-tree instrument
 // at all.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/served_methods_tests.rs"]
 mod served_methods_tests;
 // BUSBAR AS AN A2A **CLIENT**, over all three bindings. Mounted here for the reason every block
 // above is: the claim is about A REQUEST ON THE WIRE, and only the shared harness can see one.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/client_leg_tests.rs"]
 mod client_leg_tests;
 
@@ -2355,7 +2355,7 @@ mod client_leg_tests;
 // test that goes through `busbar_core::build_router` can make it. The cell this closes was previously
 // green on a chain a test built in-process — evidence that would have survived the front door
 // chaining nothing at all.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/front_door_chain_tests.rs"]
 mod front_door_chain_tests;
 
@@ -2363,6 +2363,6 @@ mod front_door_chain_tests;
 // never learns the caller's. Mounted here for the reason every block above is: the claim is about a
 // REQUEST ON THE WIRE (and, for the no-leak scan, about every byte of one), and only the shared
 // harness's recording seam can see one.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pushback_tests.rs"]
 mod pushback_tests;

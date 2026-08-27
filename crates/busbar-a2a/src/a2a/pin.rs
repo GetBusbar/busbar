@@ -265,10 +265,10 @@ pub(crate) fn pin_a_signed_card(
     ))
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pin_tests.rs"]
 mod pin_tests;
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/reuse_tests.rs"]
 mod reuse_tests;

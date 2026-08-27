@@ -436,6 +436,6 @@ pub(crate) fn respond(id: &Value, err: A2aError, message: impl Into<String>) -> 
 // reader decided; a second reading of `id` here would be a second answer to a question already
 // answered.
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/rpcerror_tests.rs"]
 mod rpcerror_tests;

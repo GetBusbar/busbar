@@ -244,7 +244,7 @@ pub(crate) fn forget(task_id: &str) {
 /// The pin currently held for a task, for the test that asserts the map is BOUNDED. Reading it is
 /// the only way to prove `forget` ran, and an unbounded map keyed by a caller-controlled rate is a
 /// leak worth a test.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
     pins().lock().ok().and_then(|m| m.get(task_id).cloned())
 }
@@ -252,7 +252,7 @@ pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
 /// The credential currently held for a task, for the test that asserts [`forget`] clears it. A
 /// secret that outlives the task it was supplied for is the bound worth a test, for the same reason
 /// [`pin_for_test`] exists.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
     auths().lock().ok().and_then(|m| m.get(task_id).cloned())
 }
@@ -462,6 +462,6 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pushdeliver_tests.rs"]
 mod pushdeliver_tests;

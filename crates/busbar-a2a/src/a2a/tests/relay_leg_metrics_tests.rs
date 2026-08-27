@@ -77,13 +77,14 @@ fn keys_of(line: &str) -> Vec<String> {
 fn scrape(_h: &Harness) -> String {
     use busbar_core::plugin_routes::PluginHttpDispatch;
     use busbar_plugin_loader::HttpEndpointRequest;
-    let resp = busbar_core::export::prometheus::PrometheusExport.handle_http(&HttpEndpointRequest {
-        method: "GET".into(),
-        path: "/metrics".into(),
-        query: String::new(),
-        headers: vec![],
-        body: vec![],
-    });
+    let resp =
+        busbar_core::export::prometheus::PrometheusExport.handle_http(&HttpEndpointRequest {
+            method: "GET".into(),
+            path: "/metrics".into(),
+            query: String::new(),
+            headers: vec![],
+            body: vec![],
+        });
     assert_eq!(
         resp.status, 200,
         "the built-in prometheus exporter must serve the exposition"

@@ -645,8 +645,8 @@ pub(super) async fn call_response_caps(
 ) -> (u16, axum::http::HeaderMap, serde_json::Value) {
     // These batteries assert the dispatch LEG, not verify-on-call: mark each server just-verified so
     // the gate reuses the snapshot and the declarative configured-hash comparison runs, exactly as it
-    // did before verify-on-call. See `busbar_core::test_support::prefresh_mcp_sightings`.
-    busbar_core::test_support::prefresh_mcp_sightings(app);
+    // did before verify-on-call. See `crate::testkit::prefresh_mcp_sightings`.
+    crate::testkit::prefresh_mcp_sightings(app);
     let handle = std::sync::Arc::new(busbar_core::state::AppHandle::new(app.clone()));
     // The sync leg's shared host arena, exactly as production's `rpc_dispatch` opens one — so the
     // breaker/reroute batteries drive the CLUSTER-1 admit+settle path, not a legacy in-place shim.

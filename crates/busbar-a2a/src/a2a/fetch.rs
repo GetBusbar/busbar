@@ -496,6 +496,6 @@ pub(crate) fn fetch_card(
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/fetch_tests.rs"]
 mod fetch_tests;

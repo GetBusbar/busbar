@@ -153,7 +153,7 @@ pub(crate) enum SetupRefusal {
     ///
     /// Reached only by [`authorise_verb`]. A `tools/call` meets the same validator one layer up, in
     /// the catalogue's `resolve`, and renders its refusal in that path's own vocabulary.
-    #[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
+    #[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
     Trust(busbar_substrate::trust::validate::Refusal),
 }
 
@@ -273,7 +273,7 @@ pub(crate) fn authorise(
 /// The verb's own params are NOT judged here. They are judged in `super::client::issue::issue`,
 /// once, for every verb however the leg was authorised — a guard on the constructor is a guard a
 /// second constructor can skip.
-#[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
+#[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
 pub(crate) fn authorise_verb(
     server: &ServerEntry,
     sighting: &busbar_substrate::trust::Sighting<super::client::catalogue::TransportPin>,
@@ -713,18 +713,18 @@ pub(super) async fn exchange(
 // Shared fixtures for the upstream-leg batteries: a REAL fake MCP peer and a REAL fake RFC 8693
 // token endpoint, both recording every byte they receive. Declared here rather than duplicated per
 // file so a test that means to vary ONE thing varies one thing.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_support.rs"]
 mod upstream_support;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_join_tests.rs"]
 mod upstream_join_tests;
 
 // A GRANTED, OPERATOR-DECLARED `roots/list` ask, satisfied on the wire — the coverage instrument
 // for `mcp|streamable-http|client|server|roots/list`. Beside the join tests because its witness is
 // the same recording peer.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/roots_satisfy_tests.rs"]
 mod roots_satisfy_tests;
 
@@ -732,14 +732,14 @@ mod roots_satisfy_tests;
 // pipeline within the per-upstream budget — the coverage instrument for
 // `mcp|streamable-http|client|server|sampling/createMessage`. Beside the roots battery because its
 // witnesses are the same recording peer plus a recording fake provider.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sampling_satisfy_tests.rs"]
 mod sampling_satisfy_tests;
 
 // THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
 // because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the
 // supervisor being reachable at all is the whole property under test.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/stdio_dispatch_tests.rs"]
 mod stdio_dispatch_tests;
 
@@ -747,34 +747,34 @@ mod stdio_dispatch_tests;
 // the same reason that one does: the claim is about the JOIN — a verb reaching a real peer through
 // the real gate — and it asserts the half a child process has no analogue for, which is the mirrored
 // headers and the exchanged credential.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/http_client_leg_tests.rs"]
 mod http_client_leg_tests;
 
 // THE WHOLE STDIO CLIENT COLUMN — every method busbar ISSUES and every message a child SENDS,
 // against a real child process. It hangs here for the same reason its neighbour does: the claim is
 // about the JOIN, and `Authorised` has exactly one constructor, which is the gate.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/stdio_client_leg_tests.rs"]
 mod stdio_client_leg_tests;
 
 // PROVEN AS A PAIR — this property is meaningless with only one direction built: an inbound
 // surface with no upstream cannot demonstrate that the outbound credential followed the
 // inbound grant, and an upstream with no inbound caller has no grant to follow.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/deputy_pair_tests.rs"]
 mod deputy_pair_tests;
 
 // KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, both transports, driven at the
 // same front door as everything above. It hangs here because the recording site is `call` below.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/breaker_fastfail_tests.rs"]
 mod breaker_fastfail_tests;
 
 // KILL-THE-UPSTREAM-MID-POOL — the failover seam mounted on this plane: `tool_pools:` reroute
 // before first byte, the pin rule, the repeatable safety rule, and the client-fault disposition,
 // against TWO real fake peers. It hangs here for the same reason its sibling does.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
 
@@ -782,7 +782,7 @@ mod reroute_pool_tests;
 // It lives here, beside the upstream-leg batteries, because it needs the same real fake peer: the
 // claim is about what a REAL `tools/call` leaves behind, and a call with no upstream to reach could
 // only ever demonstrate the refusing half.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/calllog_dispatch_tests.rs"]
 mod calllog_dispatch_tests;
 
@@ -790,13 +790,13 @@ mod calllog_dispatch_tests;
 // real fake peer. "The call was rejected" is evidence only next to a control that REACHES the peer
 // and is served, and only a real upstream can supply that control — which is why this battery sits
 // here with the other upstream-leg files rather than beside the dispatcher it exercises.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
 
 // THIS PLANE'S CLIENT LEG ON `/metrics`. Beside the other upstream-leg batteries for the same
 // reason they are all here: the claim is about a leg that REACHED a peer, and a series emitted with
 // no upstream to reach would prove only that a macro increments.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/client_leg_metrics_tests.rs"]
 mod client_leg_metrics_tests;

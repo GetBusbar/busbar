@@ -27,6 +27,7 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 use busbar_core::test_support::TestApp;
 

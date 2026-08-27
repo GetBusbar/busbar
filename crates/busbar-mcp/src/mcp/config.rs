@@ -661,7 +661,7 @@ pub(crate) const DEFAULT_MCP_VERIFY_TTL: &str = "5s";
 /// absent from this struct.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin a server.
-pub(crate) struct McpServerDefCfg {
+pub struct McpServerDefCfg {
     /// The real remote MCP endpoint. Never client-visible: callers reach it through busbar.
     ///
     /// REQUIRED for `transport: streamable_http` (the default) and REFUSED for `transport: stdio`,
@@ -969,7 +969,7 @@ impl ToolsCfg {
     // path would be a second reader of the operator's intent. It is written and pinned here because
     // the OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule
     // discovered at the moment its first caller lands is a grammar rule decided by that caller.
-    #![cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
+    #![cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
     /// declaration order (`hooks` is a LIST, and a LIST combines ADDITIVELY).
@@ -1604,13 +1604,13 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     //
     // The cross-plane list comes off core's `plane_decls()` singleton, which only core inits (this
     // very deserialize is a trigger of that init when the plane dual-compiles into core). Standalone
-    // (`busbar_mcp_native`) has no such singleton and never drives config resolution anyway — the
+    // (`not(feature = "test-support")`) has no such singleton and never drives config resolution anyway — the
     // plane runs inside busbar-core — so the standalone arm falls back to this plane's own section,
     // the only one a standalone build knows; it is unreachable in practice, and no cross-plane
     // reference is possible when only one plane exists.
-    #[cfg(not(busbar_mcp_native))]
+    #[cfg(feature = "test-support")]
     let sections = busbar_core::plane::config::config_sections();
-    #[cfg(busbar_mcp_native)]
+    #[cfg(not(feature = "test-support"))]
     let sections = vec![super::PLANE_DECL.config_section];
     for hook in &def.hooks {
         busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
@@ -1865,6 +1865,6 @@ pub(crate) fn template_parameter_names(template: &str) -> Vec<String> {
     out
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/tools_config_tests.rs"]
 mod tools_config_tests;

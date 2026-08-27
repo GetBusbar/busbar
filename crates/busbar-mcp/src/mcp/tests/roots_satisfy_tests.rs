@@ -21,6 +21,7 @@
 //!   is the operator saying what may answer it, and neither implies the other.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

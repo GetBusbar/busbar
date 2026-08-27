@@ -42,6 +42,7 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_api::{McpCallRecord, Store};
 use busbar_core::calllog::verify_call_rows;
 use busbar_core::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};

@@ -212,21 +212,21 @@ impl A2aPlane {
         // fragments are A2A domain logic reached only through this seam. Install it here, idempotently
         // (`OnceLock`), from the test/fixture entry point every A2A test builds a plane through —
         // mirroring how the MCP plane installs the hostless-egress seam in its own test path.
-        #[cfg(any(all(test, not(busbar_a2a_native)), feature = "test-support"))]
+        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
         busbar_substrate::plane_host::install_task_codec(&super::task::A2aTaskCodec);
         // Same reason: the test/fixture build has no composition root, so bind core's `TaskReader`
         // backing here too, idempotently, so the plane's `HostCtx`-free task reads resolve.
-        #[cfg(any(all(test, not(busbar_a2a_native)), feature = "test-support"))]
+        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
         busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
         // And the parse-time section-list provider, so a plane built here validates its `hooks:`
         // cross-plane references against the real fold rather than the empty pre-bind list.
-        #[cfg(any(all(test, not(busbar_a2a_native)), feature = "test-support"))]
+        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
         busbar_substrate::plane::config::install_plane_sections(
             busbar_core::plane::config::config_sections,
         );
         // And the self-enveloping verb backing, so `approve` renders its `Prebuilt` envelope + audit
         // through the real core helpers in a plane test with no composition root.
-        #[cfg(any(all(test, not(busbar_a2a_native)), feature = "test-support"))]
+        #[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
         busbar_substrate::admin_verbs::install_plane_admin_envelope(
             &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
         );
@@ -341,14 +341,14 @@ impl A2aPlane {
     }
 
     /// THE RELAY SEAM this deployment submits relayed tasks through. The LIVE one, always, in a
-    /// production build: the only other setter is `#[cfg(all(test, not(busbar_a2a_native)))]`.
+    /// production build: the only other setter is `#[cfg(all(test, feature = "test-support"))]`.
     pub(crate) fn relay_seam(&self) -> Arc<dyn super::relay::RelaySeam> {
         Arc::clone(&self.relay.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Swap the relay seam. TEST ONLY, and compiled out of every release binary — a production
     /// build has exactly one way to obtain a seam, which is the constructor above.
-    #[cfg(all(test, not(busbar_a2a_native)))]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn set_relay_seam(&self, seam: Arc<dyn super::relay::RelaySeam>) {
         *self.relay.write().unwrap_or_else(|e| e.into_inner()) = seam;
     }
@@ -544,6 +544,6 @@ impl A2aPlane {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/plane_tests.rs"]
 mod plane_tests;

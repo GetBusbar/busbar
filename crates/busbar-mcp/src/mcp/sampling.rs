@@ -331,7 +331,7 @@ async fn complete(
 /// body this function did not write.
 const MAX_COMPLETION_BYTES: usize = 8 * 1024 * 1024;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sampling_spend_tests.rs"]
 mod sampling_spend_tests;
 

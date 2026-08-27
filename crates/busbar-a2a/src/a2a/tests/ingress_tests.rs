@@ -9,7 +9,8 @@
 //! against it.
 
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
-use busbar_core::core_routes::CoreRouteTable;
+use crate::testkit::TestAppA2aExt;
+use busbar_plugin_loader::RouteAuth;
 
 fn unpinned_agent(url: &str) -> AgentDefCfg {
     AgentDefCfg {
@@ -31,14 +32,15 @@ fn unpinned_agent(url: &str) -> AgentDefCfg {
     }
 }
 
-/// The core route table the DATA router was actually built from — the same function production
-/// calls, with the same inputs, so the enumeration cannot describe a different surface.
-fn mounted(app: &std::sync::Arc<busbar_core::state::App>) -> CoreRouteTable {
-    busbar_core::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref()).1
+/// The core route table view the DATA router was actually built from — the same function production
+/// calls, with the same inputs, so the enumeration cannot describe a different surface. `(path, bar)`
+/// pairs over public types, read through core's curated test-support seam.
+fn mounted(app: &std::sync::Arc<busbar_core::state::App>) -> Vec<(String, RouteAuth)> {
+    busbar_core::base_data_route_table_view(app)
 }
 
-fn paths(table: &CoreRouteTable) -> Vec<String> {
-    table.routes().iter().map(|r| r.path.clone()).collect()
+fn paths(table: &[(String, RouteAuth)]) -> Vec<String> {
+    table.iter().map(|(p, _)| p.clone()).collect()
 }
 
 #[test]
@@ -142,20 +144,19 @@ fn the_metadata_document_is_the_one_open_route_and_the_endpoint_is_not() {
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
     let table = mounted(&app);
-    for route in table.routes() {
-        if route.path == crate::a2a::serve::METADATA_PATH {
+    for (path, auth) in &table {
+        if path == crate::a2a::serve::METADATA_PATH {
             assert_eq!(
-                route.auth,
+                *auth,
                 busbar_plugin_loader::RouteAuth::None,
                 "the discovery document must be readable without a token"
             );
         }
-        if route.path.starts_with("/a2a/agents") {
+        if path.starts_with("/a2a/agents") {
             assert_eq!(
-                route.auth,
+                *auth,
                 busbar_plugin_loader::RouteAuth::Key,
-                "{} must take the data-plane bar",
-                route.path
+                "{path} must take the data-plane bar"
             );
         }
     }

@@ -209,6 +209,6 @@ impl CardSigner<'_> {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sign_tests.rs"]
 mod sign_tests;

@@ -516,20 +516,20 @@ pub(crate) trait CardTransports {
 
 /// ONE TRANSPORT FOR EVERY REGISTRATION — a NAMED test adapter for [`A2aPlane::reverify_agent`]'s
 /// `transports` seam, so an on-call battery can drive the plane's fetch against a fake card endpoint.
-/// `#[cfg(all(test, not(busbar_a2a_native)))]`, so it is ABSENT from the release binary: production hands `reverify_agent` a
+/// `#[cfg(all(test, feature = "test-support"))]`, so it is ABSENT from the release binary: production hands `reverify_agent` a
 /// [`super::transport::LiveCardFetch`], which carries THIS registration's client identity, and a
 /// caller that wanted one transport for the whole plane would have to write "one for all" and compile
 /// it in — the review conversation an anonymous default never prompts.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) struct OneForAll<'a>(pub(crate) &'a dyn Transport);
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 impl CardTransports for OneForAll<'_> {
     fn for_agent(&self, _agent_id: &str) -> &dyn Transport {
         self.0
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/verify_tests.rs"]
 mod verify_tests;

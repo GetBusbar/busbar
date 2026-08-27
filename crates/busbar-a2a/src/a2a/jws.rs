@@ -285,6 +285,6 @@ fn decode_signature(sig: &Value) -> Result<Signature, JwsError> {
     Ok(Signature::from_bytes(&bytes))
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/jws_tests.rs"]
 mod jws_tests;

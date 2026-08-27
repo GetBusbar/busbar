@@ -354,6 +354,6 @@ fn error_reply(id: &serde_json::Value, code: i64, message: String) -> serde_json
     })
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/peer_tests.rs"]
 mod peer_tests;

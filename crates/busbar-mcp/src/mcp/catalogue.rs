@@ -913,7 +913,7 @@ impl Catalogue {
 /// `cfg(test)` and nothing else — a production caller has a real clock and a real pair of
 /// generations, and a shorthand that supplied either for it would be a shorthand for skipping a
 /// step.
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 impl Catalogue {
     pub(crate) fn resolve_now(
         &self,
@@ -1152,11 +1152,11 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/trust_gate_tests.rs"]
 mod trust_gate_tests;
 

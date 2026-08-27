@@ -784,6 +784,6 @@ fn err(rpc_id: &serde_json::Value, code: A2aError, message: impl Into<String>) -
     super::rpcerror::respond(rpc_id, code, message)
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/local_tests.rs"]
 mod local_tests;

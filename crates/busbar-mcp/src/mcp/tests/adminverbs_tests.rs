@@ -15,6 +15,7 @@
 
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{approved_hash, mcp_cfg, server_cfg, wire_tool, Peer};
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 

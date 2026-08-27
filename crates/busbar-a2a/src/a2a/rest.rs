@@ -709,6 +709,6 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_substrate::plane_routes::PlaneRout
     ]
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/rest_tests.rs"]
 mod rest_tests;

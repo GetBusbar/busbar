@@ -153,6 +153,6 @@ pub(crate) fn admit(used: u64, limit: Option<u64>, window_remaining_secs: u64) -
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/meter_tests.rs"]
 mod meter_tests;

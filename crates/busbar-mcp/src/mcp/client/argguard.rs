@@ -507,6 +507,6 @@ fn child_for_index<'a>(schemas: &[&'a Value], index: usize) -> Vec<&'a Value> {
     out
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/argguard_tests.rs"]
 mod argguard_tests;

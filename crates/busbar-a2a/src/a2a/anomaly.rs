@@ -207,6 +207,6 @@ pub(crate) fn evaluate(window: &Window, thresholds: &Thresholds) -> Option<Trip>
     None
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/anomaly_tests.rs"]
 mod anomaly_tests;

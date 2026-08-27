@@ -260,6 +260,6 @@ fn as_inbound_refusal(
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/inbound_tests.rs"]
 mod inbound_tests;

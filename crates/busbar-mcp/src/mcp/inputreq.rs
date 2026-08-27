@@ -331,6 +331,6 @@ where
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/inputreq_tests.rs"]
 mod inputreq_tests;

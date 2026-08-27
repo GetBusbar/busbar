@@ -412,7 +412,7 @@ impl CatalogueSnapshot {
 /// dispatch read a stale generation alongside a fresh snapshot and conclude nothing had changed,
 /// which is the failure this check exists to prevent.
 #[derive(Debug)]
-pub(crate) struct CatalogueCache {
+pub struct CatalogueCache {
     live: RwLock<Arc<CatalogueSnapshot>>,
     generation: AtomicU64,
 }
@@ -564,7 +564,7 @@ impl<'a> LiveSightings<'a> {
     // Production always has a cache to consult (it rides the `App`), so this is the shape used by
     // callers that legitimately have none — the catalogue's own unit batteries, which pin the
     // no-sighting fallback that a declarative deployment depends on.
-    #[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
+    #[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
     pub(crate) fn unsighted() -> Self {
         Self(None)
     }
@@ -684,14 +684,14 @@ impl RefreshGate {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/rugpull_tests.rs"]
 mod rugpull_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/catalogue_concurrency_tests.rs"]
 mod catalogue_concurrency_tests;

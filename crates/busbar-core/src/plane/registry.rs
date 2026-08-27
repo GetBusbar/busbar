@@ -342,18 +342,11 @@ impl BootCtx {
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &crate::proto::PLANE_DECL,
-    // The MCP plane's sources live in `busbar-mcp`; core dual-compiles them (see `crate::mcp`) for
-    // test/`test-support` builds ONLY, so the fixture registry the tests see matches a shipped
-    // binary's — where the composition root installs `busbar_mcp::PLANE_DECL` instead. Production core
-    // carries no MCP row; `merged_boot_plane_decls` folds the installed copy into its canonical slot.
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::mcp::PLANE_DECL,
-    // The A2A plane's sources live in `busbar-a2a`; core dual-compiles them (see `crate::a2a`) for
-    // test/`test-support` builds ONLY, so the fixture registry the tests see matches a shipped
-    // binary's — where the composition root installs `busbar_a2a::PLANE_DECL` instead. Production core
-    // carries no A2A row; `merged_boot_plane_decls` folds the installed copy into its canonical slot.
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::a2a::PLANE_DECL,
+    // The MCP and A2A plane rows are NO LONGER hard-coded here under `cfg(test)`: their sources live
+    // in `busbar-mcp` / `busbar-a2a` and core no longer dual-compiles them, so core cannot name their
+    // `PLANE_DECL`. Under the test-support surface each plane crate REGISTERS its own decl through
+    // [`register_test_plane`] (from its `testkit`), folded into [`plane_decls`] below — the same
+    // "installed ahead of built-ins" shape production's `install_planes` gives the composition root.
 ];
 
 /// The built-in declarations. Read by [`plane_decls`] to build the process list, and by the
@@ -363,7 +356,10 @@ pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     BUILTIN_PLANE_DECLS
 }
 
-/// The process plane list, folded on first read from the built-ins plus anything installed.
+/// The process plane list, folded on first read from the built-ins plus anything installed. Under the
+/// test-support surface `plane_decls` folds a growable test registration set instead (see below), so
+/// this memo is the production path only.
+#[cfg(not(any(test, feature = "test-support")))]
 static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
 
 /// Declarations the COMPOSITION ROOT installed before the plane list was first read.
@@ -384,6 +380,10 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
         INSTALLED.set(decls).is_ok(),
         "install_planes called twice: there is one composition root, and it registers once"
     );
+    // The "install before first read" invariant is enforced by the production memo. Under the
+    // test-support surface `plane_decls` re-folds on every read (no frozen `PLANES` memo), so late
+    // installs are simply picked up — the invariant is vacuous there.
+    #[cfg(not(any(test, feature = "test-support")))]
     assert!(
         PLANES.get().is_none(),
         "install_planes called after the plane list was first read; register in main before any \
@@ -435,11 +435,59 @@ fn canonical_rank(key: &str) -> usize {
 }
 
 /// The process plane list, in fold order. One acquire-load once initialised.
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
     PLANES.get_or_init(|| {
         let installed = INSTALLED.get().copied().unwrap_or(&[]);
         merged_boot_plane_decls(installed, BUILTIN_PLANE_DECLS)
     })
+}
+
+// ── TEST-SUPPORT PLANE REGISTRATION ──────────────────────────────────────────────────────────────
+// The extracted plane crates can't be hard-coded into `BUILTIN_PLANE_DECLS` (core cannot name them),
+// so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` here,
+// exactly as production's composition root `install_planes`. `plane_decls()` folds the registered set
+// ahead of the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a
+// plane registered by any test before it reads the list is visible regardless of test order, and the
+// `&'static` contract holds. Bounded: at most one leak per distinct plane (≤ the plane count).
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
+    std::sync::Mutex::new(Vec::new());
+#[cfg(any(test, feature = "test-support"))]
+static TEST_MEMO: std::sync::Mutex<Option<(usize, &'static [&'static PlaneDecl])>> =
+    std::sync::Mutex::new(None);
+
+/// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
+/// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
+/// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
+/// fixture registry matches a shipped "busbar with this plane" binary.
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_test_plane(decl: &'static PlaneDecl) {
+    let mut reg = TEST_REGISTERED.lock().unwrap();
+    if !reg.iter().any(|d| d.key == decl.key) {
+        reg.push(decl);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
+    let reg = TEST_REGISTERED.lock().unwrap();
+    let installed = INSTALLED.get().copied().unwrap_or(&[]);
+    let want = reg.len() + installed.len();
+    let mut memo = TEST_MEMO.lock().unwrap();
+    if let Some((n, slice)) = *memo {
+        if n == want {
+            return slice;
+        }
+    }
+    // Fold explicit `install_planes` registrations (registry's own tests) AND `register_test_plane`
+    // registrations ahead of the built-ins, then leak ONCE for this (grown) set.
+    let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
+    all.extend(reg.iter().copied());
+    let merged = merged_boot_plane_decls(&all, BUILTIN_PLANE_DECLS);
+    let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
+    *memo = Some((want, leaked));
+    leaked
 }
 
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.

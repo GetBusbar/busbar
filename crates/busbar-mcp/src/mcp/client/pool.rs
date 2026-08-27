@@ -138,7 +138,7 @@ impl RefreshTriggers {
 
     /// DRAIN the whole pending set — the test-only reader that asserts [`Self::signal`] populated it.
     /// Production consumes per server through [`Self::take_if_pending`] on the call path.
-    #[cfg(all(test, not(busbar_mcp_native)))]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn take_pending(&self) -> std::collections::BTreeSet<String> {
         match self.pending.lock() {
             Ok(mut p) => std::mem::take(&mut *p),
@@ -294,6 +294,6 @@ impl McpConnectionPool {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pool_tests.rs"]
 mod pool_tests;

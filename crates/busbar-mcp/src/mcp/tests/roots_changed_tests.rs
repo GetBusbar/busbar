@@ -18,6 +18,7 @@
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_key, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 

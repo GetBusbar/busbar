@@ -24,6 +24,7 @@
 //! then behave exactly as the un-pooled breaker unit — no twin answer, no reroute, one member.
 
 use super::upstream_support::{call, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 

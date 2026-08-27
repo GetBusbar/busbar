@@ -289,7 +289,7 @@ impl ReqwestTransport {
         self
     }
 
-    #[cfg(all(test, not(busbar_a2a_native)))]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
         self.extra_roots
             .push(reqwest::Certificate::from_pem(pem).expect("a PEM certificate"));
@@ -335,7 +335,7 @@ impl ReqwestTransport {
         // uninstalled `hostless()` seam. Install the core-backed driver here, idempotently
         // (`OnceLock`) — reached by both hop methods (`execute`/`post_stream`) since both build their
         // spec through this. Compiled out of every non-test build; production installs it at boot.
-        #[cfg(all(test, not(busbar_a2a_native)))]
+        #[cfg(all(test, feature = "test-support"))]
         busbar_substrate::egress::seam::install_hostless_egress(
             &busbar_core::egress::seam::CoreHostlessEgress,
         );
@@ -561,7 +561,7 @@ impl LiveCardFetch {
     /// needs a server certificate the client will accept — so the root has to reach the transports
     /// THIS BUNDLE built, not a hand-made one beside them. Applying it uniformly is what leaves the
     /// identity as the only thing that varies between the hops under test.
-    #[cfg(all(test, not(busbar_a2a_native)))]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(self, pem: &[u8]) -> Self {
         let Self {
             resolver,
@@ -632,7 +632,7 @@ impl CardTransports for LiveCardFetch {
     }
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
 
@@ -641,7 +641,7 @@ mod transport_tests;
 // the connection, and this one proves what the connection PROVES. It reuses that file's TLS harness
 // deliberately — a second server fixture would be a second thing that could stop matching
 // production.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/transport_pin_tests.rs"]
 mod transport_pin_tests;
 
@@ -649,6 +649,6 @@ mod transport_pin_tests;
 // connection PROVES ABOUT BUSBAR rather than about the peer. It reuses the first file's TLS harness
 // and CA generator deliberately — a second server fixture would be a second thing that could stop
 // matching production.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/transport_mtls_tests.rs"]
 mod transport_mtls_tests;

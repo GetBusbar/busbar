@@ -274,7 +274,7 @@ pub(crate) fn carried_a2a_gates(
 /// TEST-ONLY: every production reader reaches the runtime through the neutral host seam
 /// (`runtime_arc`/`runtime_arc_of` over an `EngineHost`); this `&App` form now survives solely for
 /// the in-crate tests that assert plane presence/absence off a built `App`.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
@@ -291,7 +291,7 @@ pub(crate) fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plan
 /// Test-only since the boot seam was neutralized: production reads the A2A runtime off the neutral
 /// host through [`runtime_arc_of`] (the `&App` boot-start caller was the last production user); the
 /// `&App` form survives for the test harnesses that build an `App` directly.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn runtime_arc(
     app: &busbar_core::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {

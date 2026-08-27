@@ -27,11 +27,11 @@
 // transport's hop moved onto the egress seam, the HOST computes the observed pin (from the same
 // [`busbar_substrate::plane_host::spki::pin`] this name aliases), so no non-test code reaches `spki_pin` any
 // more — the walk, its error taxonomy and the pin rendering are all exercised only by the tests.
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) use busbar_substrate::plane_host::spki::pin as spki_pin;
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) use busbar_substrate::plane_host::spki::{subject_public_key_info, SpkiError};
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/spki_tests.rs"]
 mod spki_tests;

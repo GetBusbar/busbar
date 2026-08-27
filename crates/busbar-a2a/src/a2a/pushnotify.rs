@@ -342,6 +342,6 @@ pub(crate) fn revalidate(
     })
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pushnotify_tests.rs"]
 mod pushnotify_tests;

@@ -111,19 +111,14 @@ mod alloc_gate_instrument {
     }
 }
 
-/// THE EXTRACTED A2A PLANE, compiled back in for TEST BUILDS ONLY. The sources live in
-/// `crates/busbar-a2a/src/a2a` (the ONE A2A plugin crate; the `busbar` binary registers its
-/// `PLANE_DECL` through `plane::registry::install_planes`), and core's PRODUCTION build knows nothing
-/// of them — this module exists so the pre-extraction fixture surface (the `TestApp` builders and
-/// `agents:` configs across the core suite) keeps exercising the real plane from inside this crate's
-/// test binary, where an externally-linked copy could not reach the registry (its `PlaneDecl` would be
-/// a different crate's type). The plane's sources are written against `busbar_core::` paths, which the
-/// `extern crate self as busbar_core` alias in this file resolves here — mirroring exactly how
-/// `crate::mcp` dual-compiles the extracted MCP plane. A2A is PLANE-ONLY: it contributes `PLANE_DECL`
-/// but no `PROTO_DECL` (it is not an LLM-style dialect on the proto axis).
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../busbar-a2a/src/a2a/mod.rs"]
-pub mod a2a;
+// THE A2A + MCP PLANES are NO LONGER dual-compiled into this crate's test binary. Their sources live
+// in `crates/busbar-a2a/src/a2a` and `crates/busbar-mcp/src/mcp` and are exercised by this crate's own
+// integration tests through the REAL, externally-linked crates (added as `[dev-dependencies]` with
+// `test-support`), and by each plane crate's OWN `--lib` tests under `feature = "test-support"`. Core
+// names NO plane type: `test_support::TestApp` installs type-erased plane runtimes through its neutral
+// `install_plane_runtime` seam, and each plane's `testkit` builds+installs its own. The former
+// `#[path = "../../busbar-*/src/*/mod.rs"] pub mod a2a|mcp;` shims (and the `busbar_*_native`
+// build-script cfgs that gated them) are GONE — the engine no longer reaches into its plugins' source.
 pub mod admin;
 /// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
 /// evidence busbar keeps — a plane supplies the record type and nothing else. `admin::audit` is the
@@ -179,18 +174,6 @@ pub mod json;
 pub mod limits;
 pub mod lineage;
 pub mod lossless;
-/// THE EXTRACTED MCP PLANE, compiled back in for TEST BUILDS ONLY. The sources live in
-/// `crates/busbar-mcp/src/mcp` (the ONE MCP plugin crate; the `busbar` binary registers its
-/// `PLANE_DECL` through `plane::registry::install_planes`), and core's PRODUCTION build knows nothing
-/// of them — this module exists so the pre-extraction fixture surface (the `TestApp::mcp*` builders
-/// and `tools:`/`mcp:` configs across the core suite) keeps exercising the real plane from inside this
-/// crate's test binary, where an externally-linked copy could not reach the registry (its `PlaneDecl`
-/// would be a different crate's type). The plane's sources are written against `busbar_core::` paths,
-/// which the `extern crate self as busbar_core` alias in this file resolves here — mirroring exactly
-/// how `proto::anthropic` dual-compiles the extracted LLM codec.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../busbar-mcp/src/mcp/mod.rs"]
-pub mod mcp;
 pub mod media;
 pub mod metrics;
 pub mod net_guard;
@@ -252,29 +235,22 @@ pub use router::{
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]
-pub(crate) use router::build_router_with_limits;
-// Production names `base_data_router` crate-internally; under test-support the crate-root name is
-// the `pub` wrapper below instead, so the plain re-export is compiled only off the test-support path.
-#[cfg(not(any(test, feature = "test-support")))]
-#[allow(unused_imports)]
-pub(crate) use router::base_data_router;
+pub(crate) use router::{base_data_router, build_router_with_limits};
 
-/// TEST-SUPPORT re-export of the base data router. `router::base_data_router` is `pub(crate)`; this
-/// thin wrapper widens it to `pub` ONLY under the test-support surface so the extracted A2A plane's
-/// own ingress tests can drive the base router directly (off the App's neutral slots, exactly as
-/// production does) without the `pub(crate)` fn escaping the crate in a production build.
+/// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
+/// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
+/// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
+/// [`busbar_plugin_loader::RouteAuth`]) — ONLY under the test-support surface, so the extracted A2A
+/// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
+/// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
 #[cfg(any(test, feature = "test-support"))]
-#[allow(clippy::type_complexity)]
-pub fn base_data_router(
-    plugin_routes: &plugin_routes::PluginRouteTable,
-    plane_slots: &std::collections::BTreeMap<
-        &'static str,
-        std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    >,
-    oauth_as: Option<&std::sync::Arc<oauth_as::plane::AsPlane>>,
-) -> (
-    axum::Router<std::sync::Arc<state::AppHandle>>,
-    core_routes::CoreRouteTable,
-) {
-    router::base_data_router(plugin_routes, plane_slots, oauth_as)
+pub fn base_data_route_table_view(
+    app: &state::App,
+) -> Vec<(String, busbar_plugin_loader::RouteAuth)> {
+    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.auth))
+        .collect()
 }

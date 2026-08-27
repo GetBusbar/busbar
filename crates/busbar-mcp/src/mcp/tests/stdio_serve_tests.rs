@@ -22,6 +22,7 @@ use crate::mcp::connect::connect_support::{
 };
 use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
 use crate::mcp::stdio_serve::SessionIdentity;
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};

@@ -1176,6 +1176,6 @@ fn synthesized_headers(value: &Value) -> HeaderMap {
     headers
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/stdio_serve_tests.rs"]
 mod stdio_serve_tests;

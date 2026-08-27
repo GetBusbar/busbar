@@ -84,11 +84,12 @@ schemars = { workspace = true, optional = true }
 # in core's. This crate's own `cargo test` still builds and runs the CODEC tests (the protocol half,
 # which needs no app), just not the plane half.
 #
-# The skip is keyed on the `busbar_mcp_native` cfg that `build.rs` sets unconditionally for THIS
-# crate's compilations and never for core's `#[path]` dual-compile (see `build.rs`), NOT on a feature:
-# a default-on `extracted` feature used to carry it, but `--no-default-features` switched it off and
-# wrongly un-skipped every plane test into this binary, where they cannot compile. A build-script cfg
-# cannot be switched off, so the skip is robust.
+# The App-needing plane tests are gated `#[cfg(all(test, feature = "test-support"))]`: `test-support`
+# is exactly the feature that pulls busbar-core into the closure (the `&App` fixtures name it), so the
+# gate is TRUE precisely when the tests can compile. `cargo test -p busbar-mcp --features test-support`
+# runs the full plane suite in THIS crate's own binary; a bare `cargo test -p busbar-mcp` runs only the
+# codec/App-free tests. (This replaced the former `busbar_mcp_native` build-script cfg + `#[path]`
+# dual-compile into busbar-core; both are gone.)
 #
 # The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
 # admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether

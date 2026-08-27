@@ -12,6 +12,7 @@
 
 use super::*;
 use crate::a2a::config::{AgentDefCfg, PinMechanism};
+use crate::testkit::TestAppA2aExt;
 use busbar_substrate::trust::TrustState;
 
 fn cfg_with(agents: &[(&str, AgentDefCfg)]) -> AgentsCfg {

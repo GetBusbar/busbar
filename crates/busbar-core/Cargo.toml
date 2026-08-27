@@ -147,17 +147,17 @@ test-support = ["busbar-substrate/test-support"]
 # `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
 timing = ["busbar-timing/timing"]
 
-# `busbar_mcp_native` / `busbar_a2a_native` are cfgs that `busbar-mcp` / `busbar-a2a`'s build scripts
-# set for those crates' OWN builds and NOT for the `#[path]` dual-compile of their `src/mcp` / `src/a2a`
-# into this crate's test binary (a build script runs for a compiled crate, not for path-included
-# source). The dual-compiled plane sources gate their tests `not(busbar_*_native)` so they run HERE and
-# skip in the plugin crate. This crate never sets either cfg, but the sources reference them, so declare
-# them KNOWN — otherwise `unexpected_cfgs` fires under `-D warnings`. (This replaced a dummy `extracted`
-# feature that served the same role.)
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(busbar_mcp_native)', 'cfg(busbar_a2a_native)'] }
-
 [dev-dependencies]
+# THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
+# (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
+# former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /
+# busbar-a2a normal-depend on busbar-core (optional, `test-support`), and a dev-dep the other way is
+# NOT a build cycle (cargo builds the lib first, then the dev-deps, then this crate's test binary).
+# It ALSO enables `test-support` on both planes in a `cargo test --workspace` build, so each plane
+# crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
+# keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
 # name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
 # the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).

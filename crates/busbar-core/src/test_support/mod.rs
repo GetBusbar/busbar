@@ -725,7 +725,7 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
 }
 
 #[allow(dead_code)]
-pub(crate) struct TestApp {
+pub struct TestApp {
     lanes: Vec<LaneSpec>,
     pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
@@ -741,18 +741,10 @@ pub(crate) struct TestApp {
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
-    /// The validated MCP resource for the built App. `None` (the default) = not an MCP server, and
-    /// the built router mounts no MCP route at all — which is what every pre-existing test expects.
-    mcp: Option<crate::mcp::McpResource>,
     /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
     /// one, which is what every pre-existing test expects and what the gating proof in
     /// `oauth_as::tests::mount_tests` asserts costs nothing.
     oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
-    tool_defs: crate::mcp::config::ToolsCfg,
-    /// The LIVE tool-list sightings the built `App` dispatches against. `None` (the default) means
-    /// no upstream has ever been contacted, which is what every pre-existing test expects and what
-    /// makes the dispatch gate fall back to the operator's configured hash.
-    mcp_sightings: Option<std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -773,7 +765,6 @@ pub(crate) struct TestApp {
     base_group_names: std::collections::HashSet<String>,
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
-    agent_defs: crate::a2a::config::AgentsCfg,
     tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     overlay_path: Option<std::path::PathBuf>,
@@ -791,21 +782,56 @@ pub(crate) struct TestApp {
     /// a test that merely omits `export:` still gets `/metrics` once any earlier test in the binary
     /// called `metrics::init()`.
     no_plugin_routes: bool,
-    /// B1.7 INSTALL SEAM: the pre-built, type-erased plane runtimes `build()` installs into the App's
-    /// [`crate::state::App::plane_slots`], keyed by each plane's decl key. `build()` fills this via
-    /// [`TestApp::install_plane_runtimes`] (which names the `crate::mcp`/`crate::a2a` plane types) and
-    /// then MOVES it into the App slot without naming a plane type itself — the precursor that lets
-    /// B2/B3 relocate the plane-specific construction out of core without also restructuring `build()`.
+    /// THE PLANE INSTALL SEAM: the pre-built, type-erased plane runtimes `build()` moves into the
+    /// App's [`crate::state::App::plane_slots`], keyed by each plane's decl key (and the MCP
+    /// per-generation runtime under [`crate::state::MCP_RUNTIME_SLOT`]). Filled from OUTSIDE core by
+    /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
+    /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
+    /// the `busbar-mcp` / `busbar-a2a` test-kits own their own construction.
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
+    /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
+    /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
+    plane_dispatch: crate::plane::PlaneDispatch,
+    /// The type-erased `agents:` config handle the built App carries on [`crate::state::App::agent_defs`].
+    /// `None` ⇒ the neutral empty placeholder (`Arc::new(())`), which no test-path consumer downcasts —
+    /// the A2A plane reads its `AgentsCfg` off its own runtime object, not off this handle. The A2A
+    /// test-kit sets the real erased `AgentsCfg` here for production fidelity.
+    agent_defs_any: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// NEUTRAL per-container hook SPECS for the MCP and A2A planes — `(container_name, own_hook_names)`
+    /// pairs plus the section-level hook list — handed here by each plane's test-kit as plain strings
+    /// off its typed config, so `build()` resolves the gates against its OWN `hook_registry`/`hook_env`
+    /// through the public `hooks::resolve_container_gates` (exactly as production does) without ever
+    /// naming a plane-typed config section. Resolving at build time (not in the test-kit) keeps the
+    /// resolution reading the same registry/env the fixture was given, regardless of builder order.
+    mcp_container_hooks: Vec<(String, Vec<String>)>,
+    mcp_section_hooks: Vec<String>,
+    a2a_container_hooks: Vec<(String, Vec<String>)>,
+    a2a_section_hooks: Vec<String>,
+    /// POST-BUILD hooks a plane's test-kit registers to run against the finished `App` (e.g. the MCP
+    /// plane's durable-demotion replay, which names `mcp::demotion` and so cannot live in core).
+    #[allow(clippy::type_complexity)]
+    post_build: Vec<Box<dyn FnOnce(&std::sync::Arc<crate::state::App>)>>,
+    /// TYPE-ERASED per-plane accumulator scratch. A plane's test-kit stashes its own builder state here
+    /// (keyed by plane key) across the fluent chain — `.mcp(cfg)`, `.mcp_server(def)`, … each mutate
+    /// ONE `McpScratch` — so core never names the plane's config types. Downcast back by the test-kit
+    /// through [`TestApp::plane_scratch`] / [`TestApp::take_plane_scratch`].
+    plane_scratch: std::collections::HashMap<&'static str, Box<dyn std::any::Any>>,
+    /// PER-PLANE FINALIZERS run at the TOP of `build()`. Each is registered ONCE by a plane's test-kit
+    /// (via [`TestApp::register_plane_finalizer`]); it reads its accumulated [`plane_scratch`] and
+    /// drives the neutral install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`,
+    /// `set_*_container_hooks`, `set_agent_defs_any`, `on_built`). This is the doorway that keeps the
+    /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
+    /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
+    #[allow(clippy::type_complexity)]
+    plane_finalizers: Vec<Box<dyn FnOnce(&mut TestApp)>>,
 }
 
 #[allow(dead_code)]
 impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
-            tool_defs: Default::default(),
-            mcp_sightings: None,
             mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
@@ -815,7 +841,6 @@ impl TestApp {
             admin_modules: None,
             login_methods: None,
             public_url: None,
-            mcp: None,
             oauth_as: None,
             role_bindings: None,
             mint_policy: None,
@@ -832,7 +857,6 @@ impl TestApp {
             base_group_names: std::collections::HashSet::new(),
             identity_providers: Default::default(),
             export_defs: Default::default(),
-            agent_defs: Default::default(),
             tool_pools: Default::default(),
             agent_pools: Default::default(),
             overlay_path: None,
@@ -843,14 +867,69 @@ impl TestApp {
             disk_paths: None,
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
+            plane_dispatch: crate::plane::PlaneDispatch::default(),
+            agent_defs_any: None,
+            mcp_container_hooks: Vec::new(),
+            mcp_section_hooks: Vec::new(),
+            a2a_container_hooks: Vec::new(),
+            a2a_section_hooks: Vec::new(),
+            post_build: Vec::new(),
+            plane_scratch: std::collections::HashMap::new(),
+            plane_finalizers: Vec::new(),
         }
     }
 
-    /// B1.7 INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl `key`.
-    /// `build()` reads the accumulated map back into [`crate::state::App::plane_slots`], so this is the
-    /// one doorway a plane runtime enters the built App's type-erased slot through — the seam B2/B3 use
-    /// to relocate plane-specific construction out of core.
-    pub(crate) fn install_plane_runtime(
+    /// TEST-KIT SEAM — get-or-create this plane's type-erased accumulator scratch, downcast to the
+    /// test-kit's own `T`. The MCP/A2A test-kits call this across the fluent chain to accumulate their
+    /// (plane-typed) builder state without core naming it; `T` MUST be the same type for a given `key`.
+    pub fn plane_scratch<T: std::any::Any + Default>(&mut self, key: &'static str) -> &mut T {
+        self.plane_scratch
+            .entry(key)
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut::<T>()
+            .expect("plane_scratch key is used with one consistent type")
+    }
+
+    /// TEST-KIT SEAM — remove and return this plane's accumulator scratch (or `T::default()` if the
+    /// test-kit never touched it). Called from inside a finalizer at build time to consume the
+    /// accumulated config and build the real plane runtime.
+    pub fn take_plane_scratch<T: std::any::Any + Default>(&mut self, key: &'static str) -> T {
+        self.plane_scratch
+            .remove(key)
+            .map(|b| *b.downcast::<T>().expect("plane_scratch key type"))
+            .unwrap_or_default()
+    }
+
+    /// TEST-KIT SEAM — register a finalizer to run at the top of `build()`. A plane's test-kit
+    /// registers exactly one (guarded by a flag in its own scratch); the finalizer reads the scratch
+    /// and drives the neutral install seams. Kept out of `build()` proper so core names no plane type.
+    pub fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut TestApp)>) {
+        self.plane_finalizers.push(f);
+    }
+
+    /// TEST-KIT SEAM — the fixture's configured `public_url:`, which a plane's finalizer needs to lower
+    /// its runtime (the A2A plane derives its card/discovery origins from it). Named distinctly from
+    /// the `public_url(url)` builder SETTER above.
+    pub fn configured_public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
+    /// TEST-KIT SEAM — busbar's PUBLIC A2A card-issuer key off the fixture's governance, computed EXACTLY
+    /// as production's `a2a_start` hook / `boot::start_planes` computes it, returned as the neutral
+    /// substrate `CardIssuer`. The A2A test-kit stamps it onto its plane so a fixture that configures
+    /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
+    /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
+    /// `pub(crate)` governance accessor.
+    pub fn a2a_card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
+        self.governance.as_ref().and_then(|g| g.a2a_card_issuer())
+    }
+
+    /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
+    /// `key` (or the MCP per-generation runtime under [`crate::state::MCP_RUNTIME_SLOT`]). `build()`
+    /// moves the accumulated map into [`crate::state::App::plane_slots`], so this is the one doorway a
+    /// plane runtime enters the built App's type-erased slot — the seam each plane's test-kit drives so
+    /// core's fixture names no plane runtime type.
+    pub fn install_plane_runtime(
         &mut self,
         key: &'static str,
         rt: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -859,99 +938,76 @@ impl TestApp {
         self
     }
 
-    /// Build this fixture's A2A plane runtime, applying busbar's PUBLIC card-issuer key off governance
-    /// exactly as production's `a2a_start` hook does — so a fixture that configures both an a2a plane
-    /// and a card-signing governance key serves signed cards without running the boot fold. `None` when
-    /// no `agents:` receiving side is configured. Names `crate::a2a` here (a plane BUILDER method) so
-    /// `build()` need not — B2/B3 relocate this.
-    fn build_a2a_plane_runtime(&self) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
-        let plane =
-            crate::a2a::plane::A2aPlane::from_config(&self.agent_defs, self.public_url.as_deref());
-        // MIRROR PRODUCTION'S `a2a_start` HOOK: stash busbar's PUBLIC card-issuer key on the plane's
-        // own slot, computed from governance exactly as `boot::start_planes` computes `BootCtx`'s.
-        if let (Some(p), Some(gov)) = (plane.as_ref(), self.governance.as_ref()) {
-            if let Some(issuer) = gov.a2a_card_issuer() {
-                p.set_card_issuer(issuer);
-            }
-        }
-        plane
+    /// NEUTRAL DISPATCH SEAM — record that plane `key` is mounted at `path` speaking `wire`. A plane's
+    /// test-kit calls this with the plane's own mount path (`&str`) and a substrate wire const, so
+    /// `build()` mounts the plane surface without naming a plane type. Mirrors production's
+    /// `PlaneDispatch::mount`.
+    pub fn mount_plane(&mut self, key: &'static str, path: &str, wire: &'static str) -> &mut Self {
+        let d = std::mem::take(&mut self.plane_dispatch);
+        self.plane_dispatch = d.mount(key, path, wire);
+        self
     }
 
-    /// Build this fixture's MCP plane per-generation runtime bundle, type-erased as `Arc<dyn Any>`.
-    /// Constructed directly (rather than via `crate::mcp::build_runtime`) so a fixture can still inject
-    /// its own `mcp_sightings`; the other five objects match production's `McpRuntime::build`. Names
-    /// `crate::mcp` here (a plane BUILDER method) so `build()` need not.
-    fn build_mcp_runtime(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
-        std::sync::Arc::new(crate::mcp::McpRuntime {
-            catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
-                &self.tool_defs,
-            )),
-            servers: std::sync::Arc::new(self.tool_defs.clone()),
-            pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
-            sightings: self.mcp_sightings.clone().unwrap_or_default(),
-            roots_epochs: Default::default(),
-            sampling_spend: Default::default(),
-            verify: Default::default(),
-        })
-    }
-
-    /// Build this fixture's plane dispatch table — mount + admission for the mcp and a2a planes, the
-    /// way production mounts them, so a router-walking test sees the surface a deployment would have.
-    /// Names `crate::mcp`/`crate::a2a` here (a plane BUILDER method) so `build()` need not.
-    fn build_plane_dispatch(
-        &self,
-        mcp: Option<&crate::mcp::McpResource>,
-        a2a_plane: Option<&std::sync::Arc<crate::a2a::plane::A2aPlane>>,
-    ) -> crate::plane::PlaneDispatch {
-        let mut dispatch = crate::plane::PlaneDispatch::default();
-        if let Some(r) = mcp {
-            dispatch = dispatch
-                .mount("mcp", r.mount_path(), crate::plane::WIRE_JSONRPC)
-                .admit("mcp", r.admission());
-        }
-        if let Some(admission) = a2a_plane.and_then(|p| p.admission()) {
-            dispatch = dispatch
-                .mount(
-                    "a2a",
-                    crate::a2a::serve::MOUNT_PATH,
-                    crate::plane::WIRE_JSONRPC,
-                )
-                // THE SECOND BINDING'S PATH, claimed by the same act and for the same reason.
-                // gRPC is served at the path the vendored `a2a.proto` dictates rather than under
-                // the plane's mount, and a claimed path is where `admission_for` finds the RFC
-                // 8707 audience — so leaving it out would not merely mislabel the leg, it would
-                // admit a token minted for some other resource on it.
-                .mount(
-                    "a2a",
-                    crate::a2a::serve::GRPC_MOUNT_PATH,
-                    crate::plane::WIRE_GRPC,
-                )
-                .admit("a2a", admission);
-        }
-        dispatch
-    }
-
-    /// Install this fixture's type-erased plane slots (the mcp ENDPOINT resource and the a2a plane)
-    /// through the B1.7 [`TestApp::install_plane_runtime`] seam, keyed by each plane's decl key. Names
-    /// `crate::mcp`/`crate::a2a` here (a plane BUILDER method) so `build()` need not.
-    fn install_plane_runtimes(
+    /// NEUTRAL DISPATCH SEAM — record plane `key`'s RFC 8707 admission. The admission is the substrate
+    /// `PlaneAdmission` the plane's own accessor already returns, so `build()` names no plane type to
+    /// wire the audience check. Mirrors production's `PlaneDispatch::admit`.
+    pub fn admit_plane(
         &mut self,
-        mcp_arc: Option<std::sync::Arc<crate::mcp::McpResource>>,
-        a2a_plane: Option<std::sync::Arc<crate::a2a::plane::A2aPlane>>,
-    ) {
-        if let Some(r) = mcp_arc {
-            self.install_plane_runtime(crate::mcp::PLANE_DECL.key, r);
-        }
-        if let Some(p) = a2a_plane {
-            self.install_plane_runtime(crate::a2a::PLANE_DECL.key, p);
-        }
+        key: &'static str,
+        admission: busbar_substrate::plane::PlaneAdmission,
+    ) -> &mut Self {
+        let d = std::mem::take(&mut self.plane_dispatch);
+        self.plane_dispatch = d.admit(key, admission);
+        self
     }
 
-    /// Replay the MCP plane's durable demotion records into the built app's sightings, exactly as
-    /// boot's durable-MCP-trust block does. Names `crate::mcp` here so `build()` need not.
-    fn hydrate_mcp_demotion(app: &std::sync::Arc<crate::state::App>) {
-        // Mint a snapshot-only host over the built app, exactly as boot's replay reads it through one.
-        crate::mcp::demotion::hydrate(&crate::plane_host::engine_host(app));
+    /// NEUTRAL GATE SEAM — hand `build()` the MCP plane's per-server hook SPECS as plain strings
+    /// (`(server_name, own_hook_names)` pairs + the section `tools.hooks:` list). `build()` resolves
+    /// them against its own `hook_registry`/`hook_env` through the public
+    /// `crate::hooks::resolve_container_gates`, exactly as production does, so no MCP-typed config
+    /// section enters core.
+    pub fn set_mcp_container_hooks(
+        &mut self,
+        containers: Vec<(String, Vec<String>)>,
+        section: Vec<String>,
+    ) -> &mut Self {
+        self.mcp_container_hooks = containers;
+        self.mcp_section_hooks = section;
+        self
+    }
+
+    /// NEUTRAL GATE SEAM — the A2A twin of [`TestApp::set_mcp_container_hooks`], over `agents:`.
+    pub fn set_a2a_container_hooks(
+        &mut self,
+        containers: Vec<(String, Vec<String>)>,
+        section: Vec<String>,
+    ) -> &mut Self {
+        self.a2a_container_hooks = containers;
+        self.a2a_section_hooks = section;
+        self
+    }
+
+    /// NEUTRAL AGENTS-HANDLE SEAM — set the type-erased `agents:` config the built App carries on
+    /// [`crate::state::App::agent_defs`]. The A2A test-kit erases its own `AgentsCfg` and hands it here,
+    /// so core names no A2A config type. No test-path consumer downcasts this handle (the A2A plane
+    /// reads its `AgentsCfg` off its runtime object); it exists for production fidelity.
+    pub fn set_agent_defs_any(
+        &mut self,
+        defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) -> &mut Self {
+        self.agent_defs_any = Some(defs);
+        self
+    }
+
+    /// NEUTRAL POST-BUILD SEAM — register a closure to run against the finished `App`. A plane's
+    /// test-kit uses this for steps that name plane types (e.g. the MCP plane's durable-demotion
+    /// replay), keeping them out of core's `build()`.
+    pub fn on_built(
+        &mut self,
+        f: Box<dyn FnOnce(&std::sync::Arc<crate::state::App>)>,
+    ) -> &mut Self {
+        self.post_build.push(f);
+        self
     }
 
     /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.
@@ -1042,12 +1098,6 @@ impl TestApp {
     /// [`TestApp::identity_provider`].
     pub(crate) fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
         self.export_defs.insert(name.into(), cfg);
-        self
-    }
-    /// Seed an `agents:` DEFINITION into the App's effective named map — the A2A-plane twin of
-    /// [`TestApp::export_def`].
-    pub(crate) fn agent_def(mut self, name: &str, cfg: crate::a2a::config::AgentDefCfg) -> Self {
-        self.agent_defs.agents.insert(name.into(), cfg);
         self
     }
     /// Declare a `tool_pools:` failover pool over already-seeded `mcp_server` registrations —
@@ -1144,18 +1194,6 @@ impl TestApp {
         self
     }
 
-    /// Make the built App an MCP server, from the same `mcp:` config shape an operator writes.
-    ///
-    /// Takes the CONFIG and runs the real validation rather than accepting a pre-built
-    /// `crate::mcp::McpResource`: a test that hand-assembled the resource could mount a
-    /// combination the validator refuses, and would then be asserting against a deployment that
-    /// cannot exist.
-    pub(crate) fn mcp(mut self, cfg: &crate::mcp::McpCfg) -> Self {
-        self.mcp =
-            Some(crate::mcp::McpResource::from_cfg(cfg).expect("test mcp config must be valid"));
-        self
-    }
-
     /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
     /// an operator writes.
     ///
@@ -1171,47 +1209,6 @@ impl TestApp {
         let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
             .expect("test oauth_as plane must build");
         self.oauth_as = Some(std::sync::Arc::new(plane));
-        self
-    }
-
-    /// Register one `tools:` entry — one MCP server — through the SAME value validation the file
-    /// path and the admin write path run.
-    ///
-    /// It validates rather than accepting the struct: a test that hand-assembled a registration
-    /// could declare a combination boot refuses (an `unpinned` server carrying key material, a
-    /// `stdio` transport nothing implements) and would then be asserting against a deployment that
-    /// cannot exist.
-    pub(crate) fn mcp_server(
-        mut self,
-        name: &str,
-        def: crate::mcp::config::McpServerDefCfg,
-    ) -> Self {
-        crate::mcp::config::validate_server(name, &def)
-            .expect("test tools: entry must be valid config");
-        self.tool_defs.servers.insert(name.to_string(), def);
-        self
-    }
-
-    /// The reserved SECTION-level `tools.hooks:` attach — the all-MCP hook list, which combines
-    /// ADDITIVELY with each server's own `hooks:`. The twin of [`TestApp::agents_hooks`].
-    pub(crate) fn tools_hooks(mut self, names: &[&str]) -> Self {
-        self.tool_defs.all_server_hooks = names.iter().map(|n| (*n).to_string()).collect();
-        self
-    }
-
-    /// The reserved SECTION-level `agents.hooks:` attach — the all-A2A hook list. Same combine rule,
-    /// same spelling, on the sibling plane, because it is one operator concept.
-    pub(crate) fn agents_hooks(mut self, names: &[&str]) -> Self {
-        self.agent_defs.all_agent_hooks = names.iter().map(|n| (*n).to_string()).collect();
-        self
-    }
-
-    /// Dispatch against these LIVE sightings — the cache a `connect`/refresh has published into.
-    pub(crate) fn with_mcp_sightings(
-        mut self,
-        cache: std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>,
-    ) -> Self {
-        self.mcp_sightings = Some(cache);
         self
     }
 
@@ -1361,6 +1358,14 @@ impl TestApp {
         std::sync::Arc<crate::state::App>,
         std::sync::Arc<crate::store::HealthState>,
     ) {
+        // PLANE FINALIZERS FIRST: each plane's test-kit registered one; it consumes its accumulated
+        // scratch and drives the neutral install seams (runtimes, dispatch mounts/admissions, gate
+        // specs, agents handle, post-build hooks). Run here — before anything below reads those fields
+        // — so the fluent `.mcp(...)/.agent_def(...)` chain lowers to a real, externally-linked plane.
+        let finalizers = std::mem::take(&mut self.plane_finalizers);
+        for f in finalizers {
+            f(&mut self);
+        }
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
@@ -1373,29 +1378,16 @@ impl TestApp {
             lanes.push(spec.to_lane());
             lane_data.push(spec.to_lane_data());
         }
-        // B1.7 SEAM: the plane runtimes are built by the plane BUILDER methods (which still name
-        // `crate::mcp`/`crate::a2a`) and handed here as type-erased objects, so `build()`'s own body
-        // names no plane type. Built BEFORE `self` is partially moved apart below so the seam's
-        // `&mut self` install call is still legal. Lowered ONCE and read twice, exactly as production
-        // does it: the registry a test configures and the dispatch table that mounts it come from one
-        // reading.
-        let a2a_plane = self.build_a2a_plane_runtime();
-        // Lowered ONCE for the same reason: `mcp:`'s typed field and the type-erased slot map below
-        // must read the identical `Arc`, never two `Arc::new(self.mcp.clone())` calls.
-        let mcp_arc = self.mcp.clone().map(std::sync::Arc::new);
-        // Built here, ahead of the `App` literal, so the dispatch table reads the SAME `a2a_plane`
-        // /`mcp` the slot map installs. The BUILDER method names the plane types; `build()` holds only
-        // the type-inferred locals and the neutral dispatch object.
-        let plane_dispatch = self.build_plane_dispatch(self.mcp.as_ref(), a2a_plane.as_ref());
-        let mcp_runtime_slot = self.build_mcp_runtime();
-        // Install the type-erased plane slots through the B1.7 seam, then MOVE the accumulated map into
-        // the App slot below — `build()` never names the slot keys or the plane runtime types itself.
-        self.install_plane_runtimes(mcp_arc, a2a_plane);
-        let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
-        // The MCP plane's always-present per-generation runtime rides `plane_slots` under its companion
-        // key (`crate::state::MCP_RUNTIME_SLOT`), the same home production `appbuild` gives it — read
-        // back through `crate::mcp::runtime`, no flat `App::mcp_runtime`/`mcp_verify` field.
-        plane_slots.insert(crate::state::MCP_RUNTIME_SLOT, mcp_runtime_slot);
+        // THE PLANE SLOTS, filled from OUTSIDE core: each plane's test-kit already built its runtime
+        // objects (the `"mcp"`/`"a2a"` dispatch resources AND the MCP per-generation runtime under
+        // `MCP_RUNTIME_SLOT`) and installed them through [`TestApp::install_plane_runtime`], so
+        // `build()` MOVES the accumulated type-erased map into the App slot without naming a plane
+        // runtime type or a slot key of its own.
+        let plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
+        // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
+        // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
+        // test sees the surface a deployment would have without `build()` naming a plane type.
+        let plane_dispatch = std::mem::take(&mut self.plane_dispatch);
         let auth = self.auth.unwrap_or_else(|| {
             std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(
                 &crate::config::AuthCfg::default_none(),
@@ -1426,26 +1418,25 @@ impl TestApp {
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
             )
         });
-        // THE MCP AND A2A GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry and
-        // env this fixture was given. A test that hand-assembled a gate chain could attach a hook
-        // the real resolver would have skipped (wrong kind, a rewrite gate, an absent plugin) and
-        // would then be asserting against a deployment that cannot exist.
+        // THE MCP AND A2A GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry and env
+        // this fixture was given. The per-container hook SPECS arrive as neutral strings from each
+        // plane's test-kit (`set_mcp_container_hooks`/`set_a2a_container_hooks`); `build()` runs the
+        // SAME `resolve_container_gates` production uses over them, so a test that hand-assembled a gate
+        // chain could not attach a hook the real resolver would have skipped.
         let mcp_server_gates = crate::hooks::resolve_container_gates(
-            self.tool_defs
-                .servers
+            self.mcp_container_hooks
                 .iter()
-                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-            &self.tool_defs.all_server_hooks,
+                .map(|(n, h)| (n.as_str(), h.as_slice())),
+            &self.mcp_section_hooks,
             &self.hook_registry,
             &hook_env,
             0,
         );
         let a2a_agent_gates = crate::hooks::resolve_container_gates(
-            self.agent_defs
-                .agents
+            self.a2a_container_hooks
                 .iter()
-                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-            &self.agent_defs.all_agent_hooks,
+                .map(|(n, h)| (n.as_str(), h.as_slice())),
+            &self.a2a_section_hooks,
             &self.hook_registry,
             &hook_env,
             0,
@@ -1455,7 +1446,13 @@ impl TestApp {
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
-            agent_defs: std::sync::Arc::new(self.agent_defs),
+            // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
+            // it via `set_agent_defs_any`; absent that, a neutral empty placeholder no test-path
+            // consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
+            agent_defs: self
+                .agent_defs_any
+                .take()
+                .unwrap_or_else(|| std::sync::Arc::new(())),
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
@@ -1519,19 +1516,14 @@ impl TestApp {
                     .unwrap_or_else(crate::auth::token::LoginMethods::empty),
             ),
             public_url: self.public_url,
-            // The MCP plane and its dispatch table are built together from ONE validated resource,
-            // exactly as `build_app_from_config` does it, so a test can never construct an App whose
-            // ingress is mounted at one path while the audience check watches another.
-            // BOTH PLANES, mounted the way production mounts them, so a router-walking test sees
-            // the surface a deployment would have rather than one this fixture invented.
-            // THE DISPATCH TABLE, built above through the plane BUILDER seam ([`build_plane_dispatch`])
-            // from the SAME `mcp`/`a2a_plane` the slot map installs — so `build()` names no plane type.
+            // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /
+            // `admit_plane` — so a router-walking test sees the surface a deployment would have while
+            // `build()` names no plane type to assemble it.
             planes: std::sync::Arc::new(plane_dispatch),
-            // THE TYPE-ERASED SLOT MAP (Step 2.3), installed through the B1.7 seam
-            // ([`install_plane_runtimes`]) from the SAME two `Arc`s the dispatch reads — not a second
-            // construction — so a test built through this fixture sees the identical "one object, two
-            // readers" property `build_app_from_config` gives production. `build()` MOVES the seam map
-            // in without naming a slot key or a plane runtime type.
+            // THE TYPE-ERASED SLOT MAP, filled from outside core through [`TestApp::install_plane_runtime`]
+            // by each plane's test-kit and MOVED in here — so a fixture-built App has the same "one
+            // object, downcast by the plane's own accessor" property `build_app_from_config` gives
+            // production, and `build()` names no slot key or plane runtime type.
             plane_slots,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
@@ -1594,15 +1586,19 @@ impl TestApp {
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
-        // Mirror main's durable-MCP-trust boot block, in the same order: attach the sinks, then
-        // replay the recorded demotions into the sightings cache BEFORE the app is handed to a
-        // caller, which is where boot does it relative to binding a listener.
+        // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
+        // to a caller. The MCP-specific demotion REPLAY that follows sink-attach in production is
+        // registered by the MCP test-kit as a `post_build` hook (it names `mcp::demotion`), run below.
         if let Some(durable) = mcp_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
             app.spent_token_ledger.set_sink(plane_store.clone());
             app.demotion_record.set_sink(plane_store);
-            Self::hydrate_mcp_demotion(&app);
+        }
+        // Run each plane test-kit's POST-BUILD hooks against the finished App (e.g. the MCP plane's
+        // durable-demotion replay), the doorway for steps that name plane types without core doing so.
+        for f in self.post_build.drain(..) {
+            f(&app);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
         // streams' front-door harnesses do. Production boots this through `register_and_migrate`; the
@@ -1615,40 +1611,9 @@ impl TestApp {
     }
 }
 
-/// SEED every registered MCP server's verification clock as JUST CHECKED, WITHOUT a sighting, so
-/// verify-on-call reuses the snapshot rather than re-fetching on the next `tools/call`.
-///
-/// The dispatch-LEG batteries (credentials, metering, breaker, reroute, roots, sampling, the wire
-/// itself) assert what leaves busbar once a tool is servable; they use synthetic approved hashes and
-/// mock upstreams that answer `tools/call` but not a verifiable `tools/list`. Verify-on-call would
-/// otherwise re-fetch and fail-close them for a reason those batteries are not about. Stamping a
-/// still-`Unsighted` ledger entry as fresh makes `crate::trust::reverify::due` answer "fresh", so the
-/// gate reuses the snapshot and the declarative `Unsighted` → configured-hash comparison runs exactly
-/// as it did before verify-on-call — which is the precondition these batteries were always written
-/// against. The drift/quarantine batteries drive their OWN `call` helper and deliberately do NOT call
-/// this, so they still fetch and detect drift.
-pub(crate) fn prefresh_mcp_sightings(app: &crate::state::App) {
-    use crate::mcp::client::catalogue::ServerCatalogue;
-    use crate::mcp::client::identity::ServerId;
-    let now = crate::store::now_ms();
-    let servers: Vec<_> = crate::mcp::runtime(app)
-        .catalogue
-        .servers()
-        .filter_map(|e| {
-            ServerId::new(&e.id)
-                .ok()
-                .map(|sid| (sid, e.approval.clone()))
-        })
-        .collect();
-    crate::mcp::runtime(app).sightings.apply(|map| {
-        for (sid, approval) in servers {
-            let entry = map
-                .entry(sid.as_str().to_string())
-                .or_insert_with(|| ServerCatalogue::seeded(sid.clone(), approval));
-            entry.ledger.last_checked_ms = Some(now);
-        }
-    });
-}
+// NOTE: `prefresh_mcp_sightings` (seed every registered MCP server's verification clock as just
+// checked) named `mcp::runtime`/`mcp::client` types and so RELOCATED to `busbar_mcp::testkit`
+// alongside the plane it serves — core's `test_support` stays plane-neutral.
 
 /// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
 /// cdylib under the given alias(es) (all pointing at the SAME cdylib) with the given declared manifest

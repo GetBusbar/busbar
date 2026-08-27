@@ -1005,6 +1005,6 @@ impl StdioWire {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/stdio_tests.rs"]
 mod stdio_tests;

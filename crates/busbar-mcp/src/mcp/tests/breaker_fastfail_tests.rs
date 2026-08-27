@@ -24,6 +24,7 @@ use super::upstream_support::{
     call, call_response, call_response_caps, exchanging_server, gov_with_scopes, mcp_cfg,
     Behaviour, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

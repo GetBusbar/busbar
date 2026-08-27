@@ -83,9 +83,12 @@ schemars = { workspace = true, optional = true }
 # back into ITS test binary. They build a `TestApp` and read the plane's runtime back out by DOWNCAST;
 # that runtime's type is `<compiling-crate>::a2a::plane::A2aPlane`, so the fixtures (in busbar-core,
 # `pub(crate)`) only produce a value the tests can reach and downcast when BOTH are the same crate —
-# inside busbar-core's binary. This crate's own `cargo test` still builds and runs the unit/codec tests
-# that need no `App`. The skip is keyed on the `busbar_a2a_native` cfg `build.rs` sets unconditionally
-# for THIS crate and never for core's `#[path]` dual-compile (see `build.rs`), NOT on a feature.
+# in THIS crate's own binary. The App-needing plane tests are gated
+# `#[cfg(all(test, feature = "test-support"))]` — `test-support` is exactly the feature that pulls
+# busbar-core into the closure (the `&App` fixtures name it), so the gate is TRUE precisely when the
+# tests can compile. `cargo test -p busbar-a2a --features test-support` runs the full plane suite here;
+# a bare `cargo test -p busbar-a2a` runs only the App-free unit/codec tests. (This replaced the former
+# `busbar_a2a_native` build-script cfg + `#[path]` dual-compile into busbar-core; both are gone.)
 #
 # The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
 # admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether
@@ -112,3 +115,14 @@ test-support = [
 [dev-dependencies]
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Test-only crates the A2A plane's own `test-support` suite names. These were reachable when the plane
+# dual-compiled into busbar-core (through core's dev-deps); now that the suite runs in THIS crate's own
+# binary they must be declared here. `reqwest`'s `json` feature is likewise test-only (the live-server
+# tests decode responses), unioned with the `http2` prod feature by the resolver.
+reqwest = { workspace = true, features = ["json"] }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+busbar-store-memory = { path = "../store-memory" }
+busbar-secret-ref = { path = "../secret-ref" }
+busbar-plugin-sign = { path = "../plugin-sign" }

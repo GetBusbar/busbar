@@ -23,6 +23,7 @@
 //! everything. Each is load-bearing only because the others exist.
 
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

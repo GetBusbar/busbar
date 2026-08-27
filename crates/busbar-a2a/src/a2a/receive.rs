@@ -2812,7 +2812,7 @@ fn reads_as_streaming(method: &str) -> bool {
         || method == "SubscribeToTask"
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn reads_as_streaming_for_test(method: &str) -> bool {
     reads_as_streaming(method)
 }
@@ -3014,6 +3014,6 @@ pub(crate) fn a2a_routes(
     routes
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/ingress_tests.rs"]
 mod ingress_tests;

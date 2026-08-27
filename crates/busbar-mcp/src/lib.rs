@@ -27,6 +27,12 @@
 pub mod codec;
 pub mod mcp;
 
+/// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
+/// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
+/// is the seam that lets core drop the `#[path]` dual-compile of `src/mcp` for its own tests.
+#[cfg(feature = "test-support")]
+pub mod testkit;
+
 /// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`). See [`mcp`] for the declaration.
 pub use mcp::PLANE_DECL;

@@ -362,7 +362,7 @@ impl UpstreamVerb {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 impl UpstreamVerb {
     /// ONE INSTANCE OF EVERY VARIANT, for the tests that enumerate the surface.
     ///
@@ -435,6 +435,6 @@ impl UpstreamVerb {
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/verb_tests.rs"]
 mod verb_tests;

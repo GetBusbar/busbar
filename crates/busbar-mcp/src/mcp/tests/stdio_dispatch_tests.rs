@@ -30,6 +30,7 @@ use super::upstream_support::{call, gov_with_scopes, mcp_cfg};
 use crate::mcp::config::{
     McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, Transport,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

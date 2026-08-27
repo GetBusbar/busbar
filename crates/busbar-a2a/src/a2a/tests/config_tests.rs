@@ -258,7 +258,9 @@ fn a_cross_plane_hook_reference_is_refused() {
     // This test drives `validate_agent` directly (no plane build), so bind the section-list provider
     // the composition root binds in production; without it `plane_sections()` is empty and a dotted
     // reference reads as merely malformed rather than cross-plane. Idempotent.
-    busbar_substrate::plane::config::install_plane_sections(busbar_core::plane::config::config_sections);
+    busbar_substrate::plane::config::install_plane_sections(
+        busbar_core::plane::config::config_sections,
+    );
     for bad in [
         "pools.fast",
         "agents.planner",

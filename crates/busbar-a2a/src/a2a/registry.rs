@@ -517,10 +517,10 @@ pub(crate) fn explain(
     busbar_substrate::catalogue::judge(registration, caller, wanted).map(|_| ())
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/registry_tests.rs"]
 mod registry_tests;
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;

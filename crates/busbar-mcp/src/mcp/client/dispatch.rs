@@ -285,14 +285,14 @@ pub(crate) fn visible_catalogue(
         .collect()
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/routing_key_tests.rs"]
 mod routing_key_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/generation_recheck_tests.rs"]
 mod generation_recheck_tests;

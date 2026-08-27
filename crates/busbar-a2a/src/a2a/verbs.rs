@@ -764,7 +764,7 @@ fn observed_skills(sighting: &Sighting<CardPin>) -> usize {
     sighting.observation().map_or(0, |o| o.capabilities.len())
 }
 
-#[cfg(all(test, not(busbar_a2a_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/verbs_tests.rs"]
 mod verbs_tests;
 

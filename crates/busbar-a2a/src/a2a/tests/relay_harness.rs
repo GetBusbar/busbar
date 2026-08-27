@@ -19,6 +19,7 @@
 //! make a test pass. So the recording seam stands in for the socket here, and the socket-level half
 //! of the claim is discharged in `transport_tests.rs` against the real client.
 
+use crate::testkit::TestAppA2aExt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

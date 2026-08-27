@@ -18,6 +18,7 @@
 //! question is what an unauthenticated caller receives.
 
 use crate::mcp::McpCfg;
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

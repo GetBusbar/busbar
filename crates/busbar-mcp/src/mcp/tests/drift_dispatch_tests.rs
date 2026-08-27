@@ -29,6 +29,7 @@ use super::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
 use crate::mcp::client::catalogue::CatalogueCache;
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
@@ -365,7 +366,7 @@ async fn a_reused_unsighted_snapshot_dispatches_on_the_configured_hash() {
             ),
         )
         .build();
-    busbar_core::test_support::prefresh_mcp_sightings(&app);
+    crate::testkit::prefresh_mcp_sightings(&app);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     let (status, body) = call(

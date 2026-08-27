@@ -509,10 +509,10 @@ fn plan_after_gate(
     }
 }
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/egress_tests.rs"]
 mod egress_tests;
 
-#[cfg(all(test, not(busbar_mcp_native)))]
+#[cfg(all(test, feature = "test-support"))]
 #[path = "tests/deputy_tests.rs"]
 mod deputy_tests;

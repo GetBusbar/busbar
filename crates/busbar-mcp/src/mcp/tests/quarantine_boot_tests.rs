@@ -31,6 +31,7 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
+use crate::testkit::TestAppMcpExt;
 use busbar_core::test_support::plugin_store::{durable_cfg, open_plugin};
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;

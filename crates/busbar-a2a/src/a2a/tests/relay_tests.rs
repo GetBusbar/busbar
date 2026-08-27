@@ -336,7 +336,8 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     if events.is_empty() {
         return;
     }
-    busbar_core::plane::taskstore::verify_task_event_rows(&events).expect("the per-task chain verifies");
+    busbar_core::plane::taskstore::verify_task_event_rows(&events)
+        .expect("the per-task chain verifies");
     assert!(
         events
             .iter()
@@ -1428,10 +1429,12 @@ async fn an_admitted_agent_task_lands_in_the_plane_request_series() {
         ("ingress_protocol", "jsonrpc"),
         ("outcome", "ok"),
     ];
-    let before = busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let before =
+        busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "the admitted call must be served: {body}");
-    let after = busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let after =
+        busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
 
     assert!(
         after > before,
