@@ -239,7 +239,12 @@ MERGED="$PROF_DIR/merged.profdata"
 RAW_COUNT="$(find "$PROF_DIR" -maxdepth 1 -name '*.profraw' -type f | wc -l | tr -d ' ')"
 MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 
-RUSTFLAGS="-Cprofile-use=$MERGED" \
+# BUSBAR_PGO=1 stamps the BUILD-PROVENANCE record (crates/busbar/build.rs) so the shipped binary
+# self-reports `pgo=true` via `busbar --build-info` / `--version`. This is belt-and-suspenders: the
+# build script ALSO detects `-Cprofile-use` in CARGO_ENCODED_RUSTFLAGS, so PGO is recorded even if
+# this env is ever dropped — but the explicit signal is the contract. A plain `cargo build --release`
+# sets neither and correctly reports `pgo=false`, which is the whole point of the stamp.
+BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"

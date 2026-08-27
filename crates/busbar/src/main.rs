@@ -71,6 +71,33 @@ use busbar_core::{
 #[cfg(not(target_env = "msvc"))]
 use busbar_core::REQUEST_ACTIVITY_TICKS;
 
+/// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
+/// by `build.rs` (see its header for what cargo does and does not expose) EXCEPT `debug-assertions`,
+/// which is read here at runtime via `cfg!(debug_assertions)` — the profile it was compiled with is
+/// the only reliable source for that bit.
+///
+/// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
+/// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
+/// regression. CI asserts these values (the build-provenance gate), so a mis-built binary can neither
+/// be misdiagnosed nor shipped green. Format is `key=value` space-separated, stable for grep/awk.
+pub(crate) fn build_info_line() -> String {
+    format!(
+        "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
+         target={target} target-cpu={cpu}",
+        profile = env!("BUSBAR_BUILD_PROFILE"),
+        opt = env!("BUSBAR_BUILD_OPT_LEVEL"),
+        lto = env!("BUSBAR_BUILD_LTO"),
+        da = if cfg!(debug_assertions) {
+            "true"
+        } else {
+            "false"
+        },
+        pgo = env!("BUSBAR_BUILD_PGO"),
+        target = env!("BUSBAR_BUILD_TARGET"),
+        cpu = env!("BUSBAR_BUILD_TARGET_CPU"),
+    )
+}
+
 /// Handle CLI flags before any environment or file access, so they work without a configured
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
@@ -80,7 +107,17 @@ fn handle_cli_flags() -> Option<i32> {
     match args.next().as_deref() {
         None => None, // no args → run the gateway
         Some("--version" | "-V") => {
+            // Version AND build posture on one line each: an operator correlating a perf number to a
+            // binary sees immediately whether it was the optimized release build or a local debug/
+            // non-PGO build (the misdiagnosis this stamp exists to prevent).
             println!("busbar {}", env!("CARGO_PKG_VERSION"));
+            println!("build: {}", build_info_line());
+            Some(0)
+        }
+        Some("--build-info") => {
+            // The raw stamp line ALONE (no version prefix), for CI to parse and assert against. Kept
+            // separate from `--version` so the gate greps a stable single line.
+            println!("{}", build_info_line());
             Some(0)
         }
         Some("--print-metadata-blocklist") => {
@@ -151,7 +188,10 @@ USAGE:
                         run the gateway (configured via environment + YAML; the two optional flags
                         point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
     busbar --help       print this help
-    busbar --version    print the version
+    busbar --version    print the version (and the build-provenance stamp)
+    busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
+                        debug-assertions / pgo / target / target-cpu) — how this binary was built,
+                        for correlating a perf number to a build and for CI's build-parity gate
     busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
                         (structure, signature/trust, conflicts, abi, version floors) and exit
                         (0 = valid, 1 = errors); no server, no network, no state, no dlopen —

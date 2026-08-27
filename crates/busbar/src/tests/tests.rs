@@ -319,3 +319,45 @@ fn signing_key_guidance_omits_secret() {
         "the guidance must use a non-secret placeholder pointing at the stdout key"
     );
 }
+
+/// THE BUILD-PROVENANCE STAMP FORMAT IS LOCKED. `scripts/build-provenance-gate.sh` parses this line
+/// as space-separated `key=value` pairs to assert a release build's optimization posture (the guard
+/// against the ~20% "regression" that was a mis-built binary). A refactor that renames a key or
+/// changes the separator would silently blind that gate; this test fails first instead. It also pins
+/// that a TEST build (which is a debug profile) self-reports `profile=debug` / `debug-assertions=true`
+/// / `pgo=false` — the exact stamp the gate must be able to distinguish from an optimized release.
+#[test]
+fn build_info_line_format_is_locked() {
+    let line = build_info_line();
+
+    // Every field the gate reads must be present as a `key=` token.
+    for key in [
+        "profile=",
+        "opt-level=",
+        "lto=",
+        "debug-assertions=",
+        "pgo=",
+        "target=",
+        "target-cpu=",
+    ] {
+        assert!(
+            line.contains(key),
+            "build_info_line() must expose `{key}` — the build-provenance gate parses it. Got: {line}"
+        );
+    }
+
+    // A `cargo test` binary is a DEBUG build, so the stamp must say so. If these ever read
+    // `release`/`false`, the stamp is decoupled from the actual build and the gate is worthless.
+    assert!(
+        line.contains("profile=debug"),
+        "a test build must self-report profile=debug; got: {line}"
+    );
+    assert!(
+        line.contains("debug-assertions=true"),
+        "a test (debug) build must self-report debug-assertions=true; got: {line}"
+    );
+    assert!(
+        line.contains("pgo=false"),
+        "a plain (non-pgo-build.sh) build must self-report pgo=false; got: {line}"
+    );
+}
