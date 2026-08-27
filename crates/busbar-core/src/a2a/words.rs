@@ -17,7 +17,6 @@
 use axum::response::{IntoResponse, Response};
 
 use super::inbound::InboundRefusal;
-use crate::state::App;
 
 /// THIS PROTOCOL'S WORDS FOR A REFUSAL CORE DECIDED.
 ///
@@ -147,39 +146,26 @@ pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
     )
 }
 
-/// THE RFC 9728 FACTS THIS PLANE PUBLISHES.
+/// THE RFC 9728 FACTS THIS PLANE PUBLISHES, rendered off the neutral host seam.
 ///
-/// The document itself is not written here, and this is the row the plane-coherence ledger retired:
-/// it had been written once per plane, and the ledger recorded (verified 2026-08-11) that the two
-/// copies were the same document with the same audience rule. `crate::ingress::protocol` renders
-/// it once and `metadata_handler::<A2aWords>` serves it, mounted `RouteAuth::None` for the reason
-/// the sibling plane's is — every caller who needs this document is by definition one that does not
-/// have a token yet, so requiring one would be a discovery loop with no entrance.
+/// The document itself is not written twice: the plane-coherence ledger retired the second copy
+/// (verified 2026-08-11) — the two were the same document with the same audience rule — so
+/// `busbar_substrate::ingress::protocol` renders the shape and this reads the one fact that varies
+/// (the audience) off the plane runtime. It is served at
+/// `/.well-known/oauth-protected-resource<mount>` by [`super::receive::metadata_route`], mounted
+/// `RouteAuth::None` for the reason the sibling plane's is — every caller who needs this document is
+/// by definition one that does not have a token yet, so requiring one would be a discovery loop with
+/// no entrance.
 ///
 /// This plane declares NO `authorization_servers` and NO `scopes_supported`, and both members are
 /// therefore omitted rather than emitted empty: RFC 9728 §2 makes both optional, and an empty array
-/// asserts "there are none" where absence says "this resource does not state it". That is what lets
-/// one renderer be byte-identical to both copies instead of a compromise between them.
+/// asserts "there are none" where absence says "this resource does not state it".
 ///
-/// `admission.audience` is the audience a client must have its authorization server mint for, and
-/// it is compared byte-for-byte against the `aud` of every token presented under this mount. Both
-/// sides read it from `A2aPlane::admission`, so there is no second spelling of it anywhere.
-impl crate::ingress::protocol::ResourceMetadata for A2aWords {
-    fn document(app: &App) -> Option<busbar_substrate::ingress::protocol::Metadata<'_>> {
-        let admission = crate::a2a::runtime(app).and_then(|p| p.admission())?;
-        Some(busbar_substrate::ingress::protocol::Metadata {
-            resource: std::borrow::Cow::Owned(admission.audience),
-            authorization_servers: &[],
-            scopes_supported: &[],
-        })
-    }
-}
-
-/// THE HOST TWIN of [`A2aWords::document`](crate::ingress::protocol::ResourceMetadata::document) — the
-/// SAME RFC 9728 document, read off the host's BOUND snapshot through the neutral
-/// [`crate::a2a::runtime_arc_of`] seam so the `RouteAuth::None` metadata handler reaches it without an
-/// `AppHandle` downcast. The audience is OWNED (a `Cow::Owned`), so the returned `Metadata` is
-/// `'static`; byte-identical to the `&App` form for every input.
+/// `admission.audience` is the audience a client must have its authorization server mint for, and it
+/// is compared byte-for-byte against the `aud` of every token presented under this mount. It is read
+/// off the host's BOUND snapshot through the neutral [`crate::a2a::runtime_arc_of`] seam, so the
+/// `RouteAuth::None` metadata handler reaches it without an `AppHandle` downcast. The audience is
+/// OWNED (a `Cow::Owned`), so the returned `Metadata` is `'static`.
 pub(super) fn document_of(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
 ) -> Option<busbar_substrate::ingress::protocol::Metadata<'static>> {

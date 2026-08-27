@@ -270,6 +270,11 @@ pub(crate) fn carried_a2a_gates(
 /// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
 /// (`PLANE_DECL::build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
 /// so this single accessor is its whole runtime seam.
+///
+/// TEST-ONLY: every production reader reaches the runtime through the neutral host seam
+/// (`runtime_arc`/`runtime_arc_of` over an `EngineHost`); this `&App` form now survives solely for
+/// the in-crate tests that assert plane presence/absence off a built `App`.
+#[cfg(test)]
 pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
