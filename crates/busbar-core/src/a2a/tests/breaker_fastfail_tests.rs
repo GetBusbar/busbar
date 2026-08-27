@@ -192,7 +192,7 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 /// arena empty) while opening the cell, byte-identically to the legacy in-place record.
 #[test]
 fn a_shared_host_scope_settles_the_prepare_admit() {
-    use crate::plane_host::DispatchScope;
+    use busbar_substrate::plane_host::DispatchScope;
     let breakers = Arc::new(PlaneBreakers::new());
     let key = crate::store::PlaneBreakers::agent_key("planner");
     let transport = CountingDenier {

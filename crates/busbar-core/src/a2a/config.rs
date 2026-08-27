@@ -537,10 +537,11 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
     }
 
     if let Some(ttl) = def.reverify_ttl.as_deref() {
-        crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `reverify_ttl:` {e}"))?;
+        busbar_substrate::duration::parse_duration_secs(ttl)
+            .map_err(|e| format!("{at}: `reverify_ttl:` {e}"))?;
     }
     if let Some(backoff) = def.recovery_backoff.as_deref() {
-        crate::admin::parse_duration_secs(backoff)
+        busbar_substrate::duration::parse_duration_secs(backoff)
             .map_err(|e| format!("{at}: `recovery_backoff:` {e}"))?;
     }
 
@@ -565,10 +566,10 @@ pub(crate) fn policy_for(
     default_backoff_ms: u64,
 ) -> Result<super::reverify::Policy, String> {
     let ttl = def.reverify_ttl.as_deref().unwrap_or(DEFAULT_REVERIFY_TTL);
-    let ttl_ms = crate::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    let ttl_ms = busbar_substrate::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
     let recovery_backoff_ms = match def.recovery_backoff.as_deref() {
         None => default_backoff_ms,
-        Some(v) => crate::admin::parse_duration_secs(v)?.saturating_mul(1_000),
+        Some(v) => busbar_substrate::duration::parse_duration_secs(v)?.saturating_mul(1_000),
     };
     Ok(super::reverify::Policy {
         ttl_ms,

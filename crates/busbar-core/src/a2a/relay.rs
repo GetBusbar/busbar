@@ -283,7 +283,7 @@ pub(crate) struct RelayCall<'a> {
     /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
     /// `None` in the originate direction and in unit tests that admit directly, where the probe hold
     /// keeps its legacy local lifetime (dropped after the in-place record).
-    pub(crate) host_scope: Option<&'a crate::plane_host::DispatchScope>,
+    pub(crate) host_scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
     /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
@@ -1461,10 +1461,16 @@ fn record_hop_outcome(
     match call.host_scope {
         Some(scope) if !settle.is_none() => match outcome {
             HopOutcome::Success => {
-                scope.settle_admission(settle, &crate::plane_host::breaker::success_signal());
+                scope.settle_admission(
+                    settle,
+                    &busbar_substrate::plane_host::breaker::success_signal(),
+                );
             }
             HopOutcome::Failure(cs) => {
-                scope.settle_admission(settle, &crate::plane_host::breaker::failure_signal(&cs));
+                scope.settle_admission(
+                    settle,
+                    &busbar_substrate::plane_host::breaker::failure_signal(&cs),
+                );
             }
             // Not an upstream health signal: leave the probe UNSETTLED so the shared scope's drop
             // releases it — the "record nothing" disposition, held to the scope's lifetime.

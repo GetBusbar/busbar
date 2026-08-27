@@ -89,7 +89,7 @@ pub(super) struct SelectedMember {
 #[allow(clippy::too_many_arguments)] // the admission's own facts, gathered where they were made.
 pub(super) fn select_member(
     app: &App,
-    scope: &crate::plane_host::DispatchScope,
+    scope: &busbar_substrate::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     kind: &'static str,

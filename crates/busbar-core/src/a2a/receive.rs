@@ -1047,12 +1047,12 @@ async fn admitted(
             )
         })
         .await
-        .unwrap_or(crate::plane_host::GateOutcome::Reject {
+        .unwrap_or(busbar_substrate::plane_host::GateOutcome::Reject {
             status: 403,
             message: String::new(),
             hook: String::new(),
         });
-        if let crate::plane_host::GateOutcome::Reject {
+        if let busbar_substrate::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,

@@ -234,7 +234,7 @@ fn the_policy_is_the_operator_cadence_and_the_default_is_named() {
     let p = policy_for(&bare, 7_000).unwrap();
     assert_eq!(
         p.ttl_ms,
-        crate::admin::parse_duration_secs(DEFAULT_REVERIFY_TTL).unwrap() * 1000,
+        busbar_substrate::duration::parse_duration_secs(DEFAULT_REVERIFY_TTL).unwrap() * 1000,
         "an absent ttl takes the named default, not zero"
     );
     assert_eq!(
