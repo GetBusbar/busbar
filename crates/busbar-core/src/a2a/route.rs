@@ -320,7 +320,7 @@ pub(super) fn hop_facts<'a>(
 /// `Retry-After`, but the task is equally NOT ACCEPTED and the id still resolves.
 #[allow(clippy::too_many_arguments)] // the refusal's own facts, no more.
 pub(super) fn render_pin_mismatch(
-    app: &Arc<crate::state::App>,
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     rpc_id: &serde_json::Value,
     task_id: &str,
@@ -336,18 +336,18 @@ pub(super) fn render_pin_mismatch(
         "a2a: the pool's members are not interchangeable; the submission is not accepted"
     );
     if !addressed {
-        let recorded =
-            crate::plane_host::SendHostDispatch::new(Arc::clone(app)).with_host(|h, _| {
-                crate::plane::taskstore::TASKS.transition(
-                    h,
-                    task_id,
-                    super::task::TaskState::Rejected,
-                    now,
-                    request_id,
-                )
-            });
+        let recorded = engine_host
+            .task_journal_write(
+                task_id,
+                busbar_substrate::plane_host::TaskWrite::Transition {
+                    to_state: super::task::TaskState::Rejected.as_str(),
+                },
+                now,
+                request_id,
+            )
+            .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
         match recorded {
-            Ok(task) => super::receive::notify_push(Arc::clone(app), seam, task),
+            Ok(task) => super::receive::notify_push(Arc::clone(engine_host), seam, task),
             Err(e) => {
                 // Error-once latch: a store that refuses the `rejected` transition is a STABLE
                 // condition (a store outage persists across every refused submission), and this

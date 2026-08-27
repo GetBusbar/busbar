@@ -296,7 +296,7 @@ pub(super) async fn mirror_push_config(
 /// then renders busbar's own scoped rows exactly as it always did.
 pub(super) async fn refresh_listed_tasks(
     app: &Arc<App>,
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     principal: &str,
@@ -321,7 +321,14 @@ pub(super) async fn refresh_listed_tasks(
         // ask a backend to enumerate its work for a caller with nothing outstanding on it.
         return;
     }
-    let Some(at) = originate(engine_host, &plane, admitted, key, a2a_version, now) else {
+    let Some(at) = originate(
+        engine_host.as_ref(),
+        &plane,
+        admitted,
+        key,
+        a2a_version,
+        now,
+    ) else {
         return;
     };
 
@@ -353,9 +360,8 @@ pub(super) async fn refresh_listed_tasks(
         .or_else(|| reply.result.as_array())
         .cloned()
         .unwrap_or_default();
-    // One host route over the admitted `app` for the whole refresh: each matched observation is a
-    // transition through the durable `task_event` seam, driven synchronously between the awaits.
-    let host = crate::plane_host::HostDispatch::new(app);
+    // Each matched observation is a transition through the durable `task_event` seam, driven over the
+    // admitted `EngineHost` — its `task_journal_write` mints the transient host per call.
     for entry in listed {
         let Some(backend_id) = entry.get("id").and_then(serde_json::Value::as_str) else {
             continue;
@@ -376,10 +382,18 @@ pub(super) async fn refresh_listed_tasks(
         // A refusal is the table doing its job — a backend re-reporting a state busbar already
         // holds, or one the table forbids — and is not an error to raise at a caller who asked for
         // a list.
-        match host.with_host(|h, _| {
-            crate::plane::taskstore::TASKS.transition(h, busbar_id, state, now, busbar_id)
-        }) {
-            Ok(task) => notify_push(Arc::clone(app), &seam, task),
+        match engine_host
+            .task_journal_write(
+                busbar_id,
+                busbar_substrate::plane_host::TaskWrite::Transition {
+                    to_state: state.as_str(),
+                },
+                now,
+                busbar_id,
+            )
+            .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
+        {
+            Ok(task) => notify_push(Arc::clone(engine_host), &seam, task),
             Err(e) => {
                 tracing::trace!(task = %busbar_id, error = %e, "a2a: a listed state was not recordable")
             }

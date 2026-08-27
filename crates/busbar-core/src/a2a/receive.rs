@@ -918,18 +918,11 @@ async fn admitted(
 ) -> Response {
     // ── PHASE-1.5 HOST PLUMBING (ADDITIVE, not yet used by any capability inversion). ─────────────
     //
-    // Hold the async-capable dispatch guard for the whole `admitted` future so a host handle is
-    // reachable at every synchronous host admit/settle site on this plane and the per-dispatch arena
-    // reclaims on any exit (return/cancel/panic). Borrows `app`, stack-pins an empty arena (no
-    // per-dispatch heap); the guard is `Send`, so this future stays `Send`. The SPAWN_BLOCKING relay
-    // hops need a `Send + 'static` route instead — that is the `SendHostDispatch` threaded into
-    // `unary_hop`/`stream_hop` below. CLUSTER-4 admits this call's budget through `host`'s arena.
-    let host = crate::plane_host::HostDispatch::new(&app);
     // THE BARE NEUTRAL SCOPE for this request's SCOPED host capability calls (govern_admit + meter).
     // Held for the whole `admitted` future so the govern grant registered in its arena is released on
-    // any exit (return/cancel/panic) — the exact RAII lifetime the `HostDispatch` arena gave it — and
-    // so the meter's fire-and-forget charge folds through the same arena. `DispatchScope::new()` is
-    // NEUTRAL and `Send`; `EngineHostImpl` materializes the transient `HostCtx` over it internally.
+    // any exit (return/cancel/panic) — a per-dispatch RAII arena — and so the meter's fire-and-forget
+    // charge folds through the same arena. `DispatchScope::new()` is NEUTRAL and `Send`;
+    // `EngineHostImpl` materializes the transient `HostCtx` over it internally.
     let cap_scope = busbar_substrate::plane_host::DispatchScope::new();
     // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
     // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
@@ -1145,7 +1138,7 @@ async fn admitted(
                 //    rule that makes a shared backend's list unable to move another tenant's row.
                 super::originate::refresh_listed_tasks(
                     &app,
-                    engine_host.as_ref(),
+                    &engine_host,
                     &admitted,
                     key,
                     &principal,
@@ -1400,9 +1393,6 @@ async fn admitted(
     // walk probe owner-checked — exactly as the bare hold used to. `EngineHostImpl` materializes the
     // transient `HostCtx` over this scope internally, so no `App`/`SendHostDispatch` is threaded for it.
     let hop_scope = busbar_substrate::plane_host::DispatchScope::new();
-    // The durable-journal route (`hop_host.with_host` in `stream_hop`) still needs a `Send + 'static`
-    // host handle — that is Batch C, so `SendHostDispatch` REMAINS for it (never for the breaker).
-    let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let selected_member = super::route::select_member(
         engine_host.as_ref(),
         &hop_scope,
@@ -1421,10 +1411,10 @@ async fn admitted(
     let pin_mismatch = selected_member.pin_mismatch;
     // THE WALK'S PROBE HOLD ALREADY RIDES THE SHARED SCOPE. `select_member` inverted the pooled
     // fresh-submission walk onto the host `breaker_admit` seam (CLUSTER-1): a won member's
-    // settle-capable probe hold is REGISTERED in `hop_host`'s arena and the plane holds only the POD
+    // settle-capable probe hold is REGISTERED in `hop_scope`'s arena and the plane holds only the POD
     // `AdmissionId` returned here — never a `PlaneAdmission`. The hop's settle and its record share
     // that one arena over this id; the recorded outcome consumes it and the scope-drop release is then
-    // a no-op; an abandoned hop hands it back when `hop_host` drops. NONE when the walk won nothing
+    // a no-op; an abandoned hop hands it back when `hop_scope` drops. NONE when the walk won nothing
     // (un-pooled/pinned hops admit later, inside `prepare`).
     let walk_admission_id = selected_member.admission_id;
 
@@ -1470,15 +1460,14 @@ async fn admitted(
         // BACK TO `working`, which chains a `task.resumed` provenance event. The transition table
         // refuses this from a terminal state, so a caller cannot resurrect finished work by
         // re-using its `contextId`.
-        if let Err(e) = host.with_host(|h, _| {
-            taskstore::TASKS.transition(
-                h,
-                &task_id,
-                super::task::TaskState::Working,
-                now,
-                &request_id,
-            )
-        }) {
+        if let Err(e) = engine_host.task_journal_write(
+            &task_id,
+            busbar_substrate::plane_host::TaskWrite::Transition {
+                to_state: super::task::TaskState::Working.as_str(),
+            },
+            now,
+            &request_id,
+        ) {
             diag_warn!(A2A_INTERRUPTED_TASK_UNRESUMED, task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
             return (
                 axum::http::StatusCode::CONFLICT,
@@ -1517,7 +1506,14 @@ async fn admitted(
                 return plane_absent();
             }
         };
-        if let Err(e) = host.with_host(|h, _| taskstore::TASKS.submit(h, &task, &request_id)) {
+        if let Err(e) = engine_host.task_journal_write(
+            &task_id,
+            busbar_substrate::plane_host::TaskWrite::Submit {
+                row: &task.to_row(),
+            },
+            now,
+            &request_id,
+        ) {
             // Error-once latch: a store that refuses the submit is a STABLE condition (a store
             // outage persists across every inbound submission), and this path runs per request.
             // Error on the TRANSITION into the failing state; hold subsequent failures at debug so
@@ -1542,15 +1538,14 @@ async fn admitted(
         // THE PER-TASK HASH-CHAIN EVENT FOR THE HOP: who delegated, to which registered agent,
         // recorded BEFORE the socket rather than after it, so a hop that never returns still left a
         // chained record saying it was made.
-        let _ = host.with_host(|h, _| {
-            taskstore::TASKS.record_dispatch(
-                h,
-                &task_id,
-                hop.target_agent_id.as_deref().unwrap_or(&agent_id),
-                now,
-                &request_id,
-            )
-        });
+        let _ = engine_host.task_journal_write(
+            &task_id,
+            busbar_substrate::plane_host::TaskWrite::Dispatch {
+                agent_id: hop.target_agent_id.as_deref().unwrap_or(&agent_id),
+            },
+            now,
+            &request_id,
+        );
     }
 
     if let Some(pinned) = callback.as_ref() {
@@ -1629,7 +1624,15 @@ async fn admitted(
         Ok(f) => f,
         Err(refusal) => {
             return refusal.map(|resp| *resp).unwrap_or_else(|| {
-                fail_task(&app, &seam, &rpc_id, &task_id, &request_id, now, 502)
+                fail_task(
+                    &engine_host,
+                    &seam,
+                    &rpc_id,
+                    &task_id,
+                    &request_id,
+                    now,
+                    502,
+                )
             })
         }
     };
@@ -1643,7 +1646,15 @@ async fn admitted(
             Ok(lease) => Some(lease),
             Err(e) => {
                 diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
-                return fail_task(&app, &seam, &rpc_id, &task_id, &request_id, now, 502);
+                return fail_task(
+                    &engine_host,
+                    &seam,
+                    &rpc_id,
+                    &task_id,
+                    &request_id,
+                    now,
+                    502,
+                );
             }
         },
         None => None,
@@ -1687,7 +1698,7 @@ async fn admitted(
     };
 
     let hop_ctx = HopContext {
-        app: Arc::clone(&app),
+        engine_host: Arc::clone(&engine_host),
         seam: Arc::clone(&seam),
         framing,
         agent_id: target_agent.clone(),
@@ -1720,7 +1731,7 @@ async fn admitted(
     }
     if let Some(reason) = pin_mismatch {
         return super::route::render_pin_mismatch(
-            &hop_ctx.app,
+            &hop_ctx.engine_host,
             &hop_ctx.seam,
             &hop_ctx.rpc_id,
             &hop_ctx.task_id,
@@ -1752,7 +1763,7 @@ async fn admitted(
     // closure ends — AFTER the outcome was recorded, so the walk probe's release is a no-op — and the
     // un-pooled `prepare` admit re-homes its own probe into the SAME scope. One scope spans both. The
     // hop's neutral `EngineHost` (cloned) rides with it so `prepare`/`record_hop_outcome` reach the
-    // breaker seam; `hop_host` (the durable-journal route) rides only with the streaming hop.
+    // breaker seam AND the streaming hop's durable-journal writes reach the task-event seam.
     if shape.requires_streaming {
         stream_hop(
             hop_ctx,
@@ -1760,7 +1771,6 @@ async fn admitted(
             gate,
             lease,
             relayed_body,
-            hop_host,
             Arc::clone(&engine_host),
             hop_scope,
         )
@@ -1783,12 +1793,12 @@ async fn admitted(
 /// shapes need the same eleven facts and an eleven-argument function is a function whose arguments
 /// get transposed.
 struct HopContext {
-    /// THE LIVE ENGINE SNAPSHOT the hop was admitted on, carried so the POST-hop and DETACHED task
-    /// writes — `record_state`, `refuse_hop`, `end_task`, the stream watcher, `notify_push` — can each
-    /// open a fresh `Send + 'static` host route (`SendHostDispatch`) to reach the durable `task_event`
-    /// seam. The per-hop `SendHostDispatch` is consumed by the `spawn_blocking` relay closure, so the
-    /// writes that run AFTER the hop cannot borrow it; they clone this `Arc<App>` and open their own.
-    app: Arc<App>,
+    /// THE NEUTRAL ENGINE HOST the hop was admitted over, carried so the POST-hop and DETACHED task
+    /// writes — `record_state`, `refuse_hop`, `end_task`, the stream watcher, `notify_push` — each reach
+    /// the durable `task_event` seam through the same `EngineHost` methods (`task_journal_write` /
+    /// `task_record_push_delivery`), which mint the transient `HostCtx` internally. Cloned by the writes
+    /// that run AFTER the hop; `Send + Sync`, so it rides onto a detached task or a blocking thread.
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// THE PLANE'S OUTBOUND SEAM, carried so the code that records a task's outcome can also
     /// DELIVER it. A push notification is the same fact as the state transition and belongs at the
     /// same instant; reaching for the plane again from `record_state` would be reading the world
@@ -1825,7 +1835,7 @@ struct HopContext {
     /// `RelayCall`.
     breaker: super::relay::RelayBreaker,
     /// THE SHARED-SCOPE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's
-    /// probe hold was registered under in the one `hop_host` scope before the hop was built, threaded
+    /// probe hold was registered under in the one `hop_scope` scope before the hop was built, threaded
     /// onto the blocking relay's `RelayCall`. `AdmissionId::NONE` for an un-pooled/pinned hop (whose
     /// probe `prepare` admits and re-homes itself into the shared host scope).
     walk_admission_id: busbar_plugin::hot::AdmissionId,
@@ -1984,7 +1994,7 @@ async fn unary_hop(
         Err(join) => {
             diag_error!(A2A_RELAY_THREAD_INCOMPLETE, task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
             return fail_task(
-                &ctx.app,
+                &ctx.engine_host,
                 &ctx.seam,
                 &ctx.rpc_id,
                 &ctx.task_id,
@@ -2038,11 +2048,11 @@ async fn stream_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
-    // The `Send + 'static` DURABLE-JOURNAL route (`hop_host.with_host` below → `taskstore` /
-    // `pushdeliver::deliver`). Batch C, so `SendHostDispatch` REMAINS here — never for the breaker.
-    host: crate::plane_host::SendHostDispatch,
     // The hop's neutral `EngineHost` and the ONE bare shared scope for the breaker seam — see
-    // `unary_hop`; the streaming hop's `relay_stream` runs on the same `spawn_blocking` thread.
+    // `unary_hop`; the streaming hop's `relay_stream` runs on the same `spawn_blocking` thread. The
+    // durable-journal writes (state transition, artifact-cursor advance, push delivery) ride this same
+    // `EngineHost` now — its methods mint the transient `HostCtx` internally, so no separate
+    // `Send + 'static` route is threaded for them.
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     hop_scope: busbar_substrate::plane_host::DispatchScope,
 ) -> Response {
@@ -2083,9 +2093,8 @@ async fn stream_hop(
     let handle = tokio::task::spawn_blocking(move || {
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit and
-        // `prepare`'s un-pooled admit settle by a host AdmissionId here. `hop_host` (the durable
-        // journal route) rides alongside for the `with_host` task-event writes.
-        let hop_host = host;
+        // `prepare`'s un-pooled admit settle by a host AdmissionId here. The durable journal writes
+        // ride the neutral `engine_host` (moved in below), which mints its own transient host per call.
         let hop_scope = hop_scope;
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
@@ -2100,13 +2109,23 @@ async fn stream_hop(
                 // ALREADY ON A BLOCKING THREAD, so the delivery is made inline rather than spawned:
                 // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
                 // order also means the receiver sees the states in the order they happened.
-                if let Ok(task) = hop_host.with_host(|h, _| {
-                    taskstore::TASKS.transition(h, &task_id, state, now, &request_id)
-                }) {
+                if let Ok(task) = engine_host
+                    .task_journal_write(
+                        &task_id,
+                        busbar_substrate::plane_host::TaskWrite::Transition {
+                            to_state: state.as_str(),
+                        },
+                        now,
+                        &request_id,
+                    )
+                    .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
+                {
                     if task.push_callback.is_some() {
-                        if let Err(e) = hop_host.with_host(|h, _| {
-                            super::pushdeliver::deliver(h, notify_seam.as_ref(), &task)
-                        }) {
+                        if let Err(e) = super::pushdeliver::deliver(
+                            engine_host.as_ref(),
+                            notify_seam.as_ref(),
+                            &task,
+                        ) {
                             diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
                         }
                     }
@@ -2116,9 +2135,12 @@ async fn stream_hop(
                 cursor = cursor.saturating_add(1);
                 // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
                 // so a duplicate delivery cannot rewind it.
-                let _ = hop_host.with_host(|h, _| {
-                    taskstore::TASKS.advance_cursor(h, &task_id, cursor, now, &request_id)
-                });
+                let _ = engine_host.task_journal_write(
+                    &task_id,
+                    busbar_substrate::plane_host::TaskWrite::AdvanceCursor { cursor },
+                    now,
+                    &request_id,
+                );
             }
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.
@@ -2205,7 +2227,7 @@ async fn stream_hop(
             Ok(Ok(super::relay::RelayStream::Streamed)) => {
                 diag_debug!(A2A_STREAM_EMPTY, task = %ctx.task_id, "a2a: the backend's stream carried no event");
                 fail_task(
-                    &ctx.app,
+                    &ctx.engine_host,
                     &ctx.seam,
                     &ctx.rpc_id,
                     &ctx.task_id,
@@ -2218,7 +2240,7 @@ async fn stream_hop(
             Err(join) => {
                 diag_error!(A2A_RELAY_THREAD_INCOMPLETE, task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
                 fail_task(
-                    &ctx.app,
+                    &ctx.engine_host,
                     &ctx.seam,
                     &ctx.rpc_id,
                     &ctx.task_id,
@@ -2236,9 +2258,9 @@ async fn stream_hop(
     let watched_request = ctx.request_id.clone();
     let watched_now = ctx.now;
     let watched_seam = Arc::clone(&ctx.seam);
-    // DETACHED watcher: clone the admitted `Arc<App>` so the terminal transition can open its own
-    // `Send + 'static` host route to the durable seam (the per-hop route was consumed by the relay).
-    let watched_app = Arc::clone(&ctx.app);
+    // DETACHED watcher: clone the admitted `EngineHost` so the terminal transition reaches the durable
+    // seam through its own transient host (`task_journal_write` mints it per call, `Send + Sync`).
+    let watched_engine_host = Arc::clone(&ctx.engine_host);
     tokio::spawn(async move {
         match handle.await {
             Ok(Ok(_)) => {}
@@ -2247,18 +2269,18 @@ async fn stream_hop(
                 // A BROKEN STREAM IS A TERMINAL FAILURE and the caller is told, for the same
                 // reason `fail_task` tells them: silence and "still working" are the same thing to
                 // a receiver, and this is the case where they are most different.
-                let recorded = crate::plane_host::SendHostDispatch::new(Arc::clone(&watched_app))
-                    .with_host(|h, _| {
-                        taskstore::TASKS.transition(
-                            h,
-                            &watched_task,
-                            super::task::TaskState::Failed,
-                            watched_now,
-                            &watched_request,
-                        )
-                    });
+                let recorded = watched_engine_host
+                    .task_journal_write(
+                        &watched_task,
+                        busbar_substrate::plane_host::TaskWrite::Transition {
+                            to_state: super::task::TaskState::Failed.as_str(),
+                        },
+                        watched_now,
+                        &watched_request,
+                    )
+                    .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
                 if let Ok(task) = recorded {
-                    notify_push(Arc::clone(&watched_app), &watched_seam, task);
+                    notify_push(Arc::clone(&watched_engine_host), &watched_seam, task);
                 }
             }
             Err(join) => {
@@ -2298,18 +2320,24 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
     if state == super::task::TaskState::Submitted {
         return;
     }
-    // POST-hop: the per-hop `SendHostDispatch` was consumed by the relay closure, so a fresh
-    // `Send + 'static` host route is opened over a clone of the admitted `Arc<App>` to reach the
-    // durable `task_event` seam.
-    let recorded =
-        crate::plane_host::SendHostDispatch::new(Arc::clone(&ctx.app)).with_host(|h, _| {
-            taskstore::TASKS.transition(h, &ctx.task_id, state, ctx.now, &ctx.request_id)
-        });
+    // POST-hop: the durable `task_event` transition is written through the admitted `EngineHost`,
+    // which mints its own transient `HostCtx` per call — no `Send + 'static` route need be reopened.
+    let recorded = ctx
+        .engine_host
+        .task_journal_write(
+            &ctx.task_id,
+            busbar_substrate::plane_host::TaskWrite::Transition {
+                to_state: state.as_str(),
+            },
+            ctx.now,
+            &ctx.request_id,
+        )
+        .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
     match recorded {
         // THE STATE CHANGED, SO THE CALLER IS TOLD. This is the line that was missing: a caller
         // could register a push callback, have it validated, pinned and persisted, and then never
         // hear anything, because nothing on this plane ever connected to it.
-        Ok(task) => notify_push(Arc::clone(&ctx.app), &ctx.seam, task),
+        Ok(task) => notify_push(Arc::clone(&ctx.engine_host), &ctx.seam, task),
         Err(e) => {
             // Reported, never fatal: the hop SUCCEEDED and the caller is owed its answer. A store
             // that refused the transition is an operator problem, not a reason to discard a
@@ -2339,7 +2367,7 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
 /// A task with no callback never spawns anything: the overwhelmingly common case costs one
 /// `Option` test.
 pub(super) fn notify_push(
-    app: Arc<App>,
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task: super::task::Task,
 ) {
@@ -2349,11 +2377,10 @@ pub(super) fn notify_push(
     let seam = Arc::clone(seam);
     tokio::task::spawn_blocking(move || {
         let task_id = task.task_id.clone();
-        // DETACHED: open a `Send + 'static` host route on the blocking thread so the delivery's chained
-        // outcome (`record_push_delivery`) reaches the durable `task_event` seam; the raw `HostCtx`
-        // never crosses the `spawn_blocking` boundary (it is materialized INSIDE `with_host`).
-        let delivered = crate::plane_host::SendHostDispatch::new(app)
-            .with_host(|h, _| super::pushdeliver::deliver(h, seam.as_ref(), &task));
+        // DETACHED: the delivery's chained outcome (`record_push_delivery`) reaches the durable
+        // `task_event` seam through the neutral `EngineHost`, which mints the transient `HostCtx`
+        // internally and never lets it cross the `spawn_blocking` boundary.
+        let delivered = super::pushdeliver::deliver(engine_host.as_ref(), seam.as_ref(), &task);
         match delivered {
             Ok(()) => tracing::debug!(task = %task_id, "a2a: push notification delivered"),
             // NEVER fatal to the task, and never retried into a hammer. The outcome is recorded and
@@ -2406,18 +2433,19 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
         // refusal and the row keeps its last-known state, readable from busbar's own store. Either
         // way: `503` + an EXACT `Retry-After` from the cell's own deadline.
         if !ctx.addressed {
-            let recorded = crate::plane_host::SendHostDispatch::new(Arc::clone(&ctx.app))
-                .with_host(|h, _| {
-                    taskstore::TASKS.transition(
-                        h,
-                        &ctx.task_id,
-                        super::task::TaskState::Rejected,
-                        ctx.now,
-                        &ctx.request_id,
-                    )
-                });
+            let recorded = ctx
+                .engine_host
+                .task_journal_write(
+                    &ctx.task_id,
+                    busbar_substrate::plane_host::TaskWrite::Transition {
+                        to_state: super::task::TaskState::Rejected.as_str(),
+                    },
+                    ctx.now,
+                    &ctx.request_id,
+                )
+                .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
             match recorded {
-                Ok(task) => notify_push(Arc::clone(&ctx.app), &ctx.seam, task),
+                Ok(task) => notify_push(Arc::clone(&ctx.engine_host), &ctx.seam, task),
                 Err(e) => {
                     // Error-once latch: a store outage persists across every breaker refusal and
                     // this path runs per request. Error on the transition; hold the rest at debug.
@@ -2496,7 +2524,13 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             ..
         } => match super::rpcerror::A2aError::from_code(*code) {
             Some(err) => {
-                end_task(&ctx.app, &ctx.seam, &ctx.task_id, &ctx.request_id, ctx.now);
+                end_task(
+                    &ctx.engine_host,
+                    &ctx.seam,
+                    &ctx.task_id,
+                    &ctx.request_id,
+                    ctx.now,
+                );
                 (
                     axum::http::StatusCode::from_u16(err.http_status())
                         .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
@@ -2512,7 +2546,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             // A code A2A does not define is not a code busbar may re-emit: to a client it is
             // indistinguishable from one the specification will define later.
             None => fail_task(
-                &ctx.app,
+                &ctx.engine_host,
                 &ctx.seam,
                 &ctx.rpc_id,
                 &ctx.task_id,
@@ -2522,7 +2556,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             ),
         },
         _ => fail_task(
-            &ctx.app,
+            &ctx.engine_host,
             &ctx.seam,
             &ctx.rpc_id,
             &ctx.task_id,
@@ -2544,20 +2578,27 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// about the RECORD rather than about the answer, split out because a refusal that carries the
 /// backend's own error code renders its answer differently and must still end the task identically.
 fn end_task(
-    app: &Arc<App>,
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task_id: &str,
     request_id: &str,
     now: u64,
 ) {
-    let recorded = crate::plane_host::SendHostDispatch::new(Arc::clone(app)).with_host(|h, _| {
-        taskstore::TASKS.transition(h, task_id, super::task::TaskState::Failed, now, request_id)
-    });
+    let recorded = engine_host
+        .task_journal_write(
+            task_id,
+            busbar_substrate::plane_host::TaskWrite::Transition {
+                to_state: super::task::TaskState::Failed.as_str(),
+            },
+            now,
+            request_id,
+        )
+        .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
     match recorded {
         // A FAILURE IS A TERMINAL STATE AND THE CALLER WANTS IT MOST. A push callback that only
         // ever fired on success would leave the one case a caller actually needs to be woken for —
         // work that will never finish — as silence indistinguishable from work still in progress.
-        Ok(task) => notify_push(Arc::clone(app), seam, task),
+        Ok(task) => notify_push(Arc::clone(engine_host), seam, task),
         Err(e) => {
             // Error-once latch: a store outage persists across every terminal failure and this
             // path runs per request. Error on the transition; hold subsequent failures at debug.
@@ -2573,7 +2614,7 @@ fn end_task(
 }
 
 fn fail_task(
-    app: &Arc<App>,
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     rpc_id: &serde_json::Value,
     task_id: &str,
@@ -2581,7 +2622,7 @@ fn fail_task(
     now: u64,
     status: u16,
 ) -> Response {
-    end_task(app, seam, task_id, request_id, now);
+    end_task(engine_host, seam, task_id, request_id, now);
     (
         axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
         axum::Json(super::rpcerror::about_task(

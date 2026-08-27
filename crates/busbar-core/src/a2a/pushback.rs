@@ -323,9 +323,17 @@ pub(crate) async fn push_notification(
         // a retry, and `transition` would refuse a move to the state it is already in.
         task
     } else {
-        let recorded = crate::plane_host::HostDispatch::new(&app).with_host(|h, _| {
-            crate::plane::taskstore::TASKS.transition(h, &task_id, reported, now, &task_id)
-        });
+        let recorded = ctx
+            .host
+            .task_journal_write(
+                &task_id,
+                busbar_substrate::plane_host::TaskWrite::Transition {
+                    to_state: reported.as_str(),
+                },
+                now,
+                &task_id,
+            )
+            .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
         match recorded {
             Ok(t) => t,
             Err(e) => {
@@ -345,13 +353,13 @@ pub(crate) async fn push_notification(
     // customer's slow receiver slow another party's agent down.
     if moved.push_callback.is_some() {
         let seam = plane.relay_seam();
-        let deliver_app = std::sync::Arc::clone(&app);
+        let deliver_host = std::sync::Arc::clone(&ctx.host);
         tokio::task::spawn_blocking(move || {
             let id = moved.task_id.clone();
-            // DETACHED: open a `Send + 'static` host route on the blocking thread so the delivery's
-            // chained outcome reaches the durable seam (the raw `HostCtx` stays inside `with_host`).
-            let delivered = crate::plane_host::SendHostDispatch::new(deliver_app)
-                .with_host(|h, _| super::pushdeliver::deliver(h, seam.as_ref(), &moved));
+            // DETACHED: the delivery's chained outcome reaches the durable seam through the neutral
+            // `EngineHost`, which mints the transient `HostCtx` internally on the blocking thread.
+            let delivered =
+                super::pushdeliver::deliver(deliver_host.as_ref(), seam.as_ref(), &moved);
             if let Err(e) = delivered {
                 diag_debug!(A2A_PUSHBACK_NOT_DELIVERED, task = %id, error = %e, "a2a: a pushed state was not delivered onward");
             }

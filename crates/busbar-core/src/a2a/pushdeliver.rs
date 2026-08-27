@@ -331,12 +331,12 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
 ///
 /// The record is written BEFORE the outcome is returned, so no caller can decide not to be audited.
 pub(crate) fn deliver(
-    host: busbar_plugin::hot::host::HostCtx,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     seam: &dyn RelaySeam,
     task: &Task,
 ) -> Result<(), PushRefusal> {
     let outcome = attempt(seam, task);
-    record_attempt(host, task, &outcome);
+    record_attempt(engine_host, task, &outcome);
     outcome
 }
 
@@ -352,7 +352,7 @@ pub(crate) fn deliver(
 /// the harm that posture exists to prevent — but it is logged at WARN rather than swallowed, because
 /// a missing audit record is itself the thing this file was changed to stop.
 fn record_attempt(
-    host: busbar_plugin::hot::host::HostCtx,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     task: &Task,
     outcome: &Result<(), PushRefusal>,
 ) {
@@ -366,11 +366,10 @@ fn record_attempt(
         Err(PushRefusal::Transport(_) | PushRefusal::Status(_)) => provenance::EV_PUSH_FAILED,
         Err(PushRefusal::NoCallback) => return,
     };
-    if let Err(e) = crate::plane::taskstore::TASKS.record_push_delivery(
-        host,
+    if let Err(e) = engine_host.task_record_push_delivery(
         &task.task_id,
         kind,
-        crate::plane_host::clock_now_secs_via(host),
+        engine_host.clock_now_secs(),
         // No inbound request originates a delivery; `request_id` is a join key and is excluded from
         // the digest for exactly this reason (see `provenance::digest_fields`).
         "",

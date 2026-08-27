@@ -147,13 +147,15 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
     task
 }
 
-/// Drive [`pushdeliver::deliver`] with a live `HostCtx` — the delivery's chained outcome
-/// (`record_push_delivery`) now reaches the durable seam over a host, but these tests assert on the
-/// TRANSPORT / guard, never the chain (the standalone `task` is not in the global working set, so the
-/// chain append is a swallowed `NoSuchTask` — exactly the best-effort posture the delivery path takes).
+/// Drive [`pushdeliver::deliver`] over a live `EngineHost` — the delivery's chained outcome
+/// (`record_push_delivery`) now reaches the durable seam through the neutral host, but these tests
+/// assert on the TRANSPORT / guard, never the chain (the standalone `task` is not in the global working
+/// set, so the chain append is a swallowed `NoSuchTask` — exactly the best-effort posture the delivery
+/// path takes).
 fn deliver_hosted(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let app = crate::test_support::TestApp::new().build();
-    crate::plane_host::with_dispatch_scope(&app, |host, _| pushdeliver::deliver(host, seam, task))
+    let engine_host = crate::plane_host::engine_host(&app);
+    pushdeliver::deliver(engine_host.as_ref(), seam, task)
 }
 
 /// REGISTER the callback the way `ingress::invoke` does: validate against the addresses it resolves to
