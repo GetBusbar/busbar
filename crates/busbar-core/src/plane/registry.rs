@@ -271,13 +271,16 @@ impl PlaneBootCtx for BootCtx {
         let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
             // The neutral engine rehydrate consults an A2A-codec predicate for whether each stored row
             // is READABLE (a known state/direction token, a present identity); the terminal/active
-            // split is core's own neutral token check. Passing the codec predicate keeps the a2a
-            // classification a2a-side while this boot seam still names only `TaskRow`/`Rehydrated`.
-            crate::plane::taskstore::TASKS.restore_from_store(
-                host,
-                store.as_ref(),
-                crate::a2a::task::readable_row,
-            )
+            // split is core's own neutral token check. The predicate is reached through the neutral
+            // `TaskCodec` seam the plane installed at boot, so this boot seam names no `crate::a2a`
+            // type — only `TaskRow`/`Rehydrated`. (Codec absent is only reachable in a mis-wired
+            // build; a row then counts readable, matching an empty-predicate restore.)
+            crate::plane::taskstore::TASKS.restore_from_store(host, store.as_ref(), |row| {
+                match busbar_substrate::plane_host::task_codec() {
+                    Some(codec) => codec.readable_row(row),
+                    None => Ok(()),
+                }
+            })
         });
         restored
             .map(|r| RestoredTasks {

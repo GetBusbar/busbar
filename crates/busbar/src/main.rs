@@ -617,6 +617,13 @@ fn main() {
     busbar_substrate::egress::seam::install_hostless_egress(
         &busbar_core::egress::seam::CoreHostlessEgress,
     );
+    // The A2A task codec: the plane supplies the three A2A-domain fragments of the neutral TASKS
+    // engine's write/restore path (transition planning, the push-callback SSRF floor, row-readability)
+    // through `TaskCodec`, bound here so core's engine names no `crate::a2a` type. Installed BEFORE any
+    // boot hydrate drives the engine. `&A2aTaskCodec` is a ZST, so it promotes to `'static`. Gated to
+    // `plane-a2a`; a build without the A2A plane never drives the engine and installs nothing.
+    #[cfg(feature = "plane-a2a")]
+    busbar_substrate::plane_host::install_task_codec(&busbar_core::a2a::A2aTaskCodec);
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

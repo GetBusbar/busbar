@@ -144,6 +144,56 @@ pub enum TaskWrite<'a> {
     },
 }
 
+/// The neutral seam by which the A2A plane supplies the task-CODEC operations the core TASKS engine
+/// needs but MUST NOT name. The engine is `busbar_api::TaskRow`-neutral (D4), but three fragments of
+/// its write/restore path are A2A domain logic — parsing a state token, planning a validated
+/// transition, flooring a push-callback URL, and judging a persisted row READABLE. The plane installs
+/// its implementation at boot ([`install_task_codec`], from the composition root); the engine reads it
+/// back through [`task_codec`] and never names `busbar_core::a2a::*`. Mirrors the `HostlessEgress`
+/// install-hook exactly — the plane provides, core consumes, the binary binds the two.
+pub trait TaskCodec: Send + Sync {
+    /// Build the transition PLAN for `to_state` at `now`. `Err` (byte-identical to the plane's
+    /// `TaskState::parse` refusal) when the token is unknown; otherwise a closure the engine applies
+    /// UNDER its working-set lock — it validates the move against the state machine and chooses the
+    /// provenance event kind, returning the new row + kind (or an `Err` message on an illegal move).
+    #[allow(clippy::type_complexity)]
+    fn plan_transition(
+        &self,
+        to_state: &str,
+        now: u64,
+    ) -> Result<
+        Box<
+            dyn FnOnce(&busbar_api::TaskRow) -> Result<(busbar_api::TaskRow, &'static str), String>,
+        >,
+        String,
+    >;
+
+    /// The push-callback SSRF FLOOR: a URL the structural guard refuses is DROPPED (returns `None`)
+    /// and logged; otherwise the callback passes through. The engine stores whatever this returns.
+    fn floor_callback(&self, task_id: &str, callback: Option<String>) -> Option<String>;
+
+    /// Whether a persisted row is READABLE — parses as a canonical task (a known state/direction
+    /// token, a present identity). `Err(rendered message)` otherwise; the engine reports and skips it.
+    fn readable_row(&self, row: &busbar_api::TaskRow) -> Result<(), String>;
+}
+
+/// The installed A2A task codec, bound once by the composition root. `OnceLock`, so a second install
+/// is a no-op (the first wins), mirroring `install_hostless_egress`.
+static TASK_CODEC: std::sync::OnceLock<&'static dyn TaskCodec> = std::sync::OnceLock::new();
+
+/// Bind the A2A plane's task codec. Called from `main` (the composition root) under `plane-a2a`,
+/// BEFORE any boot hydrate drives the TASKS engine. Idempotent by `OnceLock`.
+pub fn install_task_codec(codec: &'static dyn TaskCodec) {
+    let _ = TASK_CODEC.set(codec);
+}
+
+/// The installed A2A task codec, or `None` when none was installed (only reachable in a mis-wired
+/// build — in a `plane-a2a` binary the plane installs it at boot before the TASKS engine is driven).
+#[cfg(feature = "plane-a2a")]
+pub fn task_codec() -> Option<&'static dyn TaskCodec> {
+    TASK_CODEC.get().copied()
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these

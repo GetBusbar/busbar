@@ -656,14 +656,15 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
                         crate::plane::taskstore::TASKS.submit(host, row, request_id)
                     }
                     TaskWrite::Transition { to_state } => {
-                        let to = crate::a2a::task::TaskState::parse(to_state)
-                            .map_err(|e| e.to_string())?;
-                        crate::plane::taskstore::TASKS.transition(
-                            host,
-                            task_id,
-                            request_id,
-                            crate::a2a::task::plan_transition(to, now),
-                        )
+                        // The plan (parse the token, validate the move, choose the event kind) is A2A
+                        // domain logic reached through the neutral `TaskCodec` seam the plane installed
+                        // at boot — core drives the engine with the returned closure and names no
+                        // `crate::a2a` type. `Err` on an unknown token is byte-identical to the former
+                        // in-place `TaskState::parse` refusal.
+                        let plan = busbar_substrate::plane_host::task_codec()
+                            .ok_or_else(|| "a2a task codec not installed".to_string())?
+                            .plan_transition(to_state, now)?;
+                        crate::plane::taskstore::TASKS.transition(host, task_id, request_id, plan)
                     }
                     TaskWrite::Dispatch { agent_id } => crate::plane::taskstore::TASKS
                         .record_dispatch(host, task_id, agent_id, now, request_id),
@@ -764,13 +765,15 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         callback: Option<String>,
         now: u64,
     ) -> Result<busbar_api::TaskRow, String> {
-        // The SSRF FLOOR is A2A domain logic and now runs HERE, at the caller boundary, BEFORE the
-        // neutral engine is asked to persist: a refusable URL is DROPPED (`None` reaches the store)
-        // and logged loudly, exactly as the pre-cleave in-engine `floor_push_callback` did. The engine
-        // then stores the already-cleared callback and makes no security decision. `set_push_callback`
-        // takes no `HostCtx`; the engine hands back the row directly and its neutral `TaskStoreError`
-        // (unknown task / store miss) renders (`Display`) to the seam's `String`.
-        let callback = crate::a2a::pushnotify::floor_callback(task_id, callback);
+        // The SSRF FLOOR is A2A domain logic, reached through the neutral `TaskCodec` seam the plane
+        // installed at boot — a refusable URL is DROPPED (`None` reaches the store) and logged loudly,
+        // exactly as the former in-engine `floor_push_callback` did, and core names no `crate::a2a`
+        // type. The engine then stores the already-cleared callback and makes no security decision.
+        // (Codec absent is only reachable in a mis-wired build; then the callback stores as-is.)
+        let callback = match busbar_substrate::plane_host::task_codec() {
+            Some(codec) => codec.floor_callback(task_id, callback),
+            None => callback,
+        };
         crate::plane::taskstore::TASKS
             .set_push_callback(task_id, callback, now)
             .map_err(|e| e.to_string())

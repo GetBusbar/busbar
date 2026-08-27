@@ -580,6 +580,10 @@ pub(crate) mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;
 pub(crate) mod task;
+/// PUBLIC re-export of the A2A task codec so the composition root (`main`) can bind it to the neutral
+/// `busbar_substrate::plane_host::TaskCodec` seam via `install_task_codec` — the one public a2a symbol
+/// the binary names for this seam, mirroring how it names `busbar_core::egress::seam::CoreHostlessEgress`.
+pub use task::A2aTaskCodec;
 pub(crate) mod transport;
 pub(crate) mod verbs;
 pub(crate) mod verify;

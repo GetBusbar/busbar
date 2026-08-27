@@ -206,6 +206,14 @@ impl A2aPlane {
     // `test`/`test-support` (every A2A test, and the `TestApp` fixture), so it reads dead without them.
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub(crate) fn from_config(cfg: &AgentsCfg, public_url: Option<&str>) -> Option<Arc<Self>> {
+        // In the dual-compile / test-support build there is no composition root to install the neutral
+        // `TaskCodec` seam (the `busbar` binary's `main` does that in production), so a plane test would
+        // otherwise drive the TASKS engine with an uninstalled codec — its transitions/floor/restore
+        // fragments are A2A domain logic reached only through this seam. Install it here, idempotently
+        // (`OnceLock`), from the test/fixture entry point every A2A test builds a plane through —
+        // mirroring how the MCP plane installs the hostless-egress seam in its own test path.
+        #[cfg(any(test, feature = "test-support"))]
+        busbar_substrate::plane_host::install_task_codec(&super::task::A2aTaskCodec);
         Self::from_config_carrying(
             cfg,
             public_url,
