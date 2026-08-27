@@ -85,8 +85,11 @@ use std::time::Instant;
 ///
 /// A response extension rather than a request one, because the answer is what carries the fact and
 /// the boundary reads it after the handler has run.
-#[derive(Clone, Copy)]
-pub(crate) struct Counted;
+///
+/// The type itself is the neutral [`busbar_substrate::plane::observe::Counted`], re-exported here so
+/// a plane crate (`busbar_substrate::plane::observe::Counted`) and this middleware name the SAME type
+/// across the extraction seam.
+pub(crate) use busbar_substrate::plane::observe::Counted;
 
 /// Emit `busbar_plane_requests_total` + `busbar_plane_request_duration_seconds` for one request
 /// served by a MOUNTED plane, labelled with the plane it arrived on.

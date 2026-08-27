@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::a2a::registry::AgentRegistration;
+use crate::config::secret::SecretResolver;
 
 /// Write a secret to a uniquely-named file and hand back a `file:` reference to it. A file rather
 /// than an env var because `set_var` is process-global and these tests run in parallel with every

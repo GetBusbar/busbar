@@ -73,7 +73,6 @@
 
 use busbar_api::VirtualKey;
 
-use crate::config::secret::SecretResolver;
 use busbar_api::SecretRef;
 use busbar_substrate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
@@ -392,7 +391,7 @@ impl Lease {
 pub(crate) fn mint(
     grant: &EgressGrant<'_>,
     registration: &super::registry::AgentRegistration,
-    resolver: &SecretResolver,
+    resolver: &dyn busbar_api::SecretResolve,
     now_ms: u64,
 ) -> Result<Lease, LeaseError> {
     if registration.agent_id != grant.agent_id() {

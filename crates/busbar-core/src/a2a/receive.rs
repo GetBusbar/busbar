@@ -783,7 +783,7 @@ pub(super) async fn invoke(
     // there for.
     answered
         .extensions_mut()
-        .insert(crate::plane::observe::Counted);
+        .insert(busbar_substrate::plane::observe::Counted);
     answered
 }
 

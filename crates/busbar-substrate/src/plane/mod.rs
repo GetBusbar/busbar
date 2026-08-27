@@ -14,6 +14,11 @@
 pub mod approvals;
 pub mod calllog;
 
+// The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
+// `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
+// here; core re-exports it from `busbar_core::plane::observe` so its middleware reads the same type.
+pub mod observe;
+
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
 // `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
 // types, so they live here; core re-exports them from `busbar_core::plane::store`.
