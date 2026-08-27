@@ -429,6 +429,23 @@ pub trait EngineHost: Send + Sync {
         request_id: &str,
     ) -> Result<(), String>;
 
+    /// SCOPED task read off the live working set — the get/subscribe authorization gate. Returns None for
+    /// BOTH "not this principal's task" and "no such task" (preserving the indistinguishability the
+    /// underlying Denied::NotYours collapse gives). A pure read; no HostCtx.
+    fn task_get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow>;
+
+    /// UNSCOPED task read (operator / inbound-pushback path). None when absent. No HostCtx.
+    fn task_get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow>;
+
+    /// Set/clear a task's push callback (runs the SSRF floor + write-through to the durable sink), returning
+    /// the mutated row. Err = unknown task / store miss (Display). No HostCtx.
+    fn task_set_push_callback(
+        &self,
+        task_id: &str,
+        callback: Option<String>,
+        now: u64,
+    ) -> Result<busbar_api::TaskRow, String>;
+
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
     /// operator's declared `model`, and return the raw wire outcome. Identical to calling

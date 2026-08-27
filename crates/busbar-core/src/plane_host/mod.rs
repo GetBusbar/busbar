@@ -701,6 +701,65 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         Err("A2A task journal is not compiled in this build (plane-a2a off)".to_string())
     }
 
+    #[cfg(feature = "plane-a2a")]
+    fn task_get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow> {
+        // A pure working-set read — the underlying `get_scoped` takes no `HostCtx`, so this is a thin
+        // `TASKS.*` call plus the `Task → busbar_api::TaskRow` boundary conversion. `Denied::NotYours`
+        // (no such task OR not this principal's) collapses to `None`, preserving indistinguishability.
+        crate::plane::taskstore::TASKS
+            .get_scoped(principal, task_id)
+            .ok()
+            .map(|t| t.to_row())
+    }
+
+    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn task_get_scoped(&self, _principal: &str, _task_id: &str) -> Option<busbar_api::TaskRow> {
+        None
+    }
+
+    #[cfg(feature = "plane-a2a")]
+    fn task_get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow> {
+        // Pure read (operator / inbound-pushback path); no `HostCtx`. `None` when absent.
+        crate::plane::taskstore::TASKS
+            .get_unscoped(task_id)
+            .map(|t| t.to_row())
+    }
+
+    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn task_get_unscoped(&self, _task_id: &str) -> Option<busbar_api::TaskRow> {
+        None
+    }
+
+    #[cfg(feature = "plane-a2a")]
+    fn task_set_push_callback(
+        &self,
+        task_id: &str,
+        callback: Option<String>,
+        now: u64,
+    ) -> Result<busbar_api::TaskRow, String> {
+        // `set_push_callback` runs the SSRF floor + write-through to the durable sink and takes no
+        // `HostCtx`, so this is a thin call plus the `Task → busbar_api::TaskRow` boundary conversion.
+        // The engine's `TaskStoreError` (unknown task / store miss) renders (`Display`) to the seam's
+        // neutral `String`.
+        crate::plane::taskstore::TASKS
+            .set_push_callback(task_id, callback, now)
+            .map(|t| t.to_row())
+            .map_err(|e| e.to_string())
+    }
+
+    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the write answers `Err`.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn task_set_push_callback(
+        &self,
+        _task_id: &str,
+        _callback: Option<String>,
+        _now: u64,
+    ) -> Result<busbar_api::TaskRow, String> {
+        Err("A2A task store not compiled (plane-a2a off)".into())
+    }
+
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
         // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
         // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
