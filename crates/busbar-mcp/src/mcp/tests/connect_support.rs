@@ -269,17 +269,14 @@ pub(crate) fn mcp_cfg() -> crate::mcp::McpCfg {
 }
 
 /// A `PlaneRequestCtx` holding a key granted exactly `pairs`.
-pub(crate) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequestCtx {
+pub(crate) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
     gov_with_key("k-connect", pairs)
 }
 
 /// The same, with the KEY ID chosen by the caller — for the batteries whose subject is a
 /// per-principal fact (the roots epoch, the per-principal call chain) and whose negative control
 /// is therefore a SECOND principal.
-pub(crate) fn gov_with_key(
-    id: &str,
-    pairs: &[(&str, &str)],
-) -> busbar_core::governance::PlaneRequestCtx {
+pub(crate) fn gov_with_key(id: &str, pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
     let scopes = pairs
         .iter()
         .map(|(kind, value)| busbar_api::ScopeRef {
@@ -287,7 +284,7 @@ pub(crate) fn gov_with_key(
             value: (*value).to_string(),
         })
         .collect();
-    busbar_core::governance::PlaneRequestCtx {
+    busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(busbar_api::VirtualKey {
             id: id.to_string(),
             name: id.to_string(),
@@ -308,7 +305,7 @@ pub(crate) fn gov_with_key(
 /// Drive one JSON-RPC method against the built app, exactly as the ingress does.
 pub(crate) async fn call(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {

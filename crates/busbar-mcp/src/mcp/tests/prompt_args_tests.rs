@@ -109,7 +109,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
     busbar_core::metrics::init();
     let app = app();
     let handle = Arc::new(AppHandle::new(app.clone()));
-    let gov = busbar_core::governance::PlaneRequestCtx { key: None };
+    let gov = busbar_api::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         host: busbar_core::plane_host::engine_host_from_handle(&handle),
         handle: &handle,
@@ -183,7 +183,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
     busbar_core::metrics::init();
     let app = app();
     let handle = Arc::new(AppHandle::new(app.clone()));
-    let gov = busbar_core::governance::PlaneRequestCtx { key: None };
+    let gov = busbar_api::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         host: busbar_core::plane_host::engine_host_from_handle(&handle),
         handle: &handle,

@@ -4,7 +4,7 @@
 //! ONE OWNER FOR "MAY THIS ARTIFACT SERVE?" IN THE MCP SERVER PLANE.
 //!
 //! The invariant: the dispatch gate in [`super::Catalogue::resolve`] is the SAME comparison the
-//! operator's trust surfaces are computed from — `busbar_core::trust::Approval::serves` — and there is no
+//! operator's trust surfaces are computed from — `busbar_substrate::trust::Approval::serves` — and there is no
 //! second implementation of it anywhere in this module.
 //!
 //! Why that is a correctness property and not a tidiness one: two implementations of "may this

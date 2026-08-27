@@ -25,7 +25,7 @@
 //! bumps it. When [`crate::mcp::callerask::decide`] mints state for an exchange whose configured
 //! rounds include a `roots/list` ask, the CURRENT epoch is sealed into the blob; when such state is
 //! presented, the sealed epoch is compared against the live one, and a mismatch refuses with
-//! [`busbar_core::plane::approvals::Rejected::StaleRoots`] — the caller restarts the exchange and answers
+//! [`busbar_substrate::plane::approvals::Rejected::StaleRoots`] — the caller restarts the exchange and answers
 //! with its current roots. State minted for exchanges that never asked for roots carries no epoch
 //! and is untouched, so a chatty client cannot invalidate its own unrelated confirmations.
 //!

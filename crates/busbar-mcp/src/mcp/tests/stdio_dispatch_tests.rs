@@ -287,7 +287,7 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
     let params = serde_json::json!({ "name": "fs_read", "arguments": {} });
     let reach_the_supervisor = || {
         app.plane_breakers
-            .reset(&busbar_core::store::PlaneBreakers::tool_key("fs"))
+            .reset(&busbar_substrate::store::tool_key("fs"))
     };
 
     let text = |b: &serde_json::Value| {

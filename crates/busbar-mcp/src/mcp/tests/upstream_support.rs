@@ -468,7 +468,7 @@ async fn token_endpoint(
 /// A file rather than an environment variable deliberately: `std::env::set_var` is process-global
 /// and the test binary runs its tests in parallel, so an env-backed secret is a test that passes
 /// alone and fails in a suite.
-pub(super) fn secret_file(name: &str, value: &str) -> busbar_core::config::SecretRef {
+pub(super) fn secret_file(name: &str, value: &str) -> busbar_api::SecretRef {
     use std::io::Write as _;
     let path = std::env::temp_dir().join(format!(
         "busbar-mcp-subject-{}-{name}-{:?}",
@@ -477,7 +477,7 @@ pub(super) fn secret_file(name: &str, value: &str) -> busbar_core::config::Secre
     ));
     let mut f = std::fs::File::create(&path).expect("subject-token fixture file");
     f.write_all(value.as_bytes()).expect("write subject token");
-    busbar_core::config::SecretRef::file(path.to_string_lossy().into_owned())
+    busbar_api::SecretRef::file(path.to_string_lossy().into_owned())
 }
 
 /// A registration pointing at `peer`, with the two tools `read` and `write` approved, and an RFC
@@ -550,8 +550,8 @@ pub(super) fn exchanging_server(
 }
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequestCtx {
-    busbar_core::governance::PlaneRequestCtx {
+pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
+    busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key_with_scopes("k-test", pairs))),
     }
 }
@@ -594,7 +594,7 @@ pub(super) fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
 /// Drive one method at the handler, returning `(status, body)`.
 pub(super) async fn call(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -610,7 +610,7 @@ pub(super) async fn call(
 /// A test that needs a virgin chain asks for its own principal.
 pub(super) async fn call_as(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -623,7 +623,7 @@ pub(super) async fn call_as(
 /// header — and the (status, body) helpers above deliberately drop the header map.
 pub(super) async fn call_response(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -637,7 +637,7 @@ pub(super) async fn call_response(
 /// about tasks, so the task-path filter keeps its own tests meaningful).
 pub(super) async fn call_response_caps(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,

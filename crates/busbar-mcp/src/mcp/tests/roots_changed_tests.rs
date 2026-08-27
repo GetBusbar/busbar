@@ -91,7 +91,7 @@ async fn deployment(
 ) -> (
     Peer,
     Arc<busbar_core::state::App>,
-    busbar_core::governance::PlaneRequestCtx,
+    busbar_api::PlaneRequestCtx,
 ) {
     busbar_core::metrics::init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
@@ -107,7 +107,7 @@ async fn deployment(
 /// Ask the operator's question and hand back the sealed continuation state.
 async fn obtain_state(
     app: &Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
 ) -> String {
     let (status, body) = call(
         app,
@@ -145,7 +145,7 @@ fn redemption(state: &str) -> serde_json::Value {
 /// what the adapter derives from `gov`.
 fn rpc_ctx(
     handle: Arc<busbar_core::state::AppHandle>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     body: axum::body::Bytes,
 ) -> busbar_substrate::plane_routes::PlaneReqCtx {
     busbar_substrate::plane_routes::PlaneReqCtx {
@@ -157,7 +157,7 @@ fn rpc_ctx(
         path_params: Vec::new(),
         caller_principal: gov.key.as_ref().map(|k| k.id.clone()),
         gov: Some(gov.clone()),
-        principal: Some(busbar_core::auth::AuthPrincipal(None)),
+        principal: Some(busbar_api::AuthPrincipal(None)),
         host: busbar_core::plane_host::engine_host_from_handle(&handle),
         engine: handle,
         slot: Arc::new(()),
@@ -170,7 +170,7 @@ fn rpc_ctx(
 /// empty body, even for a plane fact the notification moved.
 async fn announce_roots_changed(
     app: &Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
 ) {
     let handle = Arc::new(busbar_core::state::AppHandle::new(app.clone()));
     let body = serde_json::json!({

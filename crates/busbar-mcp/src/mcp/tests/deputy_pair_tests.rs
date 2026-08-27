@@ -260,11 +260,11 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_core::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_core::store::now(), None)
+        .verify(plain.as_str(), busbar_substrate::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     let mut scoped = key.clone();
@@ -406,7 +406,7 @@ async fn a_wildcard_principal_is_down_scoped_to_the_single_tool_it_called() {
     busbar_core::metrics::init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
-    let wildcard = busbar_core::governance::PlaneRequestCtx {
+    let wildcard = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(wildcard_key("wildcard-key"))),
     };
 
@@ -448,7 +448,7 @@ async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
 
     let (status, body) = call(
         &app,
-        &busbar_core::governance::PlaneRequestCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "tools/call",
         params("fs_read"),
     )
@@ -513,7 +513,7 @@ async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
                 &crate::mcp::client::identity::ToolKey::parse(tool).unwrap(),
             )
             .is_ok();
-            let gov = busbar_core::governance::PlaneRequestCtx {
+            let gov = busbar_api::PlaneRequestCtx {
                 key: Some(Arc::new(key)),
             };
             let (status, body) = call(&app, &gov, "tools/call", params(tool)).await;

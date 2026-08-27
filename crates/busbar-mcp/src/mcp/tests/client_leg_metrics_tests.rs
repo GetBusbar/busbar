@@ -137,14 +137,14 @@ async fn a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_i
     let exposition = scrape(&app).await;
     let attempts = series_for(
         &exposition,
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         SERVED,
     );
     assert!(
         !attempts.is_empty(),
         "the MCP client leg reached a real upstream and left no `{}` series for \
          pool=\"{SERVED}\". An operator cannot see the calls busbar originates. Exposition:\n{exposition}",
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     );
 
     // THE CHANNEL IS NAMED, off the transport axis's own `name()` and not a spelling invented here.
@@ -168,7 +168,7 @@ async fn a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_i
     assert!(
         series_for(
             &exposition,
-            busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
+            busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
             SERVED
         )
         .is_empty(),
@@ -216,7 +216,7 @@ async fn an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_be
     let exposition = scrape(&app).await;
     let attempts = series_for(
         &exposition,
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         DEAD,
     );
     assert!(
@@ -226,18 +226,18 @@ async fn an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_be
     );
     let failures = series_for(
         &exposition,
-        busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
         DEAD,
     );
     assert!(
         !failures.is_empty(),
         "the upstream was unreachable and left no `{}` series for pool=\"{DEAD}\". Exposition:\n{exposition}",
-        busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
     );
     assert!(
         failures.iter().any(|l| l.contains(&format!(
             "disposition=\"{}\"",
-            busbar_core::proxy::DISPOSITION_TRANSIENT
+            busbar_substrate::proxy::DISPOSITION_TRANSIENT
         ))),
         "the failure must carry the MODEL PLANE'S disposition word, not one of this plane's own: \
          {failures:?}"
@@ -314,7 +314,7 @@ async fn an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt()
     assert!(
         !series_for(
             &exposition,
-            busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+            busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
             UNREACHABLE
         )
         .is_empty(),
@@ -322,7 +322,7 @@ async fn an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt()
     );
     let failures = series_for(
         &exposition,
-        busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_FAILURES_TOTAL,
         UNREACHABLE,
     );
     assert!(
@@ -334,7 +334,7 @@ async fn an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt()
     assert!(
         failures.iter().any(|l| l.contains(&format!(
             "disposition=\"{}\"",
-            busbar_core::proxy::DISPOSITION_TRANSIENT
+            busbar_substrate::proxy::DISPOSITION_TRANSIENT
         ))),
         "an unreachable peer may come back, so it carries the same transient word an I/O failure \
          does — a second disposition here would split one outage across two panels: {failures:?}"

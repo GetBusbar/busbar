@@ -130,7 +130,7 @@ fn two_server_app() -> Arc<App> {
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs` — the shape the store persists
 /// as `allowed_mcp_servers` / `allowed_mcp_tools`.
-fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequestCtx {
+fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
     let key = busbar_api::VirtualKey {
         id: "k-test".to_string(),
         name: "test".to_string(),
@@ -153,7 +153,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequ
         revision: 0,
         ..Default::default()
     };
-    busbar_core::governance::PlaneRequestCtx {
+    busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     }
 }
@@ -161,7 +161,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequ
 /// Call one method and return `(status, body)`.
 async fn call(
     app: &Arc<App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -436,7 +436,7 @@ async fn a_deployment_without_governance_serves_its_whole_catalogue() {
     let app = two_server_app();
     let (_, body) = call(
         &app,
-        &busbar_core::governance::PlaneRequestCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "tools/list",
         serde_json::json!({}),
     )
@@ -561,7 +561,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         .mcp_server("meter", poisoned_server("meter", "probe"))
         .governance(gov_state.clone())
         .build();
-    let gov = busbar_core::governance::PlaneRequestCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
     };
 
@@ -608,7 +608,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         gov_state.flush_metering() > 0,
         "the round must have metered"
     );
-    let bucket = busbar_core::governance::metering_bucket(busbar_core::store::now());
+    let bucket = busbar_core::governance::metering_bucket(busbar_substrate::store::now());
     let rows = gov_state.metering_for(bucket).expect("metering rows");
     let ours: Vec<_> = rows.iter().filter(|r| r.key_id == key.id).collect();
     assert_eq!(
@@ -640,7 +640,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         "mcp_tool:fs_read",
-        busbar_core::audit::vocab::OUTCOME_REJECTED,
+        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         "test-principal",
     );
     let entries = busbar_core::plane::auditlog::AUDIT_LOG.list_filtered(
@@ -659,7 +659,10 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         })
         .expect("the call must have audited an `mcp_tool.call` row of its own");
     assert_eq!(row.resource, "mcp_tool:meter_probe");
-    assert_eq!(row.outcome, busbar_core::admin::audit::OUTCOME_REJECTED);
+    assert_eq!(
+        row.outcome,
+        busbar_substrate::audit::vocab::OUTCOME_REJECTED
+    );
     assert_eq!(row.principal, "test-principal");
 }
 

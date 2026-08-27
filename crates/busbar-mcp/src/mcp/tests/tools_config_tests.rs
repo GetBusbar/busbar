@@ -48,7 +48,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     // SCALAR ⇒ OVERRIDE.
     assert_eq!(
         cfg.effective_upstream_credentials("filesystem"),
-        Some(busbar_core::auth::UpstreamCreds::Own)
+        Some(busbar_api::UpstreamCreds::Own)
     );
 }
 
@@ -422,14 +422,14 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
 
 use crate::mcp::config::validate_published_names;
 
-/// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `busbar_core::trust::validate`
+/// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `busbar_substrate::trust::validate`
 /// states that posture once for the whole tree; these two tests are about which NAMES the catalogue
 /// publishes, not about who may see them, so they ask as the deployment with governance off.
-fn ungoverned() -> busbar_core::catalogue::Caller<'static> {
-    busbar_core::catalogue::Caller {
+fn ungoverned() -> busbar_substrate::catalogue::Caller<'static> {
+    busbar_substrate::catalogue::Caller {
         key: None,
         now: 0,
-        generation: busbar_core::trust::validate::Generations::at_admission(1),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(1),
     }
 }
 

@@ -70,15 +70,15 @@ fn the_snapshot_carries_the_generation_it_was_published_under() {
 fn a_registered_server_serves_nothing_until_it_is_approved() {
     let sc = ServerCatalogue::registered(sid("new"));
     assert!(sc.served_tools().is_empty());
-    assert_eq!(sc.state(), busbar_core::trust::TrustState::Pending);
+    assert_eq!(sc.state(), busbar_substrate::trust::TrustState::Pending);
 }
 
 #[test]
 fn a_failed_contact_is_never_reported_as_trust() {
     let mut sc = approved_server("s", vec![simple_tool("t", "d")]);
-    assert_eq!(sc.state(), busbar_core::trust::TrustState::Approved);
+    assert_eq!(sc.state(), busbar_substrate::trust::TrustState::Approved);
     sc.observe_failure("connection refused");
-    assert_eq!(sc.state(), busbar_core::trust::TrustState::Error);
+    assert_eq!(sc.state(), busbar_substrate::trust::TrustState::Error);
     assert!(sc.served_tools().is_empty());
 }
 

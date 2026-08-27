@@ -150,7 +150,7 @@ fn a_resource_with_no_authorization_server_is_refused() {
 /// and is a different origin; admitting one is how `https://app.example.com` starts admitting
 /// `https://app.example.com.evil.test`, which is the DNS-rebinding attack the check exists for.
 ///
-/// THE VERDICT IS NO LONGER THIS PLANE'S — it is `busbar_core::ingress::protocol::origin_admitted`, one
+/// THE VERDICT IS NO LONGER THIS PLANE'S — it is `busbar_substrate::ingress::protocol::origin_admitted`, one
 /// rule for every JSON-RPC plane, because A2A had no such check at all for as long as this one was
 /// a method on `McpResource`. What this asserts is unchanged: the exact-match rule, applied to the
 /// list THIS config parses. The loopback half of the same rule is asserted beside the rule itself,
@@ -160,7 +160,7 @@ fn origin_matching_is_exact_and_the_empty_allowlist_admits_nothing() {
     let mut c = cfg("https://gateway.example.com/mcp");
     let empty = McpResource::from_cfg(&c).unwrap();
     assert!(
-        !busbar_core::ingress::protocol::origin_admitted(
+        !busbar_substrate::ingress::protocol::origin_admitted(
             "https://app.example.com",
             empty.allowed_origins()
         ),
@@ -169,7 +169,7 @@ fn origin_matching_is_exact_and_the_empty_allowlist_admits_nothing() {
 
     c.allowed_origins = vec!["https://app.example.com".to_string()];
     let r = McpResource::from_cfg(&c).unwrap();
-    assert!(busbar_core::ingress::protocol::origin_admitted(
+    assert!(busbar_substrate::ingress::protocol::origin_admitted(
         "https://app.example.com",
         r.allowed_origins()
     ));
@@ -184,7 +184,7 @@ fn origin_matching_is_exact_and_the_empty_allowlist_admits_nothing() {
         "",
     ] {
         assert!(
-            !busbar_core::ingress::protocol::origin_admitted(near, r.allowed_origins()),
+            !busbar_substrate::ingress::protocol::origin_admitted(near, r.allowed_origins()),
             "`{near}` is not the allowed origin and must be refused"
         );
     }

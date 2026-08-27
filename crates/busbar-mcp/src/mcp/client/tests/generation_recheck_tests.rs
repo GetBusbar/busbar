@@ -14,7 +14,7 @@
 use crate::mcp::client::catalogue::{CatalogueCache, TransportPin};
 use crate::mcp::client::dispatch::{resolve, revalidate, DispatchRefusal};
 use crate::mcp::client::support::{approved_server, key_wildcard, sid, simple_tool};
-use busbar_core::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 /// AN UNRELATED SERVER'S APPLY BUMPS THE CACHE-WIDE GENERATION, refusing an in-flight call selected
 /// against a different server. A control resolve on the post-bump snapshot proves the TARGET is

@@ -136,11 +136,11 @@ fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
 /// gate — identity and grant, and deliberately not the artifact step, because this plane CATALOGUES
 /// what it will not dispatch — but it asks it of the same ordered validator, so the key, the clock
 /// and the snapshot travel together instead of a bare grant closure.
-fn seeing(key: &busbar_api::VirtualKey) -> busbar_core::catalogue::Caller<'_> {
-    busbar_core::catalogue::Caller {
+fn seeing(key: &busbar_api::VirtualKey) -> busbar_substrate::catalogue::Caller<'_> {
+    busbar_substrate::catalogue::Caller {
         key: Some(key),
         now: 0,
-        generation: busbar_core::trust::validate::Generations::at_admission(1),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(1),
     }
 }
 
@@ -272,7 +272,7 @@ fn an_unpinned_server_never_dispatches() {
 /// serves nothing — whitespace is not out-of-band material, and a pin with nothing to verify with is
 /// not a pin.
 ///
-/// The rule is [`busbar_core::trust::declared`]'s now, and it used to be this plane's alone: the sibling
+/// The rule is [`busbar_substrate::trust::declared`]'s now, and it used to be this plane's alone: the sibling
 /// plane's reader took `key.unwrap_or_default()` and would have built an artifact out of `""`. This
 /// is the check that moving the rule to core did not lose it on the plane it started on.
 #[test]
@@ -287,9 +287,9 @@ fn a_present_but_blank_pin_key_declares_nothing() {
         "boot must still refuse a rooted mechanism with no usable material"
     );
     assert_eq!(
-        busbar_core::trust::declared::declared_pin::<crate::mcp::client::catalogue::TransportPin>(
-            def.pin.declaration()
-        ),
+        busbar_substrate::trust::declared::declared_pin::<
+            crate::mcp::client::catalogue::TransportPin,
+        >(def.pin.declaration()),
         None,
         "and the reader must refuse it on its own, not by trusting that boot already did"
     );
@@ -387,7 +387,7 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
     // THE CALL IS REFUSED, AND THE REFUSAL NAMES THE QUARANTINE RATHER THAN THE MOVE.
     //
     // It used to name the move, because the generation was compared before anything else. The one
-    // ordered validator in `busbar_core::trust::validate` compares it LAST, deliberately: "something
+    // ordered validator in `busbar_substrate::trust::validate` compares it LAST, deliberately: "something
     // moved, retry" is a worse message than "this tool's approved digest was withdrawn", and an
     // operator handed the first goes looking for a config apply they did not make. Nothing is
     // admitted that was not admitted before — both steps refuse this call — and
@@ -488,7 +488,7 @@ fn no_principal_sees_another_principals_prompts_resources_or_templates() {
     /// One catalogue SURFACE, read for one caller. A named type because the four surfaces are the
     /// point of this test: a fifth one added without a row here is a surface with no entitlement
     /// assertion, and naming the shape is what makes adding the row obvious.
-    type ReadSurface = fn(&Catalogue, &busbar_core::catalogue::Caller<'_>) -> Vec<String>;
+    type ReadSurface = fn(&Catalogue, &busbar_substrate::catalogue::Caller<'_>) -> Vec<String>;
     let surfaces: [(&str, ReadSurface); 4] = [
         ("tools", |c, k| {
             c.tools_for(k)
@@ -623,10 +623,10 @@ fn a_key_that_is_no_longer_live_sees_nothing_on_any_surface() {
     ] {
         let mut gone = live.clone();
         mutate(&mut gone);
-        let asked = busbar_core::catalogue::Caller {
+        let asked = busbar_substrate::catalogue::Caller {
             key: Some(&gone),
             now: 100,
-            generation: busbar_core::trust::validate::Generations::at_admission(1),
+            generation: busbar_substrate::trust::validate::Generations::at_admission(1),
         };
         assert!(cat.tools_for(&asked).is_empty(), "{what}: tools");
         assert!(cat.prompts_for(&asked).is_empty(), "{what}: prompts");
@@ -636,10 +636,10 @@ fn a_key_that_is_no_longer_live_sees_nothing_on_any_surface() {
             "{what}: templates"
         );
         assert_eq!(
-            busbar_core::catalogue::judge(cat.tools_for(&seeing(&live))[0], &asked, &(),)
+            busbar_substrate::catalogue::judge(cat.tools_for(&seeing(&live))[0], &asked, &(),)
                 .unwrap_err()
                 .audit_reason(),
-            busbar_core::audit::vocab::REASON_IDENTITY_NOT_LIVE,
+            busbar_substrate::audit::vocab::REASON_IDENTITY_NOT_LIVE,
             "{what}: the audit record must say the key is gone, not that it lacks a grant"
         );
     }

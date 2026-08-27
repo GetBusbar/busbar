@@ -100,7 +100,7 @@ resource_templates_allow:
 }
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequestCtx {
+fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
     let key = busbar_api::VirtualKey {
         id: "k-test".to_string(),
         name: "test".to_string(),
@@ -123,14 +123,14 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_core::governance::PlaneRequ
         revision: 0,
         ..Default::default()
     };
-    busbar_core::governance::PlaneRequestCtx {
+    busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     }
 }
 
 async fn call(
     app: &Arc<App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {

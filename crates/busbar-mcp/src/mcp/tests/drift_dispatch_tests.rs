@@ -81,7 +81,7 @@ async fn approved_and_connected(
     );
     assert_eq!(
         report.state,
-        busbar_core::trust::TrustState::Approved,
+        busbar_substrate::trust::TrustState::Approved,
         "an upstream serving exactly what was approved is approved: {report:?}"
     );
     (app, cache)
@@ -156,7 +156,7 @@ async fn a_schema_changed_under_a_live_cache_refuses_the_dispatch() {
     );
     assert_eq!(
         report.state,
-        busbar_core::trust::TrustState::Quarantined,
+        busbar_substrate::trust::TrustState::Quarantined,
         "drift demotes the server: {report:?}"
     );
 
@@ -321,7 +321,7 @@ async fn a_failed_refresh_refuses_the_dispatch() {
         .unwrap();
     assert_eq!(
         report.state,
-        busbar_core::trust::TrustState::Error,
+        busbar_substrate::trust::TrustState::Error,
         "a failed contact is `error`, never a silently retained `approved`: {report:?}"
     );
 

@@ -4,7 +4,7 @@
 //! busbar-mcp — the Model Context Protocol, as ONE plugin crate.
 //!
 //! WHAT THIS CRATE HOLDS TODAY. The MCP protocol codec — the [`codec`] module: the
-//! [`ProtocolDecl`](busbar_core::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
+//! [`ProtocolDecl`](busbar_substrate::proto::ProtocolDecl) ([`PROTO_DECL`]), the JSON-RPC dialect, and
 //! the `tools/call` and subscription operation cells that core resolves through the support matrix.
 //! This is the whole of what `busbar-core/src/handlers/mcp.rs` was and what the standalone
 //! `busbar-proto-mcp` crate carried before it folded in here.

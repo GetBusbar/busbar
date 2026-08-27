@@ -4,7 +4,7 @@
 //! A QUARANTINE IS ONLY A DEFENCE IF IT OUTLIVES THE THING THAT NOTICED IT.
 //!
 //! Under verify-on-call the thing that notices a drifted upstream is the CALL itself
-//! (`busbar_core::trust::verify`): a `tools/call` re-verifies the server's advertised surface within
+//! (`busbar_substrate::trust::verify`): a `tools/call` re-verifies the server's advertised surface within
 //! `verify_ttl`, single-flight, and refuses fail-closed before dispatch. These cases drive that path
 //! at `verify_ttl: 0` (strict-live) so the drift is deterministic without a wall clock, and they are
 //! about what happens to the resulting quarantine when nobody is calling:
@@ -55,7 +55,7 @@ fn poisoned_schema() -> serde_json::Value {
     })
 }
 
-fn granted() -> busbar_core::governance::PlaneRequestCtx {
+fn granted() -> busbar_api::PlaneRequestCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 

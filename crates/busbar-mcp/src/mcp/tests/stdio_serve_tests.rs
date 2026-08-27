@@ -75,10 +75,7 @@ struct Client {
 
 impl Client {
     /// Boot a session over duplex pipes, as the given identity.
-    fn open(
-        app: Arc<busbar_core::state::App>,
-        gov: busbar_core::governance::PlaneRequestCtx,
-    ) -> Self {
+    fn open(app: Arc<busbar_core::state::App>, gov: busbar_api::PlaneRequestCtx) -> Self {
         let handle = Arc::new(busbar_core::state::AppHandle::new(app));
         Self::open_on(handle, gov)
     }
@@ -86,12 +83,12 @@ impl Client {
     /// The same, on a caller-held handle — for the tests that swap a second `App` mid-session.
     fn open_on(
         handle: Arc<busbar_core::state::AppHandle>,
-        gov: busbar_core::governance::PlaneRequestCtx,
+        gov: busbar_api::PlaneRequestCtx,
     ) -> Self {
         let (stdin_client, stdin_server) = tokio::io::duplex(1 << 16);
         let (stdout_server, stdout_client) = tokio::io::duplex(1 << 16);
         let identity = SessionIdentity {
-            principal: busbar_core::auth::AuthPrincipal(None),
+            principal: busbar_api::AuthPrincipal(None),
             gov,
         };
         let session = super::new_session(handle, identity, stdout_server);
@@ -186,7 +183,7 @@ async fn plain_deployment() -> (Peer, Arc<busbar_core::state::App>) {
 #[tokio::test]
 async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
     let (peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_core::governance::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
 
     client
         .send(&frame(1, "server/discover", serde_json::json!({})))
@@ -259,7 +256,7 @@ async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
 #[tokio::test]
 async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_core::governance::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
 
     // A LEGACY-era opening: no `_meta` at all, exactly what an installed stdio client sends first.
     client
@@ -300,7 +297,7 @@ async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
 #[tokio::test]
 async fn logging_set_level_makes_the_sessions_records_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_core::governance::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
 
     // BEFORE: no level anywhere, a single response line and nothing else.
     client
@@ -577,7 +574,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         .governance(gov_state)
         .groups_tree(groups)
         .build();
-    let gov = busbar_core::governance::PlaneRequestCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     };
     let mut client = Client::open(app, gov);
@@ -633,10 +630,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
 async fn subscriptions_and_resource_watches_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
     let handle = Arc::new(busbar_core::state::AppHandle::new(app));
-    let mut client = Client::open_on(
-        handle.clone(),
-        busbar_core::governance::PlaneRequestCtx::default(),
-    );
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
 
     client
         .send(&frame(
@@ -886,10 +880,7 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
 async fn unsubscribe_stops_the_resource_updates() {
     let (_peer, app) = plain_deployment().await;
     let handle = Arc::new(busbar_core::state::AppHandle::new(app));
-    let mut client = Client::open_on(
-        handle.clone(),
-        busbar_core::governance::PlaneRequestCtx::default(),
-    );
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
     let uri = format!("ws_{RESOURCE_URI}");
     client
         .send(&frame(
@@ -983,7 +974,7 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
         .governance(gov_state.clone())
         .build();
     let sub_key = Arc::new(key);
-    let gov = busbar_core::governance::PlaneRequestCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(sub_key.clone()),
     };
     let mut client = Client::open(app, gov);
@@ -1033,16 +1024,16 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     // principal, watched off a real task-result envelope, transitioned through the registry's own
     // verb. The tasks METHODS' behaviour is `tasks_tests.rs`' subject, not re-proven here.
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_core::governance::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
     // The session's actor is `anonymous` (ungoverned fixture); create its task in the registry.
-    let task = crate::mcp::tasks::TASKS.create("anonymous", busbar_core::store::now_ms());
+    let task = crate::mcp::tasks::TASKS.create("anonymous", busbar_substrate::store::now_ms());
     // Attach the watcher exactly as `deliver` does when it hands the caller a task result.
     client.session.watch_task_result(&serde_json::json!({
         "jsonrpc": "2.0", "id": "t0",
         "result": { "resultType": "task", "taskId": task.id, "status": "submitted" },
     }));
     crate::mcp::tasks::TASKS
-        .cancel(&task.id, "anonymous", busbar_core::store::now_ms())
+        .cancel(&task.id, "anonymous", busbar_substrate::store::now_ms())
         .expect("cancel the task");
     let pushed = client.recv().await;
     assert_eq!(
@@ -1066,7 +1057,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
 #[tokio::test]
 async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_core::governance::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
     let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"_meta\":{}}}\n\n: keepalive\n\n";
     let response = axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)

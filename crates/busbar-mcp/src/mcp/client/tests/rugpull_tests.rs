@@ -13,7 +13,7 @@
 use crate::mcp::client::catalogue::{tool_digest, CatalogueCache, TransportPin};
 use crate::mcp::client::dispatch::{resolve, DispatchRefusal};
 use crate::mcp::client::support::{approved_server, key_wildcard, sid, simple_tool, tool};
-use busbar_core::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 /// THE HEADLINE TEST. Approve a tool, dispatch against it, change its schema under the live cache,
 /// and assert the OUTPUT on all three axes: the state demotes, the changes queue names the tool, and

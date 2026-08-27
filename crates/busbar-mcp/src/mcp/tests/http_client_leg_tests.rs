@@ -48,7 +48,7 @@ use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::upstream::{authorise_verb, Authorised, SetupRefusal};
 use busbar_api::VirtualKey;
 use busbar_core::test_support::TestApp;
-use busbar_core::trust::validate::Generations;
+use busbar_substrate::trust::validate::Generations;
 use std::collections::BTreeSet;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
@@ -173,7 +173,7 @@ fn authorise(
         &sighting,
         caller,
         Generations::at_admission(crate::mcp::runtime(app).catalogue.generation()),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
     )
 }
 
@@ -362,7 +362,7 @@ async fn an_ungranted_caller_issues_nothing_and_causes_no_outbound_traffic() {
         .expect_err("a caller with no `mcp_server` grant for this registration must be refused");
     assert_eq!(
         refusal.audit_reason(),
-        busbar_core::audit::vocab::REASON_NOT_GRANTED,
+        busbar_substrate::audit::vocab::REASON_NOT_GRANTED,
         "the refusal must carry the GRANT word, not a generic one: {refusal}"
     );
     assert_eq!(
@@ -403,7 +403,7 @@ async fn an_unpinned_registration_issues_nothing() {
         authorise(&app, Some(&caller)).expect_err("an unpinned registration serves nothing");
     assert_eq!(
         refusal.audit_reason(),
-        busbar_core::audit::vocab::REASON_NOT_SERVING,
+        busbar_substrate::audit::vocab::REASON_NOT_SERVING,
         "the refusal must indict the REGISTRATION, not the caller: {refusal}"
     );
     assert_eq!(peer.mcp_hits(), 0);
@@ -520,7 +520,7 @@ async fn a_verbs_exchange_asks_for_no_tool_scope_and_binds_to_this_upstream() {
 
 /// AN UPSTREAM FAILURE IS `dispatched`, NOT A THIRD OUTCOME.
 ///
-/// `busbar_core::audit::vocab` has exactly two outcome words and `upstream_failed` is a REASON that rides
+/// `busbar_substrate::audit::vocab` has exactly two outcome words and `upstream_failed` is a REASON that rides
 /// `dispatched` — because `refused` means the call did not go out and this one did. The reason token
 /// was being written into the `outcome` field, so an upstream that answered a JSON-RPC error left a
 /// record whose outcome was a word no reader knows and which said neither "dispatched" nor

@@ -113,7 +113,7 @@ fn confirming_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
 async fn deployment() -> (
     Peer,
     Arc<busbar_core::state::App>,
-    busbar_core::governance::PlaneRequestCtx,
+    busbar_api::PlaneRequestCtx,
 ) {
     busbar_core::metrics::init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
@@ -129,7 +129,7 @@ async fn deployment() -> (
 /// Ask the operator's question, and hand back the continuation state the caller was issued.
 async fn obtain_approval(
     app: &Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     arguments: &serde_json::Value,
 ) -> (String, serde_json::Value) {
     let (status, body) = call(

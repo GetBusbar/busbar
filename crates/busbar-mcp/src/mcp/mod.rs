@@ -223,7 +223,7 @@ pub(crate) fn resource_of(
 /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the objects the plane carries for one
 /// config generation, bundled into ONE mcp-owned struct so core's `App` names no `crate::mcp` type for
 /// any of them. It is carried in [`busbar_core::state::App::plane_slots`] behind `Arc<dyn Any>` under
-/// the always-present companion key [`busbar_core::state::MCP_RUNTIME_SLOT`], and [`runtime`] downcasts
+/// the always-present companion key [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`], and [`runtime`] downcasts
 /// it back HERE, inside the plane.
 ///
 /// It rides its OWN `plane_slots` key rather than the plane's decl key (`"mcp"`, where the server-side
@@ -293,14 +293,14 @@ impl McpRuntime {
 
 /// THE MCP PLANE'S RUNTIME for this generation, read through the TYPE-ERASED `plane_slots` seam
 /// ([`busbar_core::state::App::plane_slot`]) under the ALWAYS-PRESENT companion key
-/// [`busbar_core::state::MCP_RUNTIME_SLOT`], and downcast back to [`McpRuntime`] HERE, inside the
+/// [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`], and downcast back to [`McpRuntime`] HERE, inside the
 /// plane — so core outside this module reaches the runtime only as an opaque `Arc<dyn Any>` slot and
 /// names no `crate::mcp` runtime type. Unlike [`resource`] (whose `"mcp"` slot is config-conditional),
 /// this slot is present on EVERY generation the MCP plane is compiled into, so the lookup and the
 /// downcast both `.expect`: `appbuild` composes it through the plane's `build_runtime` seam and the
 /// slot is always an `McpRuntime`.
 pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
-    app.plane_slot(busbar_core::state::MCP_RUNTIME_SLOT)
+    app.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
         .downcast_ref::<McpRuntime>()
         .expect("the mcp runtime slot is an McpRuntime")
@@ -351,7 +351,7 @@ pub(crate) fn runtime_live(
 }
 
 /// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `plane_slots` runtime slot
-/// ([`busbar_core::state::MCP_RUNTIME_SLOT`]) — the one entry point `appbuild` calls so the
+/// ([`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`]) — the one entry point `appbuild` calls so the
 /// composition of the `App` names no `crate::mcp` runtime type.
 /// `prior` is the prior generation's `App` (for the carry-over rules in [`McpRuntime::build`]); it is
 /// read through [`runtime`] so this function, not `appbuild`, owns the downcast.

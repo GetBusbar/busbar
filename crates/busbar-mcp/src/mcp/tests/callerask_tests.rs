@@ -298,7 +298,7 @@ fn one_callers_state_is_not_redeemable_by_another() {
     assert!(matches!(
         got,
         AskDecision::Refuse(Refusal::StateRejected(
-            busbar_core::plane::approvals::Rejected::WrongPrincipal
+            busbar_substrate::plane::approvals::Rejected::WrongPrincipal
         ))
     ));
 }

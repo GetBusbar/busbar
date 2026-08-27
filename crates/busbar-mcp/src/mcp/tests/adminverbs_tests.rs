@@ -98,7 +98,7 @@ async fn serve_passthrough(peer: &Peer) -> (std::net::SocketAddr, tokio::task::J
         peer,
         &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
     );
-    cfg.upstream_credentials = Some(busbar_core::auth::UpstreamCreds::Passthrough);
+    cfg.upstream_credentials = Some(busbar_api::UpstreamCreds::Passthrough);
     let app = TestApp::new()
         .governance(gov)
         .mcp(&mcp_cfg())
@@ -324,7 +324,7 @@ pub(crate) async fn drive_mcp_verb_errors() {
 #[tokio::test]
 async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
     use crate::mcp::client::identity::ServerId;
-    use busbar_core::trust::reverify::{due, Due, Policy};
+    use busbar_substrate::trust::reverify::{due, Due, Policy};
 
     busbar_core::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
@@ -340,7 +340,7 @@ async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
         ttl_ms: 3_600_000,
         recovery_backoff_ms: 0,
     };
-    let now = busbar_core::store::now_ms();
+    let now = busbar_substrate::store::now_ms();
     assert_eq!(
         due(&fresh, &policy, now, false),
         Due::NeverChecked,
@@ -356,7 +356,7 @@ async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
         .map(|s| s.ledger.clone())
         .expect("the connect observed the server, so the cache has an entry");
     assert_eq!(
-        due(&stamped, &policy, busbar_core::store::now_ms(), false),
+        due(&stamped, &policy, busbar_substrate::store::now_ms(), false),
         Due::No,
         "the operator just looked; the unattended timer must not immediately look again \
          (ledger: {stamped:?})"

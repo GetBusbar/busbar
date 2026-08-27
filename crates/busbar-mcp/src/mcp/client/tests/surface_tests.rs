@@ -18,7 +18,7 @@ use crate::mcp::client::{
     dispatch::DispatchRefusal, Endpoint, McpClientEngine, McpServerRegistration,
 };
 use busbar_api::Redacted;
-use busbar_core::trust::PinnedArtifact as _;
+use busbar_substrate::trust::PinnedArtifact as _;
 
 #[test]
 fn an_http_registration_carries_the_url_the_transport_will_post_to() {

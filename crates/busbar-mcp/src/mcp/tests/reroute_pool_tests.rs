@@ -104,7 +104,7 @@ fn pooled_app(
         .build()
 }
 
-fn gov() -> busbar_core::governance::PlaneRequestCtx {
+fn gov() -> busbar_api::PlaneRequestCtx {
     gov_with_scopes(&[
         ("mcp_server", "fs-a"),
         ("mcp_tool", "fs-a_read"),
@@ -232,7 +232,7 @@ async fn a_member_with_a_different_approved_digest_is_refused_never_dispatched()
     let error = b2.get("error").expect("a JSON-RPC error object");
     assert_eq!(
         error["data"]["reason"],
-        busbar_core::audit::vocab::REASON_NOT_INTERCHANGEABLE,
+        busbar_substrate::audit::vocab::REASON_NOT_INTERCHANGEABLE,
         "{b2}"
     );
     let message = error["message"].as_str().unwrap_or_default();

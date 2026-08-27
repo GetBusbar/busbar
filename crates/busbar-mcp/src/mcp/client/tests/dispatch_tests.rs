@@ -15,7 +15,7 @@ use crate::mcp::client::dispatch::{resolve, revalidate, visible_catalogue, Dispa
 use crate::mcp::client::egress::EgressDenied;
 use crate::mcp::client::support::{approved_server, key_wildcard, key_with_scopes, simple_tool};
 use busbar_api::ScopeRef;
-use busbar_core::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 fn seeded() -> CatalogueCache {
     let cache = CatalogueCache::new();
