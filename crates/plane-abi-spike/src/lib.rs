@@ -22,7 +22,6 @@
 //! (c) allocates per call.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The sized/versioned POD ABI — the WorkItem/struct discipline the design prescribes.
@@ -288,23 +287,32 @@ pub fn govern_admit_vec(req: &[u8]) -> Result<Vec<u8>, ()> {
 /// binary/bench/test linking this crate counts allocs on the hot path.
 pub struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+// PER-THREAD count, not process-global. The alloc gate measures a single-threaded loop, but
+// `cargo test` runs this crate's tests CONCURRENTLY — with one shared atomic, another test thread
+// allocating inside the measured window inflates the count (the exact-equality gate then flaps:
+// `expected 10000, saw 10004` under CI load, green in isolation). A `const`-initialized thread-local
+// isolates each thread's count: no lazy init, no destructor, no heap — so `.with()` is a plain TLS
+// read/write that is safe to call from inside `GlobalAlloc` (and `System.*` never re-enters this
+// allocator). The measurement stays EXACT; it just stops seeing other threads.
+thread_local! {
+    static ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 impl CountingAlloc {
-    /// Total allocations observed since process start (or last [`reset`](Self::reset)).
+    /// Allocations observed on THIS thread since process start (or last [`reset`](Self::reset)).
     pub fn count() -> u64 {
-        ALLOC_COUNT.load(Ordering::Relaxed)
+        ALLOC_COUNT.with(|c| c.get())
     }
-    /// Reset the counter to zero and return the previous value.
+    /// Reset this thread's counter to zero and return the previous value.
     pub fn reset() -> u64 {
-        ALLOC_COUNT.swap(0, Ordering::Relaxed)
+        ALLOC_COUNT.with(|c| c.replace(0))
     }
 }
 
 unsafe impl GlobalAlloc for CountingAlloc {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
         System.alloc(layout)
     }
     #[inline]
@@ -313,12 +321,12 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
         System.alloc_zeroed(layout)
     }
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
         System.realloc(ptr, layout, new_size)
     }
 }
