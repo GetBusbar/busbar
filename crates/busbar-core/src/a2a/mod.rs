@@ -502,7 +502,7 @@ pub(crate) fn admin_routes(
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
+    let ap = |rel: &str| format!("{}{rel}", busbar_substrate::api::ADMIN_PREFIX);
     serde_json::json!({
         ap("/agents/{name}/connect"): {
             "post": {

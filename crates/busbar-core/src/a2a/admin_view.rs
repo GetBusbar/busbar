@@ -7,7 +7,7 @@
 //! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
 //! [`busbar_substrate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
 
-use crate::admin::v1::contract::NamedDefView;
+use busbar_substrate::api::NamedDefView;
 
 /// Project one `agents:` DEFINITION onto the shared named-map view.
 ///
