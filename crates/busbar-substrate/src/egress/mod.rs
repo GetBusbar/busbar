@@ -14,6 +14,12 @@
 //! card fetch, an A2A task relay and an MCP dispatch, and a field that named one of them would be a
 //! field the other two had to leave meaningless.
 
+// The neutral INPUT to the host-mediated fetch adapter: the `HopSpec` pure-data hop description a
+// plane builds without naming a core type. The adapter DRIVERS that consume it stay in
+// `busbar_core::egress::seam` (they reach the core-owned `plane_host` FFI egress vtable); core
+// re-exports `HopSpec` from there so `busbar_core::egress::seam::HopSpec` still resolves.
+pub mod seam;
+
 /// One buffered outbound round trip, reduced to what a caller reads back.
 ///
 /// `Default` is the empty response — status `0`, no location, no body, no observed identity — used

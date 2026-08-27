@@ -53,30 +53,12 @@ pub fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
     f(&scope)
 }
 
-/// The one hop the adapter opens, as neutral data. The plane composes protocol on top; this carries
-/// only what an outbound request IS — verb, url, headers, body — plus the host's allowlist stance and
-/// the opaque mTLS client-identity ref (never a key).
-pub struct HopSpec<'a> {
-    pub verb: &'a str,
-    pub url: &'a str,
-    pub headers: &'a [(String, String)],
-    pub body: &'a [u8],
-    /// The host allowlist stance for this hop (lowered from the plane's per-registration policy).
-    pub allow_private: bool,
-    pub allow_plaintext: bool,
-    /// The opaque host-side client-identity ref (`0` = present none). Never a key.
-    pub client_identity_ref: u64,
-    /// The opaque host-side trust-anchor ref (`0` = no extra roots — trust only the platform roots).
-    /// Never certificate bytes. Carries a private-CA registration (the a2a `trusting_root` fixture).
-    pub trust_anchor_ref: u64,
-    /// The per-hop end-to-end deadline. [`Duration::ZERO`] ⇒ the host's default ceiling.
-    pub timeout: std::time::Duration,
-    /// The plane's ALREADY-JUDGED pinned address for this hop (Design A). `Some` ⇒ the host connects
-    /// to THIS address and does NOT resolve the URL host (the plane resolved-then-pinned plane-side and
-    /// hands the survivor over); `None` ⇒ the host resolves the URL host itself. The URL host is still
-    /// used for SNI / cert-name / mTLS in either case.
-    pub resolved_addr: Option<std::net::IpAddr>,
-}
+// The neutral hop description this adapter consumes relocated to `busbar_substrate::egress::seam`
+// (pure `std` data — borrowed slices, allowlist flags, opaque host refs, a deadline and an
+// already-judged pinned address) so a plane crate builds a hop spec without reaching into core.
+// Re-exported here so every in-core `HopSpec` reach — `build_desc`/`buffered`/`stream_head` below,
+// and `crate::egress::seam::HopSpec` from the plane transports — is unchanged.
+pub use busbar_substrate::egress::seam::HopSpec;
 
 /// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection both
 /// planes map from (the A2A [`Response`](super::Response) carries a subset; the MCP dispatch reads
