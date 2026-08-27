@@ -36,6 +36,19 @@ pub fn digest_arguments(arguments: &serde_json::Value) -> String {
     hex::encode(h.finalize())
 }
 
+/// A fresh nonce. `getrandom` is the same fail-closed entropy source key secrets use; a failure is
+/// not survivable here, because a predictable nonce is a `multi-round` scenario that passes by
+/// accident and a replay window that is wider than it looks.
+///
+/// Pure `getrandom` + `hex` (no core reach), relocated here beside the seal so a plane crate mints a
+/// nonce without naming `busbar_core::plane::approvals`; core re-exports it, so
+/// `crate::plane::approvals::nonce` still resolves for the tests and the extracted MCP plane.
+pub fn nonce() -> Result<String, getrandom::Error> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b)?;
+    Ok(hex::encode(b))
+}
+
 /// Domain separation for the derived key. Changing this string invalidates every outstanding state,
 /// which is the correct behaviour for a payload-format change.
 const DERIVE_DOMAIN: &[u8] = b"busbar/mcp/askstate/derive/v1";

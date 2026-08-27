@@ -2667,7 +2667,7 @@ fn caller_ask_decision(
                 roots_epoch: super::runtime_of(&ctx.host).roots_epochs.current(principal),
             }
         },
-        &busbar_core::plane::approvals::digest_arguments(arguments),
+        &busbar_substrate::plane::approvals::digest_arguments(arguments),
         callerask::Approvals {
             sealer: sealer.as_ref(),
             host: ctx.host.as_ref(),

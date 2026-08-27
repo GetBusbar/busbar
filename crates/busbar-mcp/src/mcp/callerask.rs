@@ -63,7 +63,7 @@
 //! the one that would still hold if the specification said nothing.
 
 use super::config::{AskEntryCfg, AskRoundCfg};
-use busbar_core::plane::approvals::{self, AskState, Sealer};
+use busbar_substrate::plane::approvals::{self, AskState, Sealer};
 
 /// The three client-side methods an ask may name, and the capability key each is gated by.
 ///

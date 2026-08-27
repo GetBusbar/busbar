@@ -32,7 +32,7 @@
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
-use busbar_core::egress::seam::{self, HopSpec};
+use busbar_substrate::egress::seam::{self, EgressFaultInfo, HopSpec};
 
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
@@ -84,6 +84,16 @@ impl HttpTransport {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError> {
+        // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
+        // dual-compiles this plane has no composition root to install the hostless-egress driver (the
+        // `busbar` binary's `main` does that), so a plane test would otherwise drive an uninstalled
+        // seam. Install the core-backed driver here, idempotently (`OnceLock`), reaching the core
+        // driver only under the `not(busbar_mcp_native)` dual-compile where `busbar_core` is nameable.
+        // Compiled out of EVERY non-test build — production installs it at boot.
+        #[cfg(all(test, not(busbar_mcp_native)))]
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &busbar_core::egress::seam::CoreHostlessEgress,
+        );
         // THE PLANE POOL GUARD, PLANE-SIDE AND UNCHANGED: resolve-then-pin (the SSRF check + typed
         // `SsrfRefusal`) before any hop, so the destination cannot be one the check never saw. The
         // returned client is not used to run the hop any more — the hostless egress seam builds its
@@ -129,7 +139,19 @@ impl HttpTransport {
                 timeout,
                 resolved_addr: Some(resolved),
             };
-            seam::with_hostless(|scope| seam::buffered(scope, &spec, cap))
+            // THE HOP, through the neutral hostless-egress driver the composition root installed
+            // (core's `CoreHostlessEgress`, over the `plane_host` FFI egress vtable). A build that
+            // installed none has no egress backend behind this plane; it refuses the hop with an
+            // `Io`-class fault (`EgressFailClass::Fault` → `TransportError::Io` below) rather than
+            // inventing a client, keeping the plane's transport free of any `reqwest::Response`.
+            seam::hostless()
+                .ok_or_else(|| EgressFaultInfo {
+                    class: busbar_plugin::hot::EgressFailClass::Fault,
+                    status: 0,
+                    cause: "no governed egress backend is installed for this build".to_string(),
+                    url: url.clone(),
+                })?
+                .buffered(&spec, cap)
         })
         .await
         .map_err(|e| TransportError::Io(format!("the upstream hop task failed to run: {e}")))?;

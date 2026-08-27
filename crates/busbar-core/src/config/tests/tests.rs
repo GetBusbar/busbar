@@ -3435,7 +3435,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
     assert_eq!(
-        crate::config::RESERVED_POOLS_SECTION_KEYS,
+        busbar_substrate::plane::config::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials"],
         "the `pools:` reserved-key set is CLOSED. A new all-scope knob must go under a reserved \
          `defaults:` sub-key, never a new top-level reserved word — adding one would turn a \
@@ -3443,7 +3443,7 @@ fn pools_reserved_section_keys_are_frozen() {
     );
 
     // BOTH reserved words are rejected as pool names, with a message that says why.
-    for reserved in crate::config::RESERVED_POOLS_SECTION_KEYS {
+    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
         let err = serde_yaml::from_str::<crate::config::PoolsCfg>(&format!(
             "{reserved}:\n  members: [ {{ model: a }} ]\n"
         ))

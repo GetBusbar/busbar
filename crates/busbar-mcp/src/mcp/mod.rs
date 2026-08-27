@@ -199,6 +199,14 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// names no `crate::mcp` type. `None` exactly when `mcp:` is not configured this generation (the
 /// plane contributed no slot — the same absence the deleted `App::mcp: None` used to encode). The
 /// downcast never fails: the mcp slot is always an `McpResource` (`PLANE_DECL::build`).
+///
+/// `&App`-typed and named `busbar_core::state::App`, so it compiles ONLY where busbar-core is in the
+/// closure and reachable: the dual-compile into busbar-core's OWN test binary (`not(busbar_mcp_native)`
+/// under `test`, where its test fixtures call it) and a standalone `test-support` build (which pulls
+/// busbar-core as an optional dep). The default standalone build — where busbar-core is not a
+/// dependency at all — compiles it out entirely; production reaches the resource through the neutral
+/// `resource_of` twin below.
+#[cfg(any(all(test, not(busbar_mcp_native)), feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
@@ -304,6 +312,12 @@ impl McpRuntime {
 // this `&App`-typed helper's remaining callers are the plane's own test fixtures (and, pending the
 // H3/H5 data-path repoint, will be gone from production entirely). It stays for those tests; the
 // allowance keeps a `--no-default-features` lib build (which links no tests) warning-clean.
+//
+// Named `busbar_core::state::App`, so — like `resource` above — it compiles ONLY where busbar-core is
+// in the closure: the dual-compile into core's own test binary and a standalone `test-support` build.
+// The default standalone build compiles it out; production reads the runtime through the neutral
+// `runtime_slots` twin.
+#[cfg(any(all(test, not(busbar_mcp_native)), feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
     app.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)

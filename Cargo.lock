@@ -657,6 +657,7 @@ dependencies = [
  "hex",
  "hmac",
  "httpdate",
+ "indexmap",
  "metrics",
  "reqwest 0.12.28",
  "schemars",

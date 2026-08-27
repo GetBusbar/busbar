@@ -11,11 +11,14 @@
 //! live here; core re-exports them, so `crate::plane::config::{PlaneCfg, PlaneEndpointCfg,
 //! ContainerGateInputs, refuse_cross_plane_reference}` still resolves there.
 //!
-//! The GRAMMAR machinery that reads a section against the plane REGISTRY —
-//! `busbar_core::plane::config::split_section`, its `Section`, `config_sections`, and the reserved-key
-//! literal — stays core: it reaches `busbar_core::plane::registry` (`PlaneDecl`) and core's
-//! `RESERVED_POOLS_SECTION_KEYS`, which are core-owned. So this module is the CONTRACTS half of the
-//! seam; the registry-coupled READER half remains in core.
+//! The SECTION-MAP SPLIT — [`split_section`], its [`Section`] carrier, the reserved-key literal
+//! ([`RESERVED_SECTION_KEYS`]) and the reserved-name refusal — is here too: it is pure `serde` +
+//! `indexmap` + `busbar_api::UpstreamCreds` once its ONE registry coupling (the `PlaneDecl` lookup
+//! that turned a plane key into the section/noun WORDS) is lifted out into a param pair the caller
+//! supplies, so an extracted plane reads its own section without naming core. Core keeps only a thin
+//! `split_section` WRAPPER that supplies those words from `busbar_core::plane::registry` for its own
+//! callers, and `config_sections`, which reaches that registry. So this module is now the whole config
+//! reader a plane needs; the registry-coupled `config_sections` singleton stays core.
 
 /// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
 /// references without naming that plane's credential-bearing types.
@@ -237,4 +240,133 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+// ── THE SECTION-MAP SPLIT ────────────────────────────────────────────────────────────────────────
+//
+// The reserved-key refusals + the two typed lifts (`hooks:` / `upstream_credentials:`) a plane's
+// top-level section is read into, plus the reserved-key literal and the operator refusal sentence.
+// Relocated here from `busbar_core::plane::config` so an extracted plane crate reads its own section
+// without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
+// into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
+// its own `PLANE_DECL.config_section` / `subject_noun` consts), so this half names only `serde` +
+// `indexmap` + `busbar_api::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
+// callers (`config::split_section(deserializer, plane_key, validate)`), so those are unchanged.
+
+/// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
+/// the `upstream_credentials:` default. Every other key is a registration.
+///
+/// THE ONE declaration of the pair, now that the split that reads it lives here: core re-exports it as
+/// both `crate::plane::config::RESERVED_SECTION_KEYS` and `crate::config::RESERVED_POOLS_SECTION_KEYS`,
+/// so there is still a single `&["hooks", "upstream_credentials"]` literal in the tree and a word
+/// cannot come to be reserved on one plane and free on another.
+pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+
+/// One plane's top-level section, split into its two reserved knobs and its registrations.
+///
+/// Insertion-ordered, because catalogue construction and every operator-facing listing read it and a
+/// hash-ordered listing is a listing that changes between runs for no reason. A plane that wants
+/// another container converts once, at the end, where the conversion is visible.
+pub struct Section<T> {
+    /// The reserved `<section>.hooks:` all-plane attach list. LIST ⇒ ADDITIVE.
+    pub hooks: Vec<String>,
+    /// The reserved `<section>.upstream_credentials:` all-plane default. SCALAR ⇒ OVERRIDE.
+    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    /// The registrations — every key that is not one of [`RESERVED_SECTION_KEYS`].
+    pub entries: indexmap::IndexMap<String, T>,
+}
+
+/// THE SECTION-MAP SPLIT, and the only copy of it: read one plane's top-level section into its two
+/// reserved knobs and its registrations, in the one order all three planes are read in.
+///
+/// `section` / `noun` supply the WORDS for the operator sentences (a plane passes its own decl's
+/// `config_section` and `subject_noun`), so no caller carries a second vocabulary for its own section
+/// and the split names no plane registry; `validate` is the plane's VALUE RULES, run on each entry as
+/// it is parsed, so the file and the admin write path refuse the same definitions — the ONE GRAMMAR,
+/// TWO PATHS rule. A plane with no value rules passes `|_, _| Ok(())`.
+///
+/// The REFUSAL ORDER is the load-bearing part. A reserved key holding a MAPPING is somebody trying to
+/// define a registration by that name, and it is refused BEFORE the typed lifts so the operator reads
+/// "that name is reserved" rather than "expected a sequence" — the diagnosis is different, and the
+/// confusing one costs an operator an afternoon.
+pub fn split_section<'de, D, T>(
+    deserializer: D,
+    section: &'static str,
+    noun: &'static str,
+    validate: impl Fn(&str, &T) -> Result<(), String>,
+) -> Result<Section<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    use serde::de::Error as _;
+    use serde::Deserialize as _;
+
+    let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
+        indexmap::IndexMap::deserialize(deserializer)?;
+
+    // BEFORE the typed lifts, for the reason in the doc above.
+    for reserved in RESERVED_SECTION_KEYS {
+        if raw
+            .get(*reserved)
+            .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
+        {
+            return Err(D::Error::custom(reserved_name_refusal(
+                section, noun, reserved,
+            )));
+        }
+    }
+
+    let hooks: Vec<String> = match raw.shift_remove("hooks") {
+        None => Vec::new(),
+        Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
+            D::Error::custom(format!(
+                "the reserved `{section}.hooks:` all-{section} attach must be a list of hook \
+                 names: {e}"
+            ))
+        })?,
+    };
+    let upstream_credentials = match raw.shift_remove("upstream_credentials") {
+        None => None,
+        Some(v) => Some(busbar_api::UpstreamCreds::deserialize(v).map_err(|e| {
+            D::Error::custom(format!(
+                "the reserved `{section}.upstream_credentials:` all-{section} default must be a \
+                 credential mode (`own` or `passthrough`): {e}"
+            ))
+        })?),
+    };
+
+    let mut entries = indexmap::IndexMap::new();
+    for (name, value) in raw {
+        // The well-typed spellings are gone; this catches the map-valued "I meant a registration"
+        // one with a precise message instead of a type error.
+        if RESERVED_SECTION_KEYS.contains(&name.as_str()) {
+            return Err(D::Error::custom(reserved_name_refusal(
+                section, noun, &name,
+            )));
+        }
+        let def: T = T::deserialize(value).map_err(D::Error::custom)?;
+        validate(&name, &def).map_err(D::Error::custom)?;
+        entries.insert(name, def);
+    }
+
+    Ok(Section {
+        hooks,
+        upstream_credentials,
+        entries,
+    })
+}
+
+/// THE SENTENCE an operator reads when they name a registration with a reserved section word,
+/// written once for all three planes and for both spellings that reach it.
+///
+/// It names the section, what the two words ARE, and that the rule holds on every plane — because the
+/// surprise the reservation exists to prevent is precisely learning the word space once and
+/// discovering it differs somewhere else.
+fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
+    format!(
+        "`{name}` may not be used as a name in `{section}:`: that key is RESERVED at the \
+         `{section}:` section level (the all-{section} `hooks:` attach list and \
+         `upstream_credentials:` default), on every plane. Rename the {noun}."
+    )
 }

@@ -1677,33 +1677,21 @@ impl<'de> Deserialize<'de> for PoolCfg {
     }
 }
 
-/// The FROZEN reserved key set of the `pools:` SECTION (freeze blocker, 1.5.3). These two names
-/// are section-level knobs, NOT pool names:
-///
-/// ```yaml
-/// pools:
-///   hooks: [pii]                  # RESERVED (LIST → ADDITIVE): attach to ALL pools
-///   upstream_credentials: own     # RESERVED (SCALAR → OVERRIDE): the all-pools default
-///   fast:                         # a real pool
-///     members: [ ... ]
-///     hooks: [cheapest, pii]
-///     upstream_credentials: passthrough
-/// ```
-///
-/// **THIS SET IS CLOSED AND MUST NEVER GROW.** Every reserved word here is a word an operator can no
-/// longer use as a POOL NAME, so ADDING one in a later release retroactively turns a previously-legal
-/// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
-/// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
-/// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever.
-///
-/// THIS IS THE ONLY DECLARATION, on every plane. `tools:` and `agents:` reserve the same two words —
-/// even where a plane does not implement one — and they do it by reading this slice through
-/// [`crate::plane::config::RESERVED_SECTION_KEYS`], not by restating it. A second
-/// `&["hooks", "upstream_credentials"]` literal is exactly how a word comes to be reserved on one
-/// plane and free on another.
-///
-/// Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
-pub(crate) const RESERVED_POOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+// THE FROZEN reserved key set of the `pools:` SECTION (freeze blocker, 1.5.3): `hooks` and
+// `upstream_credentials` are section-level knobs, NOT pool names — `pools.hooks:` (LIST → ADDITIVE:
+// attach to ALL pools) and `pools.upstream_credentials:` (SCALAR → OVERRIDE: the all-pools default),
+// alongside real pools like `pools.fast:`.
+//
+// THIS SET IS CLOSED AND MUST NEVER GROW. Every reserved word here is a word an operator can no longer
+// use as a POOL NAME, so ADDING one in a later release retroactively turns a previously-legal config
+// into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every FUTURE
+// all-scope knob must therefore land under a reserved `defaults:` sub-key (`pools.defaults.<knob>`),
+// which costs one word ONCE and is then additive forever.
+//
+// THIS IS THE ONLY DECLARATION, on every plane, and it now lives in the neutral substrate as
+// `busbar_substrate::plane::config::RESERVED_SECTION_KEYS` (the shared section split that reads it
+// moved there): `tools:` and `agents:` reserve the same two words by reading that ONE slice, not by
+// restating it. Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 
 /// THE ONE CHECK BOTH FAILOVER SECTIONS GET, parameterised by which registry a bare name resolves
 /// against rather than written once per plane. `tool_pools:` and `agent_pools:` are the same grammar
@@ -1793,7 +1781,8 @@ fn check_failover_pool(
     }
 }
 
-/// The top-level `pools:` map (1.5.3), which carries the [`RESERVED_POOLS_SECTION_KEYS`] alongside the
+/// The top-level `pools:` map (1.5.3), which carries the two reserved section keys
+/// ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]) alongside the
 /// pools themselves. Every key that is NOT one of those two reserved words is a pool. A pool may NOT be
 /// named `hooks` or `upstream_credentials` — both are REJECTED at parse with a clear error. The custom
 /// `Deserialize` lifts the reserved keys out first, then parses the remainder as the pool map.
@@ -1808,7 +1797,7 @@ pub(crate) struct PoolsCfg {
     /// key). SCALAR ⇒ OVERRIDE: a pool's own value REPLACES this. `None` = absent ⇒ the
     /// built-in default (`own`).
     pub(crate) all_pool_upstream_credentials: Option<crate::auth::UpstreamCreds>,
-    /// The real pools, keyed by name (every top-level key except [`RESERVED_POOLS_SECTION_KEYS`]).
+    /// The real pools, keyed by name (every top-level key except the two reserved section keys).
     pub(crate) pools: HashMap<String, PoolCfg>,
 }
 

@@ -292,7 +292,7 @@ fn a_bare_hook_name_is_accepted_on_both_lists() {
 /// split that consults it. What stays testable is that every word in it is refused HERE.
 #[test]
 fn an_agent_may_not_be_named_by_a_reserved_word() {
-    for reserved in crate::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
         let err = parse(&format!(
             "{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n"
         ))

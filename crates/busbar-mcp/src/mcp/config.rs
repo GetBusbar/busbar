@@ -16,7 +16,7 @@
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
 //! discover that a name legal on one plane is a section knob on another. It is no longer a claim
 //! about two constants that agree: there is ONE declaration
-//! ([`busbar_core::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
 //! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
@@ -943,7 +943,7 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying the two [`busbar_core::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `tools:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ToolsCfg {
@@ -1006,9 +1006,12 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // stays here is the only thing that is this plane's: `validate_server`, the VALUE rules,
         // run through the same function the admin write path calls so the API rejects exactly what
         // the file rejects.
-        let section = busbar_core::plane::config::split_section::<D, McpServerDefCfg>(
+        // The neutral substrate split, called with THIS plane's own section/noun consts (a standalone
+        // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
+        let section = busbar_substrate::plane::config::split_section::<D, McpServerDefCfg>(
             deserializer,
-            "mcp",
+            super::PLANE_DECL.config_section,
+            super::PLANE_DECL.subject_noun,
             validate_server,
         )?;
 
@@ -1598,7 +1601,17 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // THE PARSE-TIME PLANE BOUNDARY, owned by `plane::config` and called with this plane's own
     // wording for the site. The rule that most needs to be identical on both planes is now one
     // function rather than two copies that agreed only because one was pasted from the other.
+    //
+    // The cross-plane list comes off core's `plane_decls()` singleton, which only core inits (this
+    // very deserialize is a trigger of that init when the plane dual-compiles into core). Standalone
+    // (`busbar_mcp_native`) has no such singleton and never drives config resolution anyway — the
+    // plane runs inside busbar-core — so the standalone arm falls back to this plane's own section,
+    // the only one a standalone build knows; it is unreachable in practice, and no cross-plane
+    // reference is possible when only one plane exists.
+    #[cfg(not(busbar_mcp_native))]
     let sections = busbar_core::plane::config::config_sections();
+    #[cfg(busbar_mcp_native)]
+    let sections = vec![super::PLANE_DECL.config_section];
     for hook in &def.hooks {
         busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }

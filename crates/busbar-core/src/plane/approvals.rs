@@ -70,7 +70,7 @@
 // `sha2`/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
 // digest_arguments}` still resolves for the tests and `crate::mcp::callerask`.
 pub use busbar_substrate::plane::approvals::{
-    digest_arguments, AskState, Rejected, Sealer, DEFAULT_TTL_SECS,
+    digest_arguments, nonce, AskState, Rejected, Sealer, DEFAULT_TTL_SECS,
 };
 
 /// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
@@ -225,15 +225,6 @@ impl SpentTokenLedger {
             }
         }
     }
-}
-
-/// A fresh nonce. `getrandom` is the same fail-closed entropy source key secrets use; a failure is
-/// not survivable here, because a predictable nonce is a `multi-round` scenario that passes by
-/// accident and a replay window that is wider than it looks.
-pub fn nonce() -> Result<String, getrandom::Error> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b)?;
-    Ok(hex::encode(b))
 }
 
 #[cfg(test)]

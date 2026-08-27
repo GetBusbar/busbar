@@ -56,6 +56,12 @@ serde = { workspace = true }
 # relocated declaration surface needs the same maintained `serde_yaml_ng` fork the rest of the tree
 # reads YAML with. Type-name only in the shipped surface; no YAML is parsed in this crate.
 serde_yaml = { workspace = true }
+# The relocated section-map split (`plane::config::split_section`) reads a plane's top-level section
+# into an insertion-ordered `IndexMap` — catalogue construction and every operator-facing listing
+# read it, and a hash-ordered listing changes between runs for no reason. The neutral half of the
+# reader (the reserved-key refusals + the two typed lifts), taking its section/noun words as params so
+# it names no plane registry; core wraps it with the `PlaneDecl` lookup for its own callers.
+indexmap = { workspace = true }
 # The relocated busbar-signed token crypto (`governance::signing`): Ed25519 mint/verify over a
 # base64url payload (`ed25519-dalek`), with first-boot key generation drawing 32 bytes straight from
 # the OS CSPRNG (`getrandom`) — the same fail-closed entropy source key secrets use. Pure crypto with

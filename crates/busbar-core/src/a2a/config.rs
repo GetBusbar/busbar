@@ -15,7 +15,7 @@
 //! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
 //! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
 //! rule once should not discover that a name legal on one plane is a section knob on another. There
-//! is ONE declaration of the pair ([`crate::plane::config::RESERVED_SECTION_KEYS`]) and one reader
+//! is ONE declaration of the pair ([`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]) and one reader
 //! of it, so that cannot drift. The reserved set is closed; a new A2A knob lands under a per-entry
 //! key, never as a new section word.
 //!
@@ -271,7 +271,7 @@ pub(crate) struct AgentDefCfg {
     pub(crate) hooks: Vec<String>,
 }
 
-/// The top-level `agents:` map, carrying the two [`crate::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `agents:` map, carrying the two [`busbar_substrate::plane::config::RESERVED_SECTION_KEYS`]
 /// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct AgentsCfg {

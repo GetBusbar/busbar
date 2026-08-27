@@ -58,7 +58,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
 /// that EVERY word in that set is refused as a server NAME on this plane.
 #[test]
 fn a_server_may_not_be_named_with_a_reserved_section_word() {
-    for reserved in busbar_core::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
         let yaml =
             format!("{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n");
         let err = parse(&yaml).expect_err("a reserved name holding a mapping must be refused");
