@@ -786,6 +786,7 @@ use Target::{FromCatalogue, Named};
 /// plane's own reader has, so this plane labels its own requests from inside, with the leg they came
 /// in on — which is what makes a per-binding number readable from busbar's own telemetry rather than
 /// only from a conformance suite's stdout.
+#[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
     app: Arc<App>,
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,

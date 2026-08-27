@@ -185,6 +185,7 @@ const ORIGINATED_RPC_ID: &str = "busbar-originated";
 ///
 /// BEST EFFORT, ALWAYS LOGGED, NEVER FATAL. The caller's answer is already decided and is about
 /// busbar's own record, which is correct whatever the backend says.
+#[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn mirror_push_config(
     app: &Arc<App>,
     engine_host: &dyn busbar_substrate::plane_host::EngineHost,
