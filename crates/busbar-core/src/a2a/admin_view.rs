@@ -83,8 +83,7 @@ pub(crate) fn openapi_schemas(
     req_gen: &mut schemars::SchemaGenerator,
     paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    use crate::admin::v1::json::ap;
-    use crate::admin::v1::json::{set_request_body, set_response_schema};
+    use busbar_substrate::api::{ap, set_request_body, set_response_schema};
     let connect = serde_json::to_value(schema_gen.subschema_for::<super::verbs::A2aTrustView>())
         .unwrap_or_else(|_| serde_json::json!({}));
     set_response_schema(paths, &ap("/agents/{name}/connect"), "post", "200", connect);

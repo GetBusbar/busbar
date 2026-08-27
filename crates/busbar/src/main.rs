@@ -639,6 +639,15 @@ fn main() {
     busbar_substrate::plane::config::install_plane_sections(
         busbar_core::plane::config::config_sections,
     );
+    // The self-enveloping verb backing: the A2A `approve` verb builds its OWN response + audit
+    // (`AdminReply::Prebuilt`) through the neutral `PlaneAdminEnvelope` seam, so it names no
+    // `err_json`/`ok_json`/`AdminError`/audit chain. Backed by core's `CorePlaneAdminEnvelope` (a ZST
+    // mapping each neutral call onto the real envelope helpers), bound here before the router serves.
+    // Gated to `plane-a2a`.
+    #[cfg(feature = "plane-a2a")]
+    busbar_substrate::admin_verbs::install_plane_admin_envelope(
+        &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
+    );
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

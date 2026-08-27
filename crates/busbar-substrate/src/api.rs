@@ -136,3 +136,27 @@ pub fn set_response_schema(
         );
     }
 }
+
+/// Attach a REQUIRED request-body `$ref` schema onto `<abs_path>.<method>` — the module-level twin of
+/// `openapi_doc`'s nested `body_raw!`, exposed for a plane's `openapi_schemas` contributor (the write
+/// verb's typed request body). Neutral `serde_json` manipulation, so it lives here beside
+/// [`set_response_schema`]; a plane names it directly rather than reaching into `busbar-core`.
+#[cfg(feature = "openapi-schema")]
+pub fn set_request_body(
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+    abs_path: &str,
+    method: &str,
+    schema: serde_json::Value,
+) {
+    if let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) {
+        if let Some(obj) = op.as_object_mut() {
+            obj.insert(
+                "requestBody".to_string(),
+                serde_json::json!({
+                    "required": true,
+                    "content": {"application/json": {"schema": schema}}
+                }),
+            );
+        }
+    }
+}

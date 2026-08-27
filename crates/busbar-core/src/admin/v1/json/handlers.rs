@@ -3657,27 +3657,9 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     ("/openapi.json", "This OpenAPI 3.1 document"),
 ];
 
-/// Attach a REQUIRED request-body `$ref` schema onto `<abs_path>.<method>` — the module-level twin of
-/// `openapi_doc`'s nested `body_raw!`, exposed for a plane's `openapi_schemas` contributor.
-#[cfg(feature = "openapi-schema")]
-pub(crate) fn set_request_body(
-    paths: &mut serde_json::Map<String, serde_json::Value>,
-    abs_path: &str,
-    method: &str,
-    schema: serde_json::Value,
-) {
-    if let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) {
-        if let Some(obj) = op.as_object_mut() {
-            obj.insert(
-                "requestBody".to_string(),
-                json!({
-                    "required": true,
-                    "content": {"application/json": {"schema": schema}}
-                }),
-            );
-        }
-    }
-}
+// `set_request_body` (the write verb's request-body schema attach) relocated to the neutral
+// `busbar_substrate::api::set_request_body` beside `set_response_schema` — its one caller is the A2A
+// plane's `openapi_schemas` contributor, which names the substrate twin directly.
 
 #[cfg(feature = "openapi-schema")]
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test

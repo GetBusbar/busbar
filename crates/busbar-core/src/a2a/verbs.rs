@@ -67,10 +67,10 @@ use super::pin::CardPin;
 use super::plane::A2aPlane;
 use super::registry::AgentRegistration;
 use super::reverify::{self, Due, Ledger, Policy};
-use crate::admin::planeverbs::{self, PlaneTrust};
-use crate::admin::v1::contract::taxonomy::Cond;
-use crate::admin::v1::contract::AdminError;
-use busbar_substrate::admin_verbs::{AdminReply, AdminReqCtx, PlaneVerbError};
+use busbar_substrate::admin_verbs::{
+    plane_admin_envelope, registered, AdminReply, AdminReqCtx, PlaneAdminCond, PlaneTrust,
+    PlaneVerbError,
+};
 use busbar_substrate::diag_error;
 use busbar_substrate::diagnostics::A2A_CARD_FETCH_PANICKED;
 use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
@@ -462,7 +462,7 @@ impl PlaneTrust for A2aAgents {
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: &str,
     ) -> Result<A2aSubject, PlaneVerbError> {
-        planeverbs::registered(|| {
+        registered(|| {
             let plane = crate::a2a::runtime_arc_of(host)?;
             let registration = plane
                 .with_registrations(|regs| regs.iter().find(|r| r.agent_id == name).cloned())?;
@@ -549,11 +549,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     // response verbatim and audits nothing.
     let subject = match A2aAgents::resolve(&ctx.host, &name) {
         Ok(v) => v,
-        Err(e) => {
-            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(
-                &planeverbs::to_admin_error("a2a", &name, e),
-            ))
-        }
+        Err(e) => return AdminReply::Prebuilt(plane_admin_envelope().plane_error("a2a", &name, e)),
     };
     // The buffered body, parsed through the REAL `axum::Json` extractor over a request rebuilt from the
     // ctx's own headers + bytes — the SAME content-type gate AND deserialize path (and the SAME
@@ -571,12 +567,12 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
                 // TAGGED with its condition. This operation declares two `Validation` conditions, and
                 // an untagged emission proves only that one of them is reachable — see the over-claim
                 // half of `declared_error_set_is_exactly_what_the_handlers_emit`.
-                return AdminReply::Prebuilt(crate::admin::v1::json::err_json_cond(
-                    &AdminError::Validation(format!(
+                return AdminReply::Prebuilt(plane_admin_envelope().validation(
+                    format!(
                         "the approve body must be `{{\"fingerprint\": \"…\"}}` naming the \
                          fingerprint `connect` reported: {e}"
-                    )),
-                    Cond::MalformedBody,
+                    ),
+                    Some(PlaneAdminCond::MalformedBody),
                 ));
             }
         }
@@ -584,39 +580,40 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
 
     let preview = match look(&subject).await {
         Ok(p) => p,
-        Err(e) => {
-            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(
-                &planeverbs::to_admin_error("a2a", &name, e),
-            ))
-        }
+        Err(e) => return AdminReply::Prebuilt(plane_admin_envelope().plane_error("a2a", &name, e)),
     };
     if let Err(refusal) = agrees(&preview, req.fingerprint.trim()) {
-        planeverbs::audit(
+        plane_admin_envelope().audit(
             "a2a",
             VERB,
             &name,
             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
             &principal,
         );
-        return AdminReply::Prebuilt(crate::admin::v1::json::err_json_cond(
-            &AdminError::Validation(refusal),
-            Cond::InvalidConfig,
-        ));
+        return AdminReply::Prebuilt(
+            plane_admin_envelope().validation(refusal, Some(PlaneAdminCond::InvalidConfig)),
+        );
     }
 
     // ── THE WRITE, under the registry's own lock, against the sighting just observed. ────────────
+    // The two shapes the under-lock write refuses with, kept neutral (no `AdminError`) so the verb
+    // renders them through the envelope seam: `NotFound` → `not_found`, `Validation` → `validation`.
+    enum WriteRefusal {
+        NotFound(String),
+        Validation(String),
+    }
     let applied = subject.plane.with_registrations_mut(|regs| {
         // RE-FOUND under the lock rather than mutating the clone: a config apply may have removed
         // the registration while the card was being fetched, and writing an approval back into a
         // registry that no longer has the row would be approving something nobody registered.
         let Some(reg) = regs.iter_mut().find(|r| r.agent_id == name) else {
-            return Err(AdminError::not_found(format!(
+            return Err(WriteRefusal::NotFound(format!(
                 "{} `{name}`",
                 super::PLANE_DECL.subject_noun
             )));
         };
         super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)
-            .map_err(|e| AdminError::Validation(e.to_string()))?;
+            .map_err(|e| WriteRefusal::Validation(e.to_string()))?;
         // RECORD WHAT WAS SEEN. The approval just adopted this exact observation, so it derives no
         // drift and the state is `Approved` either way — but leaving `Never` behind would report a
         // registration that has demonstrably been contacted as one that never has.
@@ -638,26 +635,31 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     let reg = match applied {
         Ok(r) => r,
         Err(e) => {
-            planeverbs::audit(
+            plane_admin_envelope().audit(
                 "a2a",
                 VERB,
                 &name,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 &principal,
             );
-            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(&e));
+            return AdminReply::Prebuilt(match e {
+                WriteRefusal::NotFound(what) => plane_admin_envelope().not_found(what),
+                WriteRefusal::Validation(msg) => plane_admin_envelope().validation(msg, None),
+            });
         }
     };
-    planeverbs::audit(
+    plane_admin_envelope().audit(
         "a2a",
         VERB,
         &name,
         busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         &principal,
     );
-    AdminReply::Prebuilt(crate::admin::v1::json::ok_json(
-        StatusCode::OK,
-        &registration_view(&name, &reg),
+    // The success view, SERIALIZED here (declaration key order) and framed by the envelope exactly as
+    // `ok_json` would — the seam re-emits these bytes verbatim.
+    AdminReply::Prebuilt(plane_admin_envelope().ok(
+        StatusCode::OK.as_u16(),
+        serde_json::to_string(&registration_view(&name, &reg)).unwrap_or_else(|_| "{}".to_string()),
     ))
 }
 

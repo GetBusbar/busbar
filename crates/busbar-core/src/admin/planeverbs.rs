@@ -74,6 +74,74 @@ pub(crate) fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbErro
     }
 }
 
+/// THE CORE BACKING for the self-enveloping verb seam
+/// ([`busbar_substrate::admin_verbs::PlaneAdminEnvelope`]) — the one place a plane's `Prebuilt` verb
+/// reaches the frozen envelope helpers (`err_json`/`err_json_cond`/`ok_json`), the neutral→frozen
+/// error boundary ([`to_admin_error`]), and the audit chain ([`audit`]), so the plane names none of
+/// them. A ZST: it carries no state, promoting to `'static` for the composition-root bind.
+///
+/// Every method maps its neutral inputs back onto exactly what the A2A `approve` verb used to call
+/// inline, so the wire bytes, the `#[cfg(test)]` taxonomy `Cond` tag, and the audit row are
+/// byte-identical to the pre-seam handler.
+pub struct CorePlaneAdminEnvelope;
+
+impl busbar_substrate::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
+    fn plane_error(
+        &self,
+        plane: &'static str,
+        name: &str,
+        err: busbar_substrate::admin_verbs::PlaneVerbError,
+    ) -> axum::response::Response {
+        crate::admin::v1::json::err_json(&to_admin_error(plane, name, err))
+    }
+
+    fn validation(
+        &self,
+        msg: String,
+        cond: Option<busbar_substrate::admin_verbs::PlaneAdminCond>,
+    ) -> axum::response::Response {
+        use crate::admin::v1::contract::taxonomy::Cond;
+        use busbar_substrate::admin_verbs::PlaneAdminCond;
+        let e = AdminError::Validation(msg);
+        match cond {
+            Some(PlaneAdminCond::MalformedBody) => {
+                crate::admin::v1::json::err_json_cond(&e, Cond::MalformedBody)
+            }
+            Some(PlaneAdminCond::InvalidConfig) => {
+                crate::admin::v1::json::err_json_cond(&e, Cond::InvalidConfig)
+            }
+            None => crate::admin::v1::json::err_json(&e),
+        }
+    }
+
+    fn not_found(&self, what: String) -> axum::response::Response {
+        crate::admin::v1::json::err_json(&AdminError::not_found(what))
+    }
+
+    fn ok(&self, status: u16, body: String) -> axum::response::Response {
+        // Funnel through the REAL `ok_json` (its status/content-type framing is the single source of
+        // truth) with the ALREADY-serialized body carried verbatim by a `RawValue` — so
+        // `ok_json`'s `serde_json::to_string` re-emits the plane's own bytes, byte-identical to the
+        // plane having handed `ok_json` its view directly.
+        let status = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK);
+        match serde_json::value::RawValue::from_string(body) {
+            Ok(raw) => crate::admin::v1::json::ok_json(status, &raw),
+            Err(_) => crate::admin::v1::json::ok_json(status, &serde_json::json!({})),
+        }
+    }
+
+    fn audit(
+        &self,
+        plane: &'static str,
+        verb: &'static str,
+        name: &str,
+        outcome: &'static str,
+        principal: &crate::auth::AuthPrincipal,
+    ) {
+        audit(plane, verb, name, outcome, principal);
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/planeverbs_tests.rs"]
 mod planeverbs_tests;

@@ -224,6 +224,12 @@ impl A2aPlane {
         busbar_substrate::plane::config::install_plane_sections(
             busbar_core::plane::config::config_sections,
         );
+        // And the self-enveloping verb backing, so `approve` renders its `Prebuilt` envelope + audit
+        // through the real core helpers in a plane test with no composition root.
+        #[cfg(any(test, feature = "test-support"))]
+        busbar_substrate::admin_verbs::install_plane_admin_envelope(
+            &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
+        );
         Self::from_config_carrying(
             cfg,
             public_url,

@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
+use axum::response::Response;
 use busbar_plugin::cold::http_endpoint::RouteMethod;
 
 use crate::plane_host::EngineHost;
@@ -219,4 +220,69 @@ pub struct AdminRouteSpec {
     pub kind: AdminVerbKind,
     /// The neutral handler the core adapter awaits, having built an [`AdminReqCtx`].
     pub handler: AdminHandler,
+}
+
+/// THE SELF-ENVELOPING VERB SEAM — the neutral half of what a plane whose verb returns
+/// [`AdminReply::Prebuilt`] needs, so it builds its OWN response + audit WITHOUT naming core's frozen
+/// `AdminError` / `Cond` / `ok_json` / `err_json` / the audit chain.
+///
+/// A "prebuilt" verb (A2A `approve`) carries condition-tagged validation errors and a bespoke success
+/// view, so it cannot ride the shared `Refused`/`Applied`/`Rejected` shim. It instead reaches these
+/// methods, whose CORE impl (`busbar_core::admin::CorePlaneAdminEnvelope`) maps each neutral input
+/// back onto the real `err_json`/`err_json_cond`/`ok_json`/`to_admin_error`/`planeverbs::audit` — so
+/// the wire bytes, the frozen taxonomy `Cond` tag, and the audit row are byte-identical to the plane
+/// having called them directly, while the plane names only this seam.
+pub trait PlaneAdminEnvelope: Send + Sync {
+    /// A plane `resolve`/`look` refusal → the frozen error envelope: core does
+    /// `err_json(&to_admin_error(plane, name, err))`.
+    fn plane_error(&self, plane: &'static str, name: &str, err: PlaneVerbError) -> Response;
+    /// A `Validation` (400 `invalid_request`) the plane raised itself, optionally CONDITION-TAGGED:
+    /// core does `err_json_cond(&AdminError::Validation(msg), cond)` (or `err_json` when untagged).
+    fn validation(&self, msg: String, cond: Option<PlaneAdminCond>) -> Response;
+    /// A `not_found` the plane raised itself (a row that vanished under the write lock): core does
+    /// `err_json(&AdminError::not_found(what))`, `what` the already-composed `"<noun> `<name>`"`.
+    fn not_found(&self, what: String) -> Response;
+    /// A success body the plane already SERIALIZED (`serde_json::to_string` of its view, so the JSON
+    /// key order is the struct's declaration order): core frames it exactly as `ok_json` does — the
+    /// given status, `application/json`, the body verbatim.
+    fn ok(&self, status: u16, body: String) -> Response;
+    /// Record one self-audited verb outcome: core does `planeverbs::audit(plane, verb, name, outcome,
+    /// principal)`, `outcome` one of the neutral `busbar_substrate::audit::vocab::OUTCOME_*`.
+    fn audit(
+        &self,
+        plane: &'static str,
+        verb: &'static str,
+        name: &str,
+        outcome: &'static str,
+        principal: &busbar_api::AuthPrincipal,
+    );
+}
+
+/// THE CONDITION TAGS a self-enveloping plane attaches to a validation error — the neutral subset the
+/// extracted planes actually emit. Core maps each onto its frozen `taxonomy::Cond` so the class-level
+/// drift test witnesses the declaration at CONDITION granularity (see A2A `approve`'s two conditions).
+#[derive(Debug, Clone, Copy)]
+pub enum PlaneAdminCond {
+    /// The request body did not parse as the verb's expected shape → core's `Cond::MalformedBody`.
+    MalformedBody,
+    /// The request contradicts the operator's configured state → core's `Cond::InvalidConfig`.
+    InvalidConfig,
+}
+
+static PLANE_ADMIN_ENVELOPE: std::sync::OnceLock<&'static dyn PlaneAdminEnvelope> =
+    std::sync::OnceLock::new();
+
+/// BIND the core envelope backing. Idempotent (first bind wins); the composition root calls this once
+/// at startup with `&busbar_core::admin::CorePlaneAdminEnvelope`.
+pub fn install_plane_admin_envelope(envelope: &'static dyn PlaneAdminEnvelope) {
+    let _ = PLANE_ADMIN_ENVELOPE.set(envelope);
+}
+
+/// THE BOUND envelope backing. Panics only if a self-enveloping verb runs before the composition root
+/// bound it — which cannot happen on any boot path (bound beside the other plane seams, before the
+/// router serves) nor in a plane test (the plane's `from_config` binds it too).
+pub fn plane_admin_envelope() -> &'static dyn PlaneAdminEnvelope {
+    *PLANE_ADMIN_ENVELOPE
+        .get()
+        .expect("plane admin envelope must be installed before a self-enveloping verb runs")
 }
