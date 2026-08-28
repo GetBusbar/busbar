@@ -137,7 +137,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
         // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the
         // identical projection). The build happens here, per sink — never once and broadcast.
         let payload = cache.get(target.projection);
-        tokio::spawn(async move {
+        crate::state::spawn_detached(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
             let body = payload.to_string();
             let mut req = client

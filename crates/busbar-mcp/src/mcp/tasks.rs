@@ -577,7 +577,7 @@ pub(crate) struct Runner {
 /// `tasks/cancel` that lands in between finds no handle, sets the terminal status, and `attach`
 /// then aborts the runner it was handed. Neither ordering leaks a runner.
 pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
-    let handle = tokio::spawn({
+    let handle = busbar_substrate::detached::spawn_detached({
         let task = Arc::clone(&task);
         async move { run(task, runner).await }
     });

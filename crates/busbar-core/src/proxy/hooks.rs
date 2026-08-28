@@ -1133,7 +1133,7 @@ where
         metrics::counter!(crate::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
         return;
     };
-    tokio::spawn(async move {
+    crate::state::spawn_detached(async move {
         let _permit = permit;
         fut.await;
     });

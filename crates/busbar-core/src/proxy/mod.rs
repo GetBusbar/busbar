@@ -173,6 +173,10 @@ mod auth_style_tests;
 mod egress_target_tests;
 
 #[cfg(test)]
+#[path = "tests/translate_offload_tests.rs"]
+mod translate_offload_tests;
+
+#[cfg(test)]
 #[path = "tests/attempt_timeout_precedence_tests.rs"]
 mod attempt_timeout_precedence_tests;
 

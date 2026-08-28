@@ -1080,3 +1080,10 @@ where
 #[cfg(test)]
 #[path = "tests/worker_shard_tests.rs"]
 mod worker_shard_tests;
+
+// ── DETACHED-WORK DRAIN — RELOCATED to `busbar-substrate::detached` so the plane crates (which
+// deliberately never link busbar-core) reach the same seam. Re-exported here for core callers
+// and the composition root.
+pub use busbar_substrate::detached::{
+    set_worker_detached, spawn_detached, DetachedTasks, DETACHED_DRAIN_GRACE,
+};

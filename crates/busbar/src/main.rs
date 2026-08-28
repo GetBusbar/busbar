@@ -1316,6 +1316,11 @@ fn serve_thread_per_core(
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
                 busbar_core::state::set_worker_id(i);
+                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
+                // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
+                // stop gives such work a bounded window instead of an instant abort.
+                let detached = busbar_core::state::DetachedTasks::new();
+                busbar_core::state::set_worker_detached(detached.clone());
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1344,6 +1349,13 @@ fn serve_thread_per_core(
                         &listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
+                    )
+                    .await;
+                    // Connections are drained; give this worker's detached work its bounded
+                    // grace before the runtime drops (and aborts whatever remains).
+                    let _ = tokio::time::timeout(
+                        busbar_core::state::DETACHED_DRAIN_GRACE,
+                        detached.drained(),
                     )
                     .await;
                 });

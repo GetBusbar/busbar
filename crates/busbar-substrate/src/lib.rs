@@ -28,6 +28,7 @@ pub mod api;
 pub mod auth {
     pub mod challenge;
 }
+pub mod detached;
 pub mod diagnostics;
 pub mod net_guard;
 pub mod audit {

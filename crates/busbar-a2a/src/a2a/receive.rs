@@ -2280,7 +2280,7 @@ async fn stream_hop(
     // DETACHED watcher: clone the admitted `EngineHost` so the terminal transition reaches the durable
     // seam through its own transient host (`task_journal_write` mints it per call, `Send + Sync`).
     let watched_engine_host = Arc::clone(&ctx.engine_host);
-    tokio::spawn(async move {
+    busbar_substrate::detached::spawn_detached(async move {
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(refusal)) => {

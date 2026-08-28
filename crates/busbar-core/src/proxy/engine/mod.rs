@@ -18,6 +18,13 @@ use crate::diagnostics::{
 };
 use crate::handlers::TranslateCodec;
 
+/// Bodies at or above this size run the (pure, synchronous) cross-protocol translate on the
+/// blocking pool instead of inline on the single-threaded worker — see the offload comment at the
+/// call site. 128 KiB: the inline worst case at the boundary is ~1-2 ms (inside the p99 envelope),
+/// and real chat bodies are two orders of magnitude smaller, so the offload branch is statically
+/// dead on the happy path. A constant, not a knob.
+const TRANSLATE_OFFLOAD_THRESHOLD: usize = 128 * 1024;
+
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
 /// delegate. The ingress hot path (`ingress::forward_resolved`) instead calls
@@ -1688,19 +1695,62 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // degraded path): read→clear-extra→write, shim-key strip, model rewrite, serialize. Both
             // paths route through `translate_request_cross_protocol` so neither can carry a translation
             // step the other lacks (the drift class that sharing one seam ends).
-            match translate_request_cross_protocol(
-                &app,
-                i,
-                ingress_protocol,
-                op,
-                hop_v,
-                req_content_type,
-                effective_reasoning(&cands, i, app.lanes[i].reasoning),
-                &body,
-                resolved_gov_key
+            //
+            // HUGE-BODY OFFLOAD: the translate is a pure synchronous function over owned bytes — no
+            // store, no client shard, no per-worker stripe — and on a single-threaded worker a
+            // maximum-size body (`limits.request_body_max_bytes`, 32 MiB default) is hundreds of
+            // milliseconds of CPU that would head-of-line-block every connection this worker owns.
+            // At or above [`TRANSLATE_OFFLOAD_THRESHOLD`] the SAME call runs on the blocking pool
+            // (the connection never moves; the worker keeps serving while this future waits); below
+            // it, inline exactly as always. The common path pays one length compare — real chat
+            // bodies sit two orders of magnitude under the threshold.
+            let translated = if body.len() >= TRANSLATE_OFFLOAD_THRESHOLD {
+                let app2 = app.clone();
+                let body2 = body.clone();
+                let ip: String = ingress_protocol.to_string();
+                let ct: String = req_content_type.to_string();
+                let key: String = resolved_gov_key
                     .map(|k| k.id.as_str())
-                    .unwrap_or("anonymous"),
-            ) {
+                    .unwrap_or("anonymous")
+                    .to_string();
+                let reasoning = effective_reasoning(&cands, i, app.lanes[i].reasoning);
+                match tokio::task::spawn_blocking(move || {
+                    translate_request_cross_protocol(
+                        &app2, i, &ip, op, hop_v, &ct, reasoning, &body2, &key,
+                    )
+                })
+                .await
+                {
+                    Ok(r) => r,
+                    // The blocking task itself failed (panic/cancel): internal error, same exit
+                    // shape as a parse failure.
+                    Err(_) => {
+                        app.store.release_probe_in(pool_name, i);
+                        drop(permit);
+                        return ingress_error(
+                            ingress_protocol,
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            KIND_API_ERROR,
+                            DETAIL_INTERNAL_ERROR,
+                        );
+                    }
+                }
+            } else {
+                translate_request_cross_protocol(
+                    &app,
+                    i,
+                    ingress_protocol,
+                    op,
+                    hop_v,
+                    req_content_type,
+                    effective_reasoning(&cands, i, app.lanes[i].reasoning),
+                    &body,
+                    resolved_gov_key
+                        .map(|k| k.id.as_str())
+                        .unwrap_or("anonymous"),
+                )
+            };
+            match translated {
                 Ok(p) => p,
                 Err(resp) => {
                     // Probe class guard: a translation failure also bails before dispatch, so release
