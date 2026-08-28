@@ -1165,6 +1165,20 @@ async fn run(data_workers: usize) {
     // on the single work-stealing runtime `main()` built — the compile-time platform shape.
     #[cfg(unix)]
     {
+        // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
+        // detached work spawned at any moment — including after the signal — can still observe
+        // that shutdown has fired. Each data worker registers a clone
+        // (`busbar_core::state::set_worker_shutdown`) beside its detached tracker, and an MCP task
+        // runner selects on it to write its CANCELLED terminal status within the drain grace
+        // instead of being aborted with a caller left polling forever.
+        let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
+        {
+            let rx = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                recv_shutdown(rx).await;
+                let _ = worker_shutdown_tx.send(true);
+            });
+        }
         let data_handles = serve_thread_per_core(
             data_workers,
             listen.clone(),
@@ -1172,6 +1186,7 @@ async fn run(data_workers: usize) {
             tls_cfg,
             tls_secret_resolver.clone(),
             &shutdown_tx,
+            worker_shutdown_rx,
         );
         let admin_listener = bind_listener(&admin_listen).await;
         serve_listener(
@@ -1277,6 +1292,7 @@ fn serve_thread_per_core(
     tls_cfg: Option<busbar_core::config::TlsCfg>,
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
+    worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1303,6 +1319,7 @@ fn serve_thread_per_core(
         let resolver = secret_resolver.clone();
         let listen = addr.clone();
         let shutdown_rx = shutdown_tx.subscribe();
+        let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
@@ -1321,6 +1338,11 @@ fn serve_thread_per_core(
                 // stop gives such work a bounded window instead of an instant abort.
                 let detached = busbar_core::state::DetachedTasks::new();
                 busbar_core::state::set_worker_detached(detached.clone());
+                // The shutdown level, registered beside the tracker: detached work spawned on
+                // this worker captures it and can settle its own terminal state (an MCP task
+                // runner writes CANCELLED) inside the drain grace below instead of being aborted
+                // silently when the runtime drops.
+                busbar_core::state::set_worker_shutdown(worker_shutdown);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

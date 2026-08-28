@@ -72,6 +72,47 @@ pub fn set_worker_detached(t: std::sync::Arc<DetachedTasks>) {
     DETACHED.with(|d| *d.borrow_mut() = Some(t));
 }
 
+thread_local! {
+    /// This worker thread's view of the process shutdown broadcast, set once at spawn exactly like
+    /// the detached tracker above; `None` on non-worker threads, where detached work keeps its
+    /// pre-seam behaviour (no early shutdown arm — it is aborted when its runtime drops).
+    static SHUTDOWN: std::cell::RefCell<Option<tokio::sync::watch::Receiver<bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Register the current worker thread's shutdown watch (composition root, once per worker, at
+/// spawn). The composition root flips the paired sender to `true` when the process shutdown
+/// broadcast fires, BEFORE the worker's listener finishes draining — so detached work that selects
+/// on [`shutdown_fired`] gets the whole of [`DETACHED_DRAIN_GRACE`] to write its terminal state.
+pub fn set_worker_shutdown(rx: tokio::sync::watch::Receiver<bool>) {
+    SHUTDOWN.with(|s| *s.borrow_mut() = Some(rx));
+}
+
+/// This worker thread's shutdown watch, cloned for a future that outlives the request that spawned
+/// it. Captured AT SPAWN (like the detached tracker) rather than read lazily from inside the
+/// future, so the value is decided on the thread that owns the registration.
+pub fn worker_shutdown() -> Option<tokio::sync::watch::Receiver<bool>> {
+    SHUTDOWN.with(|s| s.borrow().clone())
+}
+
+/// Resolve when the worker's shutdown has fired; NEVER resolve when no watch was registered
+/// (a non-worker thread, a test that registered nothing) — the caller's `select!` then behaves
+/// exactly as if the arm did not exist.
+///
+/// A CLOSED channel counts as fired, the same reading `main`'s `recv_shutdown` gives the broadcast:
+/// the sender is owned by the composition root for the process lifetime, so losing it means the
+/// process is tearing down, and "keep running" is the one wrong answer.
+pub async fn shutdown_fired(rx: Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(mut rx) = rx else {
+        return std::future::pending().await;
+    };
+    while !*rx.borrow_and_update() {
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Spawn request-outliving work: tracked on a data worker (so shutdown grants it the bounded
 /// drain grace), a plain `tokio::spawn` anywhere else. The wrapper is a `Drop` guard inside the
 /// future, so completion AND abort both settle the count.

@@ -242,3 +242,129 @@ fn task_ids_are_unique_and_not_sequential() {
     assert!(a.starts_with("t_"));
     assert!(a.len() > 32, "the id carries 128 bits of CSPRNG output");
 }
+
+/// A WORKER SHUTDOWN routes through the SAME cancel transition a caller-issued `tasks/cancel`
+/// takes: the runner's outer frame observes the shutdown watch, writes the `cancelled` terminal
+/// status, and emits the audit record exactly once — a shutdown-aborted long task is never a
+/// caller polling for ever over a row stuck at `working`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shutdown_settles_a_working_task_as_cancelled_and_audits_it_once() {
+    let task = TASKS.create("key-shutdown", busbar_substrate::store::now_ms());
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let audited = std::cell::Cell::new(0u32);
+    let settle = settle_or_cancel_on_shutdown(
+        &task,
+        Some(rx),
+        // The long-running task: work that will not finish on its own within any grace.
+        std::future::pending::<()>(),
+        busbar_substrate::store::now_ms,
+        |id| {
+            assert_eq!(id, task.id, "the audit record names the task it cancelled");
+            audited.set(audited.get() + 1);
+        },
+    );
+    let fire = async {
+        // Let the settle arm park on the watch first, then fire the shutdown level — the order
+        // the composition root produces (the runner is long since spawned when drain begins).
+        tokio::task::yield_now().await;
+        let _ = tx.send(true);
+    };
+    tokio::join!(settle, fire);
+    assert_eq!(
+        task.detailed()["status"],
+        "cancelled",
+        "a shutdown-dropped runner must leave the SAME terminal status a `tasks/cancel` writes"
+    );
+    assert_eq!(audited.get(), 1, "the cancel is audited exactly once");
+}
+
+/// A task that COMPLETED before the shutdown arm ran keeps its settled status: the shutdown-time
+/// cancel is the same CAS-guarded `McpTask::cancel` the verb calls, so it neither rewrites the
+/// terminal state nor emits a spurious audit record.
+#[tokio::test(flavor = "current_thread")]
+async fn a_completion_that_beat_the_shutdown_keeps_its_status_and_is_not_audited_again() {
+    let task = TASKS.create("key-shutdown-complete", busbar_substrate::store::now_ms());
+    task.complete(
+        serde_json::json!({ "content": [] }),
+        busbar_substrate::store::now_ms(),
+    );
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let _ = tx.send(true); // shutdown already fired when the arm runs
+    settle_or_cancel_on_shutdown(
+        &task,
+        Some(rx),
+        std::future::pending::<()>(),
+        busbar_substrate::store::now_ms,
+        |_| panic!("a task that completed must not get a shutdown-cancel audit record"),
+    )
+    .await;
+    assert_eq!(
+        task.detailed()["status"],
+        "completed",
+        "the shutdown arm must never rewrite a terminal status"
+    );
+}
+
+/// A caller-issued cancel RACING the shutdown-issued one stays a single terminal transition with a
+/// single audit record: whichever ran first won the CAS under the task lock, and the loser's
+/// `cancel` returns `false` so its audit closure never fires.
+#[tokio::test(flavor = "current_thread")]
+async fn a_caller_cancel_racing_the_shutdown_yields_one_transition_and_one_audit() {
+    let task = TASKS.create("key-shutdown-race", busbar_substrate::store::now_ms());
+    // The caller's `tasks/cancel` lands first (the verb path audits it on its own).
+    assert!(TASKS
+        .cancel(
+            &task.id,
+            "key-shutdown-race",
+            busbar_substrate::store::now_ms()
+        )
+        .is_some());
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let _ = tx.send(true);
+    settle_or_cancel_on_shutdown(
+        &task,
+        Some(rx),
+        std::future::pending::<()>(),
+        busbar_substrate::store::now_ms,
+        |_| panic!("the shutdown arm lost the CAS and must not emit a second audit record"),
+    )
+    .await;
+    assert_eq!(task.detailed()["status"], "cancelled");
+}
+
+/// The runner's own work finishing FIRST is the whole of normal life: the inner future wrote its
+/// terminal status and the shutdown arm never ran. `None` (no watch registered — a non-worker
+/// thread) is the same statement made structurally: the arm can never fire at all.
+#[tokio::test(flavor = "current_thread")]
+async fn the_inner_work_finishing_first_leaves_the_shutdown_arm_unrun() {
+    let task = TASKS.create("key-shutdown-none", busbar_substrate::store::now_ms());
+    settle_or_cancel_on_shutdown(
+        &task,
+        None,
+        async {
+            task.complete(
+                serde_json::json!({ "content": [] }),
+                busbar_substrate::store::now_ms(),
+            );
+        },
+        busbar_substrate::store::now_ms,
+        |_| panic!("no shutdown fired, so no cancel may be audited"),
+    )
+    .await;
+    assert_eq!(task.detailed()["status"], "completed");
+}
+
+/// `McpTask::cancel` reports whether THIS call made the transition — the guard the shutdown arm's
+/// single-audit property rests on.
+#[test]
+fn cancel_reports_the_transition_it_made_and_only_that_one() {
+    let task = TASKS.create("key-cancel-cas", busbar_substrate::store::now_ms());
+    assert!(
+        task.cancel(busbar_substrate::store::now_ms()),
+        "the first cancel of a working task performs the transition"
+    );
+    assert!(
+        !task.cancel(busbar_substrate::store::now_ms()),
+        "a second cancel finds the task terminal and reports no transition"
+    );
+}
