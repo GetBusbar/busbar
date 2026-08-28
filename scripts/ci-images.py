@@ -103,7 +103,20 @@ def collect(root: str):
         text = open(path, encoding="utf-8").read()
         pinned = {}
         for m in PINNED.finditer(text):
-            pinned["%s:%s" % (m.group("repo"), m.group("tag"))] = m.group("digest")
+            key = "%s:%s" % (m.group("repo"), m.group("tag"))
+            # ONE file may pin the same logical image in several jobs (ci.yml's check + coverage
+            # both carry postgres/valkey service blocks). Those pins must agree with EACH OTHER,
+            # not merely with the other workflow: reducing to a dict silently let the last
+            # occurrence win, so one job could drift to different bytes than its sibling in the
+            # same file and nothing here would say so — the exact defect class this script exists
+            # to remove, one directory closer to home.
+            if key in pinned and pinned[key] != m.group("digest"):
+                problems.append(
+                    "%s pins `%s` at DIFFERENT digests in different jobs (%s vs %s). Two jobs in "
+                    "one workflow running the same service on different bytes is the same split "
+                    "brain as two workflows disagreeing." % (name, key, pinned[key], m.group("digest"))
+                )
+            pinned[key] = m.group("digest")
         per_file[name] = pinned
 
         # An `image:` that is NOT digest-pinned is the defect this whole exercise removes, so it is
@@ -218,8 +231,14 @@ MUTATIONS = [
     (
         "the two workflows disagree about a digest",
         "ci.yml",
+        # EVERY occurrence, not the first: ci.yml legitimately pins the same image in more than one
+        # job (check + coverage). `collect()` reduces a file to one digest per logical image, so a
+        # mutation that corrupts only the first pin is overwritten by the intact twin and the
+        # injected violation vanishes — the self-test then fails itself ("Got: nothing") despite
+        # the rule being sound. Mutating every pin keeps the injection visible however many jobs
+        # carry the pin.
         lambda t: t.replace(
-            "image: postgres:16@sha256:95206741", "image: postgres:16@sha256:00000000", 1
+            "image: postgres:16@sha256:95206741", "image: postgres:16@sha256:00000000"
         ),
         "DIFFERENT digests",
     ),
@@ -284,8 +303,12 @@ def selftest(root: str) -> int:
         def sub(m):
             d = digest or m.group(2)
             return "        image: ghcr.io/getbusbar/ci-postgres:16@%s" % d
+        # EVERY pin, for the same reason the digest-disagreement mutation above replaces every
+        # occurrence: a repoint that moves only the first postgres pin leaves the intact duplicate
+        # to win `collect()`'s per-file reduction, and the red twin's injected disagreement is
+        # never seen ("Got: nothing").
         return _re.sub(r"^(\s*)image: postgres:16@(sha256:[0-9a-f]{64})\s*$", sub, text,
-                       count=1, flags=_re.M)
+                       flags=_re.M)
 
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))

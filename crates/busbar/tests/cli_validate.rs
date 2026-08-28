@@ -902,6 +902,12 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// THE COLLISION UNDER TEST IS THE SUBTLE ONE — an override against a namespaced default nobody
 /// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
 /// only to each other would exit 0 here and look correct doing it.
+///
+/// GATED ON `plane-mcp` because the collision check itself lives in `busbar-mcp` and is compiled
+/// out with the plane: a `--no-default-features` binary has no `tools:` plane to collide in, so
+/// `--validate` exiting 0 there is the correct answer, not the missed refusal this test exists to
+/// pin. Same shape as the `auth-admin-tokens` gate above.
+#[cfg(feature = "plane-mcp")]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");

@@ -393,7 +393,7 @@ pub(crate) fn operator_resume(approval: &mut Approval<CardPin>) {
 
 /// THE TRUST VIEW of one registered agent — what both verbs answer with.
 ///
-/// The sibling of `crate::mcp::admin_view::McpTrustView` and shaped like it on purpose: an
+/// The sibling of `busbar_mcp::mcp::admin_view::McpTrustView` and shaped like it on purpose: an
 /// operator console rendering both planes should be rendering one component. It is NOT the same
 /// type, because the two planes' capability vocabularies differ (a `tools:` entry has an approved
 /// digest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one
