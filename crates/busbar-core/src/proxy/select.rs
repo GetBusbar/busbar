@@ -270,7 +270,11 @@ pub(crate) async fn pick_among(
     // the walk's retry hops) and borrowed for its whole life: `wl` is the pool member as configured,
     // `model` is the operator-facing name a refusal must be able to say, and `pool_name` is this
     // plane's PIN — see `LaneCandidate::interchange_key`.
-    let members: Vec<LaneCandidate<'_>> = cands
+    // Inline capacity 8: a pool's member count is small (operator-configured lanes), so the whole
+    // per-pick working set below lives on the stack for every realistic pool — the heap is touched
+    // only past 8 candidates. This was three heap allocations per request (members + the order's
+    // two scratch vecs), on a path the seam contract prices in nanoseconds.
+    let members: smallvec::SmallVec<[LaneCandidate<'_>; 8]> = cands
         .iter()
         .map(|wl| LaneCandidate {
             wl,
@@ -281,7 +285,7 @@ pub(crate) async fn pick_among(
 
     // The positions this request has ALREADY dispatched to on an earlier failover hop — the seam's
     // `Attempt::tried`, spelled from the caller's accumulated cross-hop exclusion set.
-    let tried: Vec<usize> = members
+    let tried: smallvec::SmallVec<[usize; 8]> = members
         .iter()
         .enumerate()
         .filter(|(_, c)| request_ctx.excluded.contains(&c.wl.idx))
@@ -337,8 +341,8 @@ pub(crate) async fn pick_among(
         // Pre-sized to the candidate count and reused across the walk's retry hops (`.clear()` +
         // re-`.extend()`), so a HalfOpen-probe-race re-selection costs no allocation and no growth
         // realloc. The filter can only DROP entries, so `cands.len()` is an upper bound.
-        candidates: Vec::with_capacity(cands.len()),
-        weights: Vec::with_capacity(cands.len()),
+        candidates: smallvec::SmallVec::new(),
+        weights: smallvec::SmallVec::new(),
     };
 
     // THE ONE SELECTION LOOP — `failover::walk_with`, the same function `failover::walk` hands the
@@ -442,8 +446,10 @@ struct SwrrOrder<'a> {
     /// (HalfOpen probe race, at capacity). Local to the pick: it never mutates the caller's
     /// cross-hop exclusion set.
     local_excluded: std::collections::HashSet<usize>,
-    candidates: Vec<usize>,
-    weights: Vec<u32>,
+    // Inline capacity matches the caller's candidate bound: reused across the walk's retry hops
+    // (clear+extend), stack-resident for every realistic pool size.
+    candidates: smallvec::SmallVec<[usize; 8]>,
+    weights: smallvec::SmallVec<[u32; 8]>,
 }
 
 impl crate::failover::Order for SwrrOrder<'_> {

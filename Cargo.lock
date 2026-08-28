@@ -476,6 +476,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
+ "smallvec",
  "sonic-rs",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",

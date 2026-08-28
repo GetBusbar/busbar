@@ -31,6 +31,10 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
+# typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
+# live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
+smallvec = { workspace = true }
 # Debug-only per-method micro-timing. DEFAULT OFF: with `busbar-timing`'s `timing` feature disabled
 # (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
 # a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
