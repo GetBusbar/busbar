@@ -810,6 +810,10 @@ fn main() {
     // Non-unix has no SO_REUSEPORT (no kernel fan-out across per-core listeners), so those builds
     // keep the classic single work-stealing runtime — a compile-time platform shape, not a
     // configuration: no knob selects it and no unix deployment can end up on it.
+    // Publish the data-plane worker count to core BEFORE anything builds: the egress client
+    // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
+    // exactly like the runtimes themselves — set once here, immutable, no config surface.
+    busbar_core::state::set_data_workers(worker_threads);
     #[cfg(unix)]
     {
         tokio::runtime::Builder::new_current_thread()
@@ -1298,6 +1302,10 @@ fn serve_thread_per_core(
                     // the thread unpinned but still serving — the kernel still balances via SO_REUSEPORT.
                     core_affinity::set_for_current(id);
                 }
+                // This thread IS data-plane worker `i` for its whole lifetime: everything core
+                // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
+                // stages) indexes by this id. Set after the pin, before the runtime serves.
+                busbar_core::state::set_worker_id(i);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

@@ -164,6 +164,39 @@ pub(crate) struct PoolRuntime {
     pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
 }
 
+// ── DATA-PLANE TOPOLOGY, published once by the composition root ─────────────────────────────────
+// The `busbar` binary spawns N per-worker data runtimes (thread-per-core; see main.rs) and tells
+// core two things before any request is served: HOW MANY workers exist (sizes the client shards
+// below, and the per-worker state stripes later stages add) and, on each worker thread, WHICH
+// worker this thread is. Both are process-topology facts — set at boot, immutable, no config.
+
+/// Total data-plane workers, set once by the composition root before serving. Unset (tests,
+/// embedded uses) falls back to the machine-derived default at each consumer.
+static DATA_WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Publish the data-plane worker count. First call wins; later calls are ignored (boot runs once).
+pub fn set_data_workers(n: usize) {
+    let _ = DATA_WORKERS.set(n.max(1));
+}
+
+thread_local! {
+    /// This thread's data-plane worker id (0..N), or `usize::MAX` on every non-worker thread
+    /// (the control runtime, the blocking pool). A plain `Cell` read — no atomic — because the id
+    /// is a per-thread constant after spawn.
+    static WORKER_ID: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// Mark the current thread as data-plane worker `id`. Called exactly once per worker thread by the
+/// composition root, after pinning and before the worker's runtime starts serving.
+pub fn set_worker_id(id: usize) {
+    WORKER_ID.with(|w| w.set(id));
+}
+
+/// The current thread's worker id, or `usize::MAX` for a non-worker thread.
+pub(crate) fn worker_id() -> usize {
+    WORKER_ID.with(|w| w.get())
+}
+
 /// The upstream HTTP client, SHARDED: N identical `reqwest::Client`s, each owning its own
 /// connection pool, one selected per thread. ONE shared client meant one pool mutex that every
 /// request crossed twice (connection checkout + checkin) across every worker — a lock convoy
@@ -171,24 +204,30 @@ pub(crate) struct PoolRuntime {
 /// 4-core pin, and inverted busbar's standing against per-worker-sharded gateways on 32-thread
 /// x86). Each worker thread is assigned one shard on first use and keeps it: warm connections
 /// and TLS sessions stay worker-local, and each shard's pool lock is contended by ~1/Nth of the
-/// threads. NOT configurable — the shard count derives from the machine (`min(cores, 16)`,
-/// power of two) and the per-host idle budget is divided across shards so the TOTAL kept-alive
-/// sockets toward any upstream are unchanged.
+/// threads. NOT configurable — the shard count is one per data-plane worker (published by the
+/// composition root; machine-derived fallback for embedded/test uses) and the per-host idle
+/// budget is divided across shards so the TOTAL kept-alive sockets toward any upstream are
+/// unchanged.
 #[derive(Clone)]
 pub struct UpstreamClients {
     shards: Arc<[Client]>,
 }
 
 impl UpstreamClients {
-    /// The shard count for this machine: `min(available cores, 16)` rounded up to a power of two
-    /// (so shard selection is a mask, not a modulo). 16 caps the idle-socket multiplication on
-    /// very wide boxes; beyond ~16 shards the residual per-shard contention is negligible.
+    /// The shard count: ONE SHARD PER DATA-PLANE WORKER when the composition root published the
+    /// count (`set_data_workers` — the thread-per-core binary always does), so every worker gets a
+    /// pool of its own and shard selection is a direct index by worker id. Unset (tests, embedded
+    /// uses that never call `set_data_workers`) falls back to the machine-derived
+    /// `min(cores, 16).next_power_of_two()` the pre-topology sharding used.
     pub(crate) fn shard_count() -> usize {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .next_power_of_two()
-            .min(16)
+        match DATA_WORKERS.get() {
+            Some(&n) => n,
+            None => std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .next_power_of_two()
+                .min(16),
+        }
     }
 
     /// Build N shards from a builder factory (each shard is an IDENTICAL client; reqwest clients
@@ -198,11 +237,19 @@ impl UpstreamClients {
         UpstreamClients { shards }
     }
 
-    /// This thread's client. Threads are assigned shards round-robin on FIRST use and keep the
-    /// assignment for their lifetime (a tokio worker's requests always reuse its own shard's
-    /// warm connections). The assignment counter is the only shared write, paid once per thread
-    /// per process lifetime — never per request.
+    /// This thread's client. A DATA-PLANE WORKER (id set at spawn) indexes its own shard directly —
+    /// one thread-local `Cell` read, no shared write ever, and its warm connections/TLS sessions
+    /// never cross another worker's pool lock. Any OTHER thread (the control runtime's prober,
+    /// blocking-pool threads, non-unix workers without ids) keeps the prior behavior: assigned a
+    /// shard round-robin on FIRST use for its lifetime — a once-per-thread counter bump, never a
+    /// per-request write.
     pub fn get(&self) -> &Client {
+        let id = crate::state::worker_id();
+        if id != usize::MAX {
+            // min: defensive only — the composition root sizes shards to the worker count, so a
+            // worker id is always in range.
+            return &self.shards[id.min(self.shards.len() - 1)];
+        }
         static NEXT_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         thread_local! {
             static SHARD: std::cell::OnceCell<usize> = const { std::cell::OnceCell::new() };
@@ -210,8 +257,9 @@ impl UpstreamClients {
         let idx = SHARD.with(|s| {
             *s.get_or_init(|| NEXT_THREAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         });
-        // Mask, not modulo: the count is a power of two by construction (and >= 1).
-        &self.shards[idx & (self.shards.len() - 1)]
+        // Modulo, not mask: with worker-published counts the shard count is exact (= N workers),
+        // not a power of two. Cold path — the result is cached per thread above.
+        &self.shards[idx % self.shards.len()]
     }
 
     /// Do two `UpstreamClients` share the SAME underlying shard set (`Arc::ptr_eq`)? True exactly
@@ -1003,5 +1051,53 @@ where
         let axum::extract::State(handle) =
             axum::extract::State::<Arc<AppHandle>>::from_request_parts(parts, state).await?;
         Ok(CurrentApp(handle.load()))
+    }
+}
+
+#[cfg(test)]
+mod worker_shard_tests {
+    //! The worker-id → client-shard seam: a data worker indexes its OWN shard (so its pool lock is
+    //! never crossed by another worker), and a thread with no id keeps the round-robin fallback.
+    //! Tests run on plain spawned threads so each gets a fresh thread-local id slot.
+
+    #[test]
+    fn worker_ids_index_distinct_shards_and_unset_falls_back() {
+        let clients = super::UpstreamClients::build(3, reqwest::Client::new);
+        let addr_of = |c: &reqwest::Client| c as *const _ as usize;
+        let shard_for = |id: Option<usize>| {
+            let clients = clients.clone();
+            std::thread::spawn(move || {
+                if let Some(i) = id {
+                    super::set_worker_id(i);
+                }
+                addr_of(clients.get())
+            })
+            .join()
+            .unwrap()
+        };
+        let s0 = shard_for(Some(0));
+        let s1 = shard_for(Some(1));
+        let s2 = shard_for(Some(2));
+        assert_ne!(s0, s1, "workers 0 and 1 must not share a client shard");
+        assert_ne!(s1, s2, "workers 1 and 2 must not share a client shard");
+        assert_ne!(s0, s2, "workers 0 and 2 must not share a client shard");
+        // Same worker id on another thread → the same shard (identity is the id, not the thread).
+        assert_eq!(
+            s1,
+            shard_for(Some(1)),
+            "a worker id must map to one stable shard"
+        );
+        // Out-of-range id clamps (defensive; the composition root sizes shards to the count).
+        assert_eq!(
+            s2,
+            shard_for(Some(9)),
+            "an out-of-range id clamps to the last shard"
+        );
+        // No id → the round-robin fallback still hands out a valid shard.
+        let fallback = shard_for(None);
+        assert!(
+            [s0, s1, s2].contains(&fallback),
+            "fallback must be one of the shards"
+        );
     }
 }
