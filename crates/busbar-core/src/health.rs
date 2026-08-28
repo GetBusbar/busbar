@@ -23,7 +23,6 @@ use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
 use crate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
 use crate::config::HealthMode;
-use crate::proto::convert_headers;
 use crate::state::App;
 use crate::store::{now, BreakerCfg};
 
@@ -303,34 +302,55 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     let auth = crate::proxy::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
 
     // Send the SAME native-SDK fingerprint headers the organic forward path sends, so a probe is
-    // indistinguishable from real traffic to the backend: reqwest emits no default User-Agent (its
-    // absence is a proxy tell), and a missing Accept differs from what a native SDK sends. The probe
-    // is non-streaming, so `wants_stream = false`. Without these, a backend could fingerprint and
-    // special-case busbar's health probes — defeating the indistinguishability guarantee.
+    // indistinguishable from real traffic to the backend: the shared client emits no default
+    // User-Agent (its absence is a proxy tell), and a missing Accept differs from what a native SDK
+    // sends. The probe is non-streaming, so `wants_stream = false`. Without these, a backend could
+    // fingerprint and special-case busbar's health probes — defeating the indistinguishability
+    // guarantee.
+    //
+    // WAVE 7: the probe rides the SAME owned egress client stack (`crate::proxy::egress_request` +
+    // the lane-sharded `EgressClient`) as the forward path, assembling its header map in the
+    // engine's exact insertion order — auth headers first, then CT/UA/Accept — so the probe's wire
+    // fingerprint (client stack, TLS/ALPN posture, header shape) stays byte-identical to organic
+    // traffic. The probe composes its own URL (probe-specific path, not necessarily a lane egress
+    // target), so it parses the `http::Uri` here; a seconds-cadence background parse, not hot-path.
     let egress_name = lane.protocol;
-    let res = app
-        .client
-        .get()
-        .post(format!("{}{}", lane.base_url, wire_path))
-        .headers(convert_headers(auth))
-        .header(
-            CONTENT_TYPE,
-            // Declaration constants all three: static bytes, no per-probe allocs — and byte-identical
-            // to the forward path's headers, which is this probe's indistinguishability contract.
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
-        )
-        .header(
-            USER_AGENT,
-            axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
-        )
-        .header(
-            ACCEPT,
-            axum::http::HeaderValue::from_static(crate::proxy::egress_accept(egress_name, false)),
-        )
-        .timeout(timeout)
-        .body(body)
-        .send()
-        .await;
+    let uri: http::Uri = match format!("{}{}", lane.base_url, wire_path).parse() {
+        Ok(u) => u,
+        Err(_) => {
+            // A malformed probe URL is a probe-construction issue, not upstream health — record
+            // nothing, same disposition as the ClientFault arm below. (The organic path proves the
+            // same base_url composes into a valid URL, so this arm is effectively unreachable.)
+            tracing::warn!(lane = %lane.model, "health probe URL failed to parse; lane not penalized");
+            return;
+        }
+    };
+    let mut headers = http::HeaderMap::with_capacity(auth.len() + 3);
+    for (name, value) in auth {
+        headers.insert(name, value);
+    }
+    headers.insert(
+        CONTENT_TYPE,
+        // Declaration constants all three: static bytes, no per-probe allocs — and byte-identical
+        // to the forward path's headers, which is this probe's indistinguishability contract.
+        axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+    );
+    headers.insert(
+        USER_AGENT,
+        axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+    );
+    headers.insert(
+        ACCEPT,
+        axum::http::HeaderValue::from_static(crate::proxy::egress_accept(egress_name, false)),
+    );
+    let req = crate::proxy::egress_request(uri, headers, bytes::Bytes::from(body));
+    // TIMEOUT RE-PROVISION: reqwest's per-request `.timeout(timeout)` bounded the ENTIRE probe
+    // lifecycle — connect, headers, AND the body read. The owned client carries no per-request
+    // total timeout, so re-provide the same bound as ONE deadline shared by the send below and the
+    // capped error-body read (`read_capped_error_body`), so a black-holed upstream can never hang
+    // the prober past its configured `timeout_secs`.
+    let deadline = tokio::time::Instant::now() + timeout;
+    let res = tokio::time::timeout_at(deadline, app.client.get().request(req)).await;
 
     // Classify the probe outcome through the organic disposition pipeline so auth/billing failures
     // reach HardDown instead of being mis-filed as transient cooldowns. Carry the server-requested
@@ -338,7 +358,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // cooldown floor (the captured value is otherwise dropped by `classify`, which returns only the
     // Disposition).
     let (disposition, retry_after_secs) = match res {
-        Ok(r) if r.status().is_success() => {
+        Ok(Ok(r)) if r.status().is_success() => {
             if app.store.lane_needs_probe(i, now()) {
                 // Probe tests the shared upstream → recover the lane in every cell (all pools +
                 // default), clearing both Open trips and soft cooldowns. This runs FIRST so that by
@@ -356,7 +376,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             app.store.record_probe_success_all_cells(i);
             return;
         }
-        Ok(r) => {
+        Ok(Ok(r)) => {
             // Non-2xx: run the body through Stage 1a (the cell's `extract_error`) → Stage 1b
             // (normalize_raw_error + the lane's error_map) → Stage 2 (classify), exactly as the
             // forwarding path does, capturing the Retry-After header the body-only extractor can't
@@ -368,7 +388,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
             let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
-            let body = read_capped_error_body(r).await;
+            let body = read_capped_error_body(r.into_body(), deadline).await;
             // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
             // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the
             // PROTOCOL's, shared by every operation it serves), so calling `protocol_error` directly
@@ -383,9 +403,13 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
                 retry_after_secs,
             )
         }
-        // Transport error (connect/timeout/reset): treat as a transient network failure, as the
-        // organic path does. No HTTP response, so no Retry-After.
-        Err(_) => (Disposition::TransientUpstream, None),
+        // Transport error (connect/reset/TLS) from the owned client: treat as a transient network
+        // failure, as the organic path does. No HTTP response, so no Retry-After. Same disposition
+        // the reqwest error took before the cutover.
+        Ok(Err(_)) => (Disposition::TransientUpstream, None),
+        // The probe deadline elapsed before response headers arrived — reqwest's `.timeout()`
+        // surfaced this as a request error, which took this same transient arm.
+        Err(_elapsed) => (Disposition::TransientUpstream, None),
     };
 
     match disposition {
@@ -446,23 +470,36 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
 /// call site below) so a misclassification from an oversized body is observable through the
 /// breaker transition it produces, not silent — no user/hook/operator/audit-facing data is capped
 /// here, only this probe's own internal classification input.
-async fn read_capped_error_body(mut resp: reqwest::Response) -> Vec<u8> {
+///
+/// Reads hyper body frames directly (the probe rides the owned egress client), under the SAME
+/// probe deadline that bounded the send — re-providing reqwest's whole-lifecycle `.timeout()`,
+/// which previously covered this read too. A deadline expiry mid-body classifies on what arrived,
+/// exactly like a mid-body transport error did before.
+async fn read_capped_error_body(
+    mut body: hyper::body::Incoming,
+    deadline: tokio::time::Instant,
+) -> Vec<u8> {
+    use http_body_util::BodyExt;
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                let remaining = PROBE_ERROR_BODY_CAP.saturating_sub(buf.len());
-                if remaining == 0 {
-                    break;
-                }
-                let take = remaining.min(chunk.len());
-                buf.extend_from_slice(&chunk[..take]);
-                if take < chunk.len() {
-                    break; // this chunk filled the cap
-                }
-            }
-            Ok(None) => break, // end of body
-            Err(_) => break,   // mid-body transport error — classify on what we have
+        let frame = match tokio::time::timeout_at(deadline, body.frame()).await {
+            Ok(Some(Ok(frame))) => frame,
+            Ok(None) => break,         // end of body
+            Ok(Some(Err(_))) => break, // mid-body transport error — classify on what we have
+            Err(_elapsed) => break,    // probe deadline hit mid-body — classify on what we have
+        };
+        // Non-data frames (trailers) carry no body bytes.
+        let Some(chunk) = frame.data_ref() else {
+            continue;
+        };
+        let remaining = PROBE_ERROR_BODY_CAP.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(chunk.len());
+        buf.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            break; // this chunk filled the cap
         }
     }
     buf
