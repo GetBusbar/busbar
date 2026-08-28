@@ -222,6 +222,34 @@ pub(crate) struct RoundRecord {
     pub(crate) satisfied: Option<String>,
 }
 
+/// THE TYPE-ERASED SPELLINGS of [`drive`]'s four seams, used by BOTH production call sites
+/// (`method::tools_call` and `tasks::run`). The seams differ only in their closure environments, so
+/// passing them erased makes the two sites name the SAME generic arguments (lifetimes are erased in
+/// codegen) and the bounded loop monomorphizes ONCE instead of once per closure set — the two
+/// copies were ~57 KB of duplicated coroutine in the release binary. Boxing the leg futures also
+/// keeps each caller's own future small (the walk.rs precedent). Tests keep passing plain closures:
+/// `drive` stays generic, and its unit tests are the only other instantiations, none in release.
+///
+/// `Send`/`Sync` on the erased objects restate what both call sites already required: `drive`'s
+/// future is awaited inside `Send` futures (the request handler and the spawned task runner), which
+/// could only ever be `Send` when every seam it holds across an await was.
+pub(crate) type ErasedRoundFut<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Round, String>> + Send + 'a>>;
+/// The erased upstream-leg seam (`call`).
+pub(crate) type ErasedCall<'a> =
+    dyn FnMut(u32, Option<serde_json::Value>) -> ErasedRoundFut<'a> + Send + 'a;
+/// The erased satisfier's future.
+pub(crate) type ErasedAskFut<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
+>;
+/// The erased granted-ask seam (`satisfy`).
+pub(crate) type ErasedSatisfy<'a> = dyn FnMut(Ask) -> ErasedAskFut<'a> + Send + 'a;
+/// The erased live-grants seam (`grants`). Shared-ref, so `Sync` is the trait that makes the held
+/// `&dyn` `Send`.
+pub(crate) type ErasedGrants<'a> = dyn Fn() -> super::config::ServerRequestGrants + Sync + 'a;
+/// The erased per-round meter seam (`charge`).
+pub(crate) type ErasedCharge<'a> = dyn FnMut(&RoundRecord) -> Result<(), String> + Send + 'a;
+
 /// DRIVE one logical dispatch to completion, bounded, metered, and gated on every round.
 ///
 /// The four closures are the seams, and each one is a closure for a reason:

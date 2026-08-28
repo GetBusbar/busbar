@@ -652,101 +652,108 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     // this path exactly as it does on that one, and the only way to be sure of that is to run the
     // same loop.
     let server_id = runner.server_id.clone();
+    // THE FOUR SEAMS, TYPE-ERASED (see `inputreq`'s `Erased*` aliases): this site and the
+    // synchronous path's (`method::tools_call`) pass identical erased types, so the bounded loop
+    // monomorphizes once for both.
+    let mut call_seam = |round: u32, satisfaction: Option<serde_json::Value>| {
+        // Reborrow the pieces the future needs; `async move` then moves these SHARED refs (a
+        // copy), not the `Runner`, so the closure stays callable per round.
+        let runner = &runner;
+        let arguments = &arguments;
+        // The neutral host seam for this leg's in-place breaker record fallback. A cheap `Arc`
+        // clone per round moved into the leg future; its `plane_breakers` is the SAME
+        // process-lifetime instance `runner.breakers` held, so the record is byte-identical.
+        let engine = host.clone();
+        // A task never reroutes mid-flight (the member was fixed at creation), so the leg's stage
+        // is not consulted here: only the message survives into the loop's refusal.
+        // Box::pin: erases the leg future's type so `drive` instantiates once across both call
+        // sites, and keeps the runner's future small; see the walk.rs precedent.
+        let leg: super::inputreq::ErasedRoundFut<'_> = Box::pin(async move {
+            let mut leg_outcome = super::upstream::LegOutcome::Nothing;
+            let result = super::upstream::call(
+                &runner.pool,
+                &runner.authorised,
+                arguments,
+                u64::from(round),
+                satisfaction,
+                &mut leg_outcome,
+            )
+            .await;
+            // SETTLE this leg's classified outcome through the runner's durable host route
+            // (CLUSTER-1). The single durable probe is settled on the first round; later
+            // input-required rounds record in place against the same cell.
+            settle_task_leg(
+                &runner.durable,
+                runner.admission,
+                &engine,
+                &runner.cell,
+                &leg_outcome,
+            );
+            result.map_err(|f| f.message)
+        });
+        leg
+    };
+    let grants_seam = {
+        // THE GRANT, RE-READ LIVE ON EVERY ROUND through the host funnel: `engine` is a
+        // `from_handle` host, so `runtime_live` re-loads the CURRENT snapshot and a revocation
+        // between rounds bites on the next one.
+        let engine = host.clone();
+        let server_id = server_id.clone();
+        move || {
+            super::runtime_live(&engine)
+                .catalogue
+                .server(&server_id)
+                .map(|s| s.grants)
+                .unwrap_or_default()
+        }
+    };
+    // The SAME satisfier as the synchronous path, for the same reason both run one loop: an
+    // upstream's roots or sampling ask from inside a task is the identical decision, judged
+    // from the identical live snapshot. The governance context is rebuilt from the principal
+    // this task was AUTHORISED as — the runner is detached from the inbound request, and the
+    // caller bound at creation is the only principal a completion made on its behalf may be
+    // admitted and charged under (bounded by `TASK_TTL_MS`, like everything else the runner
+    // carries). See `super::roots::satisfy_upstream_ask` / `super::sampling`.
+    let mut satisfy_seam = |ask: super::inputreq::Ask| {
+        // LIVE re-read (byte-identical to the former `handle.load()` then `runtime`) off the
+        // runner's `from_handle` host, so a config swap after admission is reflected here.
+        let live_rt = super::runtime_live(&host);
+        let entry = live_rt.catalogue.server(&server_id);
+        let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
+        let sampling = entry.and_then(|s| s.sampling.clone());
+        let gov = busbar_api::PlaneRequestCtx {
+            key: Some(Arc::new(runner.authorised.caller.clone())),
+        };
+        let server = server_id.clone();
+        // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
+        // future. Snapshot-independent, so the runner's single mint is byte-identical.
+        let host = host.clone();
+        // Box::pin: erased for the same one-instantiation reason as the call seam; also a cold
+        // arm (a granted ask), so the runner's future never carries it. See the walk.rs precedent.
+        let fut: super::inputreq::ErasedAskFut<'_> = Box::pin(async move {
+            if ask.kind == "sampling" {
+                super::sampling::satisfy_upstream_ask(&host, &gov, &ask, &server, sampling.as_ref())
+                    .await
+            } else {
+                super::roots::satisfy_upstream_ask(&ask, &server, &roots)
+            }
+        });
+        fut
+    };
+    // NOT CHARGED PER ROUND, and this is the one place the task path deliberately differs from
+    // the synchronous one. The caller's budget was charged ONCE, synchronously, at task
+    // creation — before the `CreateTaskResult` was returned — because that is the moment the
+    // caller can still be told it has been refused. Charging again from a detached runner would
+    // bill a request that has already been answered, against a budget window the caller cannot
+    // see, with no way to report the refusal except by failing the task.
+    let mut charge_seam = |_: &super::inputreq::RoundRecord| Ok(());
     let outcome = super::inputreq::drive(
         &runner.server_id,
         runner.max_rounds,
-        |round, satisfaction| {
-            // Reborrow the pieces the future needs; `async move` then moves these SHARED refs (a
-            // copy), not the `Runner`, so the closure stays callable per round.
-            let runner = &runner;
-            let arguments = &arguments;
-            // The neutral host seam for this leg's in-place breaker record fallback. A cheap `Arc`
-            // clone per round moved into the leg future; its `plane_breakers` is the SAME
-            // process-lifetime instance `runner.breakers` held, so the record is byte-identical.
-            let engine = host.clone();
-            // A task never reroutes mid-flight (the member was fixed at creation), so the leg's stage
-            // is not consulted here: only the message survives into the loop's refusal.
-            async move {
-                let mut leg_outcome = super::upstream::LegOutcome::Nothing;
-                let result = super::upstream::call(
-                    &runner.pool,
-                    &runner.authorised,
-                    arguments,
-                    u64::from(round),
-                    satisfaction,
-                    &mut leg_outcome,
-                )
-                .await;
-                // SETTLE this leg's classified outcome through the runner's durable host route
-                // (CLUSTER-1). The single durable probe is settled on the first round; later
-                // input-required rounds record in place against the same cell.
-                settle_task_leg(
-                    &runner.durable,
-                    runner.admission,
-                    &engine,
-                    &runner.cell,
-                    &leg_outcome,
-                );
-                result.map_err(|f| f.message)
-            }
-        },
-        {
-            // THE GRANT, RE-READ LIVE ON EVERY ROUND through the host funnel: `engine` is a
-            // `from_handle` host, so `runtime_live` re-loads the CURRENT snapshot and a revocation
-            // between rounds bites on the next one.
-            let engine = host.clone();
-            let server_id = server_id.clone();
-            move || {
-                super::runtime_live(&engine)
-                    .catalogue
-                    .server(&server_id)
-                    .map(|s| s.grants)
-                    .unwrap_or_default()
-            }
-        },
-        // The SAME satisfier as the synchronous path, for the same reason both run one loop: an
-        // upstream's roots or sampling ask from inside a task is the identical decision, judged
-        // from the identical live snapshot. The governance context is rebuilt from the principal
-        // this task was AUTHORISED as — the runner is detached from the inbound request, and the
-        // caller bound at creation is the only principal a completion made on its behalf may be
-        // admitted and charged under (bounded by `TASK_TTL_MS`, like everything else the runner
-        // carries). See `super::roots::satisfy_upstream_ask` / `super::sampling`.
-        |ask| {
-            // LIVE re-read (byte-identical to the former `handle.load()` then `runtime`) off the
-            // runner's `from_handle` host, so a config swap after admission is reflected here.
-            let live_rt = super::runtime_live(&host);
-            let entry = live_rt.catalogue.server(&server_id);
-            let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
-            let sampling = entry.and_then(|s| s.sampling.clone());
-            let gov = busbar_api::PlaneRequestCtx {
-                key: Some(Arc::new(runner.authorised.caller.clone())),
-            };
-            let server = server_id.clone();
-            // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
-            // future. Snapshot-independent, so the runner's single mint is byte-identical.
-            let host = host.clone();
-            async move {
-                if ask.kind == "sampling" {
-                    super::sampling::satisfy_upstream_ask(
-                        &host,
-                        &gov,
-                        &ask,
-                        &server,
-                        sampling.as_ref(),
-                    )
-                    .await
-                } else {
-                    super::roots::satisfy_upstream_ask(&ask, &server, &roots)
-                }
-            }
-        },
-        // NOT CHARGED PER ROUND, and this is the one place the task path deliberately differs from
-        // the synchronous one. The caller's budget was charged ONCE, synchronously, at task
-        // creation — before the `CreateTaskResult` was returned — because that is the moment the
-        // caller can still be told it has been refused. Charging again from a detached runner would
-        // bill a request that has already been answered, against a budget window the caller cannot
-        // see, with no way to report the refusal except by failing the task.
-        |_| Ok(()),
+        &mut call_seam as &mut super::inputreq::ErasedCall<'_>,
+        &grants_seam as &super::inputreq::ErasedGrants<'_>,
+        &mut satisfy_seam as &mut super::inputreq::ErasedSatisfy<'_>,
+        &mut charge_seam as &mut super::inputreq::ErasedCharge<'_>,
     )
     .await;
     // The leg loop above SETTLED the durable admission through `runner.durable` (CLUSTER-1).

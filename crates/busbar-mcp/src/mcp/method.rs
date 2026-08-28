@@ -1603,75 +1603,83 @@ async fn tools_call(
     let bound_rt = super::runtime_of(&ctx.host);
     let pool = bound_rt.pool.as_ref();
     let route_ref = &route;
+    // THE FOUR SEAMS, TYPE-ERASED (see `inputreq`'s `Erased*` aliases): this site and the task
+    // runner's pass identical erased types, so the bounded loop monomorphizes once for both — and
+    // each boxed leg future is one that no longer sits inline in this request's own coroutine.
+    //
+    // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
+    // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
+    // value crossing a trust boundary for no reason.
+    let mut call_seam = |round: u32, satisfaction: Option<serde_json::Value>| {
+        // Box::pin: erases the leg future's type so `drive` instantiates once across both call
+        // sites, and keeps this request's future small; see the walk.rs precedent.
+        let leg: inputreq::ErasedRoundFut<'_> = Box::pin(route_ref.dispatch(
+            &ctx.host,
+            pool,
+            scope,
+            &arguments,
+            u64::from(round),
+            satisfaction,
+        ));
+        leg
+    };
+    // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
+    // trust, so a revocation between rounds has to bite on the next one — which is the only
+    // thing "per-request check" can mean when one logical dispatch is several requests.
+    // Read for the member the route ACTUALLY dispatched to: a reroute moved the conversation
+    // to the twin, and the twin's asks are judged against the twin's own operator grants.
+    let grants_seam = || {
+        super::runtime_live(&ctx.host)
+            .catalogue
+            .server(&route_ref.active_member())
+            .map(|s| s.grants)
+            .unwrap_or_default()
+    };
+    // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask is
+    // satisfied from the operator's own `tools.<server>.roots` declaration, and a granted
+    // `sampling` ask from the operator's own `tools.<server>.sampling` policy — one governed
+    // completion on the declared model, under THIS caller's key, budget and hooks, within the
+    // per-upstream budget (see `super::sampling`). Both declarations are re-read LIVE off the
+    // same snapshot the grant was. An `elicitation` needs a human busbar does not have and
+    // keeps its refusal — and saying so is NOT the same as refusing the grant: `Unsatisfiable`
+    // and `Ungranted` are different answers with different operator remedies, which is why
+    // they are different arms. The ask still TERMINATES here in every arm: the caller is told
+    // what busbar decided, never handed the ask.
+    let mut satisfy_seam = |ask: inputreq::Ask| {
+        // Satisfied for the member the route ACTUALLY dispatched to, not the selection's
+        // nominal server: a reroute moved the conversation to the twin, and the twin's own
+        // `roots`/`sampling` declarations are the ones its asks must be answered from.
+        let member = route_ref.active_member();
+        // LIVE re-read (byte-identical to the former `ctx.handle.load()` then `runtime`): a
+        // reroute or config swap after admission is reflected in the member's `roots`/`sampling`.
+        let live_rt = super::runtime_live(&ctx.host);
+        let entry = live_rt.catalogue.server(&member);
+        let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
+        let sampling = entry.and_then(|s| s.sampling.clone());
+        let gov = ctx.gov.clone();
+        // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
+        // future. Its clock is engine-snapshot independent, so `ctx.host` is byte-identical here.
+        let host = ctx.host.clone();
+        // Box::pin: erased for the same one-instantiation reason as the call seam; also a cold
+        // arm (a granted ask), so the hot future never carries it. See the walk.rs precedent.
+        let fut: inputreq::ErasedAskFut<'_> = Box::pin(async move {
+            if ask.kind == "sampling" {
+                super::sampling::satisfy_upstream_ask(&host, &gov, &ask, &member, sampling.as_ref())
+                    .await
+            } else {
+                super::roots::satisfy_upstream_ask(&ask, &member, &roots)
+            }
+        });
+        fut
+    };
+    let mut charge_seam = |rec: &RoundRecord| charge_round(ctx, &selected.namespaced, rec, scope);
     let outcome = inputreq::drive(
         &server_id,
         server.max_input_required_rounds,
-        // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
-        // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
-        // value crossing a trust boundary for no reason.
-        |round, satisfaction| {
-            route_ref.dispatch(
-                &ctx.host,
-                pool,
-                scope,
-                &arguments,
-                u64::from(round),
-                satisfaction,
-            )
-        },
-        // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
-        // trust, so a revocation between rounds has to bite on the next one — which is the only
-        // thing "per-request check" can mean when one logical dispatch is several requests.
-        // Read for the member the route ACTUALLY dispatched to: a reroute moved the conversation
-        // to the twin, and the twin's asks are judged against the twin's own operator grants.
-        || {
-            super::runtime_live(&ctx.host)
-                .catalogue
-                .server(&route_ref.active_member())
-                .map(|s| s.grants)
-                .unwrap_or_default()
-        },
-        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask is
-        // satisfied from the operator's own `tools.<server>.roots` declaration, and a granted
-        // `sampling` ask from the operator's own `tools.<server>.sampling` policy — one governed
-        // completion on the declared model, under THIS caller's key, budget and hooks, within the
-        // per-upstream budget (see `super::sampling`). Both declarations are re-read LIVE off the
-        // same snapshot the grant was. An `elicitation` needs a human busbar does not have and
-        // keeps its refusal — and saying so is NOT the same as refusing the grant: `Unsatisfiable`
-        // and `Ungranted` are different answers with different operator remedies, which is why
-        // they are different arms. The ask still TERMINATES here in every arm: the caller is told
-        // what busbar decided, never handed the ask.
-        |ask| {
-            // Satisfied for the member the route ACTUALLY dispatched to, not the selection's
-            // nominal server: a reroute moved the conversation to the twin, and the twin's own
-            // `roots`/`sampling` declarations are the ones its asks must be answered from.
-            let member = route_ref.active_member();
-            // LIVE re-read (byte-identical to the former `ctx.handle.load()` then `runtime`): a
-            // reroute or config swap after admission is reflected in the member's `roots`/`sampling`.
-            let live_rt = super::runtime_live(&ctx.host);
-            let entry = live_rt.catalogue.server(&member);
-            let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
-            let sampling = entry.and_then(|s| s.sampling.clone());
-            let gov = ctx.gov.clone();
-            // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
-            // future. Its clock is engine-snapshot independent, so `ctx.host` is byte-identical here.
-            let host = ctx.host.clone();
-            async move {
-                if ask.kind == "sampling" {
-                    super::sampling::satisfy_upstream_ask(
-                        &host,
-                        &gov,
-                        &ask,
-                        &member,
-                        sampling.as_ref(),
-                    )
-                    .await
-                } else {
-                    super::roots::satisfy_upstream_ask(&ask, &member, &roots)
-                }
-            }
-        },
-        |rec| charge_round(ctx, &selected.namespaced, rec, scope),
+        &mut call_seam as &mut inputreq::ErasedCall<'_>,
+        &grants_seam as &inputreq::ErasedGrants<'_>,
+        &mut satisfy_seam as &mut inputreq::ErasedSatisfy<'_>,
+        &mut charge_seam as &mut inputreq::ErasedCharge<'_>,
     )
     .await;
     // The route (and with it any un-consumed single-flight probe hold) drops at the end of this

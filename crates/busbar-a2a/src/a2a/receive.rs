@@ -1117,14 +1117,16 @@ async fn admitted(
                 //    out of band is not invisible until somebody happens to read it. Nothing from
                 //    the backend's answer is rendered — see `refresh_listed_tasks` for the scoping
                 //    rule that makes a shared backend's list unable to move another tenant's row.
-                super::originate::refresh_listed_tasks(
+                // Box::pin: cold arm (the ListTasks refresh) — keeps the hot future small; see
+                // the walk.rs precedent.
+                Box::pin(super::originate::refresh_listed_tasks(
                     &engine_host,
                     &admitted,
                     key,
                     &principal,
                     a2a_version,
                     now,
-                )
+                ))
                 .await;
                 Some(super::local::list_tasks(&envelope, &rpc_id, &principal))
             }
@@ -1134,7 +1136,9 @@ async fn admitted(
                     return plane_absent();
                 };
                 Some(
-                    super::local::create_push_config(
+                    // Box::pin: cold arm (push-config CRUD) — keeps the hot future small; see
+                    // the walk.rs precedent.
+                    Box::pin(super::local::create_push_config(
                         engine_host.as_ref(),
                         dialect,
                         &envelope,
@@ -1142,7 +1146,7 @@ async fn admitted(
                         &principal,
                         seam,
                         now,
-                    )
+                    ))
                     .await,
                 )
             }
@@ -1201,7 +1205,9 @@ async fn admitted(
                 if let Some(mirrored) = super::pushback::mirrored_verb(verb) {
                     if let Some(task) = addressed_task(engine_host.as_ref(), &envelope, &principal)
                     {
-                        super::originate::mirror_push_config(
+                        // Box::pin: cold arm (callback mirroring on a local answer) — keeps the
+                        // hot future small; see the walk.rs precedent.
+                        Box::pin(super::originate::mirror_push_config(
                             &engine_host,
                             &admitted,
                             key,
@@ -1209,7 +1215,7 @@ async fn admitted(
                             &task,
                             a2a_version,
                             now,
-                        )
+                        ))
                         .await;
                     }
                 }
@@ -1291,7 +1297,9 @@ async fn admitted(
             else {
                 return plane_absent();
             };
-            match validate_callback(url, seam).await {
+            // Box::pin: edge arm (a caller-supplied callback URL) — keeps the hot future small;
+            // see the walk.rs precedent.
+            match Box::pin(validate_callback(url, seam)).await {
                 Ok(pinned) => Some(pinned),
                 Err(message) => {
                     return super::rpcerror::respond(
@@ -1431,7 +1439,9 @@ async fn admitted(
     //    single-flight, fail-closed — BEFORE the relay preamble's live `still_delegable` gate compares
     //    it. A moved fingerprint or an unreachable card demotes the registration here, and the gate
     //    then refuses; there is no background sweep. See `verify_agent_on_call`.
-    verify_agent_on_call(&engine_host, &plane, &target_agent).await;
+    // Box::pin: the re-verification arm (single-flight re-fetch machinery, TTL-short-circuited on
+    // most hops) — keeps the hot future small; see the walk.rs precedent.
+    Box::pin(verify_agent_on_call(&engine_host, &plane, &target_agent)).await;
     // The re-verification mutates the registry and so bumps its generation; the hop's admitted
     // generation is re-read AFTER it so the pre-socket gate does not refuse the call for busbar's OWN
     // re-verification — while still catching a config apply that lands between here and the socket, and
