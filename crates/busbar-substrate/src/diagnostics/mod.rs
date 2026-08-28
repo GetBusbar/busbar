@@ -2634,13 +2634,15 @@ pub const TLS_ACCEPT_PERSISTENT_FAILURE: Diagnostic = Diagnostic {
     slug: "tls-accept-persistent-failure",
     title: "TLS accept loop failing persistently (backing off)",
     severity: Severity::Actionable,
-    summary: "The TLS listener's accept loop is failing persistently — commonly file-descriptor \
+    summary: "A TLS listener's accept loop is failing persistently — commonly file-descriptor \
               exhaustion — so busbar backs off before retrying rather than spin hot on the error. \
-              The warning is already rate-limited by the backoff delay, so it fires at a human \
-              cadence, not per failed accept.",
+              On unix each of the N data-plane workers runs its own accept loop, so the warning \
+              can fire from one worker or from several at once. The warning is already \
+              rate-limited by the backoff delay, so each loop fires at a human cadence, not per \
+              failed accept.",
     action: "Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / \
-             the systemd `LimitNOFILE`) or a resource leak holding sockets open. The listener keeps \
-             retrying with backoff and recovers on its own once accepts succeed.",
+             the systemd `LimitNOFILE`) or a resource leak holding sockets open. Each listener \
+             keeps retrying with backoff and recovers on its own once accepts succeed.",
     since: "1.6.0",
     retired: false,
 };
@@ -3980,12 +3982,12 @@ pub const WORKER_THREADS_INVALID: Diagnostic = Diagnostic {
     slug: "worker-threads-invalid",
     title: "Configured worker-thread count is invalid (ignored; default used)",
     severity: Severity::Actionable,
-    summary: "An explicitly-set worker-thread count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` \
+    summary: "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` \
               — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on \
-              the default worker-thread count. The operator's intended thread count is NOT in effect. \
-              Emitted pre-tracing, to stderr, at boot.",
-    action: "Set the worker-thread count to a positive integer (at least 1) or remove it to accept the \
-             default. The gateway runs, but on the default thread count, not the value provided.",
+              the default worker count (one per core). The operator's intended worker count is NOT in \
+              effect. Emitted pre-tracing, to stderr, at boot.",
+    action: "Set the data-plane worker count to a positive integer (at least 1) or remove it to accept \
+             the default. The gateway runs, but on the default worker count, not the value provided.",
     since: "1.6.0",
     retired: false,
 };
