@@ -972,27 +972,31 @@ pub(crate) fn seed_request_id_counter() -> u64 {
 /// In-flight requests keep the snapshot they already loaded (the old `Arc<App>` stays alive until its
 /// last reference drops); new requests see the new one. `swap()` replaces the pointer under a brief
 /// write lock — the only writer is the admin apply path, so the read side is effectively uncontended
-/// (a `RwLock` read + `Arc` clone, ~tens of nanoseconds). Behaviorally identical to a fixed
-/// `Arc<App>` until something calls `swap()`.
+/// (an `ArcSwap` read — no lock, and on the `snapshot()` path no refcount write either).
+/// Behaviorally identical to a fixed `Arc<App>` until something calls `swap()`.
 pub struct AppHandle {
-    current: std::sync::RwLock<Arc<App>>,
+    current: arc_swap::ArcSwap<App>,
 }
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
         Self {
-            current: std::sync::RwLock::new(app),
+            current: arc_swap::ArcSwap::new(app),
         }
     }
 
-    /// The current `App` snapshot. Clones the `Arc` (cheap) and releases the read lock immediately.
-    /// A poisoned lock (a panic in a prior holder) still guards a valid `Arc<App>` — recover it rather
-    /// than propagate, since the guarded value is a single pointer with no inconsistent state to fear.
+    /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only
+    /// READS within a scope, prefer [`snapshot`] — it takes no refcount write at all, which
+    /// matters on the request path where a shared refcount cache line ping-pongs across every
+    /// worker.
     pub fn load(&self) -> Arc<App> {
-        self.current
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.current.load_full()
+    }
+
+    /// The current `App` snapshot as a BORROW guard: lock-free and refcount-free on the fast path
+    /// (arc-swap's debt slots). The guard pins the snapshot for its scope; derefs to `App`.
+    pub fn snapshot(&self) -> arc_swap::Guard<Arc<App>> {
+        self.current.load()
     }
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
@@ -1013,8 +1017,7 @@ impl AppHandle {
     /// method free of any one plane's types — the reconciliation lives beside the plane it belongs to.
     pub fn swap(&self, next: Arc<App>) {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
-        // hook reconciles only `next` (its pool is Arc-carried onto `next` already). Read under a
-        // read lock that is released before the write lock below is taken.
+        // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
@@ -1024,7 +1027,7 @@ impl AppHandle {
                 );
             }
         }
-        *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
+        self.current.store(next.clone());
         crate::health::spawn_probers(&next);
     }
 

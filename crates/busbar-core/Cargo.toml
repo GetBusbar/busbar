@@ -85,6 +85,10 @@ getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
+# Lock-free read-mostly snapshot for the live-config seam (`AppHandle`): reads take a debt-slot
+# Guard — no lock, no shared-refcount RMW — where the old RwLock<Arc<App>> paid a contended
+# read-lock + Arc clone on EVERY extraction, on every request, across all workers.
+arc-swap = { workspace = true }
 # Inflates the embedded gzipped OpenAPI document once on first admin request (already in the
 # release graph transitively; this only names the edge).
 flate2 = { workspace = true }

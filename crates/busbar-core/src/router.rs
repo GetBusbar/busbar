@@ -131,14 +131,14 @@ pub(crate) async fn reshape_body_limit_413(
     let path = req.uri().path().to_owned();
     let resp = next.run(req).await;
     // FAST PATH: only a 413 is ever reshaped ([`reshape_oversized_413`]'s own first check), so a
-    // non-413 — every ordinary request — must not pay the `handle.load()` snapshot the reshape
-    // needs. Verified equivalent: for any other status the function returns its input untouched.
+    // non-413 — every ordinary request — must not pay even the snapshot the reshape needs.
+    // Verified equivalent: for any other status the function returns its input untouched.
     if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
         return resp;
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    reshape_oversized_413(&handle.load().planes, &path, resp).await
+    reshape_oversized_413(&handle.snapshot().planes, &path, resp).await
 }
 
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the

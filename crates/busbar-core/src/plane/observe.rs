@@ -110,7 +110,10 @@ pub(crate) async fn observe(
     req: Request,
     next: Next,
 ) -> Response {
-    let app = handle.load();
+    // Refcount-free snapshot (arc-swap Guard): this layer only READS within the request scope,
+    // so it never needs an owned Arc — and an owned clone here was a shared-refcount RMW every
+    // plane request paid across all workers.
+    let app = handle.snapshot();
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
     // and a sibling path (`/mcpx` beside a `/mcp` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.

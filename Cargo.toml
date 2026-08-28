@@ -87,6 +87,7 @@ members = [
 #          pin is gated on `cargo deny` and the 11-configuration gate rather than landing quietly.
 a2a-lf = "0.3.0"
 a2a-pb = "0.2.0"
+arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
