@@ -1802,11 +1802,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         };
         let _cb_auth = crate::profile::start(crate::profile::Stage::CbAuth);
+        // ONE wall-clock read for this attempt's assemble stage: the SigV4 timestamp here plus the
+        // deadline-remaining reads at the timeout sites below. All three are second-granularity and
+        // no await separates them (pick → translate → auth → build → send is one synchronous run),
+        // so a shared read changes no observable value — the SigV4 timestamp is still taken INSIDE
+        // the attempt loop, per attempt (the 5-minute-skew rule), never hoisted out of it.
+        let attempt_wall = now();
         let signing_ctx = crate::proto::SigningContext {
             host: &app.lanes[i].signing_host,
             canonical_uri: &target.canonical_uri,
             body: &payload,
-            timestamp_epoch: now(),
+            timestamp_epoch: attempt_wall,
             upstream_creds: app.upstream_creds(),
         };
         // MEASUREMENT ONLY: isolates the auth-header build call specifically (SigV4 signing on
@@ -1873,7 +1879,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // (`UPSTREAM_REQUEST_TIMEOUT_SECS`, 300s) instead, letting the body run to natural completion.
         if !wants_stream {
             req = req.timeout(std::time::Duration::from_secs(
-                request_ctx.remaining(now()).max(1),
+                request_ctx.remaining(attempt_wall).max(1),
             )); // min 1s timeout
         }
         // CLIENT_BUILD ends here (the RequestBuilder is fully assembled). UPSTREAM_SEND spans the
@@ -1901,7 +1907,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let attempt_ms = effective_attempt_timeout_ms(&cands, i, app.lanes[i].attempt_timeout_ms);
         let res = match attempt_ms {
             Some(ms) => {
-                let cap = attempt_cap(ms, request_ctx.remaining(now()));
+                let cap = attempt_cap(ms, request_ctx.remaining(attempt_wall));
                 match tokio::time::timeout(cap, req.send()).await {
                     Ok(r) => r,
                     Err(_elapsed) => {

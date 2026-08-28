@@ -596,12 +596,17 @@ fn finish_inner(
     // same "the read runs ONLY when declared, never call-then-discard" discipline
     // `requested_signals` applies to hook signals. Nobody subscribed ⇒ nothing is generated. Each
     // sink then receives a payload built to ITS OWN projection (`crate::export::deliver_request_log`).
+    // ONE finish-time wall-clock read shared by the (gated) export log record and the always-on
+    // audit reqlog record below — the same instant, observed once. In 1.5.5 the only finish-time
+    // read was the gated export one; the 1.6.0 audit record's ungated second read is what this
+    // collapses away.
+    let finished_ts = crate::store::now();
     if app
         .export_projections
         .wants_stream(busbar_plugin_loader::ExportStream::Logs)
     {
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-            ts: crate::store::now(),
+            ts: finished_ts,
             ingress_protocol,
             pool,
             outcome,
@@ -628,7 +633,7 @@ fn finish_inner(
             .map(|k| k.id.as_str())
             .unwrap_or(crate::proxy::reqlog::PRINCIPAL_UNGOVERNED),
         crate::proxy::reqlog::RequestInput {
-            ts: crate::store::now(),
+            ts: finished_ts,
             ingress_protocol: ingress_protocol.to_string(),
             pool: pool.to_string(),
             outcome: audit_outcome,

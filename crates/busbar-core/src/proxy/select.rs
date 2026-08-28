@@ -353,13 +353,17 @@ pub(crate) async fn pick_among(
     // and is that allowed, do the pins agree, will the breaker have it, and what is the refusal —
     // is decided in core, identically for all three planes.
     let mut passed_over: Vec<(usize, crate::store::Unavailable)> = Vec::new();
+    // ONE wall-clock read for every admission this walk tries: the breaker consults it at
+    // second granularity and the whole walk (candidates × try_admit) spans microseconds, so a
+    // per-candidate `clock_gettime` bought nothing over this shared read.
+    let admit_now = now();
     let admitted = crate::failover::walk_with(
         pool_name,
         &members,
         &attempt,
         &mut order,
         &mut passed_over,
-        &mut |_position, c: &LaneCandidate<'_>| app.store.try_admit(pool_name, c.wl.idx, now()),
+        &mut |_position, c: &LaneCandidate<'_>| app.store.try_admit(pool_name, c.wl.idx, admit_now),
     );
 
     // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`), replaced
@@ -481,8 +485,13 @@ impl crate::failover::Order for SwrrOrder<'_> {
             }
         }
 
-        // 2. Deadline guard: never spin or re-select past the request deadline.
-        if self.request_ctx.expired(now()) {
+        // 2. Deadline guard: never spin or re-select past the request deadline. ONE wall-clock
+        //    read serves this whole hop (the guard here and the breaker/SWRR reads below): every
+        //    consumer is second-granularity and the hop spans microseconds, so a shared read is
+        //    indistinguishable from per-site reads — it only removes redundant `clock_gettime`s
+        //    from the hottest selection path.
+        let now_t = now();
+        if self.request_ctx.expired(now_t) {
             return None;
         }
 
@@ -523,7 +532,6 @@ impl crate::failover::Order for SwrrOrder<'_> {
         //    reaches this arm at all).
         let picked_lane_idx = match self.policy_order {
             Some(order) => {
-                let now_t = now();
                 // First ranked lane that is in this hop's candidate set, NOT drained, AND
                 // breaker-ready.
                 //
@@ -556,7 +564,7 @@ impl crate::failover::Order for SwrrOrder<'_> {
                 self.pool_name,
                 &self.candidates,
                 &self.weights,
-                now(),
+                now_t,
             )?,
         };
 
