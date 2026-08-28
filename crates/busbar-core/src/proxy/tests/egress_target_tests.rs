@@ -38,6 +38,12 @@ fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
             "precomputed canonical URI != reference (protocol '{}', stream {wants_stream})",
             lane.protocol
         );
+        assert_eq!(
+            target.uri.to_string(),
+            composed,
+            "precomputed http::Uri != reference composition (protocol '{}', stream {wants_stream})",
+            lane.protocol
+        );
     }
 }
 
