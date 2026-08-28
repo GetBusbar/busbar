@@ -218,7 +218,14 @@ impl Registry {
     /// Resolve a declaration by name. A linear scan over a handful of interned `&'static str`s —
     /// the same comparison chain the `match` compiled to, with the arms as data.
     pub(crate) fn decl(&self, name: &str) -> Option<&'static ProtocolDecl> {
-        self.decls.iter().copied().find(|d| d.name == name)
+        // Interned-name fast path: hot callers hold the registry's own `&'static` name
+        // (`Lane.protocol`, the route table), so pointer identity settles the row without a byte
+        // compare; a foreign string (config parse, a test literal) falls through to the equality
+        // arm of the same pass. Same result either way.
+        self.decls
+            .iter()
+            .copied()
+            .find(|d| d.name.as_ptr() == name.as_ptr() || d.name == name)
     }
 
     /// Every declaration, in declaration order.

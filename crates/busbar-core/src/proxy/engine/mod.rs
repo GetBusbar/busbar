@@ -964,9 +964,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // no native backend exhibits. False for every other protocol and for the `?alt=sse` gemini variant.
     // Additionally gated on `op.streaming()`: a non-streaming operation never frames a JSON-array
     // stream (chat streams, so this is a no-op for chat — `true && x == x`).
+    let ingress_decl = crate::proto::decl_for(ingress_protocol);
     let gemini_json_array = op.streaming()
-        && crate::proto::decl_for(ingress_protocol).is_some_and(|d| d.uses_array_stream_shim)
-        && crate::proto::decl_for(ingress_protocol)
+        && ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
+        && ingress_decl
             .and_then(|d| d.dialect())
             .map(|di| {
                 v.as_ref()

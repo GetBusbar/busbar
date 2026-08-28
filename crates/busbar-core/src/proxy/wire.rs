@@ -429,6 +429,9 @@ pub(crate) fn translate_request_cross_protocol(
     caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
     let egress_name = app.lanes[i].protocol;
+    // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
+    // four separate registry scans of the same name).
+    let egress_decl = crate::proto::decl_for(egress_name);
     // The neutral cross-protocol egress-preparation param bag, built ONCE from RESOLVED lane
     // primitives and ONLY on a cross-protocol hop (`.then` is lazy, so a same-protocol passthrough
     // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
@@ -437,8 +440,7 @@ pub(crate) fn translate_request_cross_protocol(
     let egress_prep =
         (ingress_protocol != egress_name).then(|| crate::ir::egress_prep::EgressPrep {
             ingress_protocol,
-            egress_requires_max_tokens: crate::proto::decl_for(app.lanes[i].protocol)
-                .is_some_and(|d| d.requires_max_tokens),
+            egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
             lane_default_max_tokens: app.lanes[i].default_max_tokens,
             global_default_max_tokens: app.default_max_tokens,
             reasoning_allowed,
@@ -446,16 +448,13 @@ pub(crate) fn translate_request_cross_protocol(
             // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
             // (Bedrock) must assert `prompt_caching` to receive breakpoints.
             prompt_caching_allowed: app.lanes[i].prompt_caching
-                || !crate::proto::decl_for(app.lanes[i].protocol)
-                    .is_some_and(|d| d.cache_markers_model_gated),
-            cache_control_cap: crate::proto::decl_for(app.lanes[i].protocol)
-                .and_then(|d| d.max_cache_control_breakpoints),
+                || !egress_decl.is_some_and(|d| d.cache_markers_model_gated),
+            cache_control_cap: egress_decl.and_then(|d| d.max_cache_control_breakpoints),
             // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
             // (`ProtocolDecl::fills_thought_signature`), ANDed with the LANE's URL shape: NEVER a
             // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the
             // sentinel bypass and has real reports of rejecting it.
-            thought_signature_fill: crate::proto::decl_for(app.lanes[i].protocol)
-                .is_some_and(|d| d.fills_thought_signature)
+            thought_signature_fill: egress_decl.is_some_and(|d| d.fills_thought_signature)
                 && app.lanes[i].path_base.is_none(),
         });
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the

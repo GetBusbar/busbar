@@ -487,9 +487,9 @@ pub(crate) async fn forward_once(
     // Gemini ingress streaming WITHOUT `?alt=sse` → JSON-array streamed body (see main path). GATED
     // on `uses_array_stream_shim()` (true only for GeminiWriter) so a body-model client cannot
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
-    let gemini_json_array = crate::proto::decl_for(ingress_protocol)
-        .is_some_and(|d| d.uses_array_stream_shim)
-        && crate::proto::decl_for(ingress_protocol)
+    let ingress_decl = crate::proto::decl_for(ingress_protocol);
+    let gemini_json_array = ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
+        && ingress_decl
             .and_then(|d| d.dialect())
             .map(|di| {
                 v.as_ref()
