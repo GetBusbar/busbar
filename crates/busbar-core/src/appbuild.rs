@@ -657,7 +657,20 @@ pub fn build_app_from_config(
             _ => egress_auth::resolve(&provider_cfg.protocol, provider_cfg.auth),
         };
         let base_url = provider_cfg.base_url.trim_end_matches('/').to_string();
+        // Precompute every (operation × stream) egress target ONCE at apply — path render, SigV4
+        // canonical encoding, and the WHATWG URL parse are all pure functions of lane-constant
+        // config, so the forward path reads a table instead of recomputing them per request. A
+        // URL that does not parse fails HERE (validate/apply), never per request.
+        let egress_targets = proxy::build_egress_targets(
+            protocol,
+            provider_cfg.path.as_deref(),
+            provider_cfg.path_base.as_deref(),
+            ld.upstream_model.as_deref().unwrap_or(&ld.model),
+            &base_url,
+        )
+        .map_err(|e| format!("provider '{}': {e}", ld.provider))?;
         lanes.push(Lane {
+            egress_targets,
             model: ld.model.clone(),
             provider: ld.provider.clone(),
             // Precompute the SigV4 signed-host once at boot (pure function of base_url) so the forward

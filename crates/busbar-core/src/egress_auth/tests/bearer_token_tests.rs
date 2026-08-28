@@ -16,7 +16,7 @@ impl BearerToken {
 fn ctx() -> SigningContext<'static> {
     SigningContext {
         host: "example.com",
-        canonical_uri: "/x".to_string(),
+        canonical_uri: "/x",
         body: b"{}",
         timestamp_epoch: 0,
         upstream_creds: crate::auth::UpstreamCreds::Own,

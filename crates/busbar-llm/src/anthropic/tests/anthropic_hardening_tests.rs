@@ -63,7 +63,7 @@ fn auth_headers_api_key_trims_leading_whitespace() {
     let raw = "   sk-ant-api03-secret-key";
     let ctx = busbar_core::proto::SigningContext {
         host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM.to_string(),
+        canonical_uri: PATH_UPSTREAM,
         body: b"{}",
         timestamp_epoch: 0,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -110,7 +110,7 @@ fn auth_headers_oauth_and_passthrough_preserve_leading_whitespace() {
     let amb = "  opaque-caller-token";
     let ctx = busbar_core::proto::SigningContext {
         host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM.to_string(),
+        canonical_uri: PATH_UPSTREAM,
         body: b"{}",
         timestamp_epoch: 0,
         upstream_creds: busbar_core::auth::UpstreamCreds::Passthrough,
@@ -154,7 +154,7 @@ fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
     let body = b"{}";
     let ctx = |creds| busbar_core::proto::SigningContext {
         host: "api.anthropic.com",
-        canonical_uri: PATH_UPSTREAM.to_string(),
+        canonical_uri: PATH_UPSTREAM,
         body,
         timestamp_epoch: 0,
         upstream_creds: creds,

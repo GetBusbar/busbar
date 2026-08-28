@@ -56,7 +56,7 @@ pub fn sigv4_sign_headers(
         region,
         service,
         "POST",
-        &ctx.canonical_uri,
+        ctx.canonical_uri,
         "",
         &signed,
         &payload_hash,

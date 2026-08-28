@@ -536,7 +536,6 @@ pub(crate) async fn forward_once(
             return Ok(*resp);
         }
     };
-    let base = &app.lanes[i].base_url;
 
     // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
     let key = match app.pool_upstream_creds(pool) {
@@ -552,28 +551,24 @@ pub(crate) async fn forward_once(
         crate::auth::UpstreamCreds::Own => app.lanes[i].api_key.expose_secret(),
     };
 
-    // per-request auth (SigV4 for Bedrock; static otherwise).
-    let url_path = match op.upstream_path(&app.lanes[i], wants_stream) {
-        Some(p) => p,
-        None => {
-            // Unreachable for chat; the router filters unsupported lanes before the degraded path
-            // is reached. Bail safely — the armed `probe_guard` releases any single-flight probe this
-            // lane won on drop (same probe contract as forward_once's other pre-dispatch exits).
-            return Ok(ingress_error(
-                ingress_protocol,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                KIND_API_ERROR,
-                DETAIL_INTERNAL_ERROR,
-            ));
-        }
+    // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
+    // target — wire URL + SigV4 canonical URI — is the lane's boot-precomputed table (mirrors the
+    // main forward path; see `egress::build_egress_targets` for the sign-what-you-send encoding
+    // rule). A lookup miss is the old `upstream_path` `None` arm: unreachable for chat (the router
+    // filters unsupported lanes before the degraded path is reached); bail safely — the armed
+    // `probe_guard` releases any single-flight probe this lane won on drop (same probe contract as
+    // forward_once's other pre-dispatch exits).
+    let Some(target) = app.lanes[i].egress_target(op.operation, wants_stream) else {
+        return Ok(ingress_error(
+            ingress_protocol,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            KIND_API_ERROR,
+            DETAIL_INTERNAL_ERROR,
+        ));
     };
-    // Sign and send the SAME path encoding — see `sign_and_wire_path_parts` (mirrors the main forward
-    // path): it returns the SigV4 canonical_uri (query stripped) alongside the wire path, so the
-    // degraded path no longer re-splits and allocates a second String for the canonical URI.
-    let (wire_path, canonical_uri) = sign_and_wire_path_parts(&url_path);
     let signing_ctx = crate::proto::SigningContext {
         host: &app.lanes[i].signing_host,
-        canonical_uri,
+        canonical_uri: &target.canonical_uri,
         body: &payload,
         timestamp_epoch: now(),
         upstream_creds: app.upstream_creds(),
@@ -597,7 +592,9 @@ pub(crate) async fn forward_once(
     let mut req = app
         .client
         .get()
-        .post(format!("{base}{wire_path}"))
+        // The precomputed absolute URL (mirrors the main forward path): one buffer copy instead
+        // of a per-request compose + WHATWG parse.
+        .post(target.url.clone())
         .headers(convert_headers(auth))
         .header(CONTENT_TYPE, egress_ct)
         // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched

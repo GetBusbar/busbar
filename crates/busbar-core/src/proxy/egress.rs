@@ -79,6 +79,76 @@ fn path_is_sigv4_unreserved(path: &str) -> bool {
     })
 }
 
+/// One boot-precomputed egress target: the ABSOLUTE wire URL and the SigV4 canonical URI for one
+/// `(operation, stream)` on one lane. Both are pure functions of lane-constant config (`base_url`,
+/// `path`/`path_base` overrides, `wire_model`, the protocol's path template), so the forward path
+/// reads them from the lane instead of composing the path, encoding it, and WHATWG-parsing the URL
+/// on every request. The URL is parsed from the FULL composed string exactly once at boot — never
+/// via `Url::join`/`set_path`, whose re-encoding can drift from the signed bytes (a Bedrock
+/// modelId's `%3A` must survive verbatim; see `sign_and_wire_path_parts`).
+#[derive(Clone)]
+pub(crate) struct EgressTarget {
+    pub(crate) url: reqwest::Url,
+    pub(crate) canonical_uri: String,
+}
+
+/// Build a lane's egress-target table at boot: every operation the closed vocabulary can dispatch
+/// (`Operation::ALL` ∪ the LLM family's seven ∪ the registered declarations' verbs) × stream intent.
+/// The composition is byte-identical to the per-request form this replaces: `lane.path` override
+/// verbatim, else the protocol `RequestHandler` renders from the same resolved primitives, then the
+/// same `sign_and_wire_path_parts` split. A protocol with no registered handler yields an EMPTY
+/// table — the request-path lookup miss then takes exactly the old `upstream_path` `None` arm (500,
+/// probe released). A URL that does not parse is a boot error (fail loud at apply, not per request).
+pub(crate) fn build_egress_targets(
+    protocol: &'static str,
+    path_override: Option<&str>,
+    path_base: Option<&str>,
+    wire_model: &str,
+    base_url: &str,
+) -> Result<std::collections::HashMap<(crate::operation::Operation, bool), EgressTarget>, String> {
+    use crate::operation::Operation;
+    let mut out = std::collections::HashMap::new();
+    let Some(rh) = crate::handlers::request_handler(protocol) else {
+        return Ok(out);
+    };
+    let llm: [Operation; 7] = [
+        Operation::CHAT,
+        Operation::EMBEDDINGS,
+        Operation::MODERATION,
+        Operation::IMAGE,
+        Operation::TRANSCRIPTION,
+        Operation::SPEECH,
+        Operation::RERANK,
+    ];
+    let ops = llm
+        .iter()
+        .chain(Operation::ALL.iter())
+        .chain(crate::proto::registry::declared_verbs().iter());
+    for &op in ops {
+        for stream in [false, true] {
+            if out.contains_key(&(op, stream)) {
+                continue;
+            }
+            let path = match path_override {
+                Some(p) => p.to_string(),
+                None => rh.upstream_path(&crate::handlers::EgressCtx {
+                    operation: op,
+                    model: wire_model,
+                    stream,
+                    path_base,
+                }),
+            };
+            let (wire_path, canonical_uri) = sign_and_wire_path_parts(&path);
+            let composed = format!("{base_url}{wire_path}");
+            let url = reqwest::Url::parse(&composed).map_err(|e| {
+                format!("egress URL '{composed}' (protocol '{protocol}') does not parse: {e}")
+            })?;
+            out.insert((op, stream), EgressTarget { url, canonical_uri });
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
     // The wire path is single-URI-encoded (what actually goes on the request line). The SigV4
     // CANONICAL path is DOUBLE-URI-encoded for every service except S3 (Bedrock included): AWS

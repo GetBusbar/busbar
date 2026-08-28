@@ -662,6 +662,17 @@ impl LaneSpec {
             other => panic!("unexpected test auth style in LaneSpec: {other}"),
         });
         crate::state::Lane {
+            // The REAL boot precompute, so tests exercise the same egress-target table production
+            // reads (and the probe/forward byte-identity proofs cover it). Test base URLs always
+            // parse; a fixture that breaks that should fail loudly here.
+            egress_targets: crate::proxy::build_egress_targets(
+                self.protocol.name_static(),
+                self.path.as_deref(),
+                self.path_base.as_deref(),
+                self.upstream_model.as_deref().unwrap_or(&self.model),
+                &self.base_url,
+            )
+            .expect("test lane egress URLs parse"),
             reasoning: false,
             prompt_caching: false,
             credential: crate::egress_auth::resolve(self.protocol.name(), auth),

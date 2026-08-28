@@ -230,6 +230,12 @@ impl OpDispatch {
     /// The (protocol × operation) upstream path: lane override, else the lane's protocol
     /// `RequestHandler` renders it from resolved primitives (never the `Lane`). `None` only if the
     /// protocol has no registered handler — impossible for chat (all six are registered).
+    ///
+    /// NO LONGER on the request path: the forward/degraded paths read the lane's boot-precomputed
+    /// `egress_targets` table instead (`proxy::build_egress_targets`). This stays as the REFERENCE
+    /// composition the differential test (`egress_target_tests`) proves the table byte-identical
+    /// to — if the two ever drift, that test is the tripwire.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
         if let Some(p) = &lane.path {
             return Some(p.clone());

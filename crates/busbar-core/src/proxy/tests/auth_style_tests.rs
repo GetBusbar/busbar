@@ -12,6 +12,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
     });
     Lane {
         credential: crate::egress_auth::resolve("openai", resolved_auth),
+        egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
         default_max_tokens: None,
@@ -37,7 +38,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
 fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
     SigningContext {
         host: "res.openai.azure.com",
-        canonical_uri: "/openai/deployments/gpt-4o/chat/completions".to_string(),
+        canonical_uri: "/openai/deployments/gpt-4o/chat/completions",
         body,
         timestamp_epoch: 0,
         upstream_creds: crate::auth::UpstreamCreds::Own,

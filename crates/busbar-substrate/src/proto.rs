@@ -129,8 +129,10 @@ pub struct SigningContext<'a> {
     /// lane's precomputed `signing_host` on the forward path (no per-request allocation); only the
     /// Bedrock SigV4 writer reads it.
     pub host: &'a str,
-    /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`.
-    pub canonical_uri: String,
+    /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`. Borrowed
+    /// (like `host`): on the forward path it comes from the lane's boot-precomputed egress target,
+    /// so building the context allocates nothing; only the Bedrock SigV4 writer reads it.
+    pub canonical_uri: &'a str,
     /// The exact request body bytes that will be sent.
     pub body: &'a [u8],
     /// Unix epoch seconds at signing time.

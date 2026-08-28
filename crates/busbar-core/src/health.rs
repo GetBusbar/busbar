@@ -293,11 +293,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     let wire_path = crate::proxy::sign_and_wire_path(&url_path);
     let signing_ctx = crate::proto::SigningContext {
         host: &lane.signing_host,
-        canonical_uri: wire_path
-            .split('?')
-            .next()
-            .unwrap_or(&wire_path)
-            .to_string(),
+        canonical_uri: wire_path.split('?').next().unwrap_or(&wire_path),
         body: &body,
         timestamp_epoch: now(),
         // Active health probes use busbar's own configured lane key (never a forwarded caller

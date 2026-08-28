@@ -1760,7 +1760,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Dropped explicitly just before the send so its span never overlaps `egress_send`; the
         // outer `egress_client_build` (`_t` above) is untouched and should ~= assemble + send.
         let _asm = busbar_timing::timeit!("egress_assemble");
-        let base = &app.lanes[i].base_url;
 
         // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
         // `upstream_creds` was resolved once before the loop (invariant per request).
@@ -1785,29 +1784,27 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // router filters candidates by operation support, but the engine still bails safely rather
         // than dispatch to a wrong path — releasing any single-flight probe this lane won so it
         // cannot wedge HalfOpen (same contract as the re-parse/translate guards above).
-        let url_path = match op.upstream_path(&app.lanes[i], wants_stream) {
-            Some(p) => p,
-            None => {
-                app.store.release_probe_in(pool_name, i);
-                drop(permit);
-                return ingress_error(
-                    ingress_protocol,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    KIND_API_ERROR,
-                    DETAIL_INTERNAL_ERROR,
-                );
-            }
+        // The (operation × stream) egress target — wire URL and SigV4 canonical URI — was
+        // precomputed at boot on the lane (pure functions of lane-constant config; see
+        // `egress::build_egress_targets`, which also owns the sign-what-you-send encoding rule),
+        // so this is a table read instead of a per-request path render + encode + URL parse. A
+        // lookup miss is the exact condition the old `upstream_path` `None` arm caught: the
+        // lane's protocol has no registered handler — bail safely, releasing any single-flight
+        // probe this lane won so it cannot wedge HalfOpen.
+        let Some(target) = app.lanes[i].egress_target(op.operation, wants_stream) else {
+            app.store.release_probe_in(pool_name, i);
+            drop(permit);
+            return ingress_error(
+                ingress_protocol,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                KIND_API_ERROR,
+                DETAIL_INTERNAL_ERROR,
+            );
         };
-        // SigV4 signs over the URI-encoded canonical path, so the wire request MUST be sent over the
-        // SAME encoding or AWS rejects with SignatureDoesNotMatch (e.g. a Bedrock modelId carrying
-        // reserved chars like `:` signs `%3A` but a raw send transmits `:`). Encode the path ONCE and
-        // use it for both signing and the wire URL — the percent-encoded `%XX` sequences pass through
-        // the `url` crate's path parser unchanged, so transmitted path == signed canonical path.
         let _cb_auth = crate::profile::start(crate::profile::Stage::CbAuth);
-        let (wire_path, canonical_uri) = sign_and_wire_path_parts(&url_path);
         let signing_ctx = crate::proto::SigningContext {
             host: &app.lanes[i].signing_host,
-            canonical_uri,
+            canonical_uri: &target.canonical_uri,
             body: &payload,
             timestamp_epoch: now(),
             upstream_creds: app.upstream_creds(),
@@ -1837,7 +1834,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let mut req = app
             .client
             .get()
-            .post(format!("{base}{wire_path}"))
+            // The precomputed absolute URL: cloning a parsed `Url` is one buffer copy, replacing
+            // the per-request compose + WHATWG parse (and the bytes are proven identical to the
+            // old composition by the egress-target differential test).
+            .post(target.url.clone())
             .headers(convert_headers(auth))
             .header(CONTENT_TYPE, egress_ct)
             // Native-SDK User-Agent for the egress protocol. The shared client sets none, so without

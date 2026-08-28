@@ -63,9 +63,17 @@ pub(crate) struct Lane {
     /// `crate::proto::DEFAULT_MAX_TOKENS` when unset.
     pub(crate) default_max_tokens: Option<u32>,
     /// Optional upstream model name override. When set, this value is sent to the provider as the
-    /// model identifier in the request body and URL path, instead of `self.model` (the config key).
+    /// model identifier in the body and URL path, instead of `self.model` (the config key).
     /// Useful when the provider expects a different model string (e.g. Bedrock model IDs).
     pub(crate) upstream_model: Option<String>,
+    /// Boot-precomputed `(operation, stream) → (wire URL, SigV4 canonical URI)` — every egress
+    /// target this lane can be dispatched to is a pure function of lane-constant config, so the
+    /// forward path does one table read instead of rendering the path, URI-encoding it, and
+    /// WHATWG-parsing the URL per request. Built by `proxy::build_egress_targets` (which
+    /// documents the vocabulary and the never-`Url::join` encoding rule). A lookup miss is exactly
+    /// the old per-request `upstream_path` `None` arm: the lane's protocol has no handler.
+    pub(crate) egress_targets:
+        HashMap<(crate::operation::Operation, bool), crate::proxy::EgressTarget>,
 }
 
 impl Lane {
@@ -73,6 +81,15 @@ impl Lane {
     /// otherwise falls back to the config key (`self.model`).
     pub(crate) fn wire_model(&self) -> &str {
         self.upstream_model.as_deref().unwrap_or(&self.model)
+    }
+    /// The precomputed egress target for one `(operation, stream)` — the forward path's URL/canonical
+    /// read. `None` == the old `upstream_path` `None` arm (no handler for this lane's protocol).
+    pub(crate) fn egress_target(
+        &self,
+        op: crate::operation::Operation,
+        stream: bool,
+    ) -> Option<&crate::proxy::EgressTarget> {
+        self.egress_targets.get(&(op, stream))
     }
 }
 

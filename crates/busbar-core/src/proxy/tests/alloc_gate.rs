@@ -165,11 +165,12 @@ fn alloc_gate_translate_write_stable() {
 /// steady-state count is sized to that observed jitter (see the module header). It still catches a
 /// GROSS regression — a ~20%-class allocation blow-up, or a per-request allocation that scales — the
 /// owner's headline case. The surgical gate above catches the single-allocation FIX-9 class.
-// Measured on dev @ d86b896b: a warmed steady-state request allocates exactly 140 (fully stable
-// across runs on this host). The bound is 160 — headroom +20 (~14%) for cross-platform/CI jitter
-// (dep versions are lockfile-pinned, so the variance is OS allocator bookkeeping, not deps). A
-// ~20%-class regression (allocations scaling with a new per-request cost) clears 168 and fails RED.
-const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 160;
+// Measured after the egress-target precompute (wave 4b): a warmed steady-state request allocates
+// 125 (was 140 on dev @ d86b896b — the URL parse/compose and the canonical-URI String left the
+// hot path). The bound is 145 — the same +20 headroom for cross-platform/CI allocator jitter
+// (dep versions are lockfile-pinned). Lowered IN THE SAME COMMIT as the improvement so the gate
+// keeps its sensitivity: a regression back to the old composition (+15/request) fails RED.
+const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 145;
 
 #[tokio::test(flavor = "current_thread")]
 async fn alloc_gate_openai_passthrough_forward() {

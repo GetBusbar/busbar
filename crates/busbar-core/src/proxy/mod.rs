@@ -169,6 +169,10 @@ mod bedrock_eventstream_tests;
 mod auth_style_tests;
 
 #[cfg(test)]
+#[path = "tests/egress_target_tests.rs"]
+mod egress_target_tests;
+
+#[cfg(test)]
 #[path = "tests/attempt_timeout_precedence_tests.rs"]
 mod attempt_timeout_precedence_tests;
 

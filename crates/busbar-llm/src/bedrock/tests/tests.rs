@@ -51,9 +51,10 @@ fn synth_response_id() -> String {
 fn test_bedrock_sigv4_sign_request_structure() {
     // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
     // verified against AWS's published vector in sigv4::tests.)
+    let canonical = busbar_core::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: busbar_core::sigv4::uri_encode_path("/model/anthropic.claude:0/converse"),
+        canonical_uri: &canonical,
         body: br#"{"messages":[]}"#,
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -87,7 +88,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
 fn test_bedrock_sigv4_session_token() {
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.eu-west-1.amazonaws.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -113,7 +114,7 @@ fn test_bedrock_sigv4_misconfigured_key_no_signature() {
     // A key without ACCESS:SECRET shape yields no headers (AWS will 403 → surfaced as auth).
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -683,7 +684,7 @@ fn test_write_response_event() {
 fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -1814,7 +1815,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
 fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -3083,7 +3084,7 @@ fn test_derive_sigv4_region_shapes() {
 fn test_bedrock_sigv4_fips_host_derives_correct_region() {
     let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime-fips.eu-west-1.amazonaws.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
@@ -3111,7 +3112,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
 fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
     let ctx = busbar_core::proto::SigningContext {
         host: "my-cname-front.example.com",
-        canonical_uri: "/model/m/converse".to_string(),
+        canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
         upstream_creds: busbar_core::auth::UpstreamCreds::Own,
