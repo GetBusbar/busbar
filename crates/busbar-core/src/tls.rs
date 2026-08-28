@@ -311,6 +311,149 @@ impl AcceptBackoff {
     }
 }
 
+// ── CONNECTION PLACEMENT BALANCER (thread-per-core data plane) ──────────────────────────────────
+//
+// The kernel assigns an SO_REUSEPORT connection to a listener by a deterministic 4-tuple hash at
+// SYN time, and with FEW long-lived keep-alive connections that assignment is measurably uneven
+// (8 connections over 4 workers land 2/2/2/2 only ~4% of the time) and PERSISTS — an overloaded
+// worker saturates while an underloaded one idles. This balancer fixes PLACEMENT at ACCEPT time
+// and only there: when a worker accepts while carrying at least [`REBALANCE_MARGIN`] more live
+// connections than the least-loaded worker, it hands the just-accepted bare `TcpStream` (no TLS,
+// no HTTP state exists yet) to that worker, where the connection then lives for its WHOLE life —
+// no migration, no cross-worker request state, the per-worker striping invariants untouched.
+// Once per-worker counts exceed a few dozen the margin check is statistically never true, so the
+// high-concurrency cost is a handful of relaxed loads per ACCEPT (never per request).
+//
+// No knob, no mode: the composition root wires one balancer across the data workers; the admin
+// listener and non-unix builds simply pass `None` and behave exactly as before.
+
+/// Margin before a handoff: my live connections must exceed the minimum by at least this much.
+/// 2 bounds steady-state imbalance at ±1 while making handoff ping-pong impossible (a handoff
+/// changes the difference by 2, so it can never immediately reverse).
+const REBALANCE_MARGIN: u32 = 2;
+
+/// Per-worker handoff channel depth. Accepts are rare relative to service time and the fallback
+/// (serve locally) is always correct, so this only needs to absorb a small burst.
+const HANDOFF_CHANNEL_DEPTH: usize = 16;
+
+/// One cache-line-padded live-connection count per worker (padded so workers' counter updates
+/// never false-share).
+#[repr(align(64))]
+struct PaddedCount(std::sync::atomic::AtomicU32);
+
+/// One data worker's handle to the shared placement state: the live-connection counts of every
+/// worker, its own index, its own handoff receiver, and every worker's sender.
+pub struct ConnBalancer {
+    counts: Arc<[PaddedCount]>,
+    txs: Arc<[tokio::sync::mpsc::Sender<(std::net::TcpStream, SocketAddr)>]>,
+    me: usize,
+    rx: tokio::sync::mpsc::Receiver<(std::net::TcpStream, SocketAddr)>,
+}
+
+impl ConnBalancer {
+    /// Build the shared placement state for `n` data workers: one handle per worker.
+    pub fn build(n: usize) -> Vec<ConnBalancer> {
+        let counts: Arc<[PaddedCount]> = (0..n)
+            .map(|_| PaddedCount(std::sync::atomic::AtomicU32::new(0)))
+            .collect();
+        let mut txs = Vec::with_capacity(n);
+        let mut rxs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (tx, rx) = tokio::sync::mpsc::channel(HANDOFF_CHANNEL_DEPTH);
+            txs.push(tx);
+            rxs.push(rx);
+        }
+        let txs: Arc<[_]> = txs.into();
+        rxs.into_iter()
+            .enumerate()
+            .map(|(me, rx)| ConnBalancer {
+                counts: counts.clone(),
+                txs: txs.clone(),
+                me,
+                rx,
+            })
+            .collect()
+    }
+
+    /// Decide placement for a locally-accepted connection: `None` = serve it here (the count is
+    /// already incremented and `guard` returned by the caller path), or hand it off to the
+    /// least-loaded worker. Increment-before-send so the target's count is never transiently low;
+    /// a full/closed channel rolls the increment back and serves locally — a connection is never
+    /// dropped by balancing.
+    fn try_hand_off(
+        &self,
+        stream: tokio::net::TcpStream,
+        peer: SocketAddr,
+    ) -> Option<(tokio::net::TcpStream, SocketAddr)> {
+        use std::sync::atomic::Ordering;
+        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
+        let (min_idx, min_val) = self
+            .counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
+            .min_by_key(|&(_, v)| v)
+            .expect("at least one worker");
+        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+            return Some((stream, peer));
+        }
+        let std_stream = match stream.into_std() {
+            Ok(s) => s,
+            // Can't detach — serve it locally (the tokio stream is consumed either way, so this
+            // arm re-adopts; both from_std results are served here).
+            Err(_) => return None,
+        };
+        self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
+        match self.txs[min_idx].try_send((std_stream, peer)) {
+            Ok(()) => None,
+            Err(e) => {
+                self.counts[min_idx].0.fetch_sub(1, Ordering::Relaxed);
+                let (std_stream, peer) = match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(v)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(v) => v,
+                };
+                tokio::net::TcpStream::from_std(std_stream)
+                    .ok()
+                    .map(|s| (s, peer))
+            }
+        }
+    }
+
+    /// Count this worker's newly-placed local connection; the returned guard decrements on drop
+    /// (every exit path, including panics).
+    fn place_local(&self) -> ConnCountGuard {
+        use std::sync::atomic::Ordering;
+        self.counts[self.me].0.fetch_add(1, Ordering::Relaxed);
+        ConnCountGuard {
+            counts: self.counts.clone(),
+            idx: self.me,
+        }
+    }
+
+    /// Adopt a handed-off connection: the SENDER already incremented this worker's count, so the
+    /// guard only owns the decrement.
+    fn adopt(&self) -> ConnCountGuard {
+        ConnCountGuard {
+            counts: self.counts.clone(),
+            idx: self.me,
+        }
+    }
+}
+
+/// RAII live-connection count: decrements its worker's slot when the served connection ends.
+struct ConnCountGuard {
+    counts: Arc<[PaddedCount]>,
+    idx: usize,
+}
+
+impl Drop for ConnCountGuard {
+    fn drop(&mut self) {
+        self.counts[self.idx]
+            .0
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Serve `router` over TLS on `listener` until `shutdown` resolves, then drain in-flight connections.
 ///
 /// Mirrors `axum::serve(listener, router).with_graceful_shutdown(shutdown)` for the TLS case:
@@ -322,6 +465,7 @@ pub async fn serve(
     router: Router,
     server_config: ServerConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    mut balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let graceful = GracefulShutdown::new();
@@ -331,11 +475,32 @@ pub async fn serve(
     let mut backoff = AcceptBackoff::new();
 
     loop {
-        let (stream, peer) = tokio::select! {
+        // Placement (see `ConnBalancer`): a locally-ACCEPTED connection may be handed to the
+        // least-loaded worker (pre-TLS, bare stream — placement, never migration); a RECEIVED
+        // hand-off is served here, its count already owned by the sender's increment.
+        let (stream, peer, guard) = tokio::select! {
             biased;
             () = &mut shutdown => break,
+            handed = async { balancer.as_mut().expect("guarded by if").rx.recv().await },
+                if balancer.is_some() =>
+            {
+                let Some((std_stream, peer)) = handed else { continue };
+                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
+                let guard = balancer.as_ref().map(|b| b.adopt());
+                (stream, peer, guard)
+            }
             accepted = listener.accept() => match accepted {
-                Ok(pair) => { backoff.reset(); pair }
+                Ok((stream, peer)) => {
+                    backoff.reset();
+                    match balancer.as_ref() {
+                        Some(b) => match b.try_hand_off(stream, peer) {
+                            // Handed to the least-loaded worker — nothing to serve here.
+                            None => continue,
+                            Some((stream, peer)) => (stream, peer, Some(b.place_local())),
+                        },
+                        None => (stream, peer, None),
+                    }
+                }
                 // An accept error must not kill the loop; `absorb` decides whether it is a
                 // per-connection transient (retry now) or persistent exhaustion (back off).
                 Err(e) => { backoff.absorb("tls", &e).await; continue; }
@@ -349,7 +514,27 @@ pub async fn serve(
 
         tokio::spawn(async move {
             serve_one(acceptor, conn_builder, watcher, stream, peer, router).await;
+            drop(guard);
         });
+    }
+
+    // Drain any hand-offs already in the channel (sent before every worker saw the shutdown):
+    // serve them under the graceful watcher like any late connection rather than dropping them.
+    if let Some(mut b) = balancer.take() {
+        while let Ok((std_stream, peer)) = b.rx.try_recv() {
+            let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
+                continue;
+            };
+            let acceptor = acceptor.clone();
+            let router = router.clone();
+            let conn_builder = conn_builder.clone();
+            let watcher = graceful.watcher();
+            let guard = b.adopt();
+            tokio::spawn(async move {
+                serve_one(acceptor, conn_builder, watcher, stream, peer, router).await;
+                drop(guard);
+            });
+        }
     }
 
     // Stop accepting; drain in-flight connections (the watched futures complete on their own once
@@ -576,6 +761,7 @@ pub async fn serve_plain(
     listener: TcpListener,
     router: Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    mut balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
     let conn_builder = Arc::new(hardened_conn_builder());
@@ -583,11 +769,29 @@ pub async fn serve_plain(
     let mut backoff = AcceptBackoff::new();
 
     loop {
-        let (stream, peer) = tokio::select! {
+        // Placement mirrors `serve` exactly — see `ConnBalancer`.
+        let (stream, peer, guard) = tokio::select! {
             biased;
             () = &mut shutdown => break,
+            handed = async { balancer.as_mut().expect("guarded by if").rx.recv().await },
+                if balancer.is_some() =>
+            {
+                let Some((std_stream, peer)) = handed else { continue };
+                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
+                let guard = balancer.as_ref().map(|b| b.adopt());
+                (stream, peer, guard)
+            }
             accepted = listener.accept() => match accepted {
-                Ok(pair) => { backoff.reset(); pair }
+                Ok((stream, peer)) => {
+                    backoff.reset();
+                    match balancer.as_ref() {
+                        Some(b) => match b.try_hand_off(stream, peer) {
+                            None => continue,
+                            Some((stream, peer)) => (stream, peer, Some(b.place_local())),
+                        },
+                        None => (stream, peer, None),
+                    }
+                }
                 Err(e) => { backoff.absorb("http", &e).await; continue; }
             },
         };
@@ -598,7 +802,25 @@ pub async fn serve_plain(
 
         tokio::spawn(async move {
             serve_one_plain(conn_builder, watcher, stream, peer, router).await;
+            drop(guard);
         });
+    }
+
+    // Drain late hand-offs (mirrors `serve`).
+    if let Some(mut b) = balancer.take() {
+        while let Ok((std_stream, peer)) = b.rx.try_recv() {
+            let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
+                continue;
+            };
+            let router = router.clone();
+            let conn_builder = conn_builder.clone();
+            let watcher = graceful.watcher();
+            let guard = b.adopt();
+            tokio::spawn(async move {
+                serve_one_plain(conn_builder, watcher, stream, peer, router).await;
+                drop(guard);
+            });
+        }
     }
 
     graceful.shutdown().await;

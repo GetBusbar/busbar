@@ -146,7 +146,7 @@ async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
         let shutdown = async {
             let _ = rx.await;
         };
-        super::serve(listener, test_router(), server_config, shutdown)
+        super::serve(listener, test_router(), server_config, shutdown, None)
             .await
             .unwrap();
     });
@@ -387,7 +387,7 @@ async fn body_read_timeout_trips_on_stalled_body() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown)
+        super::serve_plain(listener, router, shutdown, None)
             .await
             .unwrap();
     });
@@ -469,7 +469,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown)
+        super::serve_plain(listener, router, shutdown, None)
             .await
             .unwrap();
     });
@@ -529,7 +529,7 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown)
+        super::serve_plain(listener, router, shutdown, None)
             .await
             .unwrap();
     });
@@ -607,7 +607,7 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
             "/echo",
             axum::routing::post(|body: bytes::Bytes| async move { body.len().to_string() }),
         );
-        super::serve_plain(listener, router, shutdown)
+        super::serve_plain(listener, router, shutdown, None)
             .await
             .unwrap();
     });
@@ -696,7 +696,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
             "/echo",
             axum::routing::post(|body: String| async move { body }),
         );
-        super::serve_plain(listener, router, shutdown)
+        super::serve_plain(listener, router, shutdown, None)
             .await
             .unwrap();
     });
@@ -747,4 +747,116 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     );
 
     let _ = tx.send(());
+}
+
+// ── ConnBalancer placement tests (thread-per-core accept-time rebalancing) ─────────────────────
+
+/// A connected (client, server-accepted) TCP pair on loopback, for feeding the placement seam.
+async fn tcp_pair(
+    listener: &tokio::net::TcpListener,
+) -> (
+    tokio::net::TcpStream,
+    tokio::net::TcpStream,
+    std::net::SocketAddr,
+) {
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (server, peer) = listener.accept().await.unwrap();
+    (client, server, peer)
+}
+
+#[tokio::test]
+async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
+    let mut handles = super::ConnBalancer::build(3);
+    let b2 = handles.pop().unwrap();
+    let b1 = handles.pop().unwrap();
+    let b0 = handles.pop().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    // Below the margin (0 vs 0): serve locally — no handoff.
+    let (_c1, s1, p1) = tcp_pair(&listener).await;
+    let kept = b0.try_hand_off(s1, p1);
+    assert!(kept.is_some(), "at equal load the connection stays local");
+    let g1 = b0.place_local();
+
+    // One more local: still below margin (1 vs 0 < 0+2).
+    let (_c2, s2, p2) = tcp_pair(&listener).await;
+    assert!(b0.try_hand_off(s2, p2).is_some());
+    let g2 = b0.place_local();
+
+    // Now 2 vs 0 == min+2: the margin is met — the next accept hands off to a least-loaded
+    // worker, its count incremented by the SENDER.
+    let (_c3, s3, p3) = tcp_pair(&listener).await;
+    assert!(
+        b0.try_hand_off(s3, p3).is_none(),
+        "at min+2 the connection must be handed to the least-loaded worker"
+    );
+    let others: u32 = [&b1, &b2]
+        .iter()
+        .map(|b| b.counts[b.me].0.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
+    assert_eq!(others, 1, "exactly one target counted the handoff");
+
+    // The target adopts without double-counting, and guards decrement on drop.
+    let target = if b1.counts[b1.me]
+        .0
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == 1
+    {
+        &b1
+    } else {
+        &b2
+    };
+    let g3 = target.adopt();
+    drop(g3);
+    drop(g2);
+    drop(g1);
+    let total: u32 = b0
+        .counts
+        .iter()
+        .map(|c| c.0.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
+    assert_eq!(
+        total, 0,
+        "all guards dropped — every count must return to zero"
+    );
+
+    // A full handoff channel rolls the increment back and serves locally: fill worker 1's
+    // channel to capacity, then force a handoff attempt at margin.
+    for _ in 0..2 {
+        let (_c, s, p) = tcp_pair(&listener).await;
+        b0.try_hand_off(s, p);
+        b0.place_local();
+    }
+    // b1/b2 both at 0; drain nothing — fill b1's queue directly.
+    let mut fillers = Vec::new();
+    loop {
+        let (_c, s, p) = tcp_pair(&listener).await;
+        fillers.push(_c);
+        match b0.txs[1].try_send((s.into_std().unwrap(), p)) {
+            Ok(()) => continue,
+            Err(_) => break, // full
+        }
+    }
+    // Park worker 2 at a high count so worker 1 (full channel) is the unique argmin.
+    b2.counts[b2.me]
+        .0
+        .store(100, std::sync::atomic::Ordering::Relaxed);
+    let before = b1.counts[b1.me]
+        .0
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (_c, s, p) = tcp_pair(&listener).await;
+    let kept = b0.try_hand_off(s, p);
+    assert!(
+        kept.is_some(),
+        "a full target channel must fall back to serving locally, never dropping the connection"
+    );
+    assert_eq!(
+        b1.counts[b1.me]
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before,
+        "the failed handoff must roll its increment back"
+    );
+    drop(b1);
 }

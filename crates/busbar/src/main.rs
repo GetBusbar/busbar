@@ -1181,6 +1181,7 @@ async fn run(data_workers: usize) {
             tls_secret_resolver.clone(),
             &admin_listen,
             recv_shutdown(shutdown_tx.subscribe()),
+            None,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1207,6 +1208,7 @@ async fn run(data_workers: usize) {
                 tls_secret_resolver.clone(),
                 &listen,
                 recv_shutdown(shutdown_tx.subscribe()),
+                None,
             ),
             serve_listener(
                 admin_listener,
@@ -1215,6 +1217,7 @@ async fn run(data_workers: usize) {
                 tls_secret_resolver.clone(),
                 &admin_listen,
                 recv_shutdown(shutdown_tx.subscribe()),
+                None,
             ),
         );
     }
@@ -1287,6 +1290,12 @@ fn serve_thread_per_core(
         "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
          tasks stay on the control runtime)"
     );
+    // The connection-placement balancer (see `tls::ConnBalancer`): one handle per worker, fixing
+    // SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never migration).
+    let mut balancers: Vec<Option<tls::ConnBalancer>> = tls::ConnBalancer::build(cores.len())
+        .into_iter()
+        .map(Some)
+        .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
         let router = data_router.clone();
@@ -1294,6 +1303,7 @@ fn serve_thread_per_core(
         let resolver = secret_resolver.clone();
         let listen = addr.clone();
         let shutdown_rx = shutdown_tx.subscribe();
+        let balancer = balancers[i].take();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1333,6 +1343,7 @@ fn serve_thread_per_core(
                         resolver,
                         &listen,
                         recv_shutdown(shutdown_rx),
+                        balancer,
                     )
                     .await;
                 });
@@ -1386,11 +1397,14 @@ async fn serve_listener(
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    // The data workers' connection-placement balancer (`None` for the admin listener and
+    // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
+    balancer: Option<tls::ConnBalancer>,
 ) {
     match tls_cfg {
         None => {
             tracing::info!(listen = %label, "busbar listening");
-            if let Err(e) = tls::serve_plain(listener, router, shutdown).await {
+            if let Err(e) = tls::serve_plain(listener, router, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }
@@ -1406,7 +1420,7 @@ async fn serve_listener(
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
-            if let Err(e) = tls::serve(listener, router, server_config, shutdown).await {
+            if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }
