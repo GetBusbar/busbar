@@ -5,7 +5,9 @@
 #   2. train on a traffic MIX  (concurrent + governed: openai chat passthrough at 10x weight,
 #                               anthropic-ingress translation, SSE streaming, and an auth-refusal
 #                               sliver - all as signed-key Bearer traffic through the keys chain,
-#                               against an embedded zero-dependency mock upstream)
+#                               against an embedded zero-dependency mock upstream), repeated as
+#                               THREE independent trainer runs (fresh gateway process each) whose
+#                               raw profiles all feed ONE llvm-profdata merge - see TRAIN_RUNS
 #   3. build optimized         (-Cprofile-use)
 #
 # This is the release build: the layout of the shipped binary is deliberate (profile-guided),
@@ -40,7 +42,8 @@
 # to ship a non-PGO binary and pass. Every fatal exit removes any stale marker first.
 #
 # Knobs: PGO_REQS (base request count, default 2000; the openai passthrough volume shape runs
-# 10x this so its weight in the merged profile matches its weight in production), PGO_STREAMS
+# 10x this so its weight in the merged profile matches its weight in production; each of the
+# TRAIN_RUNS trainer runs drives 1/RUN_DIV of every shape - see the constants below), PGO_STREAMS
 # (streamed requests, default 200), PGO_CONC (loadgen keep-alive connections, default 32 - the
 # middle of the benchmark's c=8..64 range), PGO_PORT / PGO_MOCK_PORT (defaults 18080/18000),
 # PGO_TARGET (cargo --target). Requires: cargo, rustup (llvm-tools is installed on demand),
@@ -53,6 +56,20 @@ cd "$(dirname "$0")/.." || exit 1
 REQS="${PGO_REQS:-2000}"
 STREAMS="${PGO_STREAMS:-200}"
 CONC="${PGO_CONC:-32}"
+# Multi-run profile accumulation - constants, NOT knobs: this is a fixed part of the release
+# recipe, not something to tune per build. A single trainer run's edge counters carry sampling
+# noise (racy non-atomic increments under concurrency, scheduler-dependent interleavings), and
+# that noise is the main residual driver of the build-to-build layout lottery. Running the SAME
+# governed mix in TRAIN_RUNS independent trainer runs - a fresh gateway process each time, so
+# each run flushes its own .profraw set - and then feeding ALL raw profiles to ONE llvm-profdata
+# merge averages the noise: llvm-profdata sums counters across inputs, and the sum of three
+# independent samples has a tighter relative error than any single one.
+# Wall-time math: each run drives 1/RUN_DIV of every shape's single-run count, so total counted
+# requests = TRAIN_RUNS/RUN_DIV = 3/2 = 1.5x the historical single-run volume; with 3x the
+# (seconds-scale) gateway boot/teardown, total training wall time lands in the 1.5-2x band.
+# Shape weights are ratios, so halving every shape per run preserves the mix exactly.
+TRAIN_RUNS=3
+RUN_DIV=2
 PORT="${PGO_PORT:-18080}"
 MOCK_PORT="${PGO_MOCK_PORT:-18000}"
 TARGET="${PGO_TARGET:-}"
@@ -103,6 +120,7 @@ rm -f "$MARKER" 2>/dev/null || true
 # ---- phase 1: instrumented build ------------------------------------------------------------
 log "phase 1/3: instrumented build"
 rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
+# shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 RUSTFLAGS="-Cprofile-generate=$PROF_DIR" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
@@ -215,9 +233,13 @@ if errs[0]:
 PY
 
 # ---- busbar training config (mirrors the benchmark manifest's shape) -------------------------
-cat > "$WORK/config.yaml" <<YAML
-listen: "127.0.0.1:$PORT"
-admin_listen: "127.0.0.1:$((PORT + 1))"
+# Written per trainer run because each run binds its own port stride (see the training loop);
+# everything except the ports is byte-identical across runs.
+write_run_configs() {
+  local run_port="$1" run_mock_port="$2"
+  cat > "$WORK/config.yaml" <<YAML
+listen: "127.0.0.1:$run_port"
+admin_listen: "127.0.0.1:$((run_port + 1))"
 # 1.5.3 grammar. Two keys moved and the old spellings are now fail-closed boot refusals, which is
 # how this script broke the 1.5.3 Docker build: PGO is mandatory, the instrumented binary refused
 # its own training config, and the release could not produce an image. The trainer must be written
@@ -260,47 +282,35 @@ pools:
     members:
       - model: gpt-4o-mini
 YAML
-cat > "$WORK/providers.yaml" <<YAML
+  cat > "$WORK/providers.yaml" <<YAML
 mock:
   protocol: openai
-  base_url: http://127.0.0.1:$MOCK_PORT
+  base_url: http://127.0.0.1:$run_mock_port
   error_map: {}
 YAML
+}
 
 # ---- phase 2: train --------------------------------------------------------------------------
-VOLUME=$((REQS * 10))
-REFUSALS=$((REQS / 10))
-log "phase 2/3: training (c=$CONC: $VOLUME openai + $REQS large-body + $REQS xlate + $STREAMS streams + $REFUSALS refusals)"
+# Per-run shape counts: 1/RUN_DIV of the historical single-run mix (see TRAIN_RUNS/RUN_DIV at
+# the top). The shapes' RELATIVE weights - openai volume at 10x, large-body and anthropic
+# translation at 1x, the stream count, the ~1% refusal sliver - are unchanged; only the absolute
+# per-run counts shrink, and the merge sums them back across runs.
+RUN_VOLUME=$((REQS * 10 / RUN_DIV))
+RUN_REQS=$((REQS / RUN_DIV))
+RUN_STREAMS=$((STREAMS / RUN_DIV))
+RUN_REFUSALS=$((REQS / 10 / RUN_DIV))
+# The warmup was 500 in the single-run era; it is uncounted overhead paid once per run, so it
+# halves per run too (total warmup 750 vs 500 - the extra 250 is part of the 1.5-2x budget).
+RUN_WARMUP=$((500 / RUN_DIV))
+log "phase 2/3: training ($TRAIN_RUNS runs, c=$CONC, per run: $RUN_VOLUME openai + $RUN_REQS large-body + $RUN_REQS xlate + $RUN_STREAMS streams + $RUN_REFUSALS refusals)"
 # The signing key is minted by the instrumented binary itself (offline, needs no config): the
 # trainer stays in the grammar of the binary it trains, and the CLI arm gets a profile too.
+# One key serves all runs - it is env-provided config, so reusing it keeps the runs identical
+# in everything except the counter noise the multi-run merge exists to average out.
 PGO_SIGNING_KEY="$("./$INSTRUMENTED" --generate-signing-key 2>/dev/null)"
 [ -n "$PGO_SIGNING_KEY" ] || pgo_fail "--generate-signing-key produced no key"
 PGO_ADMIN_TOKEN="pgo-admin-$$"
 export PGO_SIGNING_KEY PGO_ADMIN_TOKEN
-# Validate the training config with the binary BEFORE serving: this names the failure that the
-# 1.5.3 grammar break (documented at the config above) produced as a silent dead trainer.
-BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
-  "./$INSTRUMENTED" --validate \
-  || pgo_fail "training config rejected by the binary it trains (--validate)"
-python3 "$WORK/mock.py" "$MOCK_PORT" & MOCK_PID=$!
-BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
-  "./$INSTRUMENTED" & BUSBAR_PID=$!
-for _ in $(seq 1 50); do
-  curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz" && break; sleep 0.2
-done
-# The instrumented binary must actually be serving (it may not even be host-executable under a
-# cross PGO_TARGET) - a dead trainer means no profile, so fail open now rather than merge-fail.
-curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz" \
-  || pgo_fail "instrumented busbar never became healthy (not host-executable, or crashed)"
-
-# Mint the run's client key on the admin listener. This also trains the admin plane (admin
-# chain, scope check, mutation limiter, audit) - one warm request on an otherwise-cold surface.
-CLIENT_TOKEN="$(curl -sS -X POST "http://127.0.0.1:$((PORT + 1))/api/v1/admin/keys" \
-  -H "authorization: Bearer $PGO_ADMIN_TOKEN" -H "content-type: application/json" \
-  -d '{"name":"pgo","group":"bench","expires_in":"1h"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
-  || pgo_fail "key mint on the admin listener failed"
-case "$CLIENT_TOKEN" in bbk_*) ;; *) pgo_fail "minted client token malformed: '$CLIENT_TOKEN'" ;; esac
 
 OPENAI_BODY='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"profile training request with a moderately sized body to exercise the parser"}]}'
 # ~1.4 KB request-body variant: real prompts are not one-liners, so the ingress parse/copy
@@ -310,44 +320,94 @@ OPENAI_BODY_LARGE='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"
 ANTH_BODY='{"model":"gpt-4o-mini","max_tokens":64,"messages":[{"role":"user","content":"profile training request for the translation path"}]}'
 STREAM_BODY='{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"streaming profile training"}]}'
 
-# warmup (uncounted): ramp the reqwest egress pool and let reliability state learn the lane
-# healthy BEFORE the volume shape, so training measures steady state, not cold-start ramp.
-printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" 500 200 \
-  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
-  || pgo_fail "training warmup failed"
-# shape 1: openai chat passthrough at 10x weight - THE volume path; its share of the merged
-# profile's counts should match its share of production load, so branch statistics and the
-# hot/cold split are decided by this shape.
-printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$VOLUME" 200 \
-  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
-  || pgo_fail "training shape 1 (openai chat) failed"
-log "  shape 1 (openai chat x$VOLUME) done"
-printf '%s' "$OPENAI_BODY_LARGE" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REQS" 200 \
-  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
-  || pgo_fail "training shape 1b (openai chat, large body) failed"
-log "  shape 1b (openai chat, large body) done"
-# shape 2: anthropic ingress -> openai upstream (the translation path). x-api-key, not Bearer:
-# that is what real anthropic-dialect clients send, and it trains the second extractor branch.
-printf '%s' "$ANTH_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REQS" 200 \
-  /v1/messages "x-api-key=$CLIENT_TOKEN" "anthropic-version=2023-06-01" \
-  || pgo_fail "training shape 2 (anthropic translation) failed"
-log "  shape 2 (anthropic translation) done"
-# shape 3: SSE streaming relay
-printf '%s' "$STREAM_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$STREAMS" 200 \
-  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
-  || pgo_fail "training shape 3 (SSE streaming) failed"
-log "  shape 3 (SSE streaming) done"
-# shape 4: refusal sliver (~1% of the mix, expects 401): biases the verify branch correctly
-# (valid overwhelmingly likely) while still giving the reject/finish_rejected arms real counts
-# instead of zero - small enough that refusal code is not promoted into the hot layout.
-printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REFUSALS" 401 \
-  /v1/chat/completions "authorization=Bearer bbk_bogus.bogus" \
-  || pgo_fail "training shape 4 (auth refusal) failed"
-log "  shape 4 (auth refusal) done"
+# Each iteration is a complete, independent trainer run: fresh mock, fresh gateway process,
+# fresh in-memory client key. Each run's gateway gets an explicit per-run LLVM_PROFILE_FILE
+# (run<N>_%m_%p.profraw) instead of the toolchain default: rustc's default pattern is %m-only,
+# under which same-binary processes ONLINE-merge into a single locked file - counters would
+# still accumulate, but no per-run artifact would exist to verify. The explicit per-run name
+# makes each run's flush a checkable fact, and the final llvm-profdata merge sums all runs'
+# sets. Any failure in any run goes through pgo_fail: multi-run does not soften fail-closed -
+# three chances to fail, still zero chances to ship untrained.
+for RUN in $(seq 1 "$TRAIN_RUNS"); do
+  # Deterministic per-run port stride (+10 per run, both listeners and the mock): back-to-back
+  # runs never contend with the previous run's connections lingering in TIME_WAIT, and nothing
+  # here depends on wall clock or randomness.
+  RUN_PORT=$((PORT + (RUN - 1) * 10))
+  RUN_MOCK_PORT=$((MOCK_PORT + (RUN - 1) * 10))
+  write_run_configs "$RUN_PORT" "$RUN_MOCK_PORT"
+  # Validate the training config with the binary BEFORE serving: this names the failure that the
+  # 1.5.3 grammar break (documented at the config above) produced as a silent dead trainer.
+  BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
+    "./$INSTRUMENTED" --validate \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training config rejected by the binary it trains (--validate)"
+  python3 "$WORK/mock.py" "$RUN_MOCK_PORT" & MOCK_PID=$!
+  LLVM_PROFILE_FILE="$PROF_DIR/run${RUN}_%m_%p.profraw" \
+    BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
+    "./$INSTRUMENTED" & BUSBAR_PID=$!
+  for _ in $(seq 1 50); do
+    curl -sf -o /dev/null "http://127.0.0.1:$RUN_PORT/healthz" && break; sleep 0.2
+  done
+  # The instrumented binary must actually be serving (it may not even be host-executable under a
+  # cross PGO_TARGET) - a dead trainer means no profile, so fail loud now rather than merge-fail.
+  curl -sf -o /dev/null "http://127.0.0.1:$RUN_PORT/healthz" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: instrumented busbar never became healthy (not host-executable, or crashed)"
 
-# graceful stop so the runtime flushes .profraw files
-kill "$BUSBAR_PID"; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
-kill "$MOCK_PID" 2>/dev/null || true; MOCK_PID=""
+  # Mint the run's client key on the admin listener (per run - the key store is in-memory, so it
+  # dies with the run's gateway). This also trains the admin plane (admin chain, scope check,
+  # mutation limiter, audit) - one warm request on an otherwise-cold surface, now once per run.
+  CLIENT_TOKEN="$(curl -sS -X POST "http://127.0.0.1:$((RUN_PORT + 1))/api/v1/admin/keys" \
+    -H "authorization: Bearer $PGO_ADMIN_TOKEN" -H "content-type: application/json" \
+    -d '{"name":"pgo","group":"bench","expires_in":"1h"}' \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: key mint on the admin listener failed"
+  case "$CLIENT_TOKEN" in bbk_*) ;; *) pgo_fail "run $RUN/$TRAIN_RUNS: minted client token malformed: '$CLIENT_TOKEN'" ;; esac
+
+  # warmup (uncounted): ramp the reqwest egress pool and let reliability state learn the lane
+  # healthy BEFORE the volume shape, so training measures steady state, not cold-start ramp.
+  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_WARMUP" 200 \
+    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training warmup failed"
+  # shape 1: openai chat passthrough at 10x weight - THE volume path; its share of the merged
+  # profile's counts should match its share of production load, so branch statistics and the
+  # hot/cold split are decided by this shape.
+  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_VOLUME" 200 \
+    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1 (openai chat) failed"
+  log "  run $RUN/$TRAIN_RUNS: shape 1 (openai chat x$RUN_VOLUME) done"
+  printf '%s' "$OPENAI_BODY_LARGE" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 \
+    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1b (openai chat, large body) failed"
+  log "  run $RUN/$TRAIN_RUNS: shape 1b (openai chat, large body) done"
+  # shape 2: anthropic ingress -> openai upstream (the translation path). x-api-key, not Bearer:
+  # that is what real anthropic-dialect clients send, and it trains the second extractor branch.
+  printf '%s' "$ANTH_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 \
+    /v1/messages "x-api-key=$CLIENT_TOKEN" "anthropic-version=2023-06-01" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 2 (anthropic translation) failed"
+  log "  run $RUN/$TRAIN_RUNS: shape 2 (anthropic translation) done"
+  # shape 3: SSE streaming relay (the loadgen's read() drains the chunked event stream to
+  # completion, so the relay's full write-flush-finish path trains, not just the headers).
+  printf '%s' "$STREAM_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_STREAMS" 200 \
+    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 3 (SSE streaming) failed"
+  log "  run $RUN/$TRAIN_RUNS: shape 3 (SSE streaming) done"
+  # shape 4: refusal sliver (~1% of the mix, expects 401): biases the verify branch correctly
+  # (valid overwhelmingly likely) while still giving the reject/finish_rejected arms real counts
+  # instead of zero - small enough that refusal code is not promoted into the hot layout.
+  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REFUSALS" 401 \
+    /v1/chat/completions "authorization=Bearer bbk_bogus.bogus" \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 4 (auth refusal) failed"
+  log "  run $RUN/$TRAIN_RUNS: shape 4 (auth refusal) done"
+
+  # graceful stop so the runtime flushes this run's .profraw files before the next run boots
+  kill "$BUSBAR_PID"; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
+  kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null || true; MOCK_PID=""
+  # Per-run flush proof: the run's gateway must have written its named .profraw set. A run that
+  # served traffic but flushed nothing would silently thin the merge below the designed three
+  # samples - fail closed here, attributed to the run that lost its profile.
+  ls "$PROF_DIR"/run"${RUN}"_*.profraw >/dev/null 2>&1 \
+    || pgo_fail "run $RUN/$TRAIN_RUNS flushed no .profraw (gateway exited without writing its profile)"
+  log "  run $RUN/$TRAIN_RUNS complete (.profraw flushed)"
+done
 
 # ---- phase 3: merge + optimized build --------------------------------------------------------
 log "phase 3/3: merge profiles + optimized build"
@@ -356,13 +416,24 @@ PROFDATA="$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -
 [ -n "$PROFDATA" ] || pgo_fail "llvm-profdata not found (rustup component add llvm-tools)"
 ls "$PROF_DIR"/*.profraw >/dev/null 2>&1 \
   || pgo_fail "no .profraw files produced (instrumented run flushed nothing)"
+# Re-verify every trainer run's named .profraw set still exists at merge time (each run already
+# asserted its own flush; this catches anything deleting profiles between training and merge).
+# Note the raw-file COUNT is not a per-run invariant: the keygen/--validate invocations use the
+# toolchain's default %m-only pattern, under which same-binary processes online-merge into one
+# locked file - only the run<N>_ sets are guaranteed one-per-run.
+for RUN in $(seq 1 "$TRAIN_RUNS"); do
+  ls "$PROF_DIR"/run"${RUN}"_*.profraw >/dev/null 2>&1 \
+    || pgo_fail "run $RUN/$TRAIN_RUNS .profraw set missing at merge time"
+done
+RAW_COUNT="$(find "$PROF_DIR" -maxdepth 1 -name '*.profraw' -type f | wc -l | tr -d ' ')"
 MERGED="$PROF_DIR/merged.profdata"
+# ONE merge over ALL runs' raw profiles: llvm-profdata sums the edge counters across the
+# accumulated per-run sets, which is exactly the noise-averaging the multi-run design buys.
 "$PROFDATA" merge -o "$MERGED" "$PROF_DIR"/*.profraw \
   || pgo_fail "llvm-profdata merge failed"
 # The merged profile is what -Cprofile-use consumes; an empty/absent one means the optimized
 # build below would silently be a no-op PGO. Assert it is real BEFORE the build feeds it in.
 [ -s "$MERGED" ] || pgo_fail "merged profile is empty/missing at $MERGED (training produced no usable coverage)"
-RAW_COUNT="$(find "$PROF_DIR" -maxdepth 1 -name '*.profraw' -type f | wc -l | tr -d ' ')"
 MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 
 # BUSBAR_PGO=1 stamps the BUILD-PROVENANCE record (crates/busbar/build.rs) so the shipped binary
@@ -370,6 +441,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # build script ALSO detects `-Cprofile-use` in CARGO_ENCODED_RUSTFLAGS, so PGO is recorded even if
 # this env is ever dropped — but the explicit signal is the contract. A plain `cargo build --release`
 # sets neither and correctly reports `pgo=false`, which is the whole point of the stamp.
+# shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
@@ -385,6 +457,7 @@ BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED" \
   echo "profile_bytes=$MERGED_SIZE"
   echo "profraw_count=$RAW_COUNT"
   echo "target=${TARGET:-<host>}"
+  echo "train_runs=$TRAIN_RUNS"
   echo "reqs_per_shape=$REQS"
   echo "streams=$STREAMS"
   echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
