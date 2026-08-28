@@ -2640,7 +2640,8 @@ pub const TLS_ACCEPT_PERSISTENT_FAILURE: Diagnostic = Diagnostic {
               can fire from one worker or from several at once. The warning is already \
               rate-limited by the backoff delay, so each loop fires at a human cadence, not per \
               failed accept.",
-    action: "Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / \
+    action:
+        "Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / \
              the systemd `LimitNOFILE`) or a resource leak holding sockets open. Each listener \
              keeps retrying with backoff and recovers on its own once accepts succeed.",
     since: "1.6.0",
