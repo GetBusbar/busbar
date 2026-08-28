@@ -3181,90 +3181,59 @@ fn test_swrr_rebalance_on_trip() {
     );
 }
 
-/// Concurrency: the SWRR `current_weight` reset on breaker recovery must happen UNDER
-/// the per-pool SWRR shard lock that serializes selection — NOT as a bare store inside the
-/// cell-level close. The old code zeroed `current_weight` inside `cell_closed_locked` with a plain
-/// `store(0)`, not holding the shard lock, so a recovery racing a selection could land its zero
-/// between selection's `fetch_add` and its compensating `fetch_sub(total)`, breaking the
-/// `Σ current_weight == 0` invariant.
-///
-/// This pins the lock discipline directly: hold the pool's SWRR shard lock on the test thread,
-/// fire a recovery (`record_success_for`) on another thread, and assert the recovery's reset is
-/// BLOCKED until the shard lock is released. Against the old code (reset not under the shard lock)
-/// the zero lands immediately and the post-spawn assertion that `current_weight` is still stale
-/// fails; against the fixed code the reset waits for the lock.
+/// SWRR reset on recovery is GENERATIONAL (per-worker striping): `reset_swrr_for` bumps the
+/// cell's generation instead of storing zero, and each stripe zeroes itself on its owner's next
+/// touch. Two contracts pinned here:
+///   1. Immediately after a HalfOpen→Closed recovery, the cell's accumulator READS zero (the sum
+///      counts only live-generation stripes), so a recovered cell can never rejoin selection
+///      carrying a stale weight.
+///   2. The bump cannot corrupt a selection sequence: a reset fired BETWEEN selections leaves the
+///      per-stripe `Σ == 0` invariant intact afterwards, because the zeroing happens inside
+///      `slot()` on the selecting thread itself, never as an unserialized external store (the
+///      defect the old under-lock discipline existed to prevent, now impossible by construction).
 #[test]
-fn test_swrr_reset_on_recovery_happens_under_shard_lock() {
+fn test_swrr_reset_on_recovery_is_generational() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(5000);
 
-    // Seed a stale SWRR accumulator and park the default cell HalfOpen with the probe acquired,
-    // so a success drives the HalfOpen→Closed recovery that performs the reset.
+    // Seed a stale SWRR accumulator on every stripe and park the default cell HalfOpen with the
+    // probe acquired, so a success drives the HalfOpen→Closed recovery that performs the reset.
     const STALE: i64 = 777;
-    store
-        .get_lane(0)
-        .current_weight
-        .store(STALE, Ordering::Relaxed);
-    store
-        .get_lane(0)
-        .cooldown_until
-        .store(1000, Ordering::Relaxed);
-    store
-        .get_lane(0)
-        .breaker_state
-        .store(ST_HALF_OPEN, Ordering::Relaxed);
-    store
-        .get_lane(0)
-        .probe_in_flight
-        .store(true, Ordering::Relaxed);
-
-    // Signals the recovery thread has been spawned and is about to (or has) attempt the reset.
-    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Hold the default pool's SWRR shard lock for the whole critical section. While held, no
-    // recovery may reset `current_weight` (the fix takes this same lock to zero it).
-    let guard = lock_recover(store.swrr_shard(""));
-
-    let store_r = Arc::clone(&store);
-    let started_r = Arc::clone(&started);
-    let recoverer = std::thread::spawn(move || {
-        started_r.store(true, Ordering::Release);
-        // Recovery: success on the half-open probe → HalfOpen→Closed → SWRR reset (under shard
-        // lock). Blocks here until the test thread drops `guard`.
-        store_r.record_success_for("", 0);
-    });
-
-    // Wait until the recovery thread is running, then give it ample opportunity to (wrongly)
-    // perform the reset if it weren't gated on the shard lock.
-    while !started.load(Ordering::Acquire) {
-        std::hint::spin_loop();
-    }
-    for _ in 0..50 {
-        std::thread::yield_now();
-    }
-
-    // The shard lock is still held here. Under the fix the reset cannot have happened yet.
+    store.arm_half_open_stale_swrr("", 0, 1000, STALE);
     assert_eq!(
-            store.get_lane(0).current_weight.load(Ordering::Relaxed),
-            STALE,
-            "SWRR reset must be blocked while the pool's shard lock is held — it must run UNDER that lock, \
-             not as a bare store in cell_closed"
-        );
-
-    // Release the shard lock; the recovery may now reset and complete.
-    drop(guard);
-    recoverer.join().expect("recovery thread must not panic");
-
-    assert_eq!(
-        store.get_lane(0).current_weight.load(Ordering::Relaxed),
-        0,
-        "after recovery completes (shard lock released) the SWRR accumulator must be zeroed"
+        store.cell_current_weight("", 0),
+        STALE,
+        "seeded stale accumulator must be visible before recovery"
     );
+
+    // Recovery: success on the half-open probe → HalfOpen→Closed → generational SWRR reset.
+    store.record_success_for("", 0);
     assert_eq!(
         store.breaker_state(0),
         BreakerState::Closed,
         "the half-open probe success must have recovered the cell to Closed"
     );
+    assert_eq!(
+        store.cell_current_weight("", 0),
+        0,
+        "after recovery the accumulator must READ zero immediately — stale stripes are \
+         generation-invalidated, not lazily visible"
+    );
+
+    // And the invariant survives reset-between-selections: run selections, reset mid-stream,
+    // run more — the accumulator must return to Σ == 0 after every completed selection.
+    for round in 0..3 {
+        for _ in 0..7 {
+            let picked = store.select_weighted_for("", &[0], &[3], 5000);
+            assert_eq!(picked, Some(0));
+            assert_eq!(
+                store.cell_current_weight("", 0),
+                0,
+                "per-stripe Σ must be 0 after each completed selection (round {round})"
+            );
+        }
+        store.reset_swrr_for("", store.cell("", 0).as_ref());
+    }
 }
 
 /// `record_probe_success_all_cells` must gate the SWRR reset on the

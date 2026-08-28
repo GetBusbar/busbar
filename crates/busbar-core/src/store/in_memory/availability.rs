@@ -436,10 +436,9 @@ impl LaneRuntime for HealthState {
         // double-counts the lane-global stat. The CAS is *usually* a no-op here because the 2xx caller
         // runs `recover_lane` first — but only when `lane_needs_probe` is true, and even then a peer
         // (organic request, hard-down) can move a cell back to HalfOpen between that recovery and this
-        // push. If this push then wins the HalfOpen→Closed CAS, `cell_closed_locked` zeroed the cell's
-        // SWRR `current_weight` under the transition lock, so the matching `reset_swrr_for` MUST run to
-        // hold the pool's `Σ current_weight == 0` invariant — gate it on the recovered-bool exactly
-        // like `record_success_for` and `recover_lane` do.
+        // push. If this push then wins the HalfOpen→Closed CAS, the matching `reset_swrr_for`
+        // (a generational stripe bump) MUST run so the recovered cell's stripes rejoin from 0 —
+        // gate it on the recovered-bool exactly like `record_success_for` and `recover_lane` do.
         if Self::cell_record_success(ls.as_ref(), now) {
             // Default cell belongs to the no-pool ("") set; reset runs after the transition lock is
             // released (it is a leaf within `cell_record_success`), so the shard lock is un-nested.

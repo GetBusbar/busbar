@@ -197,6 +197,29 @@ pub(crate) fn worker_id() -> usize {
     WORKER_ID.with(|w| w.get())
 }
 
+/// Stripe count for per-worker striped store state: one stripe per data worker PLUS one shared
+/// FALLBACK stripe (the last) for every non-worker thread. Constant for the process lifetime
+/// (`set_data_workers` runs before anything builds; the machine-derived fallback is stable).
+pub(crate) fn worker_stripes() -> usize {
+    DATA_WORKERS.get().copied().unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(16)
+    }) + 1
+}
+
+/// The current thread's stripe index in a `stripes`-slot stripe array: its worker id, or the
+/// last (fallback) slot for a non-worker thread. `min`: defensive clamp only.
+pub(crate) fn worker_stripe(stripes: usize) -> usize {
+    let id = worker_id();
+    if id == usize::MAX {
+        stripes - 1
+    } else {
+        id.min(stripes - 1)
+    }
+}
+
 /// The upstream HTTP client, SHARDED: N identical `reqwest::Client`s, each owning its own
 /// connection pool, one selected per thread. ONE shared client meant one pool mutex that every
 /// request crossed twice (connection checkout + checkin) across every worker — a lock convoy

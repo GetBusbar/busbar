@@ -477,9 +477,9 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     ///
     /// If a per-cell success push wins a HalfOpen→Closed CAS (possible when this push races a peer that
     /// re-armed the cell after the caller's `recover_lane`), the implementation MUST reset that cell's
-    /// SWRR accumulator — `cell_record_success` zeroes `current_weight` under the transition lock and the
-    /// matching `reset_swrr_for` re-seeds it under the pool shard lock, holding `Σ current_weight == 0`.
-    /// Gating the reset on the recovered-bool mirrors `record_success_for`/`recover_lane`.
+    /// SWRR accumulator — the matching `reset_swrr_for` bumps the cell's stripe generation so every
+    /// worker's stripe rejoins from 0, holding the per-stripe `Σ == 0` invariant. Gating the reset
+    /// on the recovered-bool mirrors `record_success_for`/`recover_lane`.
     fn record_probe_success_all_cells(&self, lane: usize);
     fn record_client_fault(&self, lane: usize);
     /// Record a transient upstream failure. `cfg` is the routing pool's resolved breaker config,

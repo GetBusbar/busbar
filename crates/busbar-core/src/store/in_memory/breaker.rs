@@ -52,6 +52,96 @@ impl OutcomeWindow {
     }
 }
 
+/// One per-worker SWRR accumulator slot, cache-line padded so adjacent workers' slots in a cell's
+/// stripe array never false-share. `weight` is the classic smooth-weighted-round-robin running
+/// value; `seen_gen` is the cell reset generation this slot last observed (see [`SwrrStripes`]).
+#[repr(align(64))]
+pub(crate) struct SwrrSlot {
+    pub(crate) weight: AtomicI64,
+    seen_gen: AtomicU64,
+}
+
+/// A cell's SWRR state, STRIPED PER DATA-PLANE WORKER (thread-per-core): each worker runs the
+/// add/find-max/subtract over its OWN slot — single-writer, no lock, no cross-core ping-pong —
+/// and the classic SWRR sequence per worker over the same config weight RATIOS preserves the
+/// global distribution (a sum of proportional streams is proportional). The LAST slot is the
+/// shared FALLBACK stripe for non-worker threads; selections on it stay serialized by the pool's
+/// SWRR shard lock, exactly the pre-stripe discipline.
+///
+/// RESET (recovery rejoining the healthy set) is GENERATIONAL, not a store: `reset()` bumps `gen`
+/// once, and each stripe lazily zeroes itself the next time its owning worker touches it and sees
+/// a stale `seen_gen` (`slot()`). That keeps reset race-free against lock-free in-flight
+/// selections — the old `store(0)` under the shard lock could not serialize against workers that
+/// no longer take that lock, and an unserialized store landing between a worker's `fetch_add` and
+/// its compensating `fetch_sub` would break the per-stripe `Σ == 0` invariant. Lazy zeroing is
+/// the same outcome the eager reset bought — the stripe rejoins from 0 — delivered on the owning
+/// worker's own thread.
+pub(crate) struct SwrrStripes {
+    gen: AtomicU64,
+    slots: Box<[SwrrSlot]>,
+}
+
+impl SwrrStripes {
+    pub(crate) fn new() -> Self {
+        Self {
+            gen: AtomicU64::new(0),
+            slots: (0..crate::state::worker_stripes())
+                .map(|_| SwrrSlot {
+                    weight: AtomicI64::new(0),
+                    seen_gen: AtomicU64::new(0),
+                })
+                .collect(),
+        }
+    }
+
+    /// This thread's slot for `stripe`, generation-checked: a stale slot zeroes itself first, so a
+    /// recovered cell's stripe always rejoins selection from 0. Single-writer for worker stripes
+    /// (the owning worker is the only thread that ever indexes them); the fallback stripe's callers
+    /// hold the pool shard lock, so its check-then-zero is serialized too.
+    pub(crate) fn slot(&self, stripe: usize) -> &AtomicI64 {
+        let s = &self.slots[stripe.min(self.slots.len() - 1)];
+        let g = self.gen.load(Ordering::Relaxed);
+        if s.seen_gen.load(Ordering::Relaxed) != g {
+            s.weight.store(0, Ordering::Relaxed);
+            s.seen_gen.store(g, Ordering::Relaxed);
+        }
+        &s.weight
+    }
+
+    /// Recovery reset: one generation bump; every stripe lazily zeroes on next touch. See the
+    /// type doc for why this replaces the eager under-lock `store(0)`.
+    pub(crate) fn reset(&self) {
+        self.gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Sum of the LIVE stripes (stale-generation slots count as their logical 0) — the whole-cell
+    /// accumulator view the SWRR invariant assertions read. Test-only, like its reader
+    /// `cell_current_weight`.
+    #[cfg(test)]
+    pub(crate) fn sum(&self) -> i64 {
+        let g = self.gen.load(Ordering::Relaxed);
+        self.slots
+            .iter()
+            .filter(|s| s.seen_gen.load(Ordering::Relaxed) == g)
+            .map(|s| s.weight.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// TEST-ONLY: force the CALLING thread's stripe to `v` at the current generation (and settle
+    /// every other stripe at a live 0), so the summed accumulator view reads exactly `v` — the
+    /// stale-accumulator precondition of the SWRR-reset regression tests.
+    #[cfg(test)]
+    pub(crate) fn force(&self, v: i64) {
+        let g = self.gen.load(Ordering::Relaxed);
+        let mine = crate::state::worker_stripe(self.slots.len());
+        for (i, s) in self.slots.iter().enumerate() {
+            s.weight
+                .store(if i == mine { v } else { 0 }, Ordering::Relaxed);
+            s.seen_gen.store(g, Ordering::Relaxed);
+        }
+    }
+}
+
 /// The per-cell circuit-breaker FSM state. `LaneState` embeds these fields directly (the default
 /// cell, used by direct/ad-hoc routes and `/stats`); named pools get their own `BreakerCell` per
 /// member lane so a lane shared across pools carries independent Open/Closed status per pool.
@@ -75,7 +165,7 @@ pub(crate) struct BreakerCell {
     pub(crate) probe_epoch: AtomicU64,
     pub(crate) err: AtomicU64,
     pub(crate) outcome_window: std::sync::Mutex<OutcomeWindow>,
-    pub(crate) current_weight: AtomicI64, // SWRR state (per pool — selection runs over a pool's set)
+    pub(crate) swrr: SwrrStripes, // SWRR state, striped per worker (per pool — selection runs over a pool's set)
     // Serializes every state+cooldown TRANSITION on this cell. `breaker_state` and `cooldown_until`
     // are two separate atomics, so a transition that touches BOTH (open: Open+long cooldown; closed:
     // Closed+clear cooldown; the Open→HalfOpen probe acquire) is not atomic across the pair on its
@@ -101,7 +191,7 @@ impl BreakerCell {
             probe_epoch: AtomicU64::new(0),
             err: AtomicU64::new(0),
             outcome_window: std::sync::Mutex::new(OutcomeWindow::new(OUTCOME_WINDOW_CAPACITY)),
-            current_weight: AtomicI64::new(0),
+            swrr: SwrrStripes::new(),
             transition_lock: std::sync::Mutex::new(()),
         }
     }
@@ -133,7 +223,7 @@ pub(crate) trait BreakerCellAccess {
     fn probe_epoch(&self) -> &AtomicU64;
     fn err(&self) -> &AtomicU64;
     fn outcome_window(&self) -> &std::sync::Mutex<OutcomeWindow>;
-    fn current_weight(&self) -> &AtomicI64;
+    fn swrr(&self) -> &SwrrStripes;
     /// Serializes state+cooldown transitions on this cell (see `BreakerCell::transition_lock`).
     fn transition_lock(&self) -> &std::sync::Mutex<()>;
 }
@@ -160,8 +250,8 @@ impl BreakerCellAccess for BreakerCell {
     fn outcome_window(&self) -> &std::sync::Mutex<OutcomeWindow> {
         &self.outcome_window
     }
-    fn current_weight(&self) -> &AtomicI64 {
-        &self.current_weight
+    fn swrr(&self) -> &SwrrStripes {
+        &self.swrr
     }
     fn transition_lock(&self) -> &std::sync::Mutex<()> {
         &self.transition_lock
@@ -190,8 +280,8 @@ impl BreakerCellAccess for LaneState {
     fn outcome_window(&self) -> &std::sync::Mutex<OutcomeWindow> {
         &self.outcome_window
     }
-    fn current_weight(&self) -> &AtomicI64 {
-        &self.current_weight
+    fn swrr(&self) -> &SwrrStripes {
+        &self.swrr
     }
     fn transition_lock(&self) -> &std::sync::Mutex<()> {
         &self.transition_lock
@@ -464,9 +554,9 @@ impl HealthState {
     /// NOTE: this does NOT reset the cell's SWRR `current_weight`. That reset must run under the
     /// per-pool SWRR shard lock (which serializes selection and owns the `Σ current_weight == 0`
     /// invariant), and only the CALLER knows the pool the cell belongs to. Callers perform the reset
-    /// via `reset_swrr_for(pool, cell)` AFTER this returns (the transition lock is released by then,
-    /// so the shard lock is taken un-nested — no lock-order inversion against selection, which takes
-    /// the shard lock with no transition lock held).
+    /// via `reset_swrr_for(pool, cell)` AFTER this returns — a single generation bump on the cell's
+    /// striped accumulator (see `SwrrStripes`), lock-free, so no ordering constraint against
+    /// selection remains.
     ///
     /// Test-only: the production recovery path (`recover_lane`) now closes cells through
     /// `cell_closed_if_recoverable` (which re-validates suppression under the lock); the only
@@ -835,8 +925,8 @@ impl HealthState {
     ///
     /// Returns `true` iff this call won the HalfOpen→Closed recovery CAS (i.e. it actually closed the
     /// cell). The caller uses that to perform the SWRR `current_weight` reset under the pool's shard
-    /// lock (`reset_swrr_for`) — the reset is NOT done here because this runs under the per-cell
-    /// transition lock and the SWRR reset must run under the per-pool SWRR shard lock instead.
+    /// bump (`reset_swrr_for`) — the reset is NOT done here because only the CALLER knows which
+    /// pool's cell this is; the generational bump itself is lock-free (see `SwrrStripes`).
     pub(crate) fn cell_record_success(c: &dyn BreakerCellAccess, now_time: u64) -> bool {
         // Serialize the whole state-dependent transition (the streak-reset gate reads the state, and
         // the HalfOpen→Closed recovery writes the (state, cooldown) pair) under the transition lock,

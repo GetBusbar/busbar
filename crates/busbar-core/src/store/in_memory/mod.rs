@@ -177,7 +177,7 @@ pub(crate) struct LaneState {
     // Single-flight probe owner token - see `BreakerCell::probe_epoch`.
     pub(crate) probe_epoch: AtomicU64,
     // SWRR state per lane
-    pub(crate) current_weight: AtomicI64,
+    pub(crate) swrr: SwrrStripes,
     pub(crate) cooldown_until: AtomicU64,
     pub(crate) budget: AtomicI64,
     pub(crate) streak: AtomicU32,
@@ -263,7 +263,7 @@ impl HealthState {
                     outcome_window: std::sync::Mutex::new(OutcomeWindow::new(
                         OUTCOME_WINDOW_CAPACITY,
                     )),
-                    current_weight: AtomicI64::new(0),
+                    swrr: SwrrStripes::new(),
                     transition_lock: std::sync::Mutex::new(()),
                     // `0` bits == "no latency sample yet" (see `latency_ewma_bits`).
                     latency_ewma_bits: AtomicU64::new(0),
@@ -412,16 +412,14 @@ impl HealthState {
     /// recovery it rejoins selection; carrying that stale value biases the first few selections and
     /// violates the `Σ current_weight == 0` invariant over the (now-changed) healthy set.
     ///
-    /// This MUST hold `swrr_shard(pool)` while zeroing: selection (`select_weighted_for`) does the
-    /// add/find-max/subtract that maintains the invariant under that same shard lock, so a bare
-    /// `store(0)` from a concurrent recovery — not serialized against selection — could land between
-    /// selection's `fetch_add` and its compensating `fetch_sub(total)`, breaking `Σ == 0`. Taking the
-    /// shard lock here serializes the reset against any in-flight selection for the pool. The lock is
-    /// taken WITHOUT any transition lock held (callers invoke this after the cell-close transition has
-    /// returned), matching selection's lock discipline and avoiding lock-order inversion.
-    pub(crate) fn reset_swrr_for(&self, pool: &str, c: &dyn BreakerCellAccess) {
-        let _swrr = lock_recover(self.swrr_shard(pool));
-        c.current_weight().store(0, Ordering::Release);
+    /// GENERATIONAL since the per-worker striping: the reset is one generation bump on the cell,
+    /// and each stripe zeroes itself the next time its OWNING worker touches it (`SwrrStripes::
+    /// slot`) — race-free against lock-free in-flight worker selections by single-writer
+    /// construction, with no shard lock needed here at all (the old eager `store(0)` under the
+    /// shard lock could not serialize against workers that no longer take that lock). `_pool` kept
+    /// for signature stability at the call sites.
+    pub(crate) fn reset_swrr_for(&self, _pool: &str, c: &dyn BreakerCellAccess) {
+        c.swrr().reset();
     }
 
     // ── Thin lane-default wrappers ─────────────────────────────────────────────────────────────
@@ -921,28 +919,35 @@ impl HealthState {
             return None;
         }
 
-        // Smooth weighted round-robin over the healthy subset, using each cell's per-pool
-        // current_weight. The add/find-max/subtract is one logical step, so serialize it across
-        // concurrent selections FOR THIS POOL (otherwise interleaving corrupts the
-        // `Σ current_weight == 0` invariant and biases distribution). The invariant is pool-local —
-        // disjoint pools share no `current_weight` cells — so a per-pool (sharded) lock suffices and
-        // lets selections for different pools proceed in parallel (see `swrr_shard`).
-        let _swrr = lock_recover(self.swrr_shard(pool));
+        // Smooth weighted round-robin over the healthy subset, on THIS THREAD'S STRIPE of each
+        // cell's per-worker SWRR state. A data worker's add/find-max/subtract runs on slots only
+        // it ever writes — one logical step by single-writer construction, NO lock, no cross-core
+        // weight ping-pong. Per-worker SWRR over the same config weight ratios preserves the
+        // global distribution (each stripe emits the classic proportional sequence; a sum of
+        // proportional streams is proportional), and the per-stripe `Σ == 0` invariant replaces
+        // the old pool-global one. Only the shared FALLBACK stripe (non-worker threads: tests,
+        // embedded callers) still serializes under the pool's shard lock — the exact pre-stripe
+        // discipline, because multiple threads share that one stripe.
+        let stripes = crate::state::worker_stripes();
+        let stripe = crate::state::worker_stripe(stripes);
+        let _swrr = (stripe == stripes - 1).then(|| lock_recover(self.swrr_shard(pool)));
         let total: i64 = healthy.iter().map(|(_, _, w)| *w).sum();
         for (_, cell, eff_wt) in &healthy {
-            cell.current_weight().fetch_add(*eff_wt, Ordering::Relaxed);
+            cell.swrr()
+                .slot(stripe)
+                .fetch_add(*eff_wt, Ordering::Relaxed);
         }
         let mut best: Option<(usize, &Arc<dyn BreakerCellAccess>)> = None;
         let mut best_weight = i64::MIN;
         for (lane_idx, cell, _) in &healthy {
-            let cw = cell.current_weight().load(Ordering::Relaxed);
+            let cw = cell.swrr().slot(stripe).load(Ordering::Relaxed);
             if cw > best_weight {
                 best_weight = cw;
                 best = Some((*lane_idx, cell));
             }
         }
         if let Some((_, cell)) = best {
-            cell.current_weight().fetch_sub(total, Ordering::Relaxed);
+            cell.swrr().slot(stripe).fetch_sub(total, Ordering::Relaxed);
         }
         best.map(|(idx, _)| idx)
     }
@@ -1010,16 +1015,14 @@ impl HealthState {
         stale_weight: i64,
     ) {
         let c = self.cell(pool, lane);
-        c.current_weight().store(stale_weight, Ordering::Relaxed);
+        c.swrr().force(stale_weight);
         c.cooldown_until().store(cooldown, Ordering::Relaxed);
         c.breaker_state().store(ST_HALF_OPEN, Ordering::Relaxed);
         c.probe_in_flight().store(true, Ordering::Relaxed);
     }
 
-    /// Read a cell's raw SWRR `current_weight`, for the SWRR invariant assertion.
+    /// Read a cell's whole SWRR accumulator (live stripes summed), for the invariant assertion.
     pub(crate) fn cell_current_weight(&self, pool: &str, lane: usize) -> i64 {
-        self.cell(pool, lane)
-            .current_weight()
-            .load(Ordering::Relaxed)
+        self.cell(pool, lane).swrr().sum()
     }
 }
