@@ -74,6 +74,13 @@ pub(crate) struct Lane {
     /// the old per-request `upstream_path` `None` arm: the lane's protocol has no handler.
     pub(crate) egress_targets:
         HashMap<(crate::operation::Operation, bool), crate::proxy::EgressTarget>,
+    /// Boot-prebuilt egress auth headers for `Own`-mode dispatch, or `None` when this lane's
+    /// credential is not lane-constant (OAuth mints, SigV4 signs — those stay per-request). Built
+    /// by `egress_auth::prebuild_auth` from the SAME `headers_for` call the request path makes, so
+    /// a clone of this map is byte-identical to the per-request build; the request path takes the
+    /// clone (one buffer copy) iff the resolved credential mode is `Own` — Passthrough carries the
+    /// CALLER's credential and always builds live.
+    pub(crate) prebuilt_auth: Option<reqwest::header::HeaderMap>,
 }
 
 impl Lane {

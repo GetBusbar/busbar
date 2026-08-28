@@ -164,6 +164,16 @@ pub(crate) trait CredentialProvider: Send + Sync {
     fn is_ready(&self) -> bool {
         true
     }
+
+    /// Whether `headers_for` is LANE-CONSTANT: a pure function of the resolved credential string
+    /// and the `Own`/`Passthrough` mode, reading nothing else from the [`SigningContext`]. `true`
+    /// lets the boot path prebuild this lane's exact auth header set once and hand the request
+    /// path a clone (see `Lane::prebuilt_auth`). Default `false` — fail closed: a credential that
+    /// mints (OAuth) or signs the request bytes (SigV4) must never be frozen at boot, so only the
+    /// static schemes below (and dialects declaring `egress_auth_lane_constant`) opt in.
+    fn is_lane_constant(&self) -> bool {
+        false
+    }
 }
 
 /// Resolve a lane's egress credential at boot from its protocol name and auth style.
@@ -191,10 +201,16 @@ pub(crate) fn resolve(
     // api-key-vs-Bearer disambiguation was the first) supplies the builder through its
     // `ProtocolDecl`; the arms below are the shared schemes of the dialects still in-tree, and
     // each leaves this match when its dialect is extracted.
-    if let Some(headers_for) =
-        crate::proto::decl_for(protocol_name).and_then(|d| d.egress_auth_headers)
-    {
-        return Arc::new(DeclaredCredential(headers_for));
+    if let Some(decl) = crate::proto::decl_for(protocol_name) {
+        if let Some(headers_for) = decl.egress_auth_headers {
+            return Arc::new(DeclaredCredential {
+                headers_for,
+                // The decl says whether its builder reads only (key, mode) — see
+                // `ProtocolDecl::egress_auth_lane_constant`. A signer (bedrock SigV4) declares
+                // `false` and is never prebuilt.
+                lane_constant: decl.egress_auth_lane_constant,
+            });
+        }
     }
     match protocol_name {
         "gemini" => Arc::new(ApiKeyHeader {
@@ -220,6 +236,9 @@ impl CredentialProvider for NoCredential {
     fn headers_for(&self, _key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         Vec::new()
     }
+    fn is_lane_constant(&self) -> bool {
+        true // constantly nothing
+    }
 }
 
 /// `Authorization: Bearer <key>` — openai / cohere / responses. Drops the header on a control-char key.
@@ -229,6 +248,9 @@ struct StaticBearer {
 impl CredentialProvider for StaticBearer {
     fn headers_for(&self, key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         crate::proto::bearer_auth_headers(self.proto, key)
+    }
+    fn is_lane_constant(&self) -> bool {
+        true // pure function of the key
     }
 }
 
@@ -256,15 +278,24 @@ impl CredentialProvider for ApiKeyHeader {
     fn headers_for(&self, key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         api_key_headers(self.header, key)
     }
+    fn is_lane_constant(&self) -> bool {
+        true // pure function of the key
+    }
 }
 
 /// A credential scheme a PROTOCOL DECLARED (`ProtocolDecl::egress_auth_headers`) — the extracted
 /// dialects' path into this layer. The builder is declared data; this wrapper is only the vtable
 /// shape `resolve` hands back for every scheme.
-struct DeclaredCredential(fn(&str, &SigningContext) -> Vec<(HeaderName, HeaderValue)>);
+struct DeclaredCredential {
+    headers_for: fn(&str, &SigningContext) -> Vec<(HeaderName, HeaderValue)>,
+    lane_constant: bool,
+}
 impl CredentialProvider for DeclaredCredential {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        (self.0)(key, ctx)
+        (self.headers_for)(key, ctx)
+    }
+    fn is_lane_constant(&self) -> bool {
+        self.lane_constant
     }
 }
 
@@ -274,8 +305,39 @@ impl CredentialProvider for DeclaredCredential {
 #[path = "tests/license_tests.rs"]
 mod license_header_tests;
 
+// The prebuilt-auth differential proof (prebuilt == live for lane-constant schemes; signers
+// refuse to prebuild). Lives in tests/ per the repo layout rule.
+#[cfg(test)]
+#[path = "tests/prebuilt_auth_tests.rs"]
+mod prebuilt_auth_tests;
+
 // `read_capped_token_response` meta-test lives in tests/ per the repo layout rule (no inline test
 // bodies in a mod.rs); keep the module here via a #[path] decl.
 #[cfg(test)]
 #[path = "tests/helper_tests.rs"]
 mod helper_tests;
+
+/// Prebuild a lane's `Own`-mode egress auth headers at boot, or `None` when the credential is not
+/// lane-constant. THE SAME CALL the request path makes — `headers_for` with an `Own`-mode context —
+/// so the map a request clones is byte-identical to what it would have built live; the context's
+/// request-varying fields are inert by definition of [`CredentialProvider::is_lane_constant`]
+/// (a `false` there is exactly "this credential reads them", and such a credential never gets here).
+pub(crate) fn prebuild_auth(
+    credential: &Arc<dyn CredentialProvider>,
+    api_key: &str,
+    signing_host: &str,
+) -> Option<reqwest::header::HeaderMap> {
+    if !credential.is_lane_constant() {
+        return None;
+    }
+    let ctx = SigningContext {
+        host: signing_host,
+        canonical_uri: "",
+        body: &[],
+        timestamp_epoch: 0,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
+    };
+    Some(crate::proto::convert_headers(
+        credential.headers_for(api_key, &ctx),
+    ))
+}

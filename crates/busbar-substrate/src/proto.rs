@@ -224,6 +224,16 @@ pub struct ProtocolDecl {
     /// data instead of a core `match`.
     pub egress_auth_headers: Option<EgressAuthHeaders>,
 
+    /// Whether [`Self::egress_auth_headers`]'s output is LANE-CONSTANT: a pure function of the
+    /// resolved credential string and the `Own`/`Passthrough` mode, reading NOTHING else from the
+    /// [`SigningContext`] (not the body, not the timestamp, not the path). `true` lets the boot
+    /// path prebuild the exact header set once per lane and hand the request path a clone
+    /// (anthropic's api-key-vs-bearer shaping and openai's plain bearer qualify); a signer that
+    /// covers the request bytes (bedrock SigV4 reads body + timestamp + canonical URI) MUST stay
+    /// `false` — prebuilding it would sign one request and send that signature on every other.
+    /// Meaningless (and `false`) when `egress_auth_headers` is `None`.
+    pub egress_auth_lane_constant: bool,
+
     /// Whether a STREAMING response on this protocol reports token usage only when the request
     /// explicitly opted in (OpenAI Chat Completions' `stream_options.include_usage`). `false` — the
     /// default answer for every other dialect — means the stream reports usage unconditionally.

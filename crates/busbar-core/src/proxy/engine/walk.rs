@@ -573,7 +573,12 @@ pub(crate) async fn forward_once(
         timestamp_epoch: now(),
         upstream_creds: app.upstream_creds(),
     };
-    let auth = lane_auth_headers(&app.lanes[i], key, &signing_ctx);
+    // Mirrors the main forward path: Own-mode on a lane-constant credential clones the
+    // boot-prebuilt map; Passthrough / non-constant credentials build live.
+    let egress_auth = match (&app.lanes[i].prebuilt_auth, app.pool_upstream_creds(pool)) {
+        (Some(pre), crate::auth::UpstreamCreds::Own) => pre.clone(),
+        _ => convert_headers(lane_auth_headers(&app.lanes[i], key, &signing_ctx)),
+    };
 
     // Egress Content-Type — mirror the main forward path exactly (it was hardcoded APPLICATION_JSON
     // here, which sent an opaque multipart transcription / binary body upstream as application/json,
@@ -595,7 +600,7 @@ pub(crate) async fn forward_once(
         // The precomputed absolute URL (mirrors the main forward path): one buffer copy instead
         // of a per-request compose + WHATWG parse.
         .post(target.url.clone())
-        .headers(convert_headers(auth))
+        .headers(egress_auth)
         .header(CONTENT_TYPE, egress_ct)
         // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched
         // through the writer vtable (`ProtocolWriter::egress_user_agent`) — writer resolved above.

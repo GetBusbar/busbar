@@ -56,6 +56,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
     // dialect is extracted; see the field doc.
     egress_auth_headers: None,
+    egress_auth_lane_constant: false,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `ResponsesWriter` methods returned.
     requires_max_tokens: false,

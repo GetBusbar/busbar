@@ -669,8 +669,13 @@ pub fn build_app_from_config(
             &base_url,
         )
         .map_err(|e| format!("provider '{}': {e}", ld.provider))?;
+        // Prebuild the Own-mode auth headers iff the credential is lane-constant (static bearer /
+        // api-key / declared non-signing schemes). OAuth and SigV4 stay per-request by definition.
+        let prebuilt_auth =
+            egress_auth::prebuild_auth(&credential, &api_key, &proxy::host_from_base(&base_url));
         lanes.push(Lane {
             egress_targets,
+            prebuilt_auth,
             model: ld.model.clone(),
             provider: ld.provider.clone(),
             // Precompute the SigV4 signed-host once at boot (pure function of base_url) so the forward

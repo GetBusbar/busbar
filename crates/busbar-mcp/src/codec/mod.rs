@@ -105,6 +105,7 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
     // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
     egress_auth_headers: None,
+    egress_auth_lane_constant: false,
     // NO PATH INGRESS (model in the BODY): `has_model_in_url` is false below, so this dialect
     // registers no arrival and the catch-all resolves its operation through the `RequestHandler`
     // on the universal ingress. The arrival is no longer a decl field (Batch C-6).

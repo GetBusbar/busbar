@@ -661,7 +661,15 @@ impl LaneSpec {
             "bearer" => crate::config::ProviderAuth::Bearer,
             other => panic!("unexpected test auth style in LaneSpec: {other}"),
         });
+        let credential = crate::egress_auth::resolve(self.protocol.name(), auth);
         crate::state::Lane {
+            // The REAL boot prebuild (same as production appbuild), so the engine's prebuilt-vs-live
+            // header paths are both exercised by the fixture protocols' real credentials.
+            prebuilt_auth: crate::egress_auth::prebuild_auth(
+                &credential,
+                &self.api_key,
+                &crate::proxy::host_from_base(&self.base_url),
+            ),
             // The REAL boot precompute, so tests exercise the same egress-target table production
             // reads (and the probe/forward byte-identity proofs cover it). Test base URLs always
             // parse; a fixture that breaks that should fail loudly here.
@@ -675,7 +683,7 @@ impl LaneSpec {
             .expect("test lane egress URLs parse"),
             reasoning: false,
             prompt_caching: false,
-            credential: crate::egress_auth::resolve(self.protocol.name(), auth),
+            credential,
             model: self.model.clone(),
             provider: self.provider.clone(),
             signing_host: crate::proxy::host_from_base(&self.base_url),

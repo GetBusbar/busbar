@@ -80,6 +80,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
     // dialect is extracted; see the field doc.
     egress_auth_headers: None,
+    egress_auth_lane_constant: false,
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_core::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot

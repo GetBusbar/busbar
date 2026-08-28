@@ -1815,11 +1815,18 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             timestamp_epoch: attempt_wall,
             upstream_creds: app.upstream_creds(),
         };
-        // MEASUREMENT ONLY: isolates the auth-header build call specifically (SigV4 signing on
-        // Bedrock; a cheap static/bearer header build on every other lane, where this reads ~0).
-        let auth = busbar_timing::scope("egress_sigv4", || {
-            lane_auth_headers(&app.lanes[i], key, &signing_ctx)
-        });
+        // Own-mode dispatch on a lane-constant credential takes the boot-prebuilt header map (one
+        // buffer copy, byte-identical to the live build — see `Lane::prebuilt_auth`). Passthrough
+        // carries the CALLER's key and a non-constant credential (OAuth / SigV4) reads the request,
+        // so both build live, exactly as before.
+        // MEASUREMENT ONLY: `egress_sigv4` isolates the live auth-header build (SigV4 signing on
+        // Bedrock; a cheap static/bearer build on other non-prebuilt arms, where this reads ~0).
+        let egress_auth = match (&app.lanes[i].prebuilt_auth, upstream_creds) {
+            (Some(pre), crate::auth::UpstreamCreds::Own) => pre.clone(),
+            _ => convert_headers(busbar_timing::scope("egress_sigv4", || {
+                lane_auth_headers(&app.lanes[i], key, &signing_ctx)
+            })),
+        };
         drop(_cb_auth);
 
         // Egress request Content-Type: JSON bodies stay JSON (chat byte-identical). An OPAQUE body
@@ -1844,7 +1851,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // the per-request compose + WHATWG parse (and the bytes are proven identical to the
             // old composition by the egress-target differential test).
             .post(target.url.clone())
-            .headers(convert_headers(auth))
+            .headers(egress_auth)
             .header(CONTENT_TYPE, egress_ct)
             // Native-SDK User-Agent for the egress protocol. The shared client sets none, so without
             // this the backend sees a UA-less request — a proxy fingerprint. Dispatched through the

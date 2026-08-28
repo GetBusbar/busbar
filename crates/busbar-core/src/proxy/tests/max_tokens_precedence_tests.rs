@@ -6,6 +6,7 @@ use std::sync::Arc;
 // An Anthropic lane (its writer `requires_max_tokens()` is true) with a given per-model default.
 fn anthropic_lane(default_max_tokens: Option<u32>) -> Lane {
     Lane {
+        prebuilt_auth: None,
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,

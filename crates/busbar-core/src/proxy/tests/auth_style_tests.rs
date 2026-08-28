@@ -11,6 +11,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         other => panic!("unexpected test auth style: {other}"),
     });
     Lane {
+        prebuilt_auth: None,
         credential: crate::egress_auth::resolve("openai", resolved_auth),
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
