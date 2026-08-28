@@ -25,6 +25,13 @@
 //! busbar that refuses every MCP config, which would make the guard vacuous in the other direction,
 //! so `chain: [keys]` must still start and listen.
 
+// GATED ON `plane-mcp` as a whole file: every test here feeds the binary an `mcp:` config, and the
+// open-front-door refusal under test lives in `busbar-mcp`, compiled out with the plane. A
+// `--no-default-features` binary has no MCP front door to leave open, so neither the refusal nor
+// the control can mean anything there. Same shape as `docs_examples.rs` gating its whole file on
+// `auth-admin-tokens`, and the same reasoning as the `plane-mcp` gate in `cli_validate.rs`.
+#![cfg(feature = "plane-mcp")]
+
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
