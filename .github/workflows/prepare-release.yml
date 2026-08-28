@@ -4,11 +4,14 @@ name: Prepare release (on dev)
 # Dispatch this (from `dev`) with a version (e.g. 1.5.1) and it does every chore that used to be
 # manual + error-prone, commits the result to `dev`, and STOPS. It does NOT tag.
 #
-# The tag — and therefore the actual release (binaries, SBOM, OpenAPI asset, attestation, Docker,
-# and the downstream cascade) — is cut automatically by tag-on-main.yml when this bumped version
-# reaches `main`. Branch model: prepare here on dev → promote dev→qa (qa-gate.yml full ~2h gate) →
-# promote qa→main (tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version → release.yml +
-# docker.yml + 19-repo dispatch).
+# Branch model (the qa/main split): prepare here on dev → promote dev→qa, where EVERYTHING is
+# built and proven (ci.yml full tier + qa-gate.yml's full plugin soak + release-stage.yml, which
+# builds all five binaries onto a DRAFT release, stages the PGO Docker image under a throwaway
+# `staging-<sha12>` tag, runs every verifier, and records the staged digest) → fast-forward
+# qa→main, where release.yml PROMOTES ONLY: it re-verifies the recorded digest and then tags,
+# publishes the qa-built draft, retags the staged image as X.Y.Z + latest (no rebuild — main
+# ships the exact bytes qa verified), and fans out. Iterate on qa as many times as it takes; each
+# push re-stages, and only the iteration fast-forwarded to main ever ships.
 #
 # What it automates (each of these bit us at least once):
 #   1. Bump crates/busbar/Cargo.toml + Cargo.lock.

@@ -3,7 +3,9 @@
 
 WHY THIS EXISTS AS A DERIVATION AND NOT AS A LIST.
 
-`ci.yml` and `release.yml` each boot Postgres and Valkey as service containers, pinned by digest.
+`ci.yml` and `release-stage.yml` each boot Postgres and Valkey as service containers, pinned by
+digest. (The release `gate` job lived in release.yml until the qa/main split moved the whole build
+half to release-stage.yml on the `qa` branch; release.yml is promote-only now and boots nothing.)
 The GHCR mirror needs to know which images and which digests. The obvious thing is to write them
 into the mirror workflow too, and that would be the third copy of the same fact.
 
@@ -18,7 +20,7 @@ A service container's `image:` MUST be a literal. GitHub does not expose the `en
 workflows keep the literals and everything else DERIVES FROM THEM. That makes the workflows the
 single source of truth rather than one copy among several.
 
-AND IT ASSERTS THE TWO WORKFLOWS AGREE. `ci.yml`'s `check` job and `release.yml`'s `gate` job run
+AND IT ASSERTS THE TWO WORKFLOWS AGREE. `ci.yml`'s `check` job and `release-stage.yml`'s `gate` job run
 the identical test command against the identical services; if their pins ever diverge, the release
 gate and the per-push gate are testing against different databases while reporting the same thing.
 Nothing was checking that. Now a divergence is a build failure that names both digests.
@@ -41,7 +43,7 @@ import tempfile
 WORKFLOWS = ".github/workflows"
 # The workflows whose service containers are mirrored, and the job each pin must live in. Both are
 # named so a pin appearing in only one of them is caught rather than silently accepted.
-SOURCES = ("ci.yml", "release.yml")
+SOURCES = ("ci.yml", "release-stage.yml")
 
 # `image: <repo>:<tag>@sha256:<64 hex>` -- the digest half is REQUIRED by this pattern, so an
 # unpinned `image: postgres:16` does not match and is reported as missing rather than parsed as
@@ -133,10 +135,10 @@ def collect(root: str):
 
     # -- AGREEMENT, EXPRESSED OVER LOGICAL IMAGES RATHER THAN LITERAL REFS ---------------------
     #
-    # ci.yml's `check` and release.yml's `gate` run the identical test command, so they must run it
+    # ci.yml's `check` and release-stage.yml's `gate` run the identical test command, so they must run it
     # against identical bytes. Comparing the literal `image:` strings expresses that only while both
     # files name the same registry. After step 3 ci.yml says `ghcr.io/getbusbar/ci-postgres:16` and
-    # release.yml still says `postgres:16`, and a literal comparison then finds no shared key and
+    # release-stage.yml still says `postgres:16`, and a literal comparison then finds no shared key and
     # QUIETLY STOPS CHECKING -- the gate that stopped gating.
     #
     # So each file is reduced to an EFFECTIVE DIGEST per LOGICAL image ("postgres:16"), reached
@@ -179,7 +181,7 @@ def collect(root: str):
                 missing = SOURCES[0] if lk not in a else SOURCES[1]
                 problems.append(
                     "`%s` is pinned in one workflow but reached by neither pin nor mirror in %s. "
-                    "ci.yml's `check` and release.yml's `gate` run the identical test command and "
+                    "ci.yml's `check` and release-stage.yml's `gate` run the identical test command and "
                     "must run it against the identical services." % (lk, missing)
                 )
             elif a[lk][0] != b[lk][0]:
@@ -252,7 +254,7 @@ MUTATIONS = [
     ),
     (
         "an image is pinned in only one of the two workflows",
-        "release.yml",
+        "release-stage.yml",
         lambda t: re.sub(
             r"^\s*image: valkey/valkey:8@sha256:[0-9a-f]{64}\s*$", "        image: scratch@sha256:"
             + "b" * 64, t, count=1, flags=re.M

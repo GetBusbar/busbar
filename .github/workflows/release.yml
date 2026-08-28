@@ -1,75 +1,81 @@
 name: Release
 
-# NOTHING IS TAGGED UNTIL A CONSUMER HAS PROVEN IT WORKS.
+# THIS WORKFLOW BUILDS NOTHING. IT NAMES WHAT `qa` ALREADY PROVED.
 #
-# THE OLD ORDER, AND WHAT IT COST. `tag-on-main.yml` read the version out of Cargo.toml the moment a
-# commit landed on `main` and pushed `vX.Y.Z`. That tag push fired this workflow AND docker.yml in
-# parallel, so the version name existed in public before one byte had been built. Everything after
-# that was recovery, not prevention. v1.5.3 shipped exactly that way: the tag went up, the GitHub
-# Release published with FIVE of seven assets because two build legs died, `install.sh` 404'd on
-# Apple Silicon, and putting it right meant deleting the release AND the tag and re-cutting.
-# Meanwhile docker.yml never produced `getbusbar/busbar:1.5.3` at all while the docs told users to
-# pin it.
+# THE SPLIT, AND THE OWNER'S WORDS THAT DEFINE IT (2026-08-27): "push to dev, fast builds and
+# tests; push to qa, everything is done and tested; push to main and it just tags and releases
+# what was built in qa. going to qa is identical PGO build just not finalized and pushed. we
+# shouldn't be building again on main as that build is not technically what we QA'd."
 #
-# AND THE CONSTRAINT THAT MAKES THIS NECESSARY RATHER THAN MERELY TIDIER. Docker Hub has TAG
-# IMMUTABILITY enabled on getbusbar/busbar. A published tag CANNOT be overwritten. So a broken
-# `1.5.3` is PERMANENT, and the remedies are deleting the tag -- which has previously required owner
-# scope that was not available -- or burning a version number. Under the old order there was no
-# point at which a bad release could be abandoned quietly, because the name was minted first.
+# Before the split this file did everything on the push to main: plan, gate, build all five
+# binaries, stage the image, verify, then promote. The order inside the run was right -- nothing
+# public before verification -- but the bytes were BORN on the main push, so whatever soaked on
+# `qa` (qa-gate's multi-hour plugin gate, benchmarking against the staged image, any manual
+# testing) was evidence about a DIFFERENT build. "The rebuild should be identical" is the exact
+# reasoning that has already cost this project twice (the two-build-path release-key gap; the
+# 1.5.3-era rebuild-instead-of-retag), so the build moved wholesale to release-stage.yml on the
+# push to `qa`, and this file became promote-only. Every compiler invocation, every docker build,
+# every artifact upload and every verifier of staged bytes lives THERE now. What remains here is
+# exactly the set of steps that mint user-facing names from already-verified state:
 #
-# THE ORDER NOW:
+#   plan            read the version from Cargo.toml (same read as before), refuse if the name is
+#                   already taken anywhere. A main push that cuts nothing (docs after a release)
+#                   is still a safe no-op.
+#   branch-green    wait for EVERY check on this commit to conclude and be green -- and on this
+#                   branch that set now INCLUDES qa-gate and the Release stage run, because
+#                   qa->main must be a fast-forward, so main's HEAD *is* the qa commit those runs
+#                   certified. "We repeat until qa is green, then push to main" is enforced here
+#                   structurally: a main push whose sha has no green qa evidence cannot proceed.
+#   resolve-staged  THE SEAM. Look up the successful `Release stage` run for THIS EXACT SHA, pull
+#                   its `staged-manifest` record (version, qa sha, staging tag, manifest digest),
+#                   and re-derive every claim in it from the outside: the registry must still
+#                   serve that digest under the staging tag, the provenance attestation must
+#                   verify, the draft release must exist, still be a draft, be anchored to this
+#                   sha, and carry assets. Absent, stale, expired or contradicted -> REFUSE.
+#                   There is no fallback build. Fail closed, always.
+#   promote-image   manifest-only retag of the RECORDED digest to `X.Y.Z` + `latest` on both
+#                   registries (docker.yml's promote primitive). The image that ships is
+#                   bit-identical to the one qa verified, benchmarked and soaked -- that identity
+#                   is the entire point of the split.
+#   promote-release push the git tag at this sha, flip the qa-built draft to published + latest,
+#                   then re-derive all of it from outside and fail loud if any name did not move.
+#   notify / discord / consumer-verification -- the fan-out and the public sweep, unchanged.
 #
-#   plan            read the version from Cargo.toml. Refuse if that version is ALREADY released
-#                   anywhere (git tag, non-draft release, or a Docker Hub tag we could never
-#                   overwrite). Mint a throwaway name, `staging-<sha>`.
-#   gate            the full suite, on the exact commit being released.
-#   draft           create the GitHub Release as a DRAFT. Draft assets have real, downloadable URLs
-#                   -- they can be fetched and EXECUTED -- but a draft does not resolve as
-#                   `releases/latest`, is not on the releases page, and creates NO git tag.
-#   build+attach    binaries, SBOM, OpenAPI, provenance, all onto the draft.
-#   stage-image     docker.yml pushes the multi-arch image under `staging-<sha>` and NOTHING else.
-#                   Really pullable, really runnable, and no user is looking at that name.
-#   verify-assets   the draft owes every asset the platform manifest names.
-#   verify-staged   THE GATE. verify-deploy.yml in `staging` mode against those real artifacts:
-#                   `docker rmi` then pull FRESH, boot the container, download and EXECUTE the
-#                   release binary, read `--version`, run the documented quickstart, prove the
-#                   attestation verifies, prove every expected asset really downloads.
-#   promote-image   ONLY ON GREEN. Manifest-only retag of the exact staged digest to `X.Y.Z`, then
-#                   `latest`, on both registries. No rebuild, so the promoted image is the one that
-#                   was verified rather than a second build that ought to match.
-#   promote-release push the git tag, flip the draft to published + latest, then RE-DERIVE all of it
-#                   from outside and fail loud if any one name did not move.
-#   notify /
-#   consumer-verification   the fan-out and the full public-facing sweep, unchanged.
+# WHAT A FAILURE LEAVES BEHIND, SAME PROPERTY AS BEFORE, NOW CHEAPER. Anything red up to and
+# including resolve-staged leaves: no git tag, no listed release, no X.Y.Z container tag, no
+# fan-out. And because nothing was built here, the retry after fixing the problem costs seconds,
+# not the ~40-minute PGO rebuild the old shape re-spent on every recovery.
 #
-# WHAT A FAILURE LEAVES BEHIND, WHICH IS THE WHOLE POINT. If anything up to and including
-# `verify-staged` fails: no git tag exists, no release is listed (the draft is invisible and
-# deletable), no `X.Y.Z` container tag was ever minted so nothing immutable was burned, no downstream
-# repo was notified, and `latest` still points where it did. The next attempt is a CLEAN RETRY, not
-# a recovery. That is the safe direction, and it is the direction the old order could not offer.
+# THE FAST-FORWARD CONTRACT, STATED AS THE OPERATING RULE. Promote qa->main with a fast-forward
+# (git push origin qa:main, or a fast-forward merge). resolve-staged finds the staged record BY
+# HEAD SHA, so a merge commit, a direct commit to main, or a cherry-pick has no record and is
+# REFUSED -- deliberately: a commit that never sat on qa is a commit whose bytes were never
+# staged, and there is nothing honest to promote for it. The refusal message says exactly this.
 #
-# WHAT IT COSTS, STATED HONESTLY. A release becomes visible later -- the staged verification adds
-# roughly 15 to 25 minutes between "the artifacts exist" and "users can see them", on top of a
-# pipeline already dominated by the two-arch PGO builds. And the promote is one more step that can
-# fail. Both are priced in deliberately: a slow release is an inconvenience, an immutable broken tag
-# is permanent.
+# THE ITERATION LOOP, FROM THIS SIDE. Each qa push re-stages: fresh sha, fresh staging-<sha12>,
+# fresh digest, fresh record, the shared draft re-filled and re-anchored. Only the iteration that
+# main's HEAD lands on can resolve; every earlier record is unreachable by construction. Nothing
+# needs cleaning up between iterations for correctness (stale registry staging tags accumulate --
+# see release-stage.yml's retention note).
 #
-# ONE MECHANISM OWNS TAGGING. `tag-on-main.yml` is GONE; its version read and its idempotency guard
-# live in `plan` below. docker.yml has no tag trigger and no `type=semver` line. Every user-facing
-# name -- the git tag, the GitHub Release, `X.Y.Z` and `latest` on both registries -- is created by
-# the two promote jobs at the bottom of this file and nowhere else.
+# ONE MECHANISM OWNS TAGGING, unchanged: every user-facing name -- the git tag, the published
+# GitHub Release, `X.Y.Z` and `latest` on both registries -- is created by the two promote jobs
+# below and nowhere else. docker.yml has no tag trigger; release-stage.yml can only emit
+# `staging-*`. scripts/release-order-lint.py asserts both directions, including the new one this
+# file introduces: NOTHING IN THIS FILE MAY BUILD.
 on:
-  # LANDING ON `main` IS STILL THE RELEASE TRIGGER. What changed is that it no longer goes through a
-  # tag: this workflow runs on the branch push, and the tag is an OUTPUT of a successful run rather
-  # than its input.
+  # LANDING ON `main` IS STILL THE RELEASE TRIGGER, and the tag is still an OUTPUT of a green run,
+  # never an input. What changed is what the run does: it promotes qa's recorded bytes instead of
+  # rebuilding them.
   push:
     branches: [main]
   # Manual re-run of the same commit after fixing whatever went red. Safe because `plan` refuses a
-  # version that is already released and every step below is idempotent against a re-run.
+  # version that is already released, resolve-staged is a pure read, and every promote step below
+  # is idempotent against a re-run.
   workflow_dispatch:
 
 # Serialize. A burst of pushes to main must not put two runs into the promote phase for the same
-# version. (This replaces tag-on-main.yml's `concurrency: tag-on-main`.)
+# version.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -219,7 +225,17 @@ jobs:
       # Workflows that must have RUN and CONCLUDED on this commit. An empty check set is the
       # vacuous-pass trap: no runs found reads as "nothing is red". These names are asserted
       # PRESENT, so a commit that CI never saw is refused rather than waved through.
-      REQUIRED_WORKFLOWS: "CI"
+      #
+      # `qa-gate` AND `Release stage` ARE REQUIRED NOW, AND THAT IS THE PROMOTE HALF OF THE SPLIT.
+      # qa->main must be a fast-forward, so main's HEAD is the very sha those two ran against on
+      # `qa`. Requiring them PRESENT and GREEN here is what turns "we repeat until qa is perfect
+      # and green, then we push to main" from a team habit into a property of the graph: a main
+      # push whose commit skipped qa (merge commit, direct push) has neither run and is refused
+      # before resolve-staged even looks for a record; a commit whose qa soak went red is refused
+      # by conclusion. (A main-push CI completion also spawns a qa-gate run whose jobs all skip --
+      # that concludes 'success' and is harmless; the qa-push run on this same sha is the one that
+      # carries the verdict, and unique_by(.name) sees red if either is red.)
+      REQUIRED_WORKFLOWS: "CI,qa-gate,Release stage"
       # WORKFLOWS THAT ARE NOT CHECKS OF THIS COMMIT, AND THIS IS NOT AN EXCEPTION LIST.
       #
       # THE ONLY ARGUMENT FOR EITHER NAME BELOW IS THAT IT DOES NOT ANSWER THIS GATE'S QUESTION.
@@ -259,10 +275,10 @@ jobs:
       # never be a reason to stop asking it -- that is the permission-to-ignore mechanism this whole
       # gate exists to remove.
       #
-      # ITS VERDICT IS NOT IGNORED, IT IS TAKEN AT THE POINT WHERE IT MEANS SOMETHING. verify-deploy
-      # runs inside this release graph twice, both times against the artifact actually being cut:
-      # as `verify-staged`, which GATES the promote, and as `consumer-verification`, which turns
-      # this run red and opens a labelled issue.
+      # ITS VERDICT IS NOT IGNORED, IT IS TAKEN AT THE POINTS WHERE IT MEANS SOMETHING. verify-deploy
+      # runs against the artifact actually being cut twice across the split: as release-stage.yml's
+      # `verify-staged` on qa, which GATES the record the promote consumes, and as
+      # `consumer-verification` below, which turns this run red after publication.
       NOT_COMMIT_CHECKS: "Release,Verify deploy"
     steps:
       - name: Every check on this commit must have concluded, and every conclusion must be green
@@ -317,12 +333,16 @@ jobs:
 
           # EVERY REQUIRED WORKFLOW MUST BE PRESENT. Without this the whole gate is vacuous on a
           # commit no workflow ever ran against: zero runs, zero red runs, green.
-          for w in $REQUIRED_WORKFLOWS; do
+          # Comma-split via read, NOT `for w in $VAR`: "Release stage" contains a space, and
+          # word-splitting a comma-joined list would quietly assert the presence of the workflows
+          # "CI,qa-gate,Release" and "stage" -- one that never matches and one that never exists.
+          while IFS= read -r w; do
+            [ -n "$w" ] || continue
             if [ "$(jq --arg w "$w" '[.[] | select(.name == $w)] | length' /tmp/runs.json)" = 0 ]; then
               echo "::error::REFUSING TO RELEASE: no '${w}' run exists for ${SHA}, so this commit's test status is UNKNOWN. A commit CI never saw is not a green commit. Nothing has been built, no tag exists and nothing is public."
               fail=1
             fi
-          done
+          done < <(printf '%s\n' "$REQUIRED_WORKFLOWS" | tr ',' '\n')
 
           # `skipped` and `neutral` are green: a workflow that legitimately did not apply to this
           # commit (path filters, an `if:` that was false) has not failed. `cancelled`, `failure`,
@@ -364,785 +384,150 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "::notice::${SHA:0:7} is green across every check. Proceeding to build."
 
-  # ── TEST GATE ────────────────────────────────────────────────────────────────────────────────
-  # Nothing is built, signed, attested or published until the suite passes ON THE COMMIT BEING
-  # RELEASED.
+  # -- RESOLVE THE STAGED RECORD: THE ONLY INPUT THE PROMOTE MAY CONSUME --------------------------
   #
-  # `ci.yml` is armed on pushes to main/dev/qa and on PRs. This job existed because the release used
-  # to run off a TAG push, which ci.yml does not see, so test gating depended entirely on someone
-  # having pushed the same commit to a branch first and on that run having been green -- a
-  # convention, not a gate. The release now runs on the main push itself, so ci.yml does see this
-  # commit; the gate stays anyway, and deliberately. A separate run being green is still a fact
-  # about a DIFFERENT run that nothing in this graph depends on, and the build-provenance
-  # attestation below would otherwise certify an artifact whose suite never ran in the run that
-  # attested it.
+  # release-stage.yml wrote a `staged-manifest` artifact -- version, qa sha, staging tag, manifest
+  # digest -- on its successful, verification-gated run. This job finds that record FOR THIS EXACT
+  # COMMIT and re-derives every claim in it from the outside before anything irreversible happens.
   #
-  # Mirrors `ci.yml`'s `check` job, including the live Postgres/Valkey service containers: without
-  # them the store roundtrip tests skip, and `CI` being set makes them hard-fail rather than skip
-  # silently, so dropping the services here would turn the gate red rather than hollow — but it
-  # would still be wrong to omit them, since that coverage is exactly what a release should prove.
-  gate:
-    name: gate (fmt · clippy · build · test)
-    # `branch-green` FIRST. Nothing is built for a release from a red commit, so the expensive part
-    # of the pipeline never starts on one either.
-    needs: [plan, branch-green]
-    runs-on: ubuntu-latest
-    services:
-      # PINNED BY DIGEST, NOT BY TAG. `postgres:16` and `valkey/valkey:8` are MOVING tags: Docker Hub
-      # re-points them at every patch, so the same commit gets different bytes on different days and
-      # a store-roundtrip failure could be caused by a database nobody in this repository changed.
-      # These service containers are load-bearing (without them the Postgres/Valkey roundtrip tests
-      # hard-fail rather than skip, which is deliberate), so what they resolve to has to be a fact
-      # about this commit, not about the calendar.
-      #
-      # WHAT A DIGEST PIN DOES NOT FIX, SAID PLAINLY SO NOBODY THINKS THE HOLE IS CLOSED: it does
-      # nothing about Docker Hub RATE LIMITS. The pull still goes to Docker Hub and an anonymous
-      # runner still gets the anonymous quota. The pin buys reproducibility; authentication is what
-      # buys quota. See the `credentials:` block below (release.yml) and the note in ci.yml.
-      #
-      # RE-PINNING: `docker buildx imagetools inspect postgres:16` prints the current digest. These
-      # are ordinary dependencies and should move on the same cadence as the rest -- if they go
-      # stale enough to matter, re-pin in the monthly-refresh PR.
-      postgres:
-        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
-        # AUTHENTICATED PULL, WHICH IS THE PART THAT ACTUALLY ADDRESSES RATE LIMITS. Docker Hub's
-        # anonymous quota is per source IP and GitHub's runner IPs are shared, so an anonymous pull
-        # can be throttled for reasons that have nothing to do with busbar -- and under the
-        # no-waiver rule that would be a red nobody can clear by fixing the software. These are the
-        # same credentials docker.yml already uses. Safe to reference unconditionally HERE because
-        # this workflow only triggers on a push to `main` and on workflow_dispatch, never on
-        # `pull_request`, so the secrets are always present; ci.yml cannot do the same without
-        # breaking fork PRs, where secrets are withheld.
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          POSTGRES_USER: busbar
-          POSTGRES_PASSWORD: busbar
-          POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U busbar"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      valkey:
-        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        # AUTHENTICATED PULL, WHICH IS THE PART THAT ACTUALLY ADDRESSES RATE LIMITS. Docker Hub's
-        # anonymous quota is per source IP and GitHub's runner IPs are shared, so an anonymous pull
-        # can be throttled for reasons that have nothing to do with busbar -- and under the
-        # no-waiver rule that would be a red nobody can clear by fixing the software. These are the
-        # same credentials docker.yml already uses. Safe to reference unconditionally HERE because
-        # this workflow only triggers on a push to `main` and on workflow_dispatch, never on
-        # `pull_request`, so the secrets are always present; ci.yml cannot do the same without
-        # breaking fork PRs, where secrets are withheld.
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
-        with:
-          components: rustfmt, clippy
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build
-        run: cargo build --workspace --locked --verbose
-      - name: Test
-        env:
-          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-          VALKEY_URL: redis://localhost:6379
-          # This is the release gate on the exact SHA being cut. Same sum-across-binaries floor as
-          # ci.yml's `check` and `windows` jobs: a suite that compiled to nothing must not let a
-          # release pass having tested nothing. MIN carries slack (unix runs a superset of the
-          # windows 4755 high-water); EXPECTED warns. PIPESTATUS[0] is cargo's own exit.
-          RELEASE_MIN_TESTS: "4700"
-          RELEASE_EXPECTED_TESTS: "4783"
-        run: |
-          set -uo pipefail
-          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/release-test.log"
-          rc=${PIPESTATUS[0]}
-          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/release-test.log" \
-                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
-                  | awk '{s+=$1} END {print s+0}')
-          echo "release gate: ${total} tests passed across the workspace (floor: ${RELEASE_MIN_TESTS}, expected: ${RELEASE_EXPECTED_TESTS})"
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::cargo test --workspace FAILED in the release gate (exit ${rc})."
-            exit "$rc"
-          fi
-          if [ "$total" -lt "$RELEASE_EXPECTED_TESTS" ]; then
-            echo "::warning::release gate ran ${total} tests, ${RELEASE_EXPECTED_TESTS} were expected."
-            echo "::warning::If tests were legitimately removed or merged, LOWER RELEASE_EXPECTED_TESTS in this job."
-            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
-          fi
-          if [ "$total" -lt "$RELEASE_MIN_TESTS" ]; then
-            echo "::error::the release gate ran ${total} tests, below its floor of ${RELEASE_MIN_TESTS}."
-            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
-            echo "::error::This is NOT a pass — a release must not be cut having tested nothing."
-            echo "::error::If the drop is intended, LOWER the RELEASE_MIN_TESTS floor in this job deliberately."
-            exit 1
-          fi
-
-  # -- THE DRAFT ------------------------------------------------------------------------------------
+  # LOOKUP IS BY HEAD SHA, AND THAT IS THE WHOLE TRUST MODEL. qa->main must be a fast-forward, so
+  # main's HEAD is literally the commit the stage run certified. The record is bound to the commit
+  # by the Actions API (that run's head_sha), not by a claim inside a file, and version agreement
+  # is a corollary rather than a hope: same sha, same Cargo.toml, same version read.
   #
-  # Created first so the parallel upload jobs have something to attach to (uploading from a matrix
-  # without a pre-existing release races -> "release not found").
+  # EVERY MISS IS A REFUSAL, NEVER A FALLBACK BUILD:
+  #   * no successful stage run for this sha  -> the commit was never staged (merge commit, direct
+  #     push, cherry-pick, or qa went red). Fix: fast-forward a GREEN qa commit to main.
+  #   * artifact expired or deleted           -> re-run release-stage.yml on the same qa sha; it
+  #     is idempotent and re-records the same digest.
+  #   * registry no longer serves the digest  -> the staging tag was overwritten or removed since
+  #     staging; the record is stale evidence. Re-stage.
+  #   * attestation fails to verify           -> the bytes cannot prove their build provenance;
+  #     nothing with that property may be named X.Y.Z.
+  #   * draft missing/published/mis-anchored  -> the release object does not match the iteration
+  #     being promoted. Re-stage (which re-anchors the draft) or investigate by hand.
   #
-  # `--draft` IS THE LOAD-BEARING FLAG, AND IT WAS VERIFIED END TO END ON A THROWAWAY REPO BEFORE
-  # THE EIGHT PLUGIN REPOS TOOK IT: a draft 404s from `releases/tags/<tag>`, does NOT resolve as
-  # `releases/latest`, and is absent from the public releases list -- yet `gh release upload` and
-  # `gh release view` still find it BY TAG, its assets have real downloadable URLs through the API,
-  # and `gh release edit --draft=false --latest` promotes it in place. So the artifacts are real
-  # enough to fetch and execute while the version is not yet a thing anyone can find. Core is the
-  # last repo to adopt this, not the pioneer.
-  #
-  # `--target` REPLACES `--verify-tag`. There IS no tag yet -- that is the point -- so the draft is
-  # anchored to the commit instead, and GitHub materialises `vX.Y.Z` at that commit when the draft
-  # is published. `promote-release` pushes the tag explicitly first anyway, so the two agree.
-  draft:
-    name: draft the release (invisible, no tag, real assets)
-    needs: [plan, gate]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # THE BODY NAMES WHAT CHANGED. `--generate-notes` alone produced a one-line compare link, so
-      # v1.5.3's published body did not mention that `--validate` now RESOLVES `env:`/`file:` secret
-      # references and exits 1 when one cannot resolve (boot behaviour unchanged). An operator
-      # deciding whether to take a config-affecting release could not learn that from the release.
-      # The CHANGELOG section for the version being cut is already written, already reviewed, and
-      # already the canonical answer, so the release body is now that section followed by the
-      # auto-generated commit/contributor notes rather than the notes alone.
-      #
-      # FAIL-SOFT, DELIBERATELY: a missing or unparseable CHANGELOG section must never block a
-      # release that is otherwise good. It degrades to the previous behaviour and says so in the log.
-      - name: Extract this version's CHANGELOG section for the release body
-        id: notes
-        env:
-          V: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          python3 - "$V" > /tmp/relnotes.md <<'PY'
-          import re, sys
-          version = sys.argv[1]
-          try:
-              text = open("CHANGELOG.md", encoding="utf-8").read()
-          except OSError:
-              sys.exit(0)
-          # Headings look like `## [1.5.3], 2026-08-08`. Capture through to the next `## `.
-          m = re.search(
-              r"^##\s*\[%s\][^\n]*\n(.*?)(?=^##\s|\Z)" % re.escape(version),
-              text, re.M | re.S)
-          if m:
-              sys.stdout.write(m.group(1).strip() + "\n")
-          PY
-          if [ -s /tmp/relnotes.md ]; then
-            echo "found=1" >> "$GITHUB_OUTPUT"
-            echo "CHANGELOG section for ${V} ($(wc -l < /tmp/relnotes.md) lines) will lead the release body."
-          else
-            echo "found=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::No CHANGELOG section found for ${V}; falling back to generated notes only." \
-                 "The release will still publish, but its body will not say what changed."
-          fi
-      - name: Create the DRAFT GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          SHA: ${{ needs.plan.outputs.sha }}
-        run: |
-          set -euo pipefail
-          # Idempotent: a re-run of the same commit reuses the existing draft rather than failing or
-          # creating a second one. A NON-draft release here means the version is already out, which
-          # `plan` should have caught; refuse rather than silently re-upload over a live release.
-          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo none)"
-          case "$state" in
-            true)  echo "Reusing the existing DRAFT ${TAG}."; exit 0 ;;
-            false) echo "::error::${TAG} is already PUBLISHED. Refusing to re-upload assets onto a live release."; exit 1 ;;
-          esac
-          notes_args=(--generate-notes)
-          [ "${{ steps.notes.outputs.found }}" = "1" ] && notes_args+=(--notes-file /tmp/relnotes.md)
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "busbar ${TAG}" \
-            --target "$SHA" \
-            --draft \
-            "${notes_args[@]}"
-          echo "::notice::${TAG} drafted at ${SHA:0:7}. It is NOT listed, does NOT resolve as releases/latest, and NO git tag exists."
-
-  # Generate a CycloneDX Software Bill of Materials (every dependency + version +
-  # license) and attach it to the draft. Lets downstream users answer "is the
-  # crate in advisory X inside busbar v1.0.1?" without decompiling, and satisfies
-  # enterprise/government (EO 14028) procurement that increasingly requires an SBOM.
-  sbom:
-    needs: [plan, draft]
-    name: sbom (cyclonedx)
-    runs-on: ubuntu-latest
-    env:
-      TAG: ${{ needs.plan.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx --locked
-      - name: Generate SBOM
-        run: cargo cyclonedx --format json --override-filename "busbar-${TAG}.cdx"
-      - name: Attach SBOM to the draft
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # cargo-cyclonedx writes the SBOM next to the package's Cargo.toml.
-          sbom="$(find . -name "busbar-${TAG}.cdx.json" -print -quit)"
-          test -n "$sbom" || { echo "SBOM not found"; exit 1; }
-          gh release upload "$TAG" "$sbom" --repo "$GITHUB_REPOSITORY" --clobber
-
-  # Publish the admin API's OpenAPI 3.1 document as a release asset. The gateway generates this doc
-  # from its typed route contract (and serves it live at GET /api/v1/admin/openapi.json), but that
-  # needs a running, authenticated instance. Attaching a static, version-stamped copy to the Release
-  # lets anyone generate a client (busbarctl, the Terraform provider, SDKs) or diff the API surface
-  # release-over-release WITHOUT running busbar. The document is emitted by the `emit_openapi_artifact`
-  # test — the same `openapi_doc()` the gateway serves — so publishing needs no user-facing CLI flag.
-  openapi:
-    needs: [plan, draft]
-    name: openapi (3.1 document)
-    runs-on: ubuntu-latest
-    env:
-      TAG: ${{ needs.plan.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - name: Emit the OpenAPI document from the release code
-        # `openapi_doc()` (and the `emit_openapi_artifact` test) live behind the CI-ONLY
-        # `openapi-schema` feature — schemars is not in the shipped binary. The generated doc is the
-        # typed one; it equals the committed `openapi.json` the runtime serves (drift-locked by the
-        # `openapi_json_matches_committed_file` test in ci.yml).
-        env:
-          BUSBAR_EMIT_OPENAPI: ${{ github.workspace }}/busbar-openapi-${{ needs.plan.outputs.tag }}.json
-        run: cargo test -p busbar -p busbar-core --bins --lib --features openapi-schema emit_openapi_artifact -- --nocapture
-      - name: Validate it is a well-formed OpenAPI 3.1 document
-        run: |
-          doc="${GITHUB_WORKSPACE}/busbar-openapi-${TAG}.json"
-          test -s "$doc" || { echo "OpenAPI doc is empty"; exit 1; }
-          jq -e '.openapi | startswith("3.1")' "$doc" > /dev/null \
-            || { echo "not an OpenAPI 3.1 document"; exit 1; }
-      - name: Attach OpenAPI document to the draft
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$TAG" "${GITHUB_WORKSPACE}/busbar-openapi-${TAG}.json" \
-            --repo "$GITHUB_REPOSITORY" --clobber
-
-  # THE PLATFORM LIST, IN EXACTLY ONE PLACE. This job emits the build matrix AND the exact set of
-  # asset filenames that matrix is contractually obliged to produce, from one literal. `upload-assets`
-  # consumes the first; `verify-assets` consumes the second.
-  #
-  # WHY IT IS A JOB AND NOT A LITERAL MATRIX. v1.5.3 published with FIVE assets where seven were
-  # expected: `busbar-aarch64-apple-darwin.tar.gz` and `busbar-x86_64-unknown-linux-gnu.tar.gz` were
-  # both missing, which is Apple Silicon Mac and x86_64 Linux, the two most common platforms there
-  # are. `curl -fsSL https://getbusbar.com/install.sh | sh` returned a 404 on Apple Silicon (the
-  # documented one-line install, dead on the most common developer machine) and two of five download
-  # links on the live /download/ page 404'd. The guard below asserted `assets != 0`, which a
-  # five-asset release passes comfortably. A count can never see a MISSING platform; only a name can.
-  #
-  # Deriving both lists here means adding a platform is one edit and its verification comes along
-  # automatically. A hardcoded expected-names list in the verifier would be a second place to forget,
-  # which is the same defect one level up.
-  targets:
-    name: release target matrix (single source of truth)
+  # Rebuilding here as a "recovery" is the one move this design bans outright: a rebuild would
+  # mint names over bytes nothing verified, which is the pre-split defect wearing a fix's clothes.
+  resolve-staged:
+    name: resolve the staged record (refuse if absent, stale or contradicted)
     needs: [plan, branch-green]
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.emit.outputs.matrix }}
-      assets: ${{ steps.emit.outputs.assets }}
-      # The bare list of target triples, for the set-equality job. It is emitted HERE, from the same
-      # parse as the build matrix, so "the set that was supposed to be produced" and "the set that
-      # was supposed to be verified" are literally the same computation and cannot drift apart.
-      targets: ${{ steps.emit.outputs.targets }}
+      staging_tag: ${{ steps.r.outputs.staging_tag }}
+      digest: ${{ steps.r.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
-      - name: Emit the target matrix and the asset names it must produce
-        id: emit
-        env:
-          TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-          spec = json.load(open(".github/release-targets.json"))
-          tag = os.environ["TAG"]
-          # EVERY per-target difference travels in the matrix as a PARAMETER. The build workflow has
-          # no `if:` and no second path, so anything a target needs has to arrive this way or not at
-          # all -- that is what makes "no way for 1 to be different" a property of the graph rather
-          # than a promise in a comment.
-          fields = ("target", "runner", "pgo", "archive", "plugin_asset")
-          # ONLY THE PUBLISHED TARGETS. `.github/release-targets.json` also declares targets that are
-          # NOT release downloads: the two musl binaries (`published: false`, `packaged_into` an
-          # image) and the two `kind: image` entries, whose "target" is not a Rust triple and whose
-          # `archive` is `oci`. Iterating the file unfiltered put those four into the BUILD matrix
-          # (build-artifact.yml would be asked to `cargo build --target image-linux-amd64`) and into
-          # the asset list `verify-assets` asserts is present on the GitHub Release -- assets that,
-          # by declaration, are never uploaded. `published` is the field that says which is which;
-          # scripts/release-gate/lib.sh's `published_targets()` and release-fleet.yml already filter
-          # on it, and this is the same predicate.
-          #
-          # STRICT, NOT `.get(..., True)`: a new target that forgets the flag must stop the release
-          # here rather than drift into or out of the matrix silently.
-          missing = [t["target"] for t in spec["targets"] if "published" not in t]
-          if missing:
-              raise SystemExit(
-                  "release-targets.json: these targets declare no `published` flag: %s. Every target "
-                  "must say whether it is a release download or an input to something else."
-                  % ", ".join(missing))
-          shipped = [t for t in spec["targets"] if t["published"]]
-          inc = [{k: t[k] for k in fields} for t in shipped]
-          assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in shipped]
-          assets += [a.replace("{tag}", tag) for a in spec["metadata_assets"]]
-          # A FLOOR, BECAUSE A LOOP OVER A DISCOVERED SET WITH NO FLOOR PASSES WHEN THE SET IS EMPTY.
-          # Both the build matrix and the verify matrix are enumerated from this output; a truncated
-          # or mis-parsed manifest would otherwise build nothing, verify nothing, and report green
-          # all the way to a published release with no assets on it.
-          if len(inc) < 5:
-              raise SystemExit(
-                  "release-targets.json declares %d PUBLISHED targets; busbar ships 5. Refusing to "
-                  "run a build matrix and a verify matrix over a set this small: an empty "
-                  "expectation list passes for a release that published nothing." % len(inc))
-          print("matrix=" + json.dumps({"include": inc}))
-          print("targets=" + json.dumps(sorted(t["target"] for t in shipped)))
-          print("assets=" + json.dumps(assets))
-          PY
-          cat "$GITHUB_OUTPUT"
-
-  # -- THE BUILD: ONE PIPELINE, ONE STEP, FIVE TARGETS ---------------------------------------------
-  #
-  # This job used to be the build. It had TWO build steps -- scripts/pgo-build.sh behind
-  # `if: matrix.pgo` for the host-native targets, upload-rust-binary-action behind `if: !matrix.pgo`
-  # for the cross targets -- two packaging steps and two upload steps, each pair gated on the same
-  # flag. Both build steps carried `BUSBAR_RELEASE_PUBKEY` in their own `env:` block. Both were
-  # green. And busbar-aarch64-unknown-linux-gnu shipped with no embedded release key in 1.5.1, 1.5.2
-  # and 1.5.3, so on ARM Linux every correctly-signed first-party plugin was refused.
-  #
-  # The key was never the point: the org variable was set the whole time. TWO BUILD PATHS PRODUCING
-  # ONE RELEASE is the point. A property established on one path is unproven on the other, silently
-  # and permanently, and no amount of care on either path fixes that.
-  #
-  # Owner, 2026-08-08: "should just be 1 build pipeline that takes what its building: arm, windows,
-  # mac, but it does the same thing for each no way for 1 to be different".
-  #
-  # So the build is now .github/workflows/build-artifact.yml: one reusable workflow that builds ONE
-  # artifact, with no `if:` on any step. Everything a target needs is a matrix VALUE passed in as an
-  # input -- runner label, whether PGO applies, archive extension -- read from
-  # .github/release-targets.json by the `targets` job above, which is the same single source of
-  # truth that computes the asset-name list `verify-assets` enforces.
-  #
-  # `fail-fast: false` is deliberate and is why `verify-assets` below runs on `!cancelled()`: one
-  # target failing must not cancel the other four, because the verifier's job is to NAME the
-  # platforms that are missing, and it cannot name what was never attempted.
-  upload-assets:
-    name: build
-    needs: [plan, draft, targets]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
-    uses: ./.github/workflows/build-artifact.yml
-    with:
-      target: ${{ matrix.target }}
-      runner: ${{ matrix.runner }}
-      archive: ${{ matrix.archive }}
-      tag: ${{ needs.plan.outputs.tag }}
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    secrets: inherit
-
-  # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
-  # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
-  # (sqlite/postgres/valkey) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
-  # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
-  # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
-  # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
-  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-valkey,
-  # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
-  # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
-  # on a version tag, independently versioned from busbar itself. busbar's own release publishes
-  # ONLY the core binary — no plugin tarball, signed or otherwise, is uploaded from this workflow.
-  # The Docker image (docker.yml) ships with zero plugins pre-installed, same as the binary.
-  #
-  #   - No trust argument favors bundling. First-party verification comes from the BUSBAR_SIGN_KEY
-  #     signature + the embedded BUSBAR_RELEASE_PUBKEY, not from which repo's Release page hosts the
-  #     file — a tarball signed by the same key and published from a plugin's own repo verifies
-  #     exactly as first-party as one uploaded here would.
-  #   - Publishing the SAME plugin from two different repos' Releases is a real provenance/trust
-  #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
-  #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
-  #
-  # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
-  # story per plugin kind.
-
-  # -- THE IMAGE, UNDER A NAME NOBODY PINS ---------------------------------------------------------
-  #
-  # docker.yml builds the multi-arch image and pushes it as `staging-<sha>` and NOTHING else. It is
-  # a real push to the real registry: `docker pull getbusbar/busbar:staging-<sha>` works, the image
-  # boots, the binary inside runs, and the OCI version label already reads X.Y.Z. What it is not is
-  # a name any user, any doc, or any Helm chart refers to.
-  #
-  # It runs in PARALLEL with the binary matrix, not after it: they are independent artifacts and the
-  # two-arch PGO container build is the long pole. `verify-staged` waits for both.
-  stage-image:
-    name: stage the image (staging tag only, nothing user-facing)
-    needs: [plan, gate]
-    uses: ./.github/workflows/docker.yml
-    with:
-      staging_tag: ${{ needs.plan.outputs.staging_tag }}
-      label_version: ${{ needs.plan.outputs.version }}
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    secrets: inherit
-
-  # PHANTOM-RELEASE GUARD: assert the draft actually carries every asset before anything is
-  # promoted. The per-target build/upload jobs run with fail-fast:false, and `draft` always makes the
-  # (initially empty) release up front, so a build/pack failure on EVERY target (e.g. a stale
-  # Cargo.lock tripping `--locked`) leaves a release with ZERO assets: a "phantom" that silently
-  # breaks busbar's plugin-registry-gate. This job fails the run loud if assets are missing.
-  #
-  # IT NOW GUARDS SOMETHING IT COULD NOT GUARD BEFORE. When this ran against a PUBLISHED release it
-  # could only report the damage; the tag and the release page already existed and recovery meant
-  # deleting both. Running it against the DRAFT means a red verdict here stops the release before a
-  # single user-facing name is minted.
-  verify-assets:
-    name: the draft owes every asset the manifest names
-    needs: [plan, targets, upload-assets, sbom, openapi]
-    runs-on: ubuntu-latest
-    # `!cancelled()` IS THE POINT OF THIS LINE, and it is the second half of the 1.5.3 defect.
-    # `upload-assets` runs `fail-fast: false`, so when two of its five legs failed the JOB failed --
-    # and a `needs:` on a failed job SKIPS the dependent by default. So the one guard that existed to
-    # notice a broken release was skipped precisely because the release was broken. A verifier that
-    # only runs when everything already worked is not a verifier. This one runs whenever the run was
-    # not cancelled, so a partial matrix produces a RED verify-assets naming the platforms that are
-    # missing, instead of a grey one naming nothing.
-    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
-    steps:
-      - name: Assert the draft carries every asset the matrix owes it
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED: ${{ needs.targets.outputs.assets }}
-          TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          set -euo pipefail
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[] | "\(.name)\t\(.size)"' > /tmp/got.tsv || : > /tmp/got.tsv
-          echo "Draft $TAG carries these assets:"
-          cat /tmp/got.tsv
-          python3 - <<'PY'
-          import json, os, sys
-          expected = json.loads(os.environ["EXPECTED"])
-          got = {}
-          for line in open("/tmp/got.tsv"):
-              line = line.rstrip("\n")
-              if not line:
-                  continue
-              name, _, size = line.partition("\t")
-              got[name] = int(size or 0)
-
-          missing = [a for a in expected if a not in got]
-          # A NAME IN THE ASSET LIST IS NOT A USABLE ARTIFACT: GitHub creates the row as soon as the
-          # upload starts, so a 0-byte or truncated upload lists identically to a good one. 1 KiB is
-          # far below any real busbar tarball and far above an empty or header-only file.
-          empty = [a for a in expected if a in got and got[a] < 1024]
-
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          lines = ["### Draft asset verification", "", "| asset | bytes | verdict |", "| --- | --- | --- |"]
-          for a in expected:
-              if a not in got:
-                  lines.append("| `%s` | - | MISSING |" % a)
-              elif got[a] < 1024:
-                  lines.append("| `%s` | %d | TOO SMALL |" % (a, got[a]))
-              else:
-                  lines.append("| `%s` | %d | ok |" % (a, got[a]))
-          extra = sorted(set(got) - set(expected))
-          if extra:
-              lines += ["", "Also present (not required): " + ", ".join("`%s`" % e for e in extra)]
-          if summary:
-              open(summary, "a").write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-
-          tag = os.environ["TAG"]
-          if not got:
-              print("::error::PHANTOM RELEASE: the %s draft has 0 assets. Every build/pack target "
-                    "failed to upload. Nothing is public and no tag exists, so this is a clean "
-                    "retry: fix the build (check Cargo.lock freshness vs --locked and the plugin "
-                    "cdylib build step) and re-run this workflow." % tag, file=sys.stderr)
-              sys.exit(1)
-          if missing or empty:
-              if missing:
-                  print("::error::INCOMPLETE RELEASE: the %s draft is missing %d of %d required "
-                        "asset(s): %s. Each missing name is a platform whose users would get a 404 "
-                        "from install.sh and from the /download/ page. Nothing was promoted, so fix "
-                        "that target's leg in `upload-assets` and re-run: no tag to delete, no "
-                        "release to unpublish." %
-                        (tag, len(missing), len(expected), ", ".join(missing)), file=sys.stderr)
-              if empty:
-                  print("::error::TRUNCATED RELEASE: the %s draft has these assets at under 1 KiB, "
-                        "which means the upload was cut short: %s" % (tag, ", ".join(empty)),
-                        file=sys.stderr)
-              sys.exit(1)
-          print("All %d required assets present and plausibly sized." % len(expected))
-          PY
-
-  # -- THE PER-ARTIFACT CONTRACT: 100% OR 0%, FOR EVERY ARTIFACT -----------------------------------
-  #
-  # `verify-assets` above answers "is every name present, and plausibly sized". That is a question
-  # about the RELEASE. This job answers "is this artifact everything a busbar binary must be", which
-  # is a question about the ARTIFACT, and it is the question 1.5.3 never asked: five assets were
-  # present and correctly sized, and one of them refused every signed plugin on its platform.
-  #
-  # ONE VERIFIER, ONE ARTIFACT, EVERY ROW. scripts/verify-artifact.py takes (artifact, target) and
-  # checks EVERY row of .github/artifact-contract.json that applies to that target. The rows are
-  # data, so adding a property is one entry in that file plus its check function -- and it then
-  # applies to all five targets automatically, with no per-target list for a platform to be
-  # forgotten from. The verifier refuses to run at all unless the declared row ids and the
-  # implemented checks are the SAME SET in both directions, so a row nobody implemented cannot look
-  # like a row that passed.
-  #
-  # IT RUNS ON THE TARGET'S OWN NATIVE RUNNER, and that is what makes the contract uniform. Because
-  # every target now builds natively, every artifact can be EXECUTED where it is verified: the
-  # aarch64-linux asset runs on ubuntu-24.04-arm, the Intel-mac asset on macos-15-intel, the Windows
-  # asset on windows-latest. So the executable rows -- the real signed first-party plugin, the
-  # anchored --version, the documented quickstart -- run for EVERY platform. Nothing is statically
-  # approximated because a runner could not execute it, and there is no per-platform subset.
-  #
-  # THE ARTIFACT IS DOWNLOADED BACK FROM THE DRAFT, NOT REUSED FROM THE BUILD. Every property is
-  # asserted on the bytes a user would receive. Asserting them on the build machine's copy is what
-  # 1.5.3 did with an env var, and the env var was set.
-  verify-artifact:
-    name: contract ${{ matrix.target }}
-    needs: [plan, targets, upload-assets]
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
-    # THE SAME `!cancelled()` REASONING AS `verify-assets`, FOR THE SAME REASON. `upload-assets`
-    # runs fail-fast:false, so one failed leg fails the matrix job, and a `needs:` on a failed job
-    # SKIPS the dependent by default -- the verifier would be switched off precisely when the
-    # release is broken. A skipped leg leaves no receipt, so `verify-set-equality` below turns it
-    # red anyway; this line is what lets the other four legs still report what they found.
-    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download this artifact from the draft, and its build evidence
+      - id: r
+        name: Find, fetch and re-verify the staged manifest for this exact sha
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          # The name `plan` derives for this sha; the record must agree, so a manifest that was
+          # somehow attached to the wrong run cannot smuggle in a different iteration's tag.
+          EXPECTED_STAGING_TAG: ${{ needs.plan.outputs.staging_tag }}
         run: |
           set -euo pipefail
-          archive="busbar-${{ matrix.target }}.${{ matrix.archive }}"
-          gh release download "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$archive" --dir . --clobber
-          # The REAL signed first-party plugin for THIS platform, from its own repo's own release,
-          # signed with the real private half of the release key. Nothing here is packed locally: a
-          # locally-signed fixture would prove the signature code compiles and would have gone green
-          # on the broken 1.5.3 aarch64 artifact.
-          gh release download "$(jq -r .plugin_probe.tag .github/release-targets.json)" \
-            --repo "$(jq -r .plugin_probe.repo .github/release-targets.json)" \
-            --pattern "${{ matrix.plugin_asset }}" --dir plugin-probe --clobber
-          ls -l "$archive" plugin-probe
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-evidence-${{ matrix.target }}
-          path: build-evidence
+          # 1. THE RUN. Successful `Release stage` runs whose head_sha is EXACTLY this commit.
+          #    Newest first: a re-staged sha (artifact expiry recovery) supersedes its earlier run.
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-stage.yml/runs?head_sha=${SHA}&status=success&per_page=10"             --jq '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.run_started_at) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::NO STAGED RECORD FOR ${SHA:0:7}. No successful 'Release stage' run has this exact head sha, so these bytes were never built, verified or QA'd under this design. This usually means qa->main was not a FAST-FORWARD (a merge commit or direct push to main mints a sha qa never saw) or the qa staging run for this commit never went green. There is NO fallback build here, deliberately: rebuilding on main is exactly what this split removed. Fix: fast-forward a green qa commit to main (git push origin qa:main) and let its staging run finish first."
+            exit 1
+          fi
+          echo "Staged by Release stage run ${run_id} (head_sha ${SHA:0:7})."
 
-      - name: The artifact contract
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          python3 scripts/verify-artifact.py \
-            --archive "busbar-${{ matrix.target }}.${{ matrix.archive }}" \
-            --target "${{ matrix.target }}" \
-            --version "${{ needs.plan.outputs.version }}" \
-            --pubkey "${{ vars.BUSBAR_RELEASE_PUBKEY }}" \
-            --plugin "plugin-probe/${{ matrix.plugin_asset }}" \
-            --evidence build-evidence \
+          # 2. THE RECORD. Download the staged-manifest artifact from that run. Expiry (90-day
+          #    retention) or manual deletion lands here, and the remedy is one idempotent re-run
+          #    of release-stage.yml on the same sha -- never a rebuild from this file.
+          if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n staged-manifest -D staged; then
+            echo "::error::STAGED RECORD MISSING for run ${run_id}: the staged-manifest artifact could not be downloaded (expired past its 90-day retention, or deleted). The staging tag may well still exist, but an unverifiable claim is not a record. Fix: re-run 'Release stage' on ${SHA:0:7} (idempotent; re-records the same digest), then re-run this workflow."
+            exit 1
+          fi
+          cat staged/staged.json
+          r_version="$(jq -r .version staged/staged.json)"
+          r_sha="$(jq -r .qa_sha staged/staged.json)"
+          r_staging="$(jq -r .staging_tag staged/staged.json)"
+          r_digest="$(jq -r .digest staged/staged.json)"
+
+          # 3. INTERNAL CONSISTENCY. Same sha implies same Cargo.toml implies same version, so any
+          #    disagreement means the record and this commit are not describing each other.
+          fail=0
+          [ "$r_sha" = "$SHA" ]           || { echo "::error::record qa_sha ${r_sha:0:7} != main HEAD ${SHA:0:7}"; fail=1; }
+          [ "$r_version" = "$VERSION" ]   || { echo "::error::record version ${r_version} != Cargo.toml version ${VERSION}"; fail=1; }
+          [ "$r_staging" = "$EXPECTED_STAGING_TAG" ] || { echo "::error::record staging_tag ${r_staging} != derived ${EXPECTED_STAGING_TAG}"; fail=1; }
+          case "$r_digest" in sha256:*) : ;; *) echo "::error::record digest '${r_digest}' is not a sha256 manifest digest"; fail=1 ;; esac
+          [ "$fail" = 0 ] || { echo "::error::STAGED RECORD INCONSISTENT. Refusing to promote it. Re-run 'Release stage' on ${SHA:0:7} and then re-run this workflow."; exit 1; }
+
+          # 4. THE REGISTRY, RE-DERIVED FROM OUTSIDE. What `docker pull` would resolve for the
+          #    staging tag right now must BE the recorded digest, on BOTH registries -- the promote
+          #    copies manifests by TAG, so tag->digest agreement at this instant is the property
+          #    that makes "ships the exact bytes qa verified" true rather than asserted.
+          reg_digest() {  # reg_digest <auth-host> <registry-host> <repo> <tag>
+            local auth_host="$1" reg_host="$2" repo="$3" tag="$4" token_url token
+            if [ "$auth_host" = "auth.docker.io" ]; then
+              token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull"
+            else
+              token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
+            fi
+            token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token')"
+            [ -n "$token" ] && [ "$token" != "null" ] || return 1
+            curl -fsS --max-time 30 -I \
+              -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json' \
+              "https://${reg_host}/v2/${repo}/manifests/${tag}" \
+            | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
+          }
+          hub="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "$r_staging" || true)"
+          ghcr="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "$r_staging" || true)"
+          echo "docker.io ${r_staging} = ${hub:-<none>}"
+          echo "ghcr.io   ${r_staging} = ${ghcr:-<none>}"
+          for pair in "docker.io:$hub" "ghcr.io:$ghcr"; do
+            got="${pair#*:}"
+            if [ "$got" != "$r_digest" ]; then
+              echo "::error::STALE STAGED RECORD: ${pair%%:*} serves '${got:-<none>}' for ${r_staging}, but the record says '${r_digest}'. The staging tag no longer points at the bytes qa verified, so promoting it would ship something else under their evidence. Fix: re-run 'Release stage' on ${SHA:0:7}, then re-run this workflow."
+              exit 1
+            fi
+          done
+
+          # 5. THE ATTESTATION, WITH THE USER'S OWN COMMAND. The staged digest carries a GitHub
+          #    build-provenance attestation recorded at build time; the promote preserves it only
+          #    if it exists and verifies NOW. Bytes that cannot prove their provenance do not get
+          #    a version number.
+          gh attestation verify "oci://index.docker.io/getbusbar/busbar:${r_staging}" \
             --repo "$GITHUB_REPOSITORY" \
-            --repo-root .
+            || { echo "::error::the staged image's build-provenance attestation does not verify. Refusing to promote unattestable bytes."; exit 1; }
 
-      # THE RECEIPT. Written only after the contract exits 0, so its existence means every applicable
-      # row passed for this target -- not that a job was scheduled. `verify-set-equality` reads these.
-      - name: Write the verified-receipt
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p verified
-          echo "${{ matrix.target }}" > "verified/${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: verified-${{ matrix.target }}
-          path: verified
-          if-no-files-found: error
-          retention-days: 7
+          # 6. THE DRAFT. It must exist, still be a DRAFT (published means this version is already
+          #    out and plan should have no-opped), be ANCHORED TO THIS SHA (release-stage re-anchors
+          #    on every iteration; a mismatch means the draft describes a different iteration than
+          #    the one being promoted), and actually carry assets (verify-assets proved the full
+          #    name set at stage time; an empty draft here means something deleted them since).
+          info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish,assets 2>/dev/null || echo '{}')"
+          d_draft="$(echo "$info"  | jq -r '.isDraft // "missing"')"
+          d_target="$(echo "$info" | jq -r '.targetCommitish // ""')"
+          d_assets="$(echo "$info" | jq -r '(.assets // []) | length')"
+          fail=0
+          [ "$d_draft" = "true" ]  || { echo "::error::draft ${TAG}: isDraft=${d_draft} (missing, or already published)"; fail=1; }
+          [ "$d_target" = "$SHA" ] || { echo "::error::draft ${TAG} is anchored to '${d_target}', not ${SHA:0:7} -- it describes a different qa iteration"; fail=1; }
+          [ "$d_assets" -gt 0 ]    || { echo "::error::draft ${TAG} carries no assets"; fail=1; }
+          [ "$fail" = 0 ] || { echo "::error::DRAFT DOES NOT MATCH THE STAGED RECORD. Re-run 'Release stage' on ${SHA:0:7} (it reuses and re-anchors the draft), then re-run this workflow."; exit 1; }
 
-  # -- SET EQUALITY, NOT SUBSET --------------------------------------------------------------------
-  #
-  # THIS IS THE CLAUSE THAT MAKES A FORGOTTEN LEG IMPOSSIBLE RATHER THAN UNLIKELY.
-  #
-  # The third structural fault behind the 1.5.3 aarch64 defect was that the PRODUCED set and the
-  # VERIFIED set were never compared. The `targets` job was already correct and already the single
-  # source of truth; verification simply did not enumerate from it, so an artifact could be produced
-  # and never checked and nothing anywhere noticed. verify-deploy.yml still hardcodes
-  # `busbar-x86_64-unknown-linux-gnu.tar.gz` for its quickstart check -- one platform, chosen once,
-  # standing in for five.
-  #
-  # So this job asserts three sets are IDENTICAL:
-  #
-  #   DECLARED  the targets `targets` emitted, from .github/release-targets.json.
-  #   BUILT     one `build-evidence-<target>` receipt per artifact the build actually produced.
-  #   VERIFIED  one `verified-<target>` receipt per artifact the contract actually passed.
-  #
-  # A target that is built but not verified is an ERROR. A target that is verified but not built is
-  # an ERROR. A subset check in either direction would have passed the whole 1.5.3 release.
-  #
-  # IT READS RECEIPTS, NOT JOB CONCLUSIONS, and the difference matters: a matrix leg that is skipped
-  # (the default `needs:` behaviour when an upstream job fails) leaves a grey square, no receipt, and
-  # a set that has silently shrunk to fit. Receipts can only be created by a step that ran and
-  # succeeded, so the sets can only shrink in a direction this job can see.
-  #
-  # `!cancelled()` for the same reason as its two upstream verifiers: this check must be loudest
-  # exactly when something upstream went wrong.
-  verify-set-equality:
-    name: the set built and the set verified must be identical
-    needs: [plan, targets, upload-assets, verify-artifact]
-    runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: receipts
-          pattern: "*-*"
-      - name: Compare the declared, built and verified sets
-        env:
-          DECLARED: ${{ needs.targets.outputs.targets }}
-        run: |
-          set -euo pipefail
-          ls -la receipts || true
-          python3 - <<'PY'
-          import json, os, sys
-
-          declared = set(json.loads(os.environ["DECLARED"]))
-          names = set(os.listdir("receipts")) if os.path.isdir("receipts") else set()
-          built = {n[len("build-evidence-"):] for n in names if n.startswith("build-evidence-")}
-          verified = {n[len("verified-"):] for n in names if n.startswith("verified-")}
-
-          lines = ["### produced vs verified", "", "| target | built | contract |", "| --- | --- | --- |"]
-          for t in sorted(declared | built | verified):
-              lines.append("| `%s` | %s | %s |" % (
-                  t, "yes" if t in built else "**NO**", "PASS" if t in verified else "**NOT VERIFIED**"))
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              open(summary, "a").write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-
-          fail = False
-          # A FLOOR FIRST. Every comparison below is between sets, and all three being empty is the
-          # state in which every comparison is trivially satisfied -- the false green this whole
-          # design exists to make impossible.
-          if len(declared) < 5:
-              print("::error::the declared target set has %d entries; busbar ships 5. Set equality "
-                    "between three empty sets is not a check." % len(declared), file=sys.stderr)
-              fail = True
-          for label, got in (("built", built), ("verified", verified)):
-              missing = sorted(declared - got)
-              extra = sorted(got - declared)
-              if missing:
-                  print("::error::NOT %s: %s. Every one of those targets is an artifact this release "
-                        "owes that was never %s. A target that is built but not verified is an error, "
-                        "and so is a target that is verified but not built -- this is set equality, "
-                        "not a subset check, because a subset check passes the 1.5.3 release in which "
-                        "busbar-aarch64-unknown-linux-gnu shipped with no release key."
-                        % (label.upper(), ", ".join(missing), label), file=sys.stderr)
-                  fail = True
-              if extra:
-                  print("::error::%s but NOT DECLARED: %s. An artifact nothing declares is an artifact "
-                        "nothing owes and nothing tracks; add it to .github/release-targets.json or "
-                        "stop producing it." % (label.upper(), ", ".join(extra)), file=sys.stderr)
-                  fail = True
-          if fail:
-              sys.exit(1)
-          print("SET EQUALITY HOLDS: %d targets declared, built and contract-verified: %s"
-                % (len(declared), ", ".join(sorted(declared))))
-          PY
-
-  # -- THE GATE: CONSUMER VERIFICATION, BEFORE THE NAME EXISTS -------------------------------------
-  #
-  # This is the job the whole restructure exists to make possible. It runs verify-deploy.yml -- the
-  # same verifier, the same checks, reused rather than reimplemented -- in `staging` mode against
-  # the artifacts that were just produced:
-  #
-  #   * `docker rmi` FIRST, then pull the staged image fresh. A cached local image lies, and it has
-  #     lied to a human on this project inside the last week. Then boot it and read the OCI version
-  #     label off the running image.
-  #   * download the real linux tarball FROM THE DRAFT, unpack it, EXECUTE the binary, and assert
-  #     `busbar --version` says X.Y.Z. Not "the archive exists" -- the bytes run and identify
-  #     themselves.
-  #   * run the DOCUMENTED quickstart from docs/getting-started.md, both halves: the binary with the
-  #     minimal config, and the docker one-liner, each of which must answer `ok` on /healthz.
-  #   * prove `gh attestation verify` -- the exact command the docs tell users to run -- passes on
-  #     the real downloaded bytes.
-  #   * prove every asset the platform manifest names is not merely listed but actually downloads.
-  #
-  # WHAT IT DELIBERATELY DOES NOT CHECK YET: the Homebrew tap, the Helm chart, getbusbar.com,
-  # /releases/latest, the `latest` container tag. Those are downstream channels that only move once
-  # the release is public, so asserting them here would be asserting a falsehood. They are checked
-  # by `consumer-verification` at the bottom, after the promote, exactly as before. The split is by
-  # what CAN be true before publication, not by what is convenient.
-  #
-  # NO `!cancelled()` HERE, AND THAT IS DELIBERATE. Every other guard in this file uses it so a red
-  # upstream job cannot switch the guard off. This one is a GATE, not a report: if the artifacts did
-  # not build, there is nothing to verify and nothing must be promoted. Default `needs` semantics --
-  # skip on upstream failure, and therefore skip the promote too -- is exactly the behaviour wanted.
-  verify-staged:
-    name: consumer verification (STAGED, this is the gate)
-    # verify-set-equality (which itself needs verify-artifact) is a load-bearing dependency, not
-    # decoration: the audit's designed order is build → per-target contract → set-equality →
-    # verify-staged → promote. Without it in this `needs:`, the per-name/per-digest artifact
-    # contract and the built==verified set check would NOT gate the promote chain
-    # (promote-release ← promote-image ← verify-staged), so a failing contract or an incomplete
-    # asset set could still flip the draft public and push the tag — the publish-before-verify
-    # seam this release model exists to close. A failed need SKIPS this gate, which skips promote,
-    # which leaves nothing public.
-    needs: [plan, verify-assets, verify-set-equality, stage-image]
-    uses: ./.github/workflows/verify-deploy.yml
-    with:
-      version: ${{ needs.plan.outputs.version }}
-      stage: staging
-      image_ref: getbusbar/busbar:${{ needs.plan.outputs.staging_tag }}
-    permissions:
-      contents: read
-      actions: read
-    secrets: inherit
+          {
+            echo "staging_tag=${r_staging}"
+            echo "digest=${r_digest}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Resolved staged record: ${r_staging} @ ${r_digest} (stage run ${run_id}). Promoting exactly these bytes."
 
   # -- PROMOTE, PART 1: THE IRREVERSIBLE HALF, FIRST -----------------------------------------------
   #
-  # Manifest-only retag of the exact digest verification just pulled and ran, onto `X.Y.Z` and then
-  # `latest`, on Docker Hub and GHCR. No rebuild: the promoted image IS the verified image.
+  # Manifest-only retag of the exact digest the qa stage built, verified and recorded -- and
+  # resolve-staged just re-proved against both registries -- onto `X.Y.Z` and then `latest`, on
+  # Docker Hub and GHCR. No rebuild: the promoted image IS the image qa verified, benchmarked and
+  # soaked, which is the entire point of the qa/main split.
   #
   # IT GOES FIRST BECAUSE IT IS THE ONLY IRREVERSIBLE STEP IN THE RELEASE. A Docker Hub `X.Y.Z` can
   # never be overwritten. A git tag and a GitHub release can both be deleted. So the ordering rule
@@ -1155,11 +540,15 @@ jobs:
   # if only some of them moved, so a partial promote is red rather than silent.
   promote-image:
     name: promote the image (X.Y.Z + latest, no rebuild)
-    needs: [plan, verify-staged]
+    needs: [plan, resolve-staged]
     uses: ./.github/workflows/docker.yml
     with:
       promote_to: ${{ needs.plan.outputs.version }}
-      promote_from: ${{ needs.plan.outputs.staging_tag }}
+      # FROM THE RECORD, NOT FROM PLAN'S DERIVATION. resolve-staged proved this tag currently
+      # resolves, on both registries, to the exact digest the qa stage recorded and verified;
+      # plan's staging_tag is the same string by construction, but the record is the one that was
+      # checked against the registry, so the record is what the promote consumes.
+      promote_from: ${{ needs['resolve-staged'].outputs.staging_tag }}
     permissions:
       contents: read
       packages: write
@@ -1448,7 +837,8 @@ jobs:
 
   # -- THE LAST STEP: DOES THE PUBLISHED THING WORK FOR A USER? ------------------------------------
   #
-  # `verify-staged` above already proved the ARTIFACTS work, before they had names. This proves the
+  # release-stage.yml's `verify-staged` (on qa) already proved the ARTIFACTS work, before they had
+  # names, and resolve-staged re-proved the record above. This proves the
   # CHANNELS moved: `docker pull getbusbar/busbar` (untagged), `curl -fsSL
   # https://getbusbar.com/install.sh | sh`, `brew install getbusbar/busbar/busbar`, the Helm chart's
   # appVersion, /releases/latest, the download page. Those are different systems, in different

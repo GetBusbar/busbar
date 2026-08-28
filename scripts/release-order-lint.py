@@ -40,8 +40,17 @@ WORKFLOWS = ".github/workflows"
 
 # The jobs allowed to create a user-facing name. Everything here must be downstream of the staged
 # consumer verification.
+#
+# THE QA/MAIN SPLIT (2026-08-27). The build half and the name-minting half no longer share a
+# workflow: release-stage.yml (push to `qa`) builds, stages, verifies, and RECORDS the staged
+# digest; release.yml (push to `main`) resolves that record fail-closed and promotes it. So the
+# gate the promote must sit downstream of is `resolve-staged` (the record re-verification, in
+# release.yml), while `verify-staged` (the staged consumer verification itself) lives in
+# release-stage.yml and must gate the RECORD being written. R10 below is the split's own rule:
+# main never rebuilds, qa never names.
 PROMOTE_JOBS = ("promote-image", "promote-release")
-VERIFY_GATE = "verify-staged"
+VERIFY_GATE = "verify-staged"      # in release-stage.yml; gates record-staged
+RESOLVE_GATE = "resolve-staged"    # in release.yml; gates the promote jobs
 
 
 class Finding(list):
@@ -137,6 +146,7 @@ def check(root: str) -> Finding:
         return open(p, encoding="utf-8").read() if os.path.exists(p) else None
 
     release = read("release.yml")
+    stage = read("release-stage.yml")
     docker = read("docker.yml")
     verify = read("verify-deploy.yml")
 
@@ -175,6 +185,16 @@ def check(root: str) -> Finding:
     rel = strip_comments(release)
     rjobs = jobs(rel)
 
+    if stage is None:
+        bad.append(
+            "R0 .github/workflows/release-stage.yml is missing. Without the qa staging workflow "
+            "there is nothing that builds and verifies release bytes, and release.yml (promote-"
+            "only by design) would have nothing honest to promote."
+        )
+        return bad
+    stg = strip_comments(stage)
+    sjobs = jobs(stg)
+
     # R3. THE RELEASE MUST BE CREATED AS A DRAFT.
     # A draft has real, downloadable assets but does not resolve as `releases/latest`, is not
     # listed, and materialises no git tag. That is what makes it safe to build against and safe to
@@ -185,18 +205,20 @@ def check(root: str) -> Finding:
     # runs `gh release edit --draft=false`, which contains the substring `--draft`, so deleting the
     # real `--draft` flag from the create call left the rule GREEN. The mutation test is what found
     # it. Match the flag as a whole token, inside the one job that may create a release.
-    draft_job = rjobs.get("draft", "")
+    draft_job = sjobs.get("draft", "")
     if not re.search(r"(?<![=\w])--draft(?![=\w])", draft_job):
         bad.append(
-            "R3 release.yml creates a GitHub Release without `--draft`. A non-draft release is "
-            "immediately listed and immediately resolves as releases/latest, so the version is "
-            "public before verification - and publishing also materialises the git tag."
+            "R3 release-stage.yml creates a GitHub Release without `--draft`. A non-draft release "
+            "is immediately listed and immediately resolves as releases/latest, so the version is "
+            "public before verification - and publishing also materialises the git tag. On the qa "
+            "branch that would publish EVERY iteration."
         )
-    if "--verify-tag" in rel:
-        bad.append(
-            "R3 release.yml still passes `--verify-tag`. Under this design no tag exists when the "
-            "release is created; the draft is anchored with `--target <sha>` instead."
-        )
+    for label, body in (("release.yml", rel), ("release-stage.yml", stg)):
+        if "--verify-tag" in body:
+            bad.append(
+                "R3 %s still passes `--verify-tag`. Under this design no tag exists when the "
+                "release is created; the draft is anchored with `--target <sha>` instead." % label
+            )
 
     # R4. EVERY PROMOTE MUST BE DOWNSTREAM OF THE STAGED CONSUMER VERIFICATION.
     # This is the rule the whole restructure exists to state. A promote that does not depend on
@@ -205,12 +227,30 @@ def check(root: str) -> Finding:
     for j in PROMOTE_JOBS:
         if j not in rjobs:
             bad.append("R4 release.yml has no `%s` job; the promote step is missing." % j)
-        elif not depends_on(rjobs, j, VERIFY_GATE):
+        elif not depends_on(rjobs, j, RESOLVE_GATE):
             bad.append(
-                "R4 release.yml's `%s` job does not depend, even transitively, on `%s`. It would "
-                "publish a user-facing name without the consumer verification having passed, "
-                "which is the entire defect this design removes." % (j, VERIFY_GATE)
+                "R4 release.yml's `%s` job does not depend, even transitively, on `%s`. Under the "
+                "qa/main split the record re-verification IS the promote's gate: skipping it means "
+                "minting a user-facing name over a digest nothing re-proved (absent, stale, or "
+                "contradicted by the registry), which is the entire defect this design removes."
+                % (j, RESOLVE_GATE)
             )
+    # The other half of the same seam: the RECORD may only be written after the staged consumer
+    # verification passed. A record written unconditionally would let release.yml promote bytes
+    # whose verification failed, with every check in resolve-staged still green.
+    if "record-staged" not in sjobs:
+        bad.append(
+            "R4 release-stage.yml has no `record-staged` job. Without the record there is no "
+            "seam: release.yml's resolve-staged would refuse every promote (fail-closed, but "
+            "permanently), or someone will 'fix' that by rebuilding on main."
+        )
+    elif not depends_on(sjobs, "record-staged", VERIFY_GATE):
+        bad.append(
+            "R4 release-stage.yml's `record-staged` job does not depend, even transitively, on "
+            "`%s`. The record is the promote's only input, so writing it before the staged "
+            "consumer verification passed publishes-by-proxy: main would happily retag a digest "
+            "whose verification failed." % VERIFY_GATE
+        )
 
     # R5. THE STAGED VERIFICATION MUST ACTUALLY BE IN STAGING MODE, AGAINST THE STAGED IMAGE.
     # Calling verify-deploy.yml without `stage: staging` would run the public sweep against an
@@ -218,17 +258,23 @@ def check(root: str) -> Finding:
     # previous release, and the natural "fix" is to delete the gate. Omitting `image_ref` is worse
     # and quieter - the image checks would fall back to the PUBLISHED pin and go green on the
     # PREVIOUS release while claiming to have verified this one.
-    vs = rjobs.get(VERIFY_GATE, "")
+    vs = sjobs.get(VERIFY_GATE, "")
+    if not vs:
+        bad.append(
+            "R5 release-stage.yml has no `%s` job. The staged consumer verification is what the "
+            "recorded digest's credibility rests on; without it the record certifies an unverified "
+            "build." % VERIFY_GATE
+        )
     if vs:
         if "stage: staging" not in vs:
             bad.append(
-                "R5 release.yml's `%s` job does not pass `stage: staging` to verify-deploy.yml. "
+                "R5 release-stage.yml's `%s` job does not pass `stage: staging` to verify-deploy.yml. "
                 "The public sweep asserts downstream channels that only move after publication, "
                 "so it cannot be the pre-promote gate." % VERIFY_GATE
             )
         if "image_ref:" not in vs:
             bad.append(
-                "R5 release.yml's `%s` job does not pass `image_ref`. Without it the image checks "
+                "R5 release-stage.yml's `%s` job does not pass `image_ref`. Without it the image checks "
                 "verify the PUBLISHED pin - the previous release - and pass while proving nothing "
                 "about the artifact being cut." % VERIFY_GATE
             )
@@ -290,11 +336,27 @@ def check(root: str) -> Finding:
             "the gate cannot be a convention: it has to be a job every other job is downstream of."
         )
     else:
-        for j in ("gate", "targets") + PROMOTE_JOBS:
+        for j in PROMOTE_JOBS + (RESOLVE_GATE,):
             if j in rjobs and not depends_on(rjobs, j, "branch-green"):
                 bad.append(
                     "R9 release.yml's `%s` job is not downstream of `branch-green`, so it would run "
                     "on a red commit." % j
+                )
+    # The stage workflow carries its own branch-green (scoped to the required workflow names; see
+    # the comment there for why the scope differs), and the expensive build must sit behind it for
+    # the same reason the promote sits behind release.yml's: nothing is built from a known-red
+    # commit.
+    if "branch-green" not in sjobs:
+        bad.append(
+            "R9 release-stage.yml has no `branch-green` job. The staging build would run on a "
+            "commit already known red, spending the full PGO pipeline on bytes that cannot ship."
+        )
+    else:
+        for j in ("gate", "targets"):
+            if j in sjobs and not depends_on(sjobs, j, "branch-green"):
+                bad.append(
+                    "R9 release-stage.yml's `%s` job is not downstream of `branch-green`, so it "
+                    "would run on a red commit." % j
                 )
     # THE ABSENCE OF AN ESCAPE HATCH IS ITSELF THE RULE. These are the names such a hatch arrives
     # under; naming them here means adding one is a build failure with a message that explains why,
@@ -304,25 +366,66 @@ def check(root: str) -> Finding:
     # (where one would be READ), not to the file's prose. The refusal messages in `branch-green`
     # say the words "no waiver" and "no bypass" out loud, on purpose, and a rule that forbade the
     # explanation of itself would be unfixable.
-    trigger_block = top_level_block(rel, "on")
-    for token in ("override_red_ci", "allow_red", "force_release", "skip_ci_check",
-                  "ignore_red", "red_waiver", "release_waiver", "bypass_ci"):
+    for label, body in (("release.yml", rel), ("release-stage.yml", stg)):
+      trigger_block = top_level_block(body, "on")
+      for token in ("override_red_ci", "allow_red", "force_release", "skip_ci_check",
+                    "ignore_red", "red_waiver", "release_waiver", "bypass_ci"):
         declared = re.search(r"^\s+%s:" % re.escape(token), trigger_block, re.M)
-        read = re.search(r"inputs\.%s\b" % re.escape(token), rel)
+        read = re.search(r"inputs\.%s\b" % re.escape(token), body)
         if declared or read:
             bad.append(
-                "R9 release.yml declares or reads a `%s` input. There is NO bypass of the "
+                "R9 %s declares or reads a `%s` input. There is NO bypass of the "
                 "red-branch gate: no override input, no force flag, no waiver, no exception list. "
                 "That absence is the feature - a waiver IS the permission-to-ignore mechanism, and "
                 "permission-to-ignore is what shipped a red release. If a check should not block a "
-                "release, change or delete the CHECK." % token
+                "release, change or delete the CHECK." % (label, token)
             )
     # `continue-on-error` on the gate is the silent version of the same thing: the job goes red, the
     # release carries on, and nothing downstream can tell.
-    if re.search(r"^\s+continue-on-error:\s*true", rjobs.get("branch-green", ""), re.M):
+    for label, jb in (("release.yml", rjobs), ("release-stage.yml", sjobs)):
+        if re.search(r"^\s+continue-on-error:\s*true", jb.get("branch-green", ""), re.M):
+            bad.append(
+                "R9 %s's `branch-green` job sets `continue-on-error: true`, which turns the "
+                "red-branch gate into a decoration: it reports red and the run proceeds anyway."
+                % label
+            )
+
+    # R10. MAIN NEVER REBUILDS, QA NEVER NAMES. This is the split's own invariant, and it is the
+    # one an incident is most likely to erode: "just rebuild it on main real quick" reintroduces
+    # the exact promoted-bytes-are-not-the-verified-bytes defect the owner named when asking for
+    # the split ("we shouldn't be building again on main as that build is not technically what we
+    # QA'd"), and a promote path in the stage workflow would mint names on every qa iteration.
+    for marker, why in (
+        ("build-artifact.yml", "calls the binary build workflow"),
+        ("pgo-build", "runs the PGO build script"),
+        ("docker/build-push-action", "builds and pushes an image"),
+        ("cargo build", "compiles"),
+    ):
+        if marker in rel:
+            bad.append(
+                "R10 release.yml contains `%s` (%s). release.yml is PROMOTE-ONLY: every byte it "
+                "names must have been built, verified and recorded by release-stage.yml on `qa`. "
+                "A build here ships bytes that are 'technically not what we QA'd' - the exact "
+                "defect the split removes. Build on qa; promote the record." % (marker, why)
+            )
+    for j, jt in rjobs.items():
+        if "docker.yml" in jt and re.search(r"^\s+staging_tag:", jt, re.M):
+            bad.append(
+                "R10 release.yml's `%s` job passes `staging_tag:` to docker.yml, i.e. it asks for "
+                "a fresh image BUILD on the main push. Main never rebuilds: the promote consumes "
+                "the digest release-stage.yml recorded on qa." % j
+            )
+    for j, jt in sjobs.items():
+        if "docker.yml" in jt and re.search(r"^\s+promote_to:", jt, re.M):
+            bad.append(
+                "R10 release-stage.yml's `%s` job passes `promote_to:` to docker.yml. The stage "
+                "workflow must never mint `X.Y.Z`/`latest`: it runs on EVERY qa iteration, and "
+                "only release.yml's promote (behind resolve-staged) may name bytes." % j
+            )
+    if "--draft=false" in stg:
         bad.append(
-            "R9 release.yml's `branch-green` job sets `continue-on-error: true`, which turns the "
-            "red-branch gate into a decoration: it reports red and the release proceeds anyway."
+            "R10 release-stage.yml publishes the draft (`--draft=false`). Publishing is naming; "
+            "it belongs to release.yml's promote-release, after the record is re-proved."
         )
 
     # R8. VERIFY-DEPLOY MUST STILL OFFER THE STAGING CONTRACT.
@@ -355,34 +458,41 @@ MUTATIONS = [
         "R1",
     ),
     (
-        "R3 the release is created without --draft",
-        "release.yml",
+        "R3 the release is created without --draft (stage workflow)",
+        "release-stage.yml",
         lambda t: t.replace("--draft \\\n", ""),
         "R3",
     ),
     (
-        "R4 promote-image stops depending on the staged verification",
+        "R4 promote-image stops depending on the staged-record verification",
         "release.yml",
-        lambda t: t.replace("needs: [plan, verify-staged]", "needs: [plan]"),
+        lambda t: t.replace("needs: [plan, resolve-staged]", "needs: [plan]"),
         "R4",
     ),
     (
-        "R5 the gate stops passing stage: staging",
-        "release.yml",
+        "R4 the staged record stops being gated on the staged verification",
+        "release-stage.yml",
+        lambda t: t.replace("needs: [plan, stage-image, verify-staged]",
+                            "needs: [plan, stage-image]"),
+        "R4",
+    ),
+    (
+        "R5 the gate stops passing stage: staging (stage workflow)",
+        "release-stage.yml",
         lambda t: t.replace("      stage: staging\n", ""),
         "R5",
     ),
     (
-        "R5 the gate stops passing image_ref",
-        "release.yml",
+        "R5 the gate stops passing image_ref (stage workflow)",
+        "release-stage.yml",
         lambda t: re.sub(r"^      image_ref: .*$", "", t, flags=re.M),
         "R5",
     ),
     (
-        "R6 the fan-out is re-hung off the build jobs",
+        "R6 the fan-out is re-hung off the record resolution instead of the promote",
         "release.yml",
         lambda t: t.replace("needs: [plan, promote-release]\n    runs-on: ubuntu-latest",
-                            "needs: [plan, verify-assets]\n    runs-on: ubuntu-latest"),
+                            "needs: [plan, resolve-staged]\n    runs-on: ubuntu-latest"),
         "R6",
     ),
     (
@@ -404,14 +514,21 @@ MUTATIONS = [
         "R7",
     ),
     (
-        "R9 the red-branch gate is removed",
+        "R9 the red-branch gate is removed from the promote workflow",
         "release.yml",
         lambda t: t.replace("  branch-green:\n", "  branch-yellow:\n"),
         "R9",
     ),
     (
-        "R9 the build stops depending on the red-branch gate",
+        "R9 the record resolution stops depending on the red-branch gate",
         "release.yml",
+        lambda t: t.replace("    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    outputs:",
+                            "    needs: [plan]\n    runs-on: ubuntu-latest\n    outputs:"),
+        "R9",
+    ),
+    (
+        "R9 the staging build stops depending on the red-branch gate",
+        "release-stage.yml",
         lambda t: t.replace("    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    services:",
                             "    needs: [plan]\n    runs-on: ubuntu-latest\n    services:"),
         "R9",
@@ -422,6 +539,20 @@ MUTATIONS = [
         lambda t: t.replace("  workflow_dispatch:\n",
                             "  workflow_dispatch:\n    inputs:\n      override_red_ci:\n        description: reason\n"),
         "R9",
+    ),
+    (
+        "R10 a fresh image build sneaks back into the main promote",
+        "release.yml",
+        lambda t: t.replace("      promote_to: ${{ needs.plan.outputs.version }}",
+                            "      staging_tag: staging-oops\n      promote_to: ${{ needs.plan.outputs.version }}"),
+        "R10",
+    ),
+    (
+        "R10 a promote sneaks into the qa staging workflow",
+        "release-stage.yml",
+        lambda t: t.replace("      staging_tag: ${{ needs.plan.outputs.staging_tag }}",
+                            "      promote_to: 9.9.9\n      staging_tag: ${{ needs.plan.outputs.staging_tag }}"),
+        "R10",
     ),
     (
         "R8 verify-deploy drops the staging inputs",
@@ -539,8 +670,7 @@ def prove(root: str) -> int:
     text = strip_comments(open(os.path.join(root, WORKFLOWS, "release.yml"), encoding="utf-8").read())
     all_jobs = jobs(text)
     failures = 0
-    for failed in ["branch-green", "gate", "upload-assets", "stage-image",
-                   "verify-assets", "verify-staged"]:
+    for failed in ["branch-green", "resolve-staged"]:
         if failed not in all_jobs:
             print("PROVE BROKEN: no job named %s" % failed)
             failures += 1

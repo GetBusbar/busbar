@@ -14,12 +14,16 @@ name: Docker
 # convenience, and 1.5.3 paid for it.
 #
 # The order is now: build -> push under a THROWAWAY name -> verify from the consumer side ->
-# PROMOTE. This file provides both halves as separate, independently callable paths, and
-# release.yml sequences them. Exactly ONE thing emits `X.Y.Z`: the `promote` job below, reached
-# only from release.yml's promote step, only after staged verification went green.
+# PROMOTE. This file provides both halves as separate, independently callable paths, and the two
+# halves are now driven from two DIFFERENT workflows on two different branches: release-stage.yml
+# (push to `qa`) calls the staging path, and release.yml (push to `main`) calls the promote path
+# against the digest the qa stage recorded -- the split exists precisely so the promoted image is
+# the staged one and main never rebuilds. Exactly ONE thing emits `X.Y.Z`: the `promote` job
+# below, reached only from release.yml's promote step, only after the qa-staged verification went
+# green and release.yml's resolve-staged re-proved the record.
 #
 # Triggers:
-#   - workflow_call (how release.yml drives it):
+#   - workflow_call (how release-stage.yml and release.yml drive it):
 #       * staging_tag: build the multi-arch image and push it under THAT name only. Really
 #         pullable, really executable, but no user is looking at `staging-<sha>`. Outputs the
 #         manifest digest so the promote path can retag those exact bytes.
