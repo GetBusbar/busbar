@@ -861,7 +861,7 @@ pub fn build_app_from_config(
             .pool_max_idle_per_host
             .div_ceil(shard_count)
             .max(1);
-        // The owned egress client (wave 7): every knob the old reqwest builder set — and WHY —
+        // The owned egress client: every knob the old reqwest builder set — and WHY —
         // lives in `proxy::egress_client`'s parity ledger; this site keeps only what appbuild
         // owns: the per-shard idle division above and the resolved limit/protocol flags. The old
         // client-level TOTAL timeout is re-provided at the call sites (the engine bounds a

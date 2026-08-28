@@ -1953,7 +1953,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .unwrap_or(APPLICATION_JSON)
         };
         let _cb_reqwest = crate::profile::start(crate::profile::Stage::CbReqwest);
-        // Assemble the egress request from PRECOMPUTED parts (wave 7): the lane's boot-parsed
+        // Assemble the egress request from PRECOMPUTED parts: the lane's boot-parsed
         // `http::Uri`, the prebuilt/live auth map extended in place with the three per-request
         // constants, and the body as one owned buffer. No builder machinery, no per-send URL
         // parse. Header ORDER matches the old builder exactly (auth, then CT/UA/Accept).

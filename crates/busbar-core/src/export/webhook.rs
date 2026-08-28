@@ -51,7 +51,7 @@ struct Target {
 /// compute gate on the `App` — see `crate::export::projection::ProjectionUnion`.)
 static TARGETS: OnceLock<Vec<Target>> = OnceLock::new();
 /// The exporter's OWN delivery client. It used to borrow the shared upstream pool; since the LLM
-/// egress moved to the owned hyper client (wave 7), webhook delivery — a background, seconds-cadence
+/// egress moved to the owned hyper client, webhook delivery — a background, seconds-cadence
 /// push with its own SSRF posture — keeps reqwest and builds its client here, ONLY when at least
 /// one webhook sink is actually configured (the default config pays nothing).
 static CLIENT: OnceLock<Client> = OnceLock::new();

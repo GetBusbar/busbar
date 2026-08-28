@@ -68,7 +68,7 @@ pub enum ReadEnd {
     TransportError,
 }
 
-/// GENERIC over the chunk source (wave 7): the LLM hot path reads a hyper `Incoming`, the
+/// GENERIC over the chunk source: the LLM hot path reads a hyper `Incoming`, the
 /// substrate/preflight callers read a reqwest response — one capped loop serves both, so the cap
 /// semantics (bounded reserve, truncate-on-overrun, transport-error flag) cannot drift between
 /// clients. `futures::Stream<Item = Result<Bytes, E>>` is the meeting point both convert to for

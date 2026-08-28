@@ -308,7 +308,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // fingerprint and special-case busbar's health probes — defeating the indistinguishability
     // guarantee.
     //
-    // WAVE 7: the probe rides the SAME owned egress client stack (`crate::proxy::egress_request` +
+    // The probe rides the SAME owned egress client stack (`crate::proxy::egress_request` +
     // the lane-sharded `EgressClient`) as the forward path, assembling its header map in the
     // engine's exact insertion order — auth headers first, then CT/UA/Accept — so the probe's wire
     // fingerprint (client stack, TLS/ALPN posture, header shape) stays byte-identical to organic

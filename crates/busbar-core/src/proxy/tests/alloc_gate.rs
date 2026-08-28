@@ -165,7 +165,7 @@ fn alloc_gate_translate_write_stable() {
 /// steady-state count is sized to that observed jitter (see the module header). It still catches a
 /// GROSS regression — a ~20%-class allocation blow-up, or a per-request allocation that scales — the
 /// owner's headline case. The surgical gate above catches the single-allocation FIX-9 class.
-// Measured after the owned hyper egress client (wave 7): a warmed steady-state request allocates
+// Measured after the owned hyper egress client landed: a warmed steady-state request allocates
 // 87 (was 125 after the wave-4b egress-target precompute, 140 on dev @ d86b896b) — reqwest's
 // per-send RequestBuilder machinery, URL re-parse and response wrappers left the hot path. The
 // bound is 107 — the same +20 headroom for cross-platform/CI allocator jitter (dep versions are

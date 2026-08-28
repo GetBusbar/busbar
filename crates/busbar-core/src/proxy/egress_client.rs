@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OWNED LLM-EGRESS HTTP CLIENT (wave 7) — hyper_util's legacy pool client over a
+//! THE OWNED LLM-EGRESS HTTP CLIENT — hyper_util's legacy pool client over a
 //! rustls/webpki connector, replacing reqwest on the forward path. What this buys per request:
 //! the send consumes the lane's boot-precomputed `http::Uri` directly (reqwest re-parsed its
 //! `Url` to a `Uri` through the full WHATWG parser at EVERY send), the request is hand-assembled

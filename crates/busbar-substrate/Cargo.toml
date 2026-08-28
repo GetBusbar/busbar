@@ -35,7 +35,7 @@ tokio = { workspace = true, features = ["net", "sync"] }
 tracing = { workspace = true }
 # S2c: the breaker classifier's `parse_retry_after` parses an HTTP-date `Retry-After` via httpdate.
 httpdate = { workspace = true }
-# Wave 7: `proxy::read_capped` is generic over ANY chunk stream (`impl Stream<Item = Result<Bytes,
+# `proxy::read_capped` is generic over ANY chunk stream (`impl Stream<Item = Result<Bytes,
 # E>>`) so core's owned hyper egress and the planes' reqwest responses share one capped loop; the
 # `Stream`/`StreamExt` vocabulary comes from `futures`.
 futures = { workspace = true }
