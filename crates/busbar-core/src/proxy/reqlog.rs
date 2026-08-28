@@ -260,14 +260,27 @@ pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'st
 
 /// THE PER-REQUEST LOG: chain positions per principal, plus the bounded window of records the
 /// process retains.
+/// The log's guarded state: chain positions and the retained window, under ONE lock.
+///
+/// One `Mutex` rather than the two this had (`chains` + `ring`), because [`LlmRequestLog::record`]
+/// sits on the plane's per-request terminal and always takes both in sequence — two acquisitions,
+/// two releases, and (measured on the board cell) two contended atomic round-trips per request
+/// where one suffices. No caller ever wants one half without the other: the append and the
+/// retention are two lines of the same act, and the read verbs snapshot the ring with the chain
+/// positions quiescent either way.
 #[derive(Default)]
-pub(crate) struct LlmRequestLog {
+struct LogState {
     /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. Unbounded in the same
     /// way `calllog`'s is, and bounded in practice by the same thing: the principals are minted
     /// key ids plus one fixed sentinel, not caller-chosen strings.
-    chains: Mutex<HashMap<String, RequestChain>>,
+    chains: HashMap<String, RequestChain>,
     /// The retained records, oldest first, across every principal. See [`MAX_RETAINED_REQUESTS`].
-    ring: Mutex<VecDeque<LlmRequestRecord>>,
+    ring: VecDeque<LlmRequestRecord>,
+}
+
+#[derive(Default)]
+pub(crate) struct LlmRequestLog {
+    state: Mutex<LogState>,
 }
 
 /// THE PROCESS-WIDE MODEL REQUEST LOG. Process state, not config-derived state, so it lives as a
@@ -284,41 +297,39 @@ impl LlmRequestLog {
         Self::default()
     }
 
-    /// Poison-recovering locks, for the reason `calllog` gives: the critical sections only
-    /// mutate chain positions and a record ring, so the data stays consistent after a panic, and
+    /// Poison-recovering lock, for the reason `calllog` gives: the critical section only
+    /// mutates chain positions and a record ring, so the data stays consistent after a panic, and
     /// cascading a poison would wedge the whole data plane because one request panicked.
-    fn chains(&self) -> MutexGuard<'_, HashMap<String, RequestChain>> {
-        self.chains.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn ring(&self) -> MutexGuard<'_, VecDeque<LlmRequestRecord>> {
-        self.ring.lock().unwrap_or_else(|e| e.into_inner())
+    fn state(&self) -> MutexGuard<'_, LogState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// APPEND ONE REQUEST to its principal's chain and retain it in the bounded window.
     ///
     /// Infallible and never on the caller's critical path in any way it can observe: this is the
     /// last thing that happens to a request that has already been answered, and an evidence write
-    /// that could refuse a request would be a new way to take the plane down.
-    pub(crate) fn record(&self, principal: &str, input: RequestInput) -> LlmRequestRecord {
-        let record = {
-            let mut chains = self.chains();
-            // `or_default()` IS SAFE HERE, and it is worth saying why because it is the same line
-            // that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
-            // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
-            // hand-writes its `Default` to be its `new`, and pins the two against each other
-            // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
-            // hazard is closed once, in core, for every stream — which is the whole argument for
-            // one mechanism. `calllog` reads identically.
-            let chain = chains.entry(principal.to_string()).or_default();
-            chain.append(principal, input)
-        };
-        let mut ring = self.ring();
-        ring.push_back(record.clone());
-        while ring.len() > MAX_RETAINED_REQUESTS {
-            ring.pop_front();
+    /// that could refuse a request would be a new way to take the plane down. One lock, and the
+    /// sealed record moves into the ring rather than being cloned into it — the ring IS the
+    /// retention, so it owns the record; a caller that needs to look at what was just written
+    /// reads back through [`Self::records_for`] like every other reader.
+    pub(crate) fn record(&self, principal: &str, input: RequestInput) {
+        let mut state = self.state();
+        // `or_default()` IS SAFE HERE, and it is worth saying why because it is the same line
+        // that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
+        // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
+        // hand-writes its `Default` to be its `new`, and pins the two against each other
+        // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
+        // hazard is closed once, in core, for every stream — which is the whole argument for
+        // one mechanism. `calllog` reads identically.
+        let record = state
+            .chains
+            .entry(principal.to_string())
+            .or_default()
+            .append(principal, input);
+        state.ring.push_back(record);
+        while state.ring.len() > MAX_RETAINED_REQUESTS {
+            state.ring.pop_front();
         }
-        record
     }
 
     /// The retained records for ONE principal, oldest first — a contiguous suffix of that
@@ -330,7 +341,8 @@ impl LlmRequestLog {
     /// thing that can distinguish "the plane chains its requests" from "the chain works".
     #[allow(dead_code)]
     pub(crate) fn records_for(&self, principal: &str) -> Vec<LlmRequestRecord> {
-        self.ring()
+        self.state()
+            .ring
             .iter()
             .filter(|r| r.principal == principal)
             .cloned()
