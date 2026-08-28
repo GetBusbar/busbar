@@ -458,6 +458,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac",
+ "http",
  "http-body",
  "http-body-util",
  "httpdate",
@@ -496,6 +497,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "webpki-roots",
 ]
 
 [[package]]

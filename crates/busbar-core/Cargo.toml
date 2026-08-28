@@ -75,6 +75,10 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry-http = { workspace = true }
 hyper-rustls = { workspace = true }
+# The compiled-in Mozilla trust anchors the owned egress client pins — the same roots reqwest's
+# rustls-tls used, kept explicit so the trust story is named, not implied.
+webpki-roots = { workspace = true }
+http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
