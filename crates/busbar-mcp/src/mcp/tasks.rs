@@ -371,10 +371,16 @@ impl McpTask {
     /// The runner is aborted rather than asked to stop, because the thing it is usually blocked on
     /// is an upstream HTTP round trip with a 30-second budget and a cooperative check would not be
     /// reached until it returned. Aborting drops the request future, which closes the connection.
-    fn cancel(&self, now_ms: u64) {
+    ///
+    /// Returns whether THIS call performed the terminal transition — `false` on a task that was
+    /// already terminal. The status check and the transition happen under ONE lock hold, so of a
+    /// caller-issued `tasks/cancel` and a shutdown-issued one racing, exactly one observes `true` —
+    /// which is what lets the shutdown path emit its audit record once and only for a cancel it
+    /// actually made.
+    fn cancel(&self, now_ms: u64) -> bool {
         let mut state = self.lock();
         if state.status.is_terminal() {
-            return;
+            return false;
         }
         state.status = Status::Cancelled;
         state.input_requests.clear();
@@ -384,6 +390,7 @@ impl McpTask {
         }
         drop(state);
         self.resumed.notify_waiters();
+        true
     }
 
     fn attach(&self, abort: tokio::task::AbortHandle) {
@@ -576,16 +583,92 @@ pub(crate) struct Runner {
 /// Attaching AFTER spawning is safe because [`McpTask::attach`] re-checks the status under the lock: a
 /// `tasks/cancel` that lands in between finds no handle, sets the terminal status, and `attach`
 /// then aborts the runner it was handed. Neither ordering leaks a runner.
+///
+/// The worker's SHUTDOWN WATCH is captured HERE, at spawn on the request's own thread — the same
+/// moment the detached tracker is captured, and for the same reason: the registration is
+/// thread-local to the worker, and the runner future must carry its own copy because it outlives
+/// the request. `None` (a non-worker thread — the stdio serve mode, a test that registered
+/// nothing) leaves the runner's shutdown arm inert.
 pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
+    let shutdown = busbar_substrate::detached::worker_shutdown();
     let handle = busbar_substrate::detached::spawn_detached({
         let task = Arc::clone(&task);
-        async move { run(task, runner).await }
+        async move { run(task, runner, shutdown).await }
     });
     task.attach(handle.abort_handle());
 }
 
-/// THE RUNNER. Ask, then dispatch, then settle — and every exit writes a terminal status, because
-/// a task that stops without one is a caller polling for ever.
+/// The audit actor a SHUTDOWN-issued cancel is attributed to. Not the task's own principal — the
+/// caller did not cancel this task, the process drain did, and an audit row that named the caller
+/// would claim an act the caller never performed.
+const SHUTDOWN_ACTOR: &str = "system:shutdown";
+
+/// THE RUNNER'S OUTER FRAME: drive [`dispatch`] to completion, UNLESS the worker's shutdown fires
+/// first — in which case the runner performs the SAME terminal transition a caller-issued
+/// `tasks/cancel` performs and exits within the detached drain grace
+/// ([`busbar_substrate::detached::DETACHED_DRAIN_GRACE`]), so a shutdown-aborted long task settles
+/// `cancelled` instead of vanishing mid-`working` with a caller polling for ever.
+async fn run(
+    task: Arc<McpTask>,
+    runner: Runner,
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+) {
+    // The host outlives the `dispatch` future (which owns the `Runner`), because the shutdown arm
+    // needs the clock and the audit seam AFTER that future has been dropped.
+    let host = runner.engine.clone();
+    settle_or_cancel_on_shutdown(
+        &task,
+        shutdown,
+        dispatch(Arc::clone(&task), runner),
+        || host.clock_now_ms(),
+        |task_id| {
+            // The SAME audit word the `tasks/cancel` verb emits (`method::tasks_cancel`), so the
+            // chain reads one vocabulary for one transition; only the actor differs.
+            host.audit_emit(
+                "mcp_task.cancel",
+                &format!("mcp_task:{task_id}"),
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+                SHUTDOWN_ACTOR,
+            );
+        },
+    )
+    .await;
+}
+
+/// The select between the runner's own work and the worker's shutdown — factored so the race
+/// semantics are testable without standing up a `Runner`.
+///
+/// The two arms and the one guard:
+/// - `inner` finishing first is the whole of normal life: it wrote its own terminal status
+///   (`complete`/`fail`), and the shutdown arm never runs — no spurious `cancelled` over a task
+///   that made it.
+/// - shutdown firing first drops `inner` (releasing its durable scope exactly as an abort would)
+///   and routes through [`McpTask::cancel`] — the IDENTICAL function the `tasks/cancel` verb calls,
+///   CAS-guarded under the task lock, so a caller-cancel racing this arm still yields exactly ONE
+///   terminal transition and `audit_cancel` fires only for the transition this arm actually made.
+///
+/// `McpTask::cancel` also aborts the runner's own task via the attached handle; that is safe here
+/// because the shutdown arm does nothing `await`-shaped after it — the audit emit is synchronous
+/// and the select returns.
+async fn settle_or_cancel_on_shutdown<F>(
+    task: &McpTask,
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    inner: F,
+    now_ms: impl Fn() -> u64,
+    audit_cancel: impl FnOnce(&str),
+) where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        () = inner => {}
+        () = busbar_substrate::detached::shutdown_fired(shutdown) => {
+            if task.cancel(now_ms()) {
+                audit_cancel(&task.id);
+            }
+        }
+    }
+}
+
 /// SETTLE one task leg's classified breaker outcome (CLUSTER-1). The runner owns ONE durable probe
 /// (fixed at task creation); fold this leg's outcome through it over the durable admission id. Once
 /// that single probe is settled (the first leg), later input-required rounds find no live admission
@@ -625,7 +708,11 @@ fn settle_task_leg(
     }
 }
 
-async fn run(task: Arc<McpTask>, runner: Runner) {
+/// THE RUNNER'S WORK. Ask, then dispatch, then settle — and every exit writes a terminal status,
+/// because a task that stops without one is a caller polling for ever. (The exit this function
+/// cannot cover — being DROPPED at shutdown — is covered by [`run`]'s shutdown arm, which settles
+/// `cancelled` through the same path the `tasks/cancel` verb uses.)
+async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // D1: the neutral host seam for the detached run — threaded in on the runner (cloned from the
     // request's `ctx.host` at task creation) rather than minted here from the core factory. The
     // `clock_now` seam it drives is engine-snapshot independent (it reads the host wall clock), so the
