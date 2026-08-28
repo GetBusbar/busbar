@@ -602,10 +602,17 @@ pub(crate) async fn forward_once(
         .header(CONTENT_TYPE, egress_ct)
         // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched
         // through the writer vtable (`ProtocolWriter::egress_user_agent`) — writer resolved above.
-        .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
+        .header(
+            USER_AGENT,
+            // `from_static`: declaration constant — static bytes, no per-request alloc (mirrors main path).
+            axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+        )
         // Native-SDK Accept for the egress protocol (mirrors the main forward path). Read from the
         // egress declaration (`ProtocolDecl::egress_stream_accept`) — no `"bedrock"` branch here.
-        .header(ACCEPT, op.egress_accept(egress_name, wants_stream))
+        .header(
+            ACCEPT,
+            axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
+        )
         .body(payload);
     // See the main forward path: reqwest's `.timeout()` bounds the whole body read, so applying the
     // failover deadline to a STREAMING request truncates a healthy long generation at that wall-clock

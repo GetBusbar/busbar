@@ -317,9 +317,20 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
         .get()
         .post(format!("{}{}", lane.base_url, wire_path))
         .headers(convert_headers(auth))
-        .header(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)
-        .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
-        .header(ACCEPT, crate::proxy::egress_accept(egress_name, false))
+        .header(
+            CONTENT_TYPE,
+            // Declaration constants all three: static bytes, no per-probe allocs — and byte-identical
+            // to the forward path's headers, which is this probe's indistinguishability contract.
+            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        )
+        .header(
+            USER_AGENT,
+            axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+        )
+        .header(
+            ACCEPT,
+            axum::http::HeaderValue::from_static(crate::proxy::egress_accept(egress_name, false)),
+        )
         .timeout(timeout)
         .body(body)
         .send()

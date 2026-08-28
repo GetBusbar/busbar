@@ -1843,13 +1843,22 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // Native-SDK User-Agent for the egress protocol. The shared client sets none, so without
             // this the backend sees a UA-less request — a proxy fingerprint. Dispatched through the
             // writer vtable (`ProtocolWriter::egress_user_agent`) — `writer` is already resolved above.
-            .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
+            .header(
+                USER_AGENT,
+                // `from_static`: the UA is a protocol-declaration constant, so wrap the static
+                // bytes instead of paying `HeaderValue::try_from`'s copy+alloc per request.
+                axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+            )
             // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent). A
             // native SDK always sends one; omitting it is a backend-side proxy fingerprint. The
             // operation chooses it: chat reads the egress declaration (`ProtocolDecl::egress_stream_accept`,
             // byte-identical to before) so no `"bedrock"` branch lives here; an op with a non-JSON
             // response chooses its own. Not part of SigV4 SignedHeaders, so no signature impact.
-            .header(ACCEPT, op.egress_accept(egress_name, wants_stream))
+            .header(
+                ACCEPT,
+                // Same: a declaration constant — static bytes, no per-request alloc.
+                axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
+            )
             .body(payload);
         drop(_cb_reqwest);
         // reqwest's per-request `.timeout()` bounds the ENTIRE request lifecycle, INCLUDING reading
