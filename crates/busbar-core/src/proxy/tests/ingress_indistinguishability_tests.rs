@@ -8,6 +8,49 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// Mint a REAL `hyper::Error` (the owned egress client's stream error type — unconstructible by
+/// hand): a one-shot local upstream declares a Content-Length it never delivers and slams the
+/// connection, so the body stream yields a genuine incomplete-message transport error. Used
+/// wherever a test injects a transport cut into `FirstByteBody`'s inner stream.
+async fn hyper_transport_err() -> hyper::Error {
+    use futures::StreamExt;
+    use http_body_util::BodyExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind err fixture");
+    let addr = listener.local_addr().expect("err fixture addr");
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\npartial")
+            .await
+            .expect("write partial");
+        // Drop: the connection dies with 93 declared bytes undelivered.
+    });
+    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec {
+        idle_per_host: 1,
+        pool_idle_timeout_secs: 1,
+        http1_only: false,
+        h2_prior_knowledge: false,
+    });
+    let req = crate::proxy::egress_request(
+        format!("http://{addr}/").parse().expect("err fixture uri"),
+        axum::http::HeaderMap::new(),
+        bytes::Bytes::new(),
+    );
+    let resp = client.request(req).await.expect("headers must arrive");
+    let mut body = resp.into_body().into_data_stream();
+    loop {
+        match body.next().await {
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => return e,
+            None => panic!("expected a mid-body transport error, got clean EOF"),
+        }
+    }
+}
+
 /// Every egress request must carry a native-SDK `Accept`
 /// header — a native SDK always sends one, so its absence is a backend-side proxy fingerprint.
 /// The headline bedrock egress must mirror botocore: `application/vnd.amazon.eventstream` for a
@@ -711,8 +754,8 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 
     // Same-protocol non-stream: is_sse=false, translate=None, ingress non-bedrock ("openai").
     let inner = futures::stream::iter(vec![
-        Ok::<Bytes, reqwest::Error>(chunk1),
-        Ok::<Bytes, reqwest::Error>(chunk2),
+        Ok::<Bytes, hyper::Error>(chunk1),
+        Ok::<Bytes, hyper::Error>(chunk2),
     ]);
     let fbb = FirstByteBody::new(
         inner,
@@ -845,7 +888,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         .build();
 
     // Split into small transport-frame-sized chunks, same shape reqwest delivers a large body in.
-    let chunks: Vec<Result<Bytes, reqwest::Error>> = body
+    let chunks: Vec<Result<Bytes, hyper::Error>> = body
         .as_bytes()
         .chunks(512)
         .map(|c| Ok(Bytes::copy_from_slice(c)))
@@ -1008,8 +1051,8 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let mut hit = false;
     for _ in 0..ATTEMPTS {
         let inner = futures::stream::iter(vec![
-            Ok::<Bytes, reqwest::Error>(chunk1.clone()),
-            Ok::<Bytes, reqwest::Error>(chunk2.clone()),
+            Ok::<Bytes, hyper::Error>(chunk1.clone()),
+            Ok::<Bytes, hyper::Error>(chunk2.clone()),
         ]);
         let mut fbb = FirstByteBody::new(
             inner,
@@ -1094,7 +1137,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     let inner = futures::stream::iter(
         frames
             .iter()
-            .map(|f| Ok::<Bytes, reqwest::Error>(Bytes::from(f.as_bytes().to_vec())))
+            .map(|f| Ok::<Bytes, hyper::Error>(Bytes::from(f.as_bytes().to_vec())))
             .collect::<Vec<_>>(),
     );
 
@@ -1165,7 +1208,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     let inner = futures::stream::iter(
         frames
             .iter()
-            .map(|f| Ok::<Bytes, reqwest::Error>(Bytes::from(f.as_bytes().to_vec())))
+            .map(|f| Ok::<Bytes, hyper::Error>(Bytes::from(f.as_bytes().to_vec())))
             .collect::<Vec<_>>(),
     );
 
@@ -1255,12 +1298,8 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         .pool("pa", &[(0, 1)])
         .build();
 
-    // A real reqwest transport error to inject AFTER the usage-bearing frames (mid-stream cut).
-    let transport_err = reqwest::Client::new()
-        .get("http://127.0.0.1:1/never")
-        .send()
-        .await
-        .expect_err("connect to a closed port must fail");
+    // A real hyper transport error to inject AFTER the usage-bearing frames (mid-stream cut).
+    let transport_err = hyper_transport_err().await;
 
     let frames: Vec<&str> = vec![
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n",
@@ -1268,7 +1307,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
         "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":50}}\n\n",
     ];
-    let mut items: Vec<Result<Bytes, reqwest::Error>> = frames
+    let mut items: Vec<Result<Bytes, hyper::Error>> = frames
         .iter()
         .map(|f| Ok(Bytes::from(f.as_bytes().to_vec())))
         .collect();
@@ -2869,7 +2908,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
         .expect("mock GET must succeed");
 
     const CAP: usize = 1024;
-    let (bytes, end) = read_capped(resp, CAP).await;
+    let (bytes, end) = read_capped(resp.bytes_stream(), CAP).await;
     assert_eq!(
         bytes.len(),
         CAP,
@@ -2979,19 +3018,15 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         "budget is exhausted after the single unit is spent (no refund yet)"
     );
 
-    // A REAL `reqwest::Error`: connect-refused to a closed loopback port. This is the pre-first-
-    // byte failure shape the streaming body sees when the upstream socket dies before any byte.
-    let reqwest_err = reqwest::Client::new()
-        .get("http://127.0.0.1:1/never")
-        .send()
-        .await
-        .expect_err("connect to a closed port must fail");
+    // A REAL `hyper::Error` transport cut. This stands in for the pre-first-byte failure shape
+    // the streaming body sees when the upstream socket dies before any byte reaches the client.
+    let reqwest_err = hyper_transport_err().await;
 
     // The inner upstream stream yields ONLY that error — no byte ever reaches the client, so this
     // exercises the pre-first-byte (`else`) arm, not the mid-stream arm. `Box::pin` makes the
     // one-shot stream `Unpin`, which `FirstByteBody`'s `Stream` impl requires of its inner.
     let inner = Box::pin(futures::stream::once(async move {
-        Err::<Bytes, reqwest::Error>(reqwest_err)
+        Err::<Bytes, hyper::Error>(reqwest_err)
     }));
     // The 2xx headers recorded an optimistic breaker SUCCESS; simulate that so the pre-first-byte
     // failure below has something to reverse. A consecutive n:1 trip config makes one
@@ -3090,15 +3125,11 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
     });
 
     for attempt in 1..=3u32 {
-        // The upstream dies before the first byte. A fresh connect-refused error is the pre-first-
+        // The upstream dies before the first byte. A fresh transport-cut error is the pre-first-
         // byte failure shape.
-        let reqwest_err = reqwest::Client::new()
-            .get("http://127.0.0.1:1/never")
-            .send()
-            .await
-            .expect_err("connect to a closed port must fail");
+        let reqwest_err = hyper_transport_err().await;
         let inner = Box::pin(futures::stream::once(async move {
-            Err::<Bytes, reqwest::Error>(reqwest_err)
+            Err::<Bytes, hyper::Error>(reqwest_err)
         }));
         let body = FirstByteBody::new(
             inner,
@@ -3183,20 +3214,16 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
         "pool cell must start Closed before any mid-body failure"
     );
 
-    // A REAL `reqwest::Error`: connect-refused to a closed loopback port — the mid-body failure
-    // shape the body sees after the first byte already streamed.
-    let reqwest_err = reqwest::Client::new()
-        .get("http://127.0.0.1:1/never")
-        .send()
-        .await
-        .expect_err("connect to a closed port must fail");
+    // A REAL `hyper::Error` transport cut — the mid-body failure shape the body sees after the
+    // first byte already streamed.
+    let reqwest_err = hyper_transport_err().await;
 
     // Inner stream yields one GOOD chunk (sets `first_byte_sent`) THEN the transport error — this
     // exercises the post-first-byte (`had_first == true`) NON-SSE `else` arm. `Box::pin` makes the
     // stream `Unpin`, which `FirstByteBody`'s `Stream` impl requires of its inner.
     let inner = Box::pin(futures::stream::iter(vec![
-        Ok::<Bytes, reqwest::Error>(Bytes::from_static(b"{\"id\":\"x\",")),
-        Err::<Bytes, reqwest::Error>(reqwest_err),
+        Ok::<Bytes, hyper::Error>(Bytes::from_static(b"{\"id\":\"x\",")),
+        Err::<Bytes, hyper::Error>(reqwest_err),
     ]));
     let body = FirstByteBody::new(
         inner,
@@ -3342,8 +3369,8 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
             .to_vec();
     let overflow = vec![b'x'; crate::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
-        Ok::<Bytes, reqwest::Error>(Bytes::from(usage_chunk)),
-        Ok::<Bytes, reqwest::Error>(Bytes::from(overflow)),
+        Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
+        Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
     ]));
 
     let body = FirstByteBody::new(
@@ -3454,7 +3481,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     let usage_chunk =
         b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n"
             .to_vec();
-    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(
+    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, hyper::Error>(
         Bytes::from(usage_chunk),
     )]));
 
@@ -3561,8 +3588,8 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             .to_vec();
     let overflow = vec![b'x'; crate::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
-        Ok::<Bytes, reqwest::Error>(Bytes::from(usage_chunk)),
-        Ok::<Bytes, reqwest::Error>(Bytes::from(overflow)),
+        Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
+        Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
     ]));
 
     // Build, poll the TWO chunks (usage accumulates, then the overflow trips `aborted()`) but do
@@ -3639,7 +3666,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
     // A normal in-band SSE chunk (no error, no terminator) — the stream never reaches a terminal
     // poll arm before it is dropped, mirroring a client disconnect mid-response.
     let chunk = b"data: {\"type\":\"content_block_delta\"}\n\n".to_vec();
-    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(
+    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, hyper::Error>(
         Bytes::from(chunk),
     )]));
 

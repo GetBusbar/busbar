@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub(crate) use crate::store::now;
 pub(crate) use crate::store::LaneRuntime;
 
-use reqwest::Client;
+use crate::proxy::EgressClient as Client;
 
 // ---------- lane (one per model) ----------
 #[derive(Clone)]

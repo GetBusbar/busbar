@@ -594,81 +594,119 @@ pub(crate) async fn forward_once(
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
     };
-    let mut req = app
-        .client
-        .get()
-        // The precomputed absolute URL (mirrors the main forward path): one buffer copy instead
-        // of a per-request compose + WHATWG parse.
-        .post(target.url.clone())
-        .headers(egress_auth)
-        .header(CONTENT_TYPE, egress_ct)
-        // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched
-        // through the writer vtable (`ProtocolWriter::egress_user_agent`) — writer resolved above.
-        .header(
-            USER_AGENT,
-            // `from_static`: declaration constant — static bytes, no per-request alloc (mirrors main path).
-            axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
-        )
-        // Native-SDK Accept for the egress protocol (mirrors the main forward path). Read from the
-        // egress declaration (`ProtocolDecl::egress_stream_accept`) — no `"bedrock"` branch here.
-        .header(
-            ACCEPT,
-            axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
-        )
-        .body(payload);
-    // See the main forward path: reqwest's `.timeout()` bounds the whole body read, so applying the
-    // failover deadline to a STREAMING request truncates a healthy long generation at that wall-clock
-    // and trips a spurious mid-stream breaker failure. Bound only the non-streaming request; a stream
-    // runs under the shared client-level ceiling (`UPSTREAM_REQUEST_TIMEOUT_SECS`).
-    if !wants_stream {
-        req = req.timeout(std::time::Duration::from_secs(timeout_secs.max(1)));
-    }
+    // Egress header map (mirrors the main forward path): the auth map IS the base — prebuilt clone
+    // or live-built above — then CT/UA/Accept in the same insertion order.
+    let mut egress_headers = egress_auth;
+    let ct_value = if body_is_json {
+        // `from_static`: declaration constant — static bytes, no per-request alloc.
+        axum::http::HeaderValue::from_static(APPLICATION_JSON)
+    } else {
+        // The caller's own CT (same-protocol opaque) / the egress handler's wire CT: runtime
+        // strings, validated here exactly as the main path does — an unencodable CT is an
+        // internal fault, never a panic on the request path.
+        match axum::http::HeaderValue::from_str(egress_ct) {
+            Ok(v) => v,
+            Err(_) => {
+                return Ok(ingress_error(
+                    ingress_protocol,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KIND_API_ERROR,
+                    DETAIL_INTERNAL_ERROR,
+                ));
+            }
+        }
+    };
+    egress_headers.insert(CONTENT_TYPE, ct_value);
+    // Native-SDK User-Agent for the egress protocol (mirrors the main forward path).
+    egress_headers.insert(
+        USER_AGENT,
+        axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+    );
+    // Native-SDK Accept for the egress protocol — a declaration constant, chosen by the operation.
+    egress_headers.insert(
+        ACCEPT,
+        axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
+    );
+    // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
+    // no builder machinery, no per-request compose + WHATWG parse.
+    let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
+    // TIMEOUT RE-PROVISION (see the main forward path): only the NON-streaming request carries the
+    // failover deadline — bounding a healthy long generation stream at the failover wall-clock
+    // would truncate it and record spurious breaker failures. A stream runs under `FirstByteBody`'s
+    // ceiling; buffered reads below run under `read_deadline`.
+    let ns_deadline = (!wants_stream)
+        .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1)));
     // Wall-clock start of the upstream call, for the `metrics.latencyMs` a native bedrock
     // ConverseStream `metadata` frame carries on the buffered-synthesis path below.
     let upstream_started = std::time::Instant::now();
     // Per-attempt time-to-headers cap on the DEGRADED path too (lane-level only: this path selects
     // by pool cell, not a member row, so the member override does not apply here). Expiry = the same
-    // transport-timeout handling as the reqwest error below.
-    let res = match app.lanes[i].attempt_timeout_ms {
-        Some(ms) => {
-            let cap = attempt_cap(ms, timeout_secs);
-            match tokio::time::timeout(cap, req.send()).await {
-                Ok(r) => r,
-                Err(_elapsed) => {
-                    record_upstream_rtt(upstream_started.elapsed());
-                    diag_debug!(
-                        ATTEMPT_TIMEOUT_DEGRADED,
-                        pool = %pool,
-                        lane = %app.lanes[i].model,
-                        attempt_timeout_ms = ms,
-                        "no response headers within the attempt cap (degraded path)"
-                    );
-                    // Mirror the transport-error handling: record transient on the POOL cell and
-                    // signal the caller to try the next degraded candidate.
-                    let tripped = app.store.record_transient_in(
-                        pool,
-                        i,
-                        ERR_NET_TIMEOUT,
-                        forward_once_cfg.as_ref(),
-                        None,
-                    );
-                    if tripped {
-                        emit_breaker_trip(app, pool, i);
-                    }
-                    // `record_transient_in` above already transitioned the cell; the armed `probe_guard`
-                    // releases the probe on drop (owner-checked no-op after the transient). Record
-                    // BEFORE release preserved (the guard drops at return, after this recording).
-                    crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
-                    // Parity with the organic path: a degraded-path attempt-timeout is a failover
-                    // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
-                    crate::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
-                    return Err(());
+    // transport-timeout handling as the transport error below. The non-stream budget deadline wraps
+    // BOTH send arms (the attempt cap, when smaller, still fires first inside).
+    let send_fut = async {
+        let send = app.client.get().request(hreq);
+        match app.lanes[i].attempt_timeout_ms {
+            Some(ms) => {
+                let cap = attempt_cap(ms, timeout_secs);
+                match tokio::time::timeout(cap, send).await {
+                    Ok(r) => SendOutcome::Sent(r),
+                    Err(_elapsed) => SendOutcome::AttemptTimeout(ms),
                 }
             }
+            None => SendOutcome::Sent(send.await),
         }
-        None => req.send().await,
+    };
+    let outcome = match ns_deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, send_fut).await {
+            Ok(o) => o,
+            Err(_elapsed) => SendOutcome::BudgetTimeout,
+        },
+        None => send_fut.await,
+    };
+    let res = match outcome {
+        SendOutcome::Sent(r) => r.map_err(EgressSendError::Client),
+        SendOutcome::BudgetTimeout => Err(EgressSendError::Timeout),
+        SendOutcome::AttemptTimeout(ms) => {
+            record_upstream_rtt(upstream_started.elapsed());
+            diag_debug!(
+                ATTEMPT_TIMEOUT_DEGRADED,
+                pool = %pool,
+                lane = %app.lanes[i].model,
+                attempt_timeout_ms = ms,
+                "no response headers within the attempt cap (degraded path)"
+            );
+            // Mirror the transport-error handling: record transient on the POOL cell and
+            // signal the caller to try the next degraded candidate.
+            let tripped = app.store.record_transient_in(
+                pool,
+                i,
+                ERR_NET_TIMEOUT,
+                forward_once_cfg.as_ref(),
+                None,
+            );
+            if tripped {
+                emit_breaker_trip(app, pool, i);
+            }
+            // `record_transient_in` above already transitioned the cell; the armed `probe_guard`
+            // releases the probe on drop (owner-checked no-op after the transient). Record
+            // BEFORE release preserved (the guard drops at return, after this recording).
+            crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
+            // Parity with the organic path: a degraded-path attempt-timeout is a failover
+            // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
+            crate::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
+            return Err(());
+        }
     };
     record_upstream_rtt(upstream_started.elapsed());
+    // ONE deadline for every buffered read of this response (mirrors the main forward path): the
+    // surviving non-stream budget deadline, or the client-ceiling re-provision anchored at send
+    // start for a stream-intent response read buffered anyway (a non-2xx error body).
+    let read_deadline = ns_deadline.unwrap_or_else(|| {
+        tokio::time::Instant::from_std(
+            upstream_started
+                + std::time::Duration::from_secs(app.client_settings.upstream_request_timeout_secs),
+        )
+    });
 
     match res {
         Ok(r) => {
@@ -698,7 +736,7 @@ pub(crate) async fn forward_once(
             let cross_protocol = ingress_protocol != egress_name;
 
             if !status.is_success() {
-                let bytes = read_capped_body(r).await;
+                let bytes = read_capped_body(r, read_deadline).await;
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
                 // different-protocol client is a foreign-format leak. Reshape to the ingress
                 // protocol's native error envelope, lifting the upstream's human message where
@@ -845,6 +883,7 @@ pub(crate) async fn forward_once(
                     pool,
                     forward_once_cfg.as_ref(),
                     r,
+                    read_deadline,
                     permit,
                     &mut budget_guard,
                     usage_sink,
@@ -884,7 +923,10 @@ pub(crate) async fn forward_once(
             // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below) —
             // disarm the local guard so it does not ALSO refund when this frame unwinds.
             budget_guard.disarm();
-            let upstream_stream = r.bytes_stream();
+            let upstream_stream = {
+                use http_body_util::BodyExt;
+                r.into_body().into_data_stream()
+            };
             let guarded_body = FirstByteBody::new(
                 upstream_stream,
                 is_sse,

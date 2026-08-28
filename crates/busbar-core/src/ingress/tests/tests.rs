@@ -61,7 +61,14 @@ fn minimal_app() -> Arc<App> {
         store: Arc::new(crate::store::HealthState::new(vec![])),
         by_model: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
-        client: crate::state::UpstreamClients::build(1, reqwest::Client::new),
+        client: crate::state::UpstreamClients::build(1, || {
+            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec {
+                idle_per_host: 4,
+                pool_idle_timeout_secs: 300,
+                http1_only: false,
+                h2_prior_knowledge: false,
+            })
+        }),
         client_settings: crate::state::UpstreamClientSettings::from_limits(
             &crate::config::LimitsResolved::default(),
         ),

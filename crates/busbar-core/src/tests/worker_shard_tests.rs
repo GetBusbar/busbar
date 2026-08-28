@@ -7,8 +7,15 @@
 
 #[test]
 fn worker_ids_index_distinct_shards_and_unset_falls_back() {
-    let clients = super::UpstreamClients::build(3, reqwest::Client::new);
-    let addr_of = |c: &reqwest::Client| c as *const _ as usize;
+    let clients = super::UpstreamClients::build(3, || {
+        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec {
+            idle_per_host: 1,
+            pool_idle_timeout_secs: 1,
+            http1_only: false,
+            h2_prior_knowledge: false,
+        })
+    });
+    let addr_of = |c: &crate::proxy::EgressClient| c as *const _ as usize;
     let shard_for = |id: Option<usize>| {
         let clients = clients.clone();
         std::thread::spawn(move || {

@@ -88,12 +88,15 @@ fn path_is_sigv4_unreserved(path: &str) -> bool {
 /// modelId's `%3A` must survive verbatim; see `sign_and_wire_path_parts`).
 #[derive(Clone)]
 pub(crate) struct EgressTarget {
+    /// The absolute URL as the WHATWG-parsed `reqwest::Url` — TEST-ONLY since the stage-B hyper
+    /// cutover: it anchors the byte-differential proof (`egress_target_tests` pins `uri` == `url`
+    /// == the reference composition), keeping the old parser in the tree AS the reference the
+    /// precomputed `uri` can never silently drift from.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) url: reqwest::Url,
     /// The SAME absolute URL as a pre-parsed `http::Uri` (wave-7 stage A): the hyper-owned egress
-    /// client sends this directly, so the per-request WHATWG re-parse reqwest performs at send
-    /// time disappears. Clone is refcounted `Bytes` parts — no parse, no copy of the string.
-    // Read by the stage-B hyper send (and the differential tests until then).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// client sends this directly, so the per-request WHATWG re-parse reqwest performed at send
+    /// time is gone. Clone is refcounted `Bytes` parts — no parse, no copy of the string.
     pub(crate) uri: axum::http::Uri,
     pub(crate) canonical_uri: String,
 }

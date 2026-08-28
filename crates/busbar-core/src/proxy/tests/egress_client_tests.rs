@@ -24,16 +24,6 @@ fn egress_request_uses_precomputed_parts_verbatim() {
     );
 }
 
-#[tokio::test]
-async fn collect_capped_caps_and_collects() {
-    // Over-cap detection and exact collection are proven end-to-end by the forward-path suites;
-    // here the pure helper: a Full body under cap collects byte-identically.
-    use http_body_util::BodyExt;
-    let body = Full::new(Bytes::from_static(b"hello"));
-    let collected = body.collect().await.unwrap().to_bytes();
-    assert_eq!(&collected[..], b"hello");
-}
-
 #[test]
 fn builder_smoke_all_shapes() {
     for (h1, h2c) in [(false, false), (true, false), (false, true), (true, true)] {

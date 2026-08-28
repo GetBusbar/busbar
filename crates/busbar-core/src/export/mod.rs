@@ -66,12 +66,13 @@ pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
     prometheus::route_owner(cfg).into_iter().collect()
 }
 
-/// Configure every PUSH request-log exporter from the resolved `export:` block. Called once at boot
-/// after the pooled client exists; the process-global sinks are `OnceLock`-guarded (like the metrics
-/// recorder), so a later config apply cannot re-point them (restart-to-apply, same posture the
-/// request-log webhook always had). No-op for an absent block.
-pub fn configure(cfg: &ExportCfg, client: reqwest::Client) {
-    webhook::configure(cfg, client);
+/// Configure every PUSH request-log exporter from the resolved `export:` block. Called once at
+/// boot; the process-global sinks are `OnceLock`-guarded (like the metrics recorder), so a later
+/// config apply cannot re-point them (restart-to-apply, same posture the request-log webhook always
+/// had). No-op for an absent block. The webhook exporter builds its own delivery client (see
+/// `webhook::CLIENT`) — nothing here touches the LLM egress pool.
+pub fn configure(cfg: &ExportCfg) {
+    webhook::configure(cfg);
     file::configure(cfg);
 }
 

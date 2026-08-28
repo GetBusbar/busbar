@@ -32,7 +32,6 @@
 //!     (every known one) are untouched.
 //!   * decompression: none before (no gzip/brotli features), none now.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -122,28 +121,6 @@ pub(crate) fn egress_request(
     *req.uri_mut() = uri;
     *req.headers_mut() = headers;
     req
-}
-
-/// Collect a response body to `Bytes` with a hard cap — the generic replacement for the
-/// reqwest-typed capped read. Returns `None` when the body exceeds `cap` (the caller's
-/// oversized-response arm) and propagates transport errors.
-pub(crate) async fn collect_capped(
-    body: hyper::body::Incoming,
-    cap: usize,
-) -> Result<Option<Bytes>, hyper::Error> {
-    use http_body_util::BodyExt;
-    let mut body = body;
-    let mut buf: Vec<u8> = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame?;
-        if let Some(data) = frame.data_ref() {
-            if buf.len() + data.len() > cap {
-                return Ok(None);
-            }
-            buf.extend_from_slice(data);
-        }
-    }
-    Ok(Some(buf.into()))
 }
 
 /// Boot-time proxy-env parity: reqwest honored `HTTPS_PROXY`/`https_proxy`/`ALL_PROXY`

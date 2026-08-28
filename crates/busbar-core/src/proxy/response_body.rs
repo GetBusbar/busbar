@@ -133,11 +133,20 @@ pub(crate) struct FirstByteBody<S, P> {
     /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
     /// ONCE per response rather than once per over-cap chunk.
     nonstream_buf_truncated: bool,
+    /// THE STREAM CEILING — the re-provision of reqwest's client-level total timeout
+    /// (`limits.upstream_request_timeout_secs`), which bounded the ENTIRE response body read, streams
+    /// included. The owned hyper client has no such knob (a pool client cannot know which requests
+    /// stream), so the bound lives here, in the body itself: a `Sleep` polled BEFORE the inner stream
+    /// on every wakeup — expiry cuts the body exactly as reqwest's `TotalTimeoutBody` did, even while
+    /// chunks are still flowing. Armed at construction (headers-arrival) rather than send-start, a
+    /// delta of one upstream header round-trip on a multi-minute ceiling; security posture unchanged
+    /// (a black-holed or drip-feeding upstream still cannot hold the body open past the ceiling).
+    ceiling: std::pin::Pin<Box<tokio::time::Sleep>>,
 }
 
 impl<S, P> FirstByteBody<S, P>
 where
-    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    S: Stream<Item = Result<Bytes, hyper::Error>> + Send + 'static,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -163,6 +172,11 @@ where
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
         let ingress_decl = crate::proto::decl_for(ingress_protocol);
+        // Arm the stream ceiling from the SAME resolved limit the old reqwest client-level timeout
+        // read — see the `ceiling` field docs for the exactness argument.
+        let ceiling = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(
+            app.client_settings.upstream_request_timeout_secs,
+        )));
         Self {
             inner,
             first_byte_sent: false,
@@ -186,13 +200,34 @@ where
             stream_failed: false,
             nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
+            ceiling,
+        }
+    }
+}
+
+/// Why the inner byte stream was cut short — either the transport itself failed (a hyper error,
+/// whose Display embeds backend internals and must never reach the client) or the stream ceiling
+/// expired (the reqwest total-timeout re-provision). One type so the single error arm below handles
+/// both identically, logging the real cause server-side.
+enum StreamCut {
+    Transport(hyper::Error),
+    Ceiling,
+}
+
+impl std::fmt::Display for StreamCut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamCut::Transport(e) => e.fmt(f),
+            StreamCut::Ceiling => f.write_str(
+                "upstream response exceeded limits.upstream_request_timeout_secs (stream ceiling)",
+            ),
         }
     }
 }
 
 impl<S, P> Stream for FirstByteBody<S, P>
 where
-    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
+    S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,
     P: Send + Unpin + 'static,
 {
     type Item = Result<Bytes, std::io::Error>;
@@ -205,7 +240,18 @@ where
         // Loop so a translated chunk that yields no complete frame yet (partial) re-polls the
         // inner stream instead of emitting an empty chunk to the client.
         loop {
-            match Pin::new(&mut this.inner).poll_next(cx) {
+            // The stream ceiling is polled BEFORE the inner stream (registering its waker either
+            // way), so expiry cuts even a still-flowing body — reqwest's `TotalTimeoutBody` order,
+            // which this re-provides. Both cut causes funnel into the ONE error arm below.
+            let step: Poll<Option<Result<Bytes, StreamCut>>> =
+                if std::future::Future::poll(this.ceiling.as_mut(), cx).is_ready() {
+                    Poll::Ready(Some(Err(StreamCut::Ceiling)))
+                } else {
+                    Pin::new(&mut this.inner)
+                        .poll_next(cx)
+                        .map(|o| o.map(|r| r.map_err(StreamCut::Transport)))
+                };
+            match step {
                 Poll::Ready(Some(Ok(chunk))) => {
                     if !this.first_byte_sent {
                         this.first_byte_sent = true;
@@ -715,7 +761,7 @@ impl<S, P> Drop for FirstByteBody<S, P> {
 impl<S, P> FirstByteBody<S, P> {
     pub(crate) fn into_body(self) -> Body
     where
-        S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
+        S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,
         P: Send + Unpin + 'static,
     {
         Body::from_stream(self)

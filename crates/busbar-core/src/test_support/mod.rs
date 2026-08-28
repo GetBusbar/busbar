@@ -1508,7 +1508,15 @@ impl TestApp {
                 .values()
                 .any(|rt| rt.upstream_credentials.is_some()),
             client: crate::state::UpstreamClients::build(1, || {
-                reqwest::Client::builder().build().unwrap()
+                // The REAL owned egress client at default spec — tests drive the same hyper stack
+                // production runs (the in-process MockServer is plain http, which the connector's
+                // `https_or_http` posture serves).
+                crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec {
+                    idle_per_host: 4,
+                    pool_idle_timeout_secs: 300,
+                    http1_only: false,
+                    h2_prior_knowledge: false,
+                })
             }),
             client_settings: crate::state::UpstreamClientSettings::from_limits(
                 &crate::config::LimitsResolved::default(),

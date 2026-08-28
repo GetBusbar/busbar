@@ -121,7 +121,7 @@ where
 /// different signal than one debugging an oversized-response misconfiguration.
 pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Result<String, String> {
     let cap = crate::proxy::max_upstream_buffered_bytes();
-    let (raw, read_end) = crate::proxy::read_capped(resp, cap).await;
+    let (raw, read_end) = crate::proxy::read_capped(resp.bytes_stream(), cap).await;
     match read_end {
         crate::proxy::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
         crate::proxy::ReadEnd::Truncated => Err(format!(

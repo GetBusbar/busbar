@@ -688,11 +688,26 @@ pub(crate) fn max_translated_body_bytes() -> usize {
 // — resolves unchanged.
 pub use busbar_substrate::proxy::{read_capped, ReadEnd};
 
-/// Read an upstream ERROR / verbatim-relay body under the tight [`max_upstream_buffered_bytes()`] cap.
-/// A truncated error body still classifies/relays correctly (error envelopes are well under the cap,
-/// and a body that overruns it can only be malformed/hostile), so the truncation flag is discarded.
-pub(crate) async fn read_capped_body(r: reqwest::Response) -> Bytes {
-    read_capped(r, max_upstream_buffered_bytes()).await.0
+/// Read an upstream ERROR / verbatim-relay body under the tight [`max_upstream_buffered_bytes()`] cap
+/// and the caller's wall-clock deadline. A truncated error body still classifies/relays correctly
+/// (error envelopes are well under the cap, and a body that overruns it can only be
+/// malformed/hostile), so the truncation flag is discarded. The deadline re-provides reqwest's
+/// client-level total timeout on this read (a stalled hostile upstream could otherwise hold the
+/// error-body read open forever); expiry yields an empty body — classification keys off the status,
+/// and the message lift from the body is best-effort by contract.
+pub(crate) async fn read_capped_body(
+    r: http::Response<hyper::body::Incoming>,
+    deadline: tokio::time::Instant,
+) -> Bytes {
+    use http_body_util::BodyExt;
+    let read = read_capped(
+        r.into_body().into_data_stream(),
+        max_upstream_buffered_bytes(),
+    );
+    match tokio::time::timeout_at(deadline, read).await {
+        Ok((bytes, _end)) => bytes,
+        Err(_elapsed) => Bytes::new(),
+    }
 }
 
 /// Map the classified `StatusClass` of a CLIENT-fault upstream 4xx to a protocol-agnostic error

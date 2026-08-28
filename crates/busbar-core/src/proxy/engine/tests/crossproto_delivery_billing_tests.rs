@@ -111,11 +111,40 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
             lane: 0,
             armed: true,
         };
-        let http_resp: axum::http::Response<Vec<u8>> = axum::http::Response::builder()
-            .status(axum::http::StatusCode::OK)
-            .body(body)
-            .expect("build upstream http response");
-        let upstream = reqwest::Response::from(http_resp);
+        // A GENUINE `hyper::body::Incoming` (unconstructible by hand): serve the fixture body from
+        // a one-shot local socket and fetch it through the REAL owned egress client — the same
+        // stack the live caller hands this function.
+        let upstream = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind fixture upstream");
+            let addr = listener.local_addr().expect("fixture addr");
+            let body = body.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut sock, _) = listener.accept().await.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                sock.write_all(head.as_bytes()).await.expect("write head");
+                sock.write_all(&body).await.expect("write body");
+            });
+            let uri: axum::http::Uri = format!("http://{addr}/").parse().expect("fixture uri");
+            let req = crate::proxy::egress_request(
+                uri,
+                axum::http::HeaderMap::new(),
+                bytes::Bytes::new(),
+            );
+            app.client
+                .get()
+                .request(req)
+                .await
+                .expect("fixture upstream send")
+        };
         let resp = translate_response_cross_protocol(
             &app,
             0,
@@ -124,6 +153,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
             "p",
             &breaker,
             upstream,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
             crate::store::Permit::Unbounded,
             &mut guard,
             sink,

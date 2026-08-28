@@ -50,14 +50,17 @@ struct Target {
 /// (Whether the request-log payload is BUILT at all is decided earlier, by the union-of-projections
 /// compute gate on the `App` — see `crate::export::projection::ProjectionUnion`.)
 static TARGETS: OnceLock<Vec<Target>> = OnceLock::new();
-/// busbar's pooled reqwest client, reused for delivery (same client the old `configure_webhook` took).
+/// The exporter's OWN delivery client. It used to borrow the shared upstream pool; since the LLM
+/// egress moved to the owned hyper client (wave 7), webhook delivery — a background, seconds-cadence
+/// push with its own SSRF posture — keeps reqwest and builds its client here, ONLY when at least
+/// one webhook sink is actually configured (the default config pays nothing).
 static CLIENT: OnceLock<Client> = OnceLock::new();
 
 /// Configure the webhook sinks once at startup from the resolved `export:` block — one [`Target`] per
 /// NAMED `module: request-log-webhook` instance, in config order. Each URL is validated HERE (SSRF
 /// guard + `https://`-only) so an invalid target is rejected loudly and left disabled, rather than
 /// firing per-request POSTs at an unintended host. No-op when no webhook instance is configured.
-pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
+pub(crate) fn configure(cfg: &ExportCfg) {
     let mut targets = Vec::new();
     for w in &cfg.request_log_webhooks {
         let auth = w
@@ -74,9 +77,24 @@ pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
         );
     }
     if !targets.is_empty() {
-        let _ = TARGETS.set(targets);
+        // Delivery posture matches the old shared pool where it matters: 10s connect bound; the
+        // per-DELIVERY total timeout is each target's own `delivery_timeout_secs` (applied per
+        // request below), so no client-level total timeout is needed. A TLS-init failure disables
+        // webhook delivery loudly instead of panicking boot.
+        match Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+        {
+            Ok(client) => {
+                let _ = TARGETS.set(targets);
+                let _ = CLIENT.set(client);
+            }
+            Err(e) => crate::diagnostics::diag_error!(
+                crate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
+                "failed to build the webhook delivery client: {e}; disabling every webhook exporter"
+            ),
+        }
     }
-    let _ = CLIENT.set(client);
 }
 
 /// Validate one URL and, if it survives, append a [`Target`]. A validation failure logs loudly and

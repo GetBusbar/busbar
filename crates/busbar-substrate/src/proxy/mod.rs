@@ -68,7 +68,15 @@ pub enum ReadEnd {
     TransportError,
 }
 
-pub async fn read_capped(r: reqwest::Response, cap: usize) -> (Bytes, ReadEnd) {
+/// GENERIC over the chunk source (wave 7): the LLM hot path reads a hyper `Incoming`, the
+/// substrate/preflight callers read a reqwest response — one capped loop serves both, so the cap
+/// semantics (bounded reserve, truncate-on-overrun, transport-error flag) cannot drift between
+/// clients. `futures::Stream<Item = Result<Bytes, E>>` is the meeting point both convert to for
+/// free (`bytes_stream()` / `BodyStream` + data frames).
+pub async fn read_capped<E>(
+    mut chunks: impl futures::Stream<Item = Result<Bytes, E>> + Unpin,
+    cap: usize,
+) -> (Bytes, ReadEnd) {
     // Pre-reserve a BOUNDED initial capacity so the per-chunk `extend_from_slice` below does not
     // reallocate-and-copy the buffer through a geometric growth series as it climbs toward `cap`.
     // Bounded two ways so this never becomes an allocation-amplification lever: (a) capped at `cap`
@@ -79,11 +87,11 @@ pub async fn read_capped(r: reqwest::Response, cap: usize) -> (Bytes, ReadEnd) {
     // starting allocation, never how many bytes are admitted.
     const READ_CAPPED_RESERVE_CEILING: usize = 64 * 1024;
     let mut buf: Vec<u8> = Vec::with_capacity(cap.min(READ_CAPPED_RESERVE_CEILING));
-    let mut r = r;
+    use futures::StreamExt;
     let mut end = ReadEnd::Complete;
     loop {
-        match r.chunk().await {
-            Ok(Some(chunk)) => {
+        match chunks.next().await {
+            Some(Ok(chunk)) => {
                 let remaining = cap.saturating_sub(buf.len());
                 if remaining == 0 {
                     // Cap already full but more bytes arrived — the body overran the cap. Stop
@@ -98,8 +106,8 @@ pub async fn read_capped(r: reqwest::Response, cap: usize) -> (Bytes, ReadEnd) {
                     break;
                 }
             }
-            Ok(None) => break, // clean end of body — buffer is complete
-            Err(_) => {
+            None => break, // clean end of body — buffer is complete
+            Some(Err(_)) => {
                 // Transport error mid-body. Keep what we have for any best-effort error relay, but
                 // flag it so the buffered translate path does NOT treat a half-received body as a
                 // clean 2xx completion (which would record breaker success and charge tokens on a

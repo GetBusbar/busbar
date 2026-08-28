@@ -1060,11 +1060,11 @@ async fn run(data_workers: usize) {
     );
 
     // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` /
-    // `request-log-file` instance) from the resolved `export:` block, reusing the pooled client for
-    // webhook delivery. No-op when no request-log sink is configured (the default). The
+    // `request-log-file` instance) from the resolved `export:` block (the webhook
+    // exporter owns its delivery client). No-op when no request-log sink is configured (the default). The
     // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
     // the `/metrics` plugin route in `build_app_from_config`).
-    export::configure(&resolved_export, app.client.get().clone());
+    export::configure(&resolved_export);
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. Re-spawned on every config reload/apply (see the admin

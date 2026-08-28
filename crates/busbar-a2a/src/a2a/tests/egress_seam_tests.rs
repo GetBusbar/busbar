@@ -111,7 +111,7 @@ fn direct_read(
             .get(reqwest::header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let (bytes, end) = read_capped(resp, cap).await;
+        let (bytes, end) = read_capped(resp.bytes_stream(), cap).await;
         (status, location, bytes.to_vec(), end)
     })
 }

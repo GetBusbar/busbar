@@ -899,7 +899,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     // ENTIRE — possibly multi-gigabyte — body before any cap could apply) so a
                     // mistyped or compromised URL serving an unbounded body is rejected with a clear
                     // error instead of OOMing busbar on boot or `/plugins/reload`.
-                    let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
+                    let (bytes, end) = crate::proxy::read_capped(resp.bytes_stream(), cap).await;
                     match end {
                         crate::proxy::ReadEnd::Complete => Ok(bytes.to_vec()),
                         crate::proxy::ReadEnd::Truncated => Err(format!(
