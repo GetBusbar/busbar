@@ -106,9 +106,10 @@ async fn forward(
         // refusal rather than an unwrap because this is a request path.
         return not_found();
     };
-    plane
-        .service()
-        .handle(request)
+    // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one call
+    // site — cold relative to the data planes, and boxing keeps this handler's future small; see
+    // the walk.rs precedent.
+    Box::pin(plane.service().handle(request))
         .await
         .map(|body| axum::body::Body::from(body.into_bytes()))
         .into_response()
