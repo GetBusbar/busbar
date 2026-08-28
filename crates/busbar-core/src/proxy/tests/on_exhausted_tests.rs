@@ -172,7 +172,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
     app.store.force_open_in("pe", 0, now() + 300);
 
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![lane(0), lane(1)],
         chat_body("pe").into(),
         None,
@@ -234,7 +234,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
     app.store.force_open_in("pl", 1, now() + 5);
 
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![lane(0), lane(1)],
         chat_body("pl").into(),
         None,
@@ -285,7 +285,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     app.store.force_open_in("ps", 0, now() + 30);
 
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![lane(0)],
         chat_body("ps").into(),
         None,
@@ -358,7 +358,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
 
     for _ in 0..4 {
         let resp = forward_with_pool(
-            app.clone(),
+            &app,
             vec![lane(0)],
             chat_body("pf").into(),
             None,
@@ -470,7 +470,7 @@ async fn drive_shed(
     tokio::time::timeout(
         SHED_BUDGET,
         forward_with_pool(
-            app,
+            &app,
             cands,
             chat_body(pool).into(),
             None,
@@ -1054,17 +1054,20 @@ fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>
 fn spawn_request(
     app: std::sync::Arc<crate::state::App>,
 ) -> tokio::task::JoinHandle<axum::response::Response> {
-    tokio::spawn(forward_with_pool(
-        app,
-        vec![lane(0)],
-        chat_body("p").into(),
-        None,
-        "p",
-        None,
-        "anthropic",
-        crate::handlers::CHAT,
-        None,
-    ))
+    tokio::spawn(async move {
+        forward_with_pool(
+            &app,
+            vec![lane(0)],
+            chat_body("p").into(),
+            None,
+            "p",
+            None,
+            "anthropic",
+            crate::handlers::CHAT,
+            None,
+        )
+        .await
+    })
 }
 
 /// Poll-until-parked: wait (bounded) for the pool's queue depth to reach `min_depth`, re-asserting on
@@ -1424,7 +1427,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
     let resp = tokio::time::timeout(
         Duration::from_secs(4),
         forward_with_pool(
-            app.clone(),
+            &app,
             vec![lane(0)],
             chat_body("p").into(),
             None,
@@ -1489,7 +1492,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
     let resp = tokio::time::timeout(
         Duration::from_secs(2),
         forward_with_pool(
-            app.clone(),
+            &app,
             vec![lane(0)],
             chat_body("p").into(),
             None,

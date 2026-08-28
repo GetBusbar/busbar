@@ -64,7 +64,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     }];
     let request_a = tokio::spawn(async move {
         forward_with_pool(
-            app_a,
+            &app_a,
             cands,
             body.into(),
             None,

@@ -379,7 +379,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -505,7 +505,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -609,7 +609,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1365,7 +1365,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     .unwrap();
     // Caller presents NO credential.
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1448,7 +1448,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
         serde_json::to_vec(&json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}))
             .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1536,7 +1536,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1613,7 +1613,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1692,7 +1692,7 @@ data: {"type":"message_stop"}"#
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1760,7 +1760,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -1814,7 +1814,7 @@ async fn test_forward_error_path_returns_native_envelope() {
     let app = TestApp::new().build();
     // No candidates → "no usable lane" 503, shaped to the ingress (OpenAI) envelope.
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![],
         serde_json::to_vec(&json!({"model": "x", "messages": []}))
             .unwrap()
@@ -1906,7 +1906,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2005,7 +2005,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2091,7 +2091,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
         .build();
 
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2171,7 +2171,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
         .build();
 
     let resp = forward_with_pool(
-            app.clone(),
+            &app,
             vec![crate::state::WeightedLane {
                 idx: 0,
                 weight: 1,
@@ -2251,7 +2251,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
         .build();
 
     let resp = forward_with_pool(
-            app.clone(),
+            &app,
             vec![crate::state::WeightedLane {
                 idx: 0,
                 weight: 1,
@@ -2313,7 +2313,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
         // Empty candidate pool → "no usable lane" / Status503 overload 503 through the forward
         // layer (forward_with_pool → handle_exhaustion_for_pool → handle_status_503).
         let resp = forward_with_pool(
-            app.clone(),
+            &app,
             vec![],
             serde_json::to_vec(&json!({"model": "x", "messages": []}))
                 .unwrap()
@@ -2380,7 +2380,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2469,7 +2469,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2544,7 +2544,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2636,7 +2636,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2738,7 +2738,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2818,7 +2818,7 @@ async fn test_truncated_body_does_not_refund_budget() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -2904,7 +2904,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     // ("expected value at line 1 column N", echoing nearby bytes) if it were interpolated.
     let bad = br#"{ "model": "p", BUSBAR_SENTINEL_LEAK }"#.to_vec();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -3718,7 +3718,7 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,

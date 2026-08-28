@@ -109,7 +109,7 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
         .force_open_in("", 0, crate::state::now() + 1_000_000);
 
     let response = crate::proxy::forward_with_pool(
-        app.clone(),
+        &app,
         vec![member(0), member(1)],
         chat_body(),
         None,
@@ -224,7 +224,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         .expect("the primary's only permit is available before the request");
 
     let response = crate::proxy::forward_with_pool(
-        app.clone(),
+        &app,
         vec![member(0), member(1)],
         chat_body(),
         None,

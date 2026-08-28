@@ -1385,7 +1385,7 @@ pub(crate) async fn named(
             .get(affinity_header_for(&app, &name))
             .and_then(|v| v.to_str().ok());
         let resp = crate::proxy::forward_with_pool_keyed(
-            app.clone(),
+            &app,
             cands.clone(),
             body,
             caller_token,
@@ -1414,7 +1414,7 @@ pub(crate) async fn named(
         // Model-based routing: anthropic ingress, lane-default breaker OperationHandler (empty pool name → the
         // op_handler shared by all direct/ad-hoc routes, surfaced by /stats and /healthz), no affinity.
         let resp = crate::proxy::forward_with_pool_keyed(
-            app.clone(),
+            &app,
             vec![WeightedLane {
                 reasoning: None,
                 idx: i,
@@ -1511,7 +1511,7 @@ pub(crate) async fn adhoc(
             // Single lane with weight=1 (default for ad-hoc routing): anthropic ingress, lane-default
             // breaker OperationHandler (empty pool name), no affinity.
             let resp = crate::proxy::forward_with_pool_keyed(
-                app.clone(),
+                &app,
                 vec![WeightedLane {
                     reasoning: None,
                     idx: i,

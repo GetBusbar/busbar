@@ -61,7 +61,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -134,7 +134,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -222,7 +222,7 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -337,7 +337,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         // Originating candidate set for pool A = its dead member (lane 0) → A exhausts.
         vec![crate::state::WeightedLane {
             reasoning: None,
@@ -443,7 +443,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,

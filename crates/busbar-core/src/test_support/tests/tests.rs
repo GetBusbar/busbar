@@ -18,7 +18,7 @@ async fn forward(
     usage_sink: Option<crate::proxy::UsageSink>,
 ) -> axum::response::Response {
     forward_with_pool(
-        app,
+        &app,
         cands,
         body,
         caller_token,
@@ -333,7 +333,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
     )
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -670,7 +670,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     // First two requests are within budget → served.
     for n in 0..2 {
         let resp = forward_with_pool(
-            app.clone(),
+            &app,
             cands.clone(),
             body.clone().into(),
             None,
@@ -687,7 +687,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 
     // Budget spent (2 → 0): the lane is no longer usable, so the pool is exhausted → 503.
     let resp3 = forward_with_pool(
-        app.clone(),
+        &app,
         cands.clone(),
         body.clone().into(),
         None,
@@ -801,7 +801,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
     use http_body_util::BodyExt as _;
     for n in 0..5 {
         let resp = forward_with_pool(
-            app.clone(),
+            &app,
             cands.clone(),
             body.clone().into(),
             None,
@@ -3849,7 +3849,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
 
     // Route via the named pool so per-pool LeastBad config is consulted.
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -3936,7 +3936,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -4002,7 +4002,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     }))
     .unwrap();
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -4081,7 +4081,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward_with_pool(
-            app.clone(),
+            &app,
             vec![crate::state::WeightedLane {
                 reasoning: None,
                 idx: 0,
@@ -4174,7 +4174,7 @@ async fn test_fallback_pool_loop_guard() {
 
     // pool_a (marked) → pool_b (marked) → pool_a re-entered (already visited) → 503 via guard.
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4260,7 +4260,7 @@ async fn test_fallback_pool_routes_to_backup() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4346,7 +4346,7 @@ async fn test_sticky_session_while_healthy() {
 
     // First call with session id "session-abc"
     let response1 = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4384,7 +4384,7 @@ async fn test_sticky_session_while_healthy() {
 
     // Second call with same session id - should get same lane
     let response2 = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4428,7 +4428,7 @@ async fn test_sticky_session_while_healthy() {
 
     // Third call with different session id - should potentially get a different lane
     let response3 = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4553,7 +4553,7 @@ async fn test_sticky_yields_when_tripped() {
     // `stable_hash("session-abc") % 2 == 0` → sticky member is cands[0] == lane 0
     // (the TRIPPED lane). This is the case the test name claims to cover.
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4738,7 +4738,7 @@ async fn test_sticky_from_system_block() {
 
     // First call with system block
     let response1 = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -4770,7 +4770,7 @@ async fn test_sticky_from_system_block() {
 
     // Second call with same system block - should get same lane (deterministic)
     let response2 = forward_with_pool(
-        app.clone(),
+        &app,
         vec![
             crate::state::WeightedLane {
                 reasoning: None,
@@ -5113,7 +5113,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
 
     // Forward with ingress_protocol="openai" to trigger translation into anthropic lane
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -5364,7 +5364,7 @@ async fn test_same_protocol_anthropic_passthrough() {
 
     // Forward with ingress_protocol="anthropic" - same protocol, no translation should occur
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -5414,7 +5414,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
     let anthropic_body =
         json!({"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true});
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -5489,7 +5489,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
     // Anthropic-format NON-streaming request; egress lane is openai → response translated back.
     let anthropic_body = json!({"model":"m","messages":[{"role":"user","content":"hi"}]});
     let response = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -5883,7 +5883,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
     // invariant that actually holds: the armed cooldown is at least the header's 45s.
     let t0 = now();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,
@@ -5946,7 +5946,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
     let req_body = serde_json::to_vec(&json!({"model": "busy-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50})).unwrap();
     let started = std::time::Instant::now();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,

@@ -183,7 +183,7 @@ async fn global_gate_reject_short_circuits_the_request() {
             serde_json::to_vec(&serde_json::json!({"model": "p", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}))
                 .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![WeightedLane {
             reasoning: None,
             idx: 0,
@@ -237,7 +237,7 @@ async fn global_gate_abstain_does_not_reject() {
             serde_json::to_vec(&serde_json::json!({"model": "p", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}))
                 .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![WeightedLane {
             reasoning: None,
             idx: 0,
@@ -466,7 +466,7 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         .build();
 
     let resp = forward_with_pool(
-        app,
+        &app,
         vec![WeightedLane {
             reasoning: None,
             idx: 0,
@@ -520,7 +520,7 @@ fn lanes(n: usize) -> Vec<WeightedLane> {
 
 async fn fire(app: Arc<App>, n_lanes: usize) -> Response {
     forward_with_pool(
-        app,
+        &app,
         lanes(n_lanes),
         chat_body().into(),
         None,
@@ -1793,7 +1793,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
     // The forward will fail to reach the fake upstream, but the routing policy captures FIRST.
     // caller_token is a non-vkey SSO bearer → lookup misses; only the threaded key can save it.
     let _ = forward_with_pool_keyed(
-        app,
+        &app,
         cands,
         body,
         Some("sso-jwt-not-a-vkey-secret"),
@@ -1908,7 +1908,7 @@ async fn reject_rides_the_full_forward_path() {
     }))
     .unwrap();
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![crate::state::WeightedLane {
             reasoning: None,
             idx: 0,

@@ -61,7 +61,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     assert!(huge.len() >= 128 * 1024);
 
     let resp = crate::proxy::forward_with_pool(
-        app.clone(),
+        &app,
         vec![member(0)],
         huge,
         None,
@@ -87,7 +87,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     .unwrap()
     .into();
     let resp = crate::proxy::forward_with_pool(
-        app.clone(),
+        &app,
         vec![member(0)],
         small,
         None,

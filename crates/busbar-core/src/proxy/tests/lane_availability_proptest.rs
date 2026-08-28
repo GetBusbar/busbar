@@ -381,7 +381,7 @@ async fn run_world(world: World) -> Disposition {
     let resp = tokio::time::timeout(
         Duration::from_secs(5),
         forward_with_pool(
-            app.clone(),
+            &app,
             cands,
             chat_body("primary").into(),
             None,
@@ -630,7 +630,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
         .build();
 
     let resp = forward_with_pool(
-        app.clone(),
+        &app,
         vec![wlane(0)],
         chat_body("primary").into(),
         None,
@@ -710,7 +710,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
         let resp = tokio::time::timeout(
             Duration::from_secs(5),
             forward_with_pool(
-                app.clone(),
+                &app,
                 vec![wlane(0)],
                 chat_body("primary").into(),
                 None,

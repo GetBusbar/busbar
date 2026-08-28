@@ -42,7 +42,11 @@ const TRANSLATE_OFFLOAD_THRESHOLD: usize = 128 * 1024;
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_with_pool(
-    app: Arc<App>,
+    // BORROWED: the whole forward runs inline inside the request future, so nothing here needs an
+    // owned Arc — ownership is taken ONLY at the escape points (streaming bodies, spawned
+    // completions), each with its own explicit clone. Every by-value pass was a shared-refcount
+    // RMW pair ping-ponging across workers (wave-6 profile).
+    app: &Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
     caller_token: Option<&str>,
@@ -73,7 +77,7 @@ pub(crate) async fn forward_with_pool(
 /// `rate_headroom` / `identity` into a pool's routing policy, matching the universal dispatch path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_with_pool_keyed(
-    app: Arc<App>,
+    app: &Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
     caller_token: Option<&str>,
@@ -145,7 +149,7 @@ pub(crate) async fn forward_with_pool_keyed(
     fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), transport = op.transport().name(), request_id = tracing::field::Empty)
 )]
 pub(crate) async fn forward_with_pool_parsed(
-    app: Arc<App>,
+    app: &Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
     mut v: Option<LazyBody>,
@@ -203,7 +207,6 @@ pub(crate) async fn forward_with_pool_parsed(
             request_id,
         ))
     };
-    let completion_app = app.clone();
     drop(_wrap);
     let resp = forward_with_pool_parsed_inner(
         app,
@@ -230,7 +233,7 @@ pub(crate) async fn forward_with_pool_parsed(
             "failed"
         };
         fire_stage_taps(
-            &completion_app.tap_hooks_response,
+            &app.tap_hooks_response,
             &shape,
             crate::hooks::wire::HookStageProjection {
                 at: "response",
@@ -242,7 +245,7 @@ pub(crate) async fn forward_with_pool_parsed(
                 status: Some(resp.status().as_u16()),
             },
             resolved_gov_key.and_then(|k| k.group.as_deref()),
-            &completion_app.groups_registry,
+            &app.groups_registry,
         );
     }
     resp
@@ -707,7 +710,7 @@ async fn translate_response_cross_protocol(
 // Plumbing function: same parameter set as the public wrapper.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_with_pool_parsed_inner(
-    app: Arc<App>,
+    app: &Arc<App>,
     cands: Vec<WeightedLane>,
     mut body: Bytes,
     // The request body VALIDATED once by the caller for JSON-body operations, carried as a
