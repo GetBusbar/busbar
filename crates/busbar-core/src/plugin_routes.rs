@@ -156,7 +156,13 @@ struct Registered {
 /// until export/hook plugins are wired into the App snapshot).
 #[derive(Default)]
 pub(crate) struct PluginRouteTable {
-    by_path_method: HashMap<(String, RouteMethod), Registered>,
+    /// Keyed by PATH with the (one- or two-entry) method list inline, NOT by `(String, RouteMethod)`
+    /// pair: the pair key forced every per-request lookup ([`declared_auth`] from the auth
+    /// middleware, [`dispatch`] from the mounted handler) to allocate a fresh `String` just to
+    /// build a key it immediately dropped. A `HashMap<String, _>` answers a `&str` query through
+    /// `Borrow`, so the hot-path lookups allocate nothing; the method walk inside one path's entry
+    /// is over however many methods THAT path declared, which is one or two.
+    by_path: HashMap<String, Vec<(RouteMethod, Registered)>>,
 }
 
 impl PluginRouteTable {
@@ -175,9 +181,11 @@ impl PluginRouteTable {
     fn mounts_for_plane(&self, admin: bool) -> Vec<(String, Vec<RouteMethod>)> {
         let mut by_path: std::collections::BTreeMap<String, Vec<RouteMethod>> =
             std::collections::BTreeMap::new();
-        for ((path, method), reg) in &self.by_path_method {
-            if (reg.auth == RouteAuth::Admin) == admin {
-                by_path.entry(path.clone()).or_default().push(*method);
+        for (path, entries) in &self.by_path {
+            for (method, reg) in entries {
+                if (reg.auth == RouteAuth::Admin) == admin {
+                    by_path.entry(path.clone()).or_default().push(*method);
+                }
             }
         }
         by_path
@@ -194,19 +202,18 @@ impl PluginRouteTable {
     /// the same table), so this set — captured from the BOOT table onto [`crate::state::App`] as
     /// `boot_route_paths` — is exactly the set of plugin paths the running router can serve.
     pub(crate) fn paths(&self) -> std::collections::HashSet<String> {
-        self.by_path_method
-            .keys()
-            .map(|(path, _)| path.clone())
-            .collect()
+        self.by_path.keys().cloned().collect()
     }
 
     /// The declared auth level for `(path, method)`, or `None` if not a registered plugin route. Read
     /// by the auth middleware to enforce the route's bar through the existing chain.
     pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
         let rm = route_method_of(method)?;
-        self.by_path_method
-            .get(&(path.to_string(), rm))
-            .map(|r| r.auth)
+        self.by_path
+            .get(path)?
+            .iter()
+            .find(|(m, _)| *m == rm)
+            .map(|(_, r)| r.auth)
     }
 
     /// Resolve + dispatch a matched request to its owning plugin. `None` iff no plugin currently owns
@@ -220,9 +227,11 @@ impl PluginRouteTable {
         app: &crate::state::App,
         req: &HttpEndpointRequest,
     ) -> Option<(String, HttpEndpointResponse)> {
-        self.by_path_method
-            .get(&(path.to_string(), method))
-            .map(|reg| {
+        self.by_path
+            .get(path)?
+            .iter()
+            .find(|(m, _)| *m == method)
+            .map(|(_, reg)| {
                 (
                     reg.owner.clone(),
                     reg.dispatch.handle_http_with_app(app, req),
@@ -309,11 +318,11 @@ pub(crate) fn preflight_route_collisions(
 /// the identical confinement + first-to-claim rules, so the two can never diverge.
 #[allow(dead_code)]
 pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
-    let mut by_path_method: HashMap<(String, RouteMethod), Registered> = HashMap::new();
+    let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
     for decl in decls {
         confine(decl.kind, &decl.owner, &decl.route.path)?;
-        let key = (decl.route.path.clone(), decl.route.method);
-        if let Some(existing) = by_path_method.get(&key) {
+        let entries = by_path.entry(decl.route.path.clone()).or_default();
+        if let Some((_, existing)) = entries.iter().find(|(m, _)| *m == decl.route.method) {
             return Err(format!(
                 "plugin {:?} cannot register {} {} — already registered by {:?}",
                 decl.owner,
@@ -322,16 +331,16 @@ pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTabl
                 existing.owner
             ));
         }
-        by_path_method.insert(
-            key,
+        entries.push((
+            decl.route.method,
             Registered {
                 auth: decl.route.auth,
                 owner: decl.owner,
                 dispatch: decl.dispatch,
             },
-        );
+        ));
     }
-    Ok(PluginRouteTable { by_path_method })
+    Ok(PluginRouteTable { by_path })
 }
 
 /// THE RESTART-TO-APPLY SIGNAL for plugin routes: the paths a just-applied config

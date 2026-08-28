@@ -505,6 +505,19 @@ impl PlaneDispatch {
                 .any(|claim| path_is_under(path, &claim.path))
         })
     }
+
+    /// Whether ANY plane has mounted a path. A key is present in [`Self::claims`] only once its
+    /// plane has mounted at least one path (see the field doc), so this is exactly "is there a
+    /// plane [`observe`] could ever label". Planes register ONCE at boot
+    /// ([`registry::install_planes`], before the first request) and the mount set is fixed for the
+    /// process lifetime, so `false` here is `false` forever — which is what lets the router omit
+    /// the plane-ingress layer STRUCTURALLY for a deployment with no mounted plane, rather than
+    /// pay a per-request snapshot load and mount walk to pass every request straight through.
+    /// NOT a statement about the current config snapshot's swappable fields: it is about which
+    /// keys ever mounted, which does not swap.
+    pub(crate) fn has_mounts(&self) -> bool {
+        !self.claims.is_empty()
+    }
 }
 
 /// WHAT AN INBOUND PATH IS — the single answer [`PlaneDispatch::ingress_of`] gives, and the input

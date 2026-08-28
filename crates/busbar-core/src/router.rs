@@ -129,9 +129,15 @@ pub(crate) async fn reshape_body_limit_413(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path().to_owned();
+    let resp = next.run(req).await;
+    // FAST PATH: only a 413 is ever reshaped ([`reshape_oversized_413`]'s own first check), so a
+    // non-413 — every ordinary request — must not pay the `handle.load()` snapshot the reshape
+    // needs. Verified equivalent: for any other status the function returns its input untouched.
+    if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+        return resp;
+    }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    let resp = next.run(req).await;
     reshape_oversized_413(&handle.load().planes, &path, resp).await
 }
 
@@ -557,20 +563,28 @@ pub(crate) fn apply_common_layers(
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
 ) -> Router {
+    // THIS ROUTER's core route-auth table, handed to the auth middleware as a `&'static`
+    // borrow rather than through `axum::Extension`. The Extension form cost every request an
+    // insert into its extensions map plus two `Arc` refcount round-trips (the layer's clone in,
+    // the extractor's clone out) to deliver a value that never changes after this function runs:
+    // routers are built ONCE at boot and a config apply only `swap`s the `AppHandle` snapshot, so
+    // the table is process-immutable and the leak is one small allocation per router per process
+    // lifetime — not per apply, and nothing at request rate. Per-router (not per-process) on
+    // purpose, still: the data plane and the admin plane each leak THEIR OWN table, and a route's
+    // bypass belongs to the plane that serves it.
+    let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::new(core_routes));
     let router = router
         // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
         // handler reads the CURRENT snapshot via the `CurrentApp` extractor; the auth middleware
         // loads it too. Until an admin apply calls `swap()`, this is identical to a fixed `Arc<App>`.
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
-            auth::auth_middleware,
+            move |app: crate::state::CurrentApp,
+                  req: axum::extract::Request,
+                  next: axum::middleware::Next| {
+                auth::auth_middleware(app, core_routes, req, next)
+            },
         ))
-        // THIS ROUTER's core route-auth table, handed to the auth middleware. Applied AFTER the
-        // auth layer, which in axum means OUTSIDE it, so the extension is present by the time the
-        // middleware extracts it. Per-router (not per-process) on purpose: the data plane and the
-        // admin plane mount different core routes, and a route's bypass belongs to the plane that
-        // serves it.
-        .layer(axum::Extension(std::sync::Arc::new(core_routes)))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
         // (`limits::translate_body_max_bytes`) — both read the SAME knob so an accepted request is
@@ -582,17 +596,30 @@ pub(crate) fn apply_common_layers(
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
             reshape_body_limit_413,
-        ))
-        // THE PLANE INGRESS BOUNDARY. Outside the auth layer, which in axum means it observes the
-        // FINAL response — including a 401 the auth chain issued before any handler ran, which on
-        // a mounted plane is exactly the failure an operator has no other signal for. It emits for
-        // a path a plane CLAIMS BY MOUNT and passes everything else straight through, so the
-        // residual plane (every protocol endpoint, `/healthz`, `/metrics`, the admin surface) is
-        // untouched and cannot be double-counted against `ingress::finish_inner`.
-        .layer(axum::middleware::from_fn_with_state(
+        ));
+    // THE PLANE INGRESS BOUNDARY. Outside the auth layer, which in axum means it observes the
+    // FINAL response — including a 401 the auth chain issued before any handler ran, which on
+    // a mounted plane is exactly the failure an operator has no other signal for. It emits for
+    // a path a plane CLAIMS BY MOUNT and passes everything else straight through, so the
+    // residual plane (every protocol endpoint, `/healthz`, `/metrics`, the admin surface) is
+    // untouched and cannot be double-counted against `ingress::finish_inner`.
+    //
+    // COMPOSED IN ONLY WHEN A PLANE IS MOUNTED — the same composition rule as `server_timing`
+    // below and for the same reason: a layer that is pure passthrough for every request this
+    // deployment can ever receive is not free, it is a `handle.load()` + a mount-table walk per
+    // request. Plane mounts are fixed at boot (`plane::registry::install_planes` registers once,
+    // before the first request), so `has_mounts()` cannot change under a config apply and omitting
+    // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
+    // contract made structural: a deployment that configured no MCP/A2A plane carries NONE of the
+    // plane machinery on its request path.
+    let router = if handle.load().planes.has_mounts() {
+        router.layer(axum::middleware::from_fn_with_state(
             handle.clone(),
             crate::plane::observe::observe,
-        ));
+        ))
+    } else {
+        router
+    };
     // Always installed (cheap: one relaxed atomic add, no allocation) — the jemalloc idle-purge
     // activity ticker must keep incrementing whether or not `server_timing` below is installed.
     let router = router.layer(axum::middleware::from_fn(request_activity_tick));

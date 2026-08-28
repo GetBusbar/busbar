@@ -64,19 +64,29 @@ pub(crate) struct CoreRoute {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CoreRouteTable {
     routes: Vec<CoreRoute>,
+    /// The LOOKUP INDEX over `routes`, maintained in the same single act that grows it
+    /// ([`CoreRouter::route`]), so the two cannot disagree. Keyed by the exact path, with the tiny
+    /// per-path method list inline: [`declared_auth`] sits on the auth middleware's per-request hot
+    /// path, and the linear `routes` scan it replaced was a per-request O(N) String-compare walk —
+    /// measurable at benchmark rates precisely because every request pays it whether or not it
+    /// names a core route. A `HashMap<String, _>` is queried by `&str` through `Borrow`, so the
+    /// lookup allocates nothing.
+    by_path: std::collections::HashMap<String, Vec<(RouteMethod, RouteAuth)>>,
 }
 
 impl CoreRouteTable {
     /// The declared auth level for `(path, method)`, or `None` when this router mounts no core
     /// route there — in which case the caller falls through to the plugin table and then to the
     /// normal data-plane bar. Exact path match only, never a prefix: a bypass that matched a prefix
-    /// would hand every path below it the same free pass.
+    /// would hand every path below it the same free pass. O(1) on the path, then a walk of that
+    /// path's own (one- or two-entry) method list.
     pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
         let rm = route_method_of(method)?;
-        self.routes
+        self.by_path
+            .get(path)?
             .iter()
-            .find(|r| r.path == path && r.method == rm)
-            .map(|r| r.auth)
+            .find(|(m, _)| *m == rm)
+            .map(|(_, a)| *a)
     }
 
     /// Every declared route, in mount order. The enumeration a router-walking test iterates so a
@@ -126,6 +136,12 @@ impl CoreRouter {
         let path = path.into();
         let mr: MethodRouter<Arc<AppHandle>> = on(method_filter_of(method), handler);
         self.router = self.router.route(&path, mr);
+        // Table and index grow in the SAME act as the mount — the one place all three are written.
+        self.table
+            .by_path
+            .entry(path.clone())
+            .or_default()
+            .push((method, auth));
         self.table.routes.push(CoreRoute { path, method, auth });
         self
     }

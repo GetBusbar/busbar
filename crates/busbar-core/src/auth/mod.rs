@@ -1325,9 +1325,12 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
 #[allow(clippy::result_large_err)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
-    axum::Extension(core_routes): axum::Extension<
-        std::sync::Arc<crate::core_routes::CoreRouteTable>,
-    >,
+    // `&'static`, not `Extension<Arc<..>>`: the table is built once at boot alongside the router it
+    // describes and never changes after (config apply swaps the `AppHandle` snapshot, not the
+    // router), so the router leaks it and the layer closure hands the borrow straight in — no
+    // per-request extensions insert, no refcount traffic, nothing to extract. See
+    // `router::apply_common_layers` for the leak and the argument.
+    core_routes: &'static crate::core_routes::CoreRouteTable,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
