@@ -44,7 +44,7 @@ impl HealthState {
             lane.streak.store(snap.streak, Ordering::Relaxed);
             lane.dead.store(snap.dead, Ordering::Relaxed);
             *lane.dead_reason.lock().unwrap_or_else(|e| e.into_inner()) = snap.dead_reason.clone();
-            lane.ok.store(snap.ok, Ordering::Relaxed);
+            lane.ok.reset_to(snap.ok);
             lane.err.store(snap.err, Ordering::Relaxed);
             lane.client_fault
                 .store(snap.client_fault, Ordering::Relaxed);
@@ -181,7 +181,7 @@ pub(crate) struct LaneState {
     pub(crate) cooldown_until: AtomicU64,
     pub(crate) budget: AtomicI64,
     pub(crate) streak: AtomicU32,
-    pub(crate) ok: AtomicU64,
+    pub(crate) ok: StripedCounter,
     pub(crate) err: AtomicU64,
     pub(crate) client_fault: AtomicU64,
     // Rolling EWMA of observed end-to-end request latency for this lane, in MILLISECONDS, stored as
@@ -254,7 +254,7 @@ impl HealthState {
                     streak: AtomicU32::new(ld.streak),
                     dead: AtomicBool::new(ld.dead),
                     dead_reason: std::sync::Mutex::new(ld.dead_reason),
-                    ok: AtomicU64::new(ld.ok),
+                    ok: StripedCounter::new(ld.ok),
                     err: AtomicU64::new(ld.err),
                     client_fault: AtomicU64::new(ld.client_fault),
                     breaker_state: AtomicU64::new(ST_CLOSED),
@@ -813,7 +813,7 @@ impl HealthState {
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
             // Dead lane: count the success for observability, don't touch the breaker.
-            ls.ok.fetch_add(1, Ordering::Relaxed);
+            ls.ok.add();
             return;
         }
         let cell = self.cell(pool, lane);
@@ -826,7 +826,7 @@ impl HealthState {
         if recovered {
             self.reset_swrr_for(pool, cell.as_ref());
         }
-        ls.ok.fetch_add(1, Ordering::Relaxed);
+        ls.ok.add();
     }
 
     // Production callers: the test-only `record_hard_down`/`record_hard_down_in` trait wrappers, and
@@ -979,7 +979,7 @@ impl HealthState {
         let mut window = lock_recover(&ls.outcome_window);
         window.push(now_time, false);
 
-        ls.ok.fetch_add(1, Ordering::Relaxed);
+        ls.ok.add();
     }
 
     /// Drive the recovery-close gate (`cell_closed_if_recoverable`) directly against a named cell with

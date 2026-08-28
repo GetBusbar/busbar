@@ -427,7 +427,7 @@ impl LaneRuntime for HealthState {
         // `record_success_for`'s dead-lane branch) but do not touch the breaker. Bump `ok` exactly
         // once and return, mirroring `record_probe_failure_all_cells`'s dead-lane early-out.
         if ls.dead.load(Ordering::Relaxed) {
-            ls.ok.fetch_add(1, Ordering::Relaxed);
+            ls.ok.add();
             return;
         }
         let now = Self::now_secs();
@@ -460,7 +460,7 @@ impl LaneRuntime for HealthState {
         // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell): the prior
         // per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a lane in N pools.
         // Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
-        ls.ok.fetch_add(1, Ordering::Relaxed);
+        ls.ok.add();
     }
 
     fn record_client_fault(&self, lane: usize) {
@@ -765,7 +765,7 @@ impl LaneRuntime for HealthState {
             // helper re-folding it independently — halving snapshot()'s breaker-cell scan cost.
             availability: self.classify_lane_from_verdict(lane, breaker_verdict),
             breaker_state: self.lane_breaker_state_from_verdict(lane, breaker_verdict, t),
-            ok: ls.ok.load(Ordering::Relaxed),
+            ok: ls.ok.sum(),
             err: ls.err.load(Ordering::Relaxed),
             client_fault: ls.client_fault.load(Ordering::Relaxed),
             // Side-effect-FREE readiness peek, NOT the mutating `usable()`. `snapshot` feeds the
@@ -821,7 +821,7 @@ impl LaneRuntime for HealthState {
                     streak: ls.streak.load(Ordering::Relaxed),
                     dead: ls.dead.load(Ordering::Relaxed),
                     dead_reason: lock_recover(&ls.dead_reason).clone(),
-                    ok: ls.ok.load(Ordering::Relaxed),
+                    ok: ls.ok.sum(),
                     err: ls.err.load(Ordering::Relaxed),
                     client_fault: ls.client_fault.load(Ordering::Relaxed),
                     latency_ewma_bits: ls.latency_ewma_bits.load(Ordering::Relaxed),

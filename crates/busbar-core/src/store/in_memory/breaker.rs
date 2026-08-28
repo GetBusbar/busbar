@@ -142,6 +142,53 @@ impl SwrrStripes {
     }
 }
 
+/// A monotonic event counter STRIPED PER DATA-PLANE WORKER: the hot writer (`add`, one success
+/// per request) increments its own cache-line-padded slot — no cross-core RMW ping-pong — and the
+/// rare readers (`/stats` snapshot, `export_health`) fold with `sum()`, which is EXACT: counter
+/// addition is order-free, so the fold is byte-identical to the single shared counter it replaces.
+/// `reset_to` (health restore) parks the restored value in the fallback slot and zeroes the rest.
+pub(crate) struct StripedCounter {
+    slots: Box<[PaddedU64]>,
+}
+
+#[repr(align(64))]
+struct PaddedU64(AtomicU64);
+
+impl StripedCounter {
+    pub(crate) fn new(initial: u64) -> Self {
+        let c = Self {
+            slots: (0..crate::state::worker_stripes())
+                .map(|_| PaddedU64(AtomicU64::new(0)))
+                .collect(),
+        };
+        c.slots[c.slots.len() - 1]
+            .0
+            .store(initial, Ordering::Relaxed);
+        c
+    }
+
+    /// One event on the calling thread's stripe.
+    pub(crate) fn add(&self) {
+        let i = crate::state::worker_stripe(self.slots.len());
+        self.slots[i].0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Fold: the exact total (addition is order-free across stripes).
+    pub(crate) fn sum(&self) -> u64 {
+        self.slots.iter().map(|s| s.0.load(Ordering::Relaxed)).sum()
+    }
+
+    /// Restore to an absolute value (health import): fallback slot carries it, others zero.
+    pub(crate) fn reset_to(&self, v: u64) {
+        for (i, s) in self.slots.iter().enumerate() {
+            s.0.store(
+                if i == self.slots.len() - 1 { v } else { 0 },
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
+
 /// The per-cell circuit-breaker FSM state. `LaneState` embeds these fields directly (the default
 /// cell, used by direct/ad-hoc routes and `/stats`); named pools get their own `BreakerCell` per
 /// member lane so a lane shared across pools carries independent Open/Closed status per pool.
@@ -928,6 +975,21 @@ impl HealthState {
     /// bump (`reset_swrr_for`) — the reset is NOT done here because only the CALLER knows which
     /// pool's cell this is; the generational bump itself is lock-free (see `SwrrStripes`).
     pub(crate) fn cell_record_success(c: &dyn BreakerCellAccess, now_time: u64) -> bool {
+        // FAST PATH — the overwhelmingly common success shape: a Closed cell with no failure
+        // streak. Nothing state-dependent remains to do (the streak reset below is a no-op at 0,
+        // and the HalfOpen→Closed CAS cannot apply to a Closed cell), so skip the transition lock
+        // and record only the outcome. A transition racing these two Acquire loads linearizes
+        // this success BEFORE itself — a valid ordering the old lock also permitted (it decided
+        // the same race by arrival order), and one no observer can distinguish: the outcome
+        // timestamp is second-resolution, and a failure landing concurrently keeps its streak
+        // bump either way. Any other shape (streak in progress, HalfOpen recovery, Open) takes
+        // the full locked path below, byte-identical to before.
+        if c.breaker_state().load(Ordering::Acquire) == ST_CLOSED
+            && c.streak().load(Ordering::Acquire) == 0
+        {
+            lock_recover(c.outcome_window()).push(now_time, false); // success outcome
+            return false;
+        }
         // Serialize the whole state-dependent transition (the streak-reset gate reads the state, and
         // the HalfOpen→Closed recovery writes the (state, cooldown) pair) under the transition lock,
         // so a concurrent hard-down trip (Open + sticky cooldown) can't interleave its pair with this
