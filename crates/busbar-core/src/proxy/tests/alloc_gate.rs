@@ -88,12 +88,15 @@ fn openai_ok() -> MockResponse {
 /// `translate_request_cross_protocol`, measured on this tree. It is exact (not `<=`) because the
 /// call is a pure synchronous function with no I/O: its allocation count does not vary run to run.
 ///
-/// The dominant allocation it pins is the per-request `Box<dyn DialectCodec>` at `wire.rs:611`
-/// (`decl_for(app.lanes[i].protocol).dialect()`). If someone reverts FIX-9's single-resolve and
-/// resolves the dialect a SECOND time per request (or adds any other stray per-request allocation on
-/// this path), the count rises and this equality fails RED. See the module header for how to
-/// re-baseline an intentional change.
-const TRANSLATE_WRITE_ALLOCS: u64 = 1; // measured on dev @ d86b896b: the single Box<dyn DialectCodec>
+/// ZERO, and zero is the CONTRACT, not a measurement that happened to come out low: the plane
+/// docs' perf ruling is "no malloc on hot calls", and this path now honors it. The `1` this
+/// replaced was the per-request `Box<dyn DialectCodec>` that `decl_for(..).dialect()` used to mint
+/// (`proto.rs`'s old `fn() -> Box<..>` codec field) — a gate baselined to the defect it existed to
+/// catch. With `codec` now a `&'static dyn` (pure-memory borrow, same shape as `handler`),
+/// `dialect()` allocates nothing, and ANY stray per-request allocation that ever lands on this
+/// path again fails this equality RED. Do not raise this number to make a change green — a raise
+/// IS the regression, and the right fix is on the hot path, not here.
+const TRANSLATE_WRITE_ALLOCS: u64 = 0; // the seam contract: no malloc on hot calls
 
 #[test]
 fn alloc_gate_translate_write_stable() {

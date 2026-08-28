@@ -98,7 +98,13 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// built-in row, so the fixture registry the tests see matches the registry a shipped binary has.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_ANTHROPIC,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_ANTHROPIC)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_ANTHROPIC);
+        Some(&CODEC)
+    },
     handler: Some(&handler::AnthropicRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,

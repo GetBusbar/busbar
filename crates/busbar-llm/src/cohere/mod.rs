@@ -33,7 +33,13 @@ pub fn protocol() -> Protocol {
 /// COHERE'S DECLARATION.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_COHERE,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_COHERE)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_COHERE);
+        Some(&CODEC)
+    },
     handler: Some(&handler::CohereRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,

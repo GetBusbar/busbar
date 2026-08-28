@@ -58,7 +58,13 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_OPENAI,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_OPENAI)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_OPENAI);
+        Some(&CODEC)
+    },
     handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,

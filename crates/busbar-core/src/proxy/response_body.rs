@@ -125,7 +125,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// (`pop_front`) instead of an O(cap) `Vec::drain` on every over-cap chunk. `taps_nonstream_usage`
     /// gates this: the client stream is untouched either way (verbatim relay, below). The SSE /
     /// translation paths never touch this (they bill via `translate.usage()`).
-    nonstream_buf: std::collections::VecDeque<u8>,
+    nonstream_buf: Vec<u8>,
     /// Set once `nonstream_buf` has dropped ANY front bytes for this response — the buffer is then a
     /// TAIL FRAGMENT, not a well-formed top-level JSON document, so the stream-end arm routes usage
     /// extraction through `usage::recover_truncated_usage` (isolates the self-contained `usage`
@@ -184,7 +184,7 @@ where
             budget_spent,
             ended: false,
             stream_failed: false,
-            nonstream_buf: std::collections::VecDeque::new(),
+            nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
         }
     }
@@ -259,9 +259,19 @@ where
                         // apply can mutate mid-response (`limits.rs:74-96`), so a second read
                         // later in this same decision could observe a DIFFERENT cap mid-computation.
                         let cap = max_translated_body_bytes();
-                        this.nonstream_buf.extend(chunk.iter().copied());
+                        // CONTIGUOUS buffer, memcpy appends. This was a `VecDeque<u8>` extended
+                        // element-by-element (`chunk.iter().copied()`) — a per-BYTE write loop on
+                        // every governed non-stream passthrough response, replacing what had been a
+                        // single `extend_from_slice` memcpy. The tail-anchoring the deque bought is
+                        // kept below, but paid only on the RARE over-cap response (already counted
+                        // on a dashboard), never on the per-chunk hot path.
+                        this.nonstream_buf.extend_from_slice(&chunk);
                         if this.nonstream_buf.len() > cap {
                             let excess = this.nonstream_buf.len() - cap;
+                            // Tail-anchor by dropping the OLDEST bytes: one memmove of the kept
+                            // tail (`Vec::drain` of a front range), amortized over an over-cap
+                            // response's lifetime — not a per-byte cost, and only ever off the
+                            // common path.
                             this.nonstream_buf.drain(..excess);
                             if !this.nonstream_buf_truncated {
                                 // Fires ONCE per response (the flag stays set for every subsequent
@@ -572,7 +582,7 @@ where
                             // reports IR usage (byte-identical to the previous inline read); a
                             // flat-fee op returns None and bills nothing.
                             let truncated = this.nonstream_buf_truncated;
-                            let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf).into();
+                            let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf);
                             if truncated {
                                 // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
                                 // cap), not a well-formed top-level document — `Op::extract_usage`'s

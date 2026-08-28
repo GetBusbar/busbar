@@ -39,7 +39,13 @@ pub fn protocol() -> Protocol {
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_RESPONSES,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_RESPONSES)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_RESPONSES);
+        Some(&CODEC)
+    },
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,

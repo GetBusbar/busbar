@@ -55,7 +55,13 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// shim key without naming one.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_GEMINI,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_GEMINI)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_GEMINI);
+        Some(&CODEC)
+    },
     handler: Some(&handler::GeminiRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,

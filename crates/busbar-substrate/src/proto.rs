@@ -173,11 +173,17 @@ pub struct ProtocolDecl {
     /// and invalidates a config file. Replaces the `match name` arm.
     pub name: &'static str,
 
-    /// How to build this protocol's NEUTRAL computed-codec facade ([`DialectCodec`]), or
-    /// `None` for a protocol that serves operations without a cross-dialect codec (MCP, whose IR is
-    /// its own). Presence alone is the "declares a codec" fact the fields below let a caller read
-    /// without building anything.
-    pub codec: Option<fn() -> Box<dyn DialectCodec>>,
+    /// This protocol's NEUTRAL computed-codec facade ([`DialectCodec`]), or `None` for a protocol
+    /// that serves operations without a cross-dialect codec (MCP, whose IR is its own). Presence
+    /// alone is the "declares a codec" fact the fields below let a caller read without touching it.
+    ///
+    /// `&'static dyn`, EXACTLY like the sibling [`Self::handler`], and that shape is the seam's
+    /// perf contract: the facade is stateless, so handing out a static borrow is a pure-memory
+    /// read. The `fn() -> Box<dyn DialectCodec>` this replaced minted a fresh heap allocation on
+    /// EVERY `dialect()` call — and `dialect()` sits on the per-request egress/response path (UA,
+    /// accept, request-id attach, pristine-head checks), so the plane seam that was designed to
+    /// cost nanoseconds was paying an allocator round-trip per touch instead.
+    pub codec: Option<&'static dyn DialectCodec>,
 
     /// The cell that serves one exchange on this protocol. Replaces `handlers::request_handler`'s
     /// match. `None` would be a protocol that declares itself and serves nothing; every declaration
@@ -327,8 +333,9 @@ impl ProtocolDecl {
 
     /// This protocol's neutral computed-codec facade ([`DialectCodec`]) — the 4th seam the
     /// operation-blind driver reads instead of `protocol_for(name).writer()/.reader()`. `None` for a
-    /// protocol that declares no codec (MCP/A2A). Keyed off the existing [`Self::codec`] presence.
-    pub fn dialect(&self) -> Option<Box<dyn DialectCodec>> {
-        self.codec.map(|make| make())
+    /// protocol that declares no codec (MCP/A2A). A pure-memory read of the declaration's static
+    /// borrow: no allocation, no construction — see [`Self::codec`] for why that is load-bearing.
+    pub fn dialect(&self) -> Option<&'static dyn DialectCodec> {
+        self.codec
     }
 }

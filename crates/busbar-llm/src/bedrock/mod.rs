@@ -36,7 +36,13 @@ pub fn protocol() -> Protocol {
 /// content type — the two facts core used to learn by allocating a reader and a writer to ask.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_BEDROCK,
-    codec: Some(|| super::proto_codec::dialect_ref(PROTO_BEDROCK)),
+    codec: {
+        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
+        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+        static CODEC: super::proto_codec::DialectRef =
+            super::proto_codec::dialect_ref(PROTO_BEDROCK);
+        Some(&CODEC)
+    },
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,

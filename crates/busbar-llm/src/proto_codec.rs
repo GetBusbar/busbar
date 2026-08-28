@@ -824,13 +824,15 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// `ProtocolReader`/`ProtocolWriter`, so the driver's `decl_for(name).dialect().X()` calls are stable
 /// across the move. Constructed only via [`ProtocolDecl::dialect`], so `protocol_for(self.0)` is
 /// always `Some`.
-struct DialectRef(&'static str);
+pub(crate) struct DialectRef(&'static str);
 
-/// Build the neutral [`DialectCodec`] facade for a named dialect — the constructor each dialect's
-/// `ProtocolDecl::codec` field now points at (post-A4b `codec` yields the neutral seam, not a concrete
-/// `Protocol`). Core calls it through `decl_for(name).dialect()` and names nothing concrete.
-pub fn dialect_ref(name: &'static str) -> Box<dyn DialectCodec> {
-    Box::new(DialectRef(name))
+/// Construct the neutral [`DialectCodec`] facade for a named dialect, `const` so each dialect's
+/// `ProtocolDecl::codec` can point at a `static` of it (post-A4b `codec` yields the neutral seam,
+/// not a concrete `Protocol`). Core reads it through `decl_for(name).dialect()` as a `&'static dyn`
+/// borrow and names nothing concrete — and, because the facade is a static, reading it allocates
+/// nothing: the seam contract is a pure-memory dispatch, same shape as `ProtocolDecl::handler`.
+pub(crate) const fn dialect_ref(name: &'static str) -> DialectRef {
+    DialectRef(name)
 }
 
 impl DialectCodec for DialectRef {
