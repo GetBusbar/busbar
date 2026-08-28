@@ -788,6 +788,8 @@ impl LaneRuntime for HealthState {
         }
     }
 
+    #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+    #[inline(never)]
     fn export_health(&self) -> Vec<LaneHealthSnapshot> {
         self.lanes
             .iter()

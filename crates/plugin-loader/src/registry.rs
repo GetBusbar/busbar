@@ -407,6 +407,8 @@ impl PluginRegistry {
 
 /// Discover plugin tarballs (`*.tar.gz` / `*.tgz`) in `dir`, sorted by filename. A missing
 /// directory is an empty list (drop-is-inert: no dir, no plugins), an unreadable one an error.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(dir) {

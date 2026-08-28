@@ -1153,6 +1153,8 @@ pub fn load_secret_from_bytes(
 /// Validates the ABI-version handshake before calling anything else (a library that isn't a busbar
 /// store plugin, or targets a different ABI, is refused, never mis-called). Returns a ready
 /// `Box<dyn Store>` or a human-readable error naming the failure.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, String> {
     let display = lib_path.display().to_string();
     // SAFETY: loading an operator-placed library is inherently trusted (its init code runs), exactly
@@ -1247,6 +1249,8 @@ pub fn plugin_library_filename(crate_snake: &str) -> String {
 /// handshake at a matching version, a supported kind, and all operational symbols — WITHOUT
 /// constructing an instance (no `open`). Returns the transport ABI version. Used to vet an uploaded
 /// artifact before writing it into the plugins directory, and to inventory the directory.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     let display = lib_path.display().to_string();
     // SAFETY: loading runs the library's init code — the same trust as loading it to serve, which is

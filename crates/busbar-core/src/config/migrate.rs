@@ -334,6 +334,8 @@ pub struct MigrateOutput {
 /// Mechanically migrate a 1.4.x config document to the 1.5.0 shape. Deterministic changes
 /// are applied; judgment calls become TODO entries; the `allowed_pools: []` semantic flip gets a
 /// LOUD warning per occurrence. Total and side-effect free.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     let doc: Value =
         serde_yaml::from_str(raw).map_err(|e| format!("input is not valid YAML: {e}"))?;

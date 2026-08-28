@@ -235,6 +235,8 @@ impl HealthState {
     /// Construct with operator-configured hard-down cooldown + honored-`Retry-After` ceiling
     /// (`limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`). Each defaults to
     /// its historical const at the config layer, so `new` and this share one source of truth.
+    #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+    #[inline(never)]
     pub(crate) fn new_with_limits(
         lanes: Vec<LaneData>,
         hard_down_cooldown_secs: u64,
@@ -296,6 +298,8 @@ impl HealthState {
     /// re-created eagerly so a restored Open cell blocks dispatch from the first request.
     // Bin-target consumer is the config-apply core (next slice); the carry-over tests use it now.
     #[allow(dead_code)]
+    #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+    #[inline(never)]
     pub(crate) fn new_with_limits_restored(
         lanes: Vec<LaneData>,
         hard_down_cooldown_secs: u64,

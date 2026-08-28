@@ -2312,6 +2312,8 @@ pub(crate) async fn flush_credential_cache(
 /// `build_app_from_config`'s doc comment), or a human-readable error (any failure changes nothing —
 /// fail-closed, the old snapshot keeps serving). Requires disk config paths (ephemeral mode has no
 /// disk truth to read).
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub(crate) fn rebuild_app_from_disk(
     current: &Arc<crate::state::App>,
 ) -> Result<(crate::state::App, Option<crate::GovCredentialRotation>), String> {

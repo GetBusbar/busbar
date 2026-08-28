@@ -207,6 +207,8 @@ pub struct LoadedConfig {
 /// runtime reload wants to re-use. When `None`, the catalog path is resolved from
 /// `config.providers_file` (relative to the config dir) or defaults to `providers.yaml` next to the
 /// resolved config.yaml (1.5.3).
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn load_config_from_disk(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
@@ -349,6 +351,8 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,

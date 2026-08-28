@@ -57,6 +57,8 @@ pub type Downloader<'a> = dyn Fn(&str) -> Result<Vec<u8>, String> + 'a;
 /// Fetch every `spec` into `dir`. See the module doc for the full contract. On boot
 /// (`fatal_on_miss = true`) any problem aborts with `Err(messages)`; on reload it is collected as a
 /// [`FetchOutcome::Warned`] and the call still succeeds.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn fetch_plugins(
     dir: &Path,
     specs: &[FetchSpec],

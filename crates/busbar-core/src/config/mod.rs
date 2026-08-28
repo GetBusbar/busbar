@@ -4504,6 +4504,8 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
