@@ -423,8 +423,6 @@ dependencies = [
 name = "busbar-core"
 version = "1.6.0"
 dependencies = [
- "a2a-lf",
- "a2a-pb",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -466,7 +464,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "proptest",
- "prost",
  "rcgen",
  "reqwest 0.12.28",
  "ring",
@@ -484,8 +481,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
- "tonic",
- "tonic-types",
  "tower",
  "tracing",
  "tracing-opentelemetry",

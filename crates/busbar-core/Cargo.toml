@@ -85,12 +85,11 @@ getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
-a2a-lf = { workspace = true }
-a2a-pb = { workspace = true }
-rmcp = { workspace = true }
-tonic = { workspace = true }
-tonic-types = { workspace = true }
-prost = { workspace = true }
+# The netted MCP codec (handlers/mod.rs nets `busbar-mcp/src/codec` for TEST builds only) names
+# rmcp's model types, so rmcp rides the `test-support` feature and is ABSENT from the production
+# build — the other plane-stack edges (a2a-lf/a2a-pb/tonic/prost) were unused in core entirely and
+# are gone (the plane crates own them).
+rmcp = { workspace = true, optional = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
@@ -143,7 +142,7 @@ txn-fence-red = []
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support"]
+test-support = ["busbar-substrate/test-support", "dep:rmcp"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
