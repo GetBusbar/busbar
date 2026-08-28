@@ -46,6 +46,13 @@ axum = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
+# THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
+# runtime as a compile-time platform shape; no knob selects either). Binary-only deps — nothing on
+# the request path names them. `core_affinity` advisorily pins the per-worker threads, `socket2`
+# sets SO_REUSEPORT on each per-worker listener so the kernel fans connections across them. See
+# main.rs `serve_thread_per_core`.
+core_affinity = { workspace = true }
+socket2 = { workspace = true }
 
 # Global allocator: jemalloc on EVERY target EXCEPT windows-msvc — a property of the BINARY (only
 # one crate in a link may declare a global allocator), which is why these stay here when everything

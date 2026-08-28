@@ -797,15 +797,39 @@ fn main() {
         // bound unenforced. 128 is far above any realistic core count this process is deployed on and
         // far above what those capacity arguments need.
         .min(MAX_WORKER_THREADS);
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .enable_all()
-        .build()
-        .expect("failed to build the tokio runtime")
-        .block_on(run());
+    // RUNTIME TOPOLOGY (1.6.0). ONE design at every core count: the data plane runs on N pinned
+    // single-threaded (`current_thread`) runtimes — one SO_REUSEPORT listener each, N = the
+    // `worker_threads` resolution above (config knob else env else effective cores, cgroup-quota-
+    // aware via `available_parallelism`) — and THIS small `current_thread` CONTROL runtime homes the
+    // admin plane and every singleton background task. There is no mode and no fallback: a 1-core
+    // box is the same topology with N = 1 (one data worker + the control thread — the same two
+    // threads the old shape effectively ran there). `enable_all` keeps a blocking pool so
+    // `spawn_blocking` keeps a home. `worker_threads` is deliberately NOT a control-runtime
+    // dimension — it is the data-plane worker count, exactly what the knob has always meant.
+    //
+    // Non-unix has no SO_REUSEPORT (no kernel fan-out across per-core listeners), so those builds
+    // keep the classic single work-stealing runtime — a compile-time platform shape, not a
+    // configuration: no knob selects it and no unix deployment can end up on it.
+    #[cfg(unix)]
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build the tokio control runtime")
+            .block_on(run(worker_threads));
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .enable_all()
+            .build()
+            .expect("failed to build the tokio runtime")
+            .block_on(run(worker_threads));
+    }
 }
 
-async fn run() {
+async fn run(data_workers: usize) {
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -1128,19 +1152,24 @@ async fn run() {
         std::process::exit(code);
     }
 
-    // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with
-    // its own TLS/mTLS. `tokio::join!` returns only once BOTH have drained.
-    let data_listener = bind_listener(&listen).await;
-    let admin_listener = bind_listener(&admin_listen).await;
-    tokio::join!(
-        serve_listener(
-            data_listener,
+    // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
+    // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections
+    // across them with no task migration — while the ADMIN plane and every singleton background
+    // task spawned above stay on THIS control runtime. N = `data_workers` (the `worker_threads`
+    // resolution: config knob else env else cgroup-aware effective cores); N = 1 is the same
+    // design on a 1-core box, not a different path. Non-unix (no SO_REUSEPORT) serves both planes
+    // on the single work-stealing runtime `main()` built — the compile-time platform shape.
+    #[cfg(unix)]
+    {
+        let data_handles = serve_thread_per_core(
+            data_workers,
+            listen.clone(),
             data_router,
             tls_cfg,
             tls_secret_resolver.clone(),
-            &listen,
-            recv_shutdown(shutdown_tx.subscribe()),
-        ),
+            &shutdown_tx,
+        );
+        let admin_listener = bind_listener(&admin_listen).await;
         serve_listener(
             admin_listener,
             admin_router,
@@ -1148,8 +1177,43 @@ async fn run() {
             tls_secret_resolver.clone(),
             &admin_listen,
             recv_shutdown(shutdown_tx.subscribe()),
-        ),
-    );
+        )
+        .await;
+        // The shutdown broadcast has fired (the admin serve returned), so every per-core data
+        // runtime is draining too. Join their threads off the async thread via `spawn_blocking`
+        // so this single control runtime keeps polling the background tasks' shutdown arms (the
+        // flusher's final flush, the tracer) while the data runtimes wind down.
+        let _ = tokio::task::spawn_blocking(move || {
+            for h in data_handles {
+                let _ = h.join();
+            }
+        })
+        .await;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
+        let data_listener = bind_listener(&listen).await;
+        let admin_listener = bind_listener(&admin_listen).await;
+        tokio::join!(
+            serve_listener(
+                data_listener,
+                data_router,
+                tls_cfg,
+                tls_secret_resolver.clone(),
+                &listen,
+                recv_shutdown(shutdown_tx.subscribe()),
+            ),
+            serve_listener(
+                admin_listener,
+                admin_router,
+                admin_tls_cfg,
+                tls_secret_resolver.clone(),
+                &admin_listen,
+                recv_shutdown(shutdown_tx.subscribe()),
+            ),
+        );
+    }
     // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
     // persists the freshest accrued spend/requests before the process exits. The background flusher's
     // shutdown arm also flushes, but it is a fire-and-forget task that could lose the race with process
@@ -1183,6 +1247,125 @@ async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
     let _ = rx.recv().await;
 }
 
+/// Spawn the DATA plane: `n` OS threads, each advisorily pinned to a distinct core via
+/// `core_affinity`, each running its own single-threaded (`current_thread`) tokio runtime that binds
+/// its OWN SO_REUSEPORT listener on the shared data `addr` and runs the SAME `serve_listener` accept
+/// loop over a clone of the (Arc-shared) `data_router`. The kernel load-balances accepted connections
+/// across the per-worker listeners, and each connection is then handled entirely on its own worker
+/// with no task migration. `n = 1` is the same design on a 1-core box — one worker, one listener.
+///
+/// Nothing here touches the request path or the app state: `data_router` is `Clone` (its `AppHandle`
+/// is an `Arc`), so every worker serves the SAME app snapshot and the SAME config-swap seam. Pinning
+/// is ADVISORY: if core enumeration is unavailable (some containers expose none) or `set_for_current`
+/// is refused (restricted cpuset), the workers run unpinned and SO_REUSEPORT still balances — the
+/// same code path, only placement differs. The admin plane and every singleton background task stay
+/// on the caller's control runtime — this function spawns ONLY data listeners. Returns the join
+/// handles; the caller awaits shutdown (the broadcast fans out to every per-worker `recv_shutdown`)
+/// and then joins them. Unix-only (SO_REUSEPORT); see the call site.
+#[cfg(unix)]
+fn serve_thread_per_core(
+    n: usize,
+    addr: String,
+    data_router: Router,
+    tls_cfg: Option<busbar_core::config::TlsCfg>,
+    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    shutdown_tx: &tokio::sync::broadcast::Sender<()>,
+) -> Vec<std::thread::JoinHandle<()>> {
+    // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
+    // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    let cores: Vec<Option<core_affinity::CoreId>> =
+        (0..n).map(|i| core_ids.get(i).copied()).collect();
+    tracing::info!(
+        runtimes = cores.len(),
+        pinned = core_ids.len().min(n),
+        listen = %addr,
+        "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
+         tasks stay on the control runtime)"
+    );
+    let mut handles = Vec::with_capacity(cores.len());
+    for (i, core_id) in cores.into_iter().enumerate() {
+        let router = data_router.clone();
+        let tls = tls_cfg.clone();
+        let resolver = secret_resolver.clone();
+        let listen = addr.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
+        let spawned = std::thread::Builder::new()
+            .name(format!("busbar-core-{i}"))
+            .spawn(move || {
+                if let Some(id) = core_id {
+                    // Best-effort pin; a false return (unsupported platform / restricted cpuset) leaves
+                    // the thread unpinned but still serving — the kernel still balances via SO_REUSEPORT.
+                    core_affinity::set_for_current(id);
+                }
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap_or_else(|e| {
+                        die(format!("failed to build per-core data runtime {i}: {e}"))
+                    });
+                rt.block_on(async move {
+                    let std_listener = bind_reuseport_listener(&listen).unwrap_or_else(|e| {
+                        die(format!(
+                            "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core runtime \
+                             {i}): {e}"
+                        ))
+                    });
+                    let listener =
+                        tokio::net::TcpListener::from_std(std_listener).unwrap_or_else(|e| {
+                            die(format!(
+                                "cannot adopt SO_REUSEPORT data listener on '{listen}' (per-core \
+                                 runtime {i}): {e}"
+                            ))
+                        });
+                    serve_listener(
+                        listener,
+                        router,
+                        tls,
+                        resolver,
+                        &listen,
+                        recv_shutdown(shutdown_rx),
+                    )
+                    .await;
+                });
+            })
+            .unwrap_or_else(|e| die(format!("cannot spawn per-core data thread {i}: {e}")));
+        handles.push(spawned);
+    }
+    handles
+}
+
+/// Build a `TcpListener` with SO_REUSEADDR + SO_REUSEPORT set on the shared data address, for the
+/// thread-per-core runtime. SO_REUSEPORT is what lets EVERY per-core runtime bind the SAME address (the
+/// 2nd plain `bind` would otherwise `EADDRINUSE`) and hands the kernel the job of load-balancing accepted
+/// connections across the listeners. Returned as a std listener the caller adopts into its per-core tokio
+/// runtime via `TcpListener::from_std`. No `unsafe` — socket2 wraps the sockopts safely. Unix-only.
+#[cfg(unix)]
+fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::ToSocketAddrs;
+    let sockaddr = addr.to_socket_addrs()?.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("listen address '{addr}' resolved to no socket address"),
+        )
+    })?;
+    let domain = if sockaddr.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&sockaddr.into())?;
+    // Backlog 1024: matches the effective default depth tokio/mio use for a plain bind, so per-core
+    // listeners accept as readily as the single multi-thread listener did.
+    socket.listen(1024)?;
+    Ok(socket.into())
+}
+
 /// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS
 /// from `tls_cfg` exactly as the single-listener path always has: `None` ⇒ plain HTTP over the shared
 /// slow-loris-hardened hyper loop; `Some` ⇒ terminate TLS (mTLS when `client_ca_file` is set), with
@@ -1206,10 +1389,11 @@ async fn serve_listener(
         Some(tls) => {
             tls::install_crypto_provider();
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
-            // `serve_listener` is not spawned: both calls are arms of the `tokio::join!` in `run()`
-            // (this file), and `run()` is polled by `.block_on(run())` on the MAIN thread, so this
-            // resolve parks the boot thread rather than a Tokio worker. It also completes before
-            // `tls::serve` below is reached, so no connection on this listener can be waiting on it.
+            // `serve_listener` is never spawned as a task: the admin call runs directly under
+            // `run()` on the control thread, and each per-worker data call is the FIRST thing its
+            // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
+            // is not yet serving anything. It also completes before `tls::serve` below is reached,
+            // so no connection on this listener can be waiting on it.
             let server_config = tls::build_server_config(&tls, &secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();

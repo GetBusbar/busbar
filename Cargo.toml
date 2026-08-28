@@ -91,6 +91,9 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
 bytes = "1"
+# CPU-core enumeration + per-thread pinning for the thread-per-core data plane (the one unix
+# topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.
+core_affinity = "0.8"
 crc32fast = "1"
 # THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
 # criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
@@ -207,6 +210,10 @@ serde_json = "1"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 sha2 = "0.11.0"
 smallvec = "1"
+# Raw socket options for the thread-per-core data plane: each per-worker listener sets SO_REUSEPORT
+# so the kernel load-balances connections across the per-worker `TcpListener`s. Binary-only boot seam;
+# already present transitively in the lock. `all` exposes the `set_reuse_port` accessor on all targets.
+socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
 tar = "0.4"
 tikv-jemalloc-ctl = "0.6"

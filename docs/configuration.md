@@ -1661,7 +1661,7 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # tokio worker pool size (was BUSBAR_WORKER_THREADS, removed 1.6.0); omit ⇒ one per core
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; was BUSBAR_WORKER_THREADS, removed 1.6.0); omit ⇒ one per core
   upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (was BUSBAR_UPSTREAM_HTTP1_ONLY, removed 1.6.0)
   upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (was BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, removed 1.6.0)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
