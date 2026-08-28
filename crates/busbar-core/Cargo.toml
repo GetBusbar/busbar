@@ -85,6 +85,9 @@ getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
+# Inflates the embedded gzipped OpenAPI document once on first admin request (already in the
+# release graph transitively; this only names the edge).
+flate2 = { workspace = true }
 # The netted MCP codec (handlers/mod.rs nets `busbar-mcp/src/codec` for TEST builds only) names
 # rmcp's model types, so rmcp rides the `test-support` feature and is ABSENT from the production
 # build — the other plane-stack edges (a2a-lf/a2a-pb/tonic/prost) were unused in core entirely and

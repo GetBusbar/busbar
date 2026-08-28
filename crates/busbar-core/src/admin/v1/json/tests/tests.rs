@@ -352,6 +352,13 @@ fn openapi_json_matches_committed_file() {
     if std::env::var("UPDATE_OPENAPI").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_OPENAPI_PATH, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_OPENAPI_PATH}: {e}"));
+        // The gz twin the binary embeds, DETERMINISTIC (mtime 0, fixed level) so the same
+        // contract always produces the same committed bytes.
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        std::io::Write::write_all(&mut enc, fresh.as_bytes()).expect("gz write");
+        let gz = enc.finish().expect("gz finish");
+        std::fs::write(format!("{COMMITTED_OPENAPI_PATH}.gz"), gz)
+            .unwrap_or_else(|e| panic!("write {COMMITTED_OPENAPI_PATH}.gz: {e}"));
         return;
     }
     let committed = std::fs::read_to_string(COMMITTED_OPENAPI_PATH)
@@ -363,15 +370,15 @@ fn openapi_json_matches_committed_file() {
     );
 }
 
-/// The static string the live handler serves must be BYTE-IDENTICAL to the committed file — i.e.
-/// `include_str!` compiled in the same bytes the drift test checks. (Guards against, e.g., a stale
-/// build cache serving an old embed.)
+/// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to
+/// the committed file — i.e. `include_bytes!` compiled in a gz of exactly the bytes the drift test
+/// checks. (Guards a stale build-cache embed AND a hand-edited/stale `.gz` twin.)
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn served_openapi_equals_committed_file() {
     let committed =
         std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi");
-    assert_eq!(super::OPENAPI_JSON, committed);
+    assert_eq!(super::handlers::openapi_json(), committed);
 }
 
 /// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`

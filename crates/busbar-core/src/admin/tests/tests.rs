@@ -12565,7 +12565,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// this audit.
 fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
     use crate::admin::v1::contract::taxonomy::MethodTag;
-    let doc: serde_json::Value = serde_json::from_str(crate::admin::v1::json::OPENAPI_JSON)
+    let doc: serde_json::Value = serde_json::from_str(crate::admin::v1::json::openapi_json())
         .expect("the committed openapi.json parses");
     let paths = doc["paths"]
         .as_object()
