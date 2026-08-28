@@ -192,7 +192,7 @@ async fn alloc_gate_openai_passthrough_forward() {
 
     async fn one_request(app: &Arc<crate::state::App>) {
         let resp = crate::proxy::forward_with_pool(
-            &app,
+            app,
             vec![member(0)],
             openai_chat_body(),
             None,

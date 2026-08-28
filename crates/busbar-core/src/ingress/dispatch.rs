@@ -246,7 +246,7 @@ pub async fn operation_resolved(
         .and_then(|h| h.to_str().ok())
         .map(str::to_string);
     let resp = crate::proxy::forward_with_pool_parsed(
-        &app,
+        app,
         cands,
         body,
         v,

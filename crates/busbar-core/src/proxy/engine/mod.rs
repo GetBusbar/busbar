@@ -950,7 +950,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     if !app.tap_hooks.is_empty() {
         if let Some(Ok(dom)) = v.as_mut().map(|l| l.ensure_dom()) {
             fire_global_taps(
-                &app,
+                app,
                 dom,
                 &body,
                 req_content_type,
@@ -1027,8 +1027,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // once and shared (Arc) so the streaming guard can record mid-stream failures with the same
     // thresholds the synchronous path used. The default (no per-pool breaker — the common case) is
     // a process-wide cached Arc, so the hot path pays no per-request allocation for it.
-    let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> =
-        resolve_breaker_cfg(&app, pool_name);
+    let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> = resolve_breaker_cfg(app, pool_name);
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
 
@@ -1102,7 +1101,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let outcomes: Vec<PolicyOutcome> =
             futures::future::join_all(chain.iter().map(|(_, gate)| {
                 decide_policy_order(
-                    &app,
+                    app,
                     gate,
                     &cands,
                     &request_ctx,
@@ -1297,7 +1296,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     None => &NULL_BODY_POLICY,
                 };
                 let outcome = decide_policy_order(
-                    &app,
+                    app,
                     resolved,
                     &cands,
                     &request_ctx,
@@ -1544,7 +1543,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // never the unowned `release_probe_in`, which would revert whichever probe is live at
         // release time regardless of which one this attempt actually won.
         let (i, permit, probe_epoch) = match pick_among(
-            &app,
+            app,
             &cands,
             &mut request_ctx,
             affinity_key_hash,
@@ -1630,10 +1629,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Held as a borrow; every metric emit below goes through the TELEMETRY BANK (telemetry.rs),
         // which resolves `(metric_pool, i)` to this generation's pre-registered per-thread slots —
         // no label allocation and no shared-atomic contention on the walk.
-        let metric_pool: &str = metric_pool_label(&app, pool_name, i);
+        let metric_pool: &str = metric_pool_label(app, pool_name, i);
 
         // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
-        crate::telemetry::upstream_attempt(&app, metric_pool, i);
+        crate::telemetry::upstream_attempt(app, metric_pool, i);
         tracing::debug!(pool = %pool_name, lane = %app.lanes[i].model, "upstream attempt");
 
         let egress_name = app.lanes[i].protocol;
@@ -1657,7 +1656,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let head_pristine = ingress_protocol == egress_name
             && first_hop_v
                 .as_ref()
-                .is_some_and(|l| head_provably_pristine(&app, i, l.probe()));
+                .is_some_and(|l| head_provably_pristine(app, i, l.probe()));
         let payload = if head_pristine {
             // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
             // from the retained pristine bytes, unchanged. `Bytes::clone` = refcount bump.
@@ -1740,7 +1739,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 }
             } else {
                 translate_request_cross_protocol(
-                    &app,
+                    app,
                     i,
                     ingress_protocol,
                     op,
@@ -1985,15 +1984,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             None,
                         );
                         if tripped {
-                            emit_breaker_trip(&app, pool_name, i);
+                            emit_breaker_trip(app, pool_name, i);
                         }
                         crate::telemetry::upstream_failure(
-                            &app,
+                            app,
                             metric_pool,
                             i,
                             DISPOSITION_ATTEMPT_TIMEOUT,
                         );
-                        crate::telemetry::failover(&app, metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
+                        crate::telemetry::failover(app, metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
                         diag_debug!(
                             ATTEMPT_TIMEOUT_FAILOVER,
                             pool = %pool_name,
@@ -2037,10 +2036,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // returns `true` only on a logical trip (not a HalfOpen reopen or already-Open no-op),
                 // so the counter is not multi-counted per cell or per cooldown bump.
                 if tripped {
-                    emit_breaker_trip(&app, pool_name, i);
+                    emit_breaker_trip(app, pool_name, i);
                 }
-                crate::telemetry::upstream_failure(&app, metric_pool, i, DISPOSITION_TRANSIENT);
-                crate::telemetry::failover(&app, metric_pool, err_type);
+                crate::telemetry::upstream_failure(app, metric_pool, i, DISPOSITION_TRANSIENT);
+                crate::telemetry::failover(app, metric_pool, err_type);
                 last_failure = Some(err_type);
                 drop(permit);
                 continue;
@@ -2269,15 +2268,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // A threshold-based Closed→Open trip is a breaker trip for this (pool,
                             // lane) — emit BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29).
                             if tripped {
-                                emit_breaker_trip(&app, pool_name, i);
+                                emit_breaker_trip(app, pool_name, i);
                             }
                             crate::telemetry::upstream_failure(
-                                &app,
+                                app,
                                 metric_pool,
                                 i,
                                 DISPOSITION_TRANSIENT,
                             );
-                            crate::telemetry::failover(&app, metric_pool, DISPOSITION_TRANSIENT);
+                            crate::telemetry::failover(app, metric_pool, DISPOSITION_TRANSIENT);
                             last_failure = Some(DISPOSITION_TRANSIENT);
                             drop(permit);
                             continue;
@@ -2326,13 +2325,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // cooldown for a stuck lane. Warn on the fresh trip; the recurring
                             // still-down probe logs at `debug!`.
                             if newly_tripped {
-                                crate::telemetry::breaker_trip(&app, metric_pool, i);
+                                crate::telemetry::breaker_trip(app, metric_pool, i);
                                 diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
                             } else {
                                 diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
                             crate::telemetry::upstream_failure(
-                                &app,
+                                app,
                                 metric_pool,
                                 i,
                                 DISPOSITION_HARD_DOWN,
@@ -2378,7 +2377,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             }
 
                             // For billing hard downs: continue to next lane (failover)
-                            crate::telemetry::failover(&app, metric_pool, DISPOSITION_HARD_DOWN);
+                            crate::telemetry::failover(app, metric_pool, DISPOSITION_HARD_DOWN);
                             last_failure = Some(DISPOSITION_HARD_DOWN);
                             continue;
                         }
@@ -2405,13 +2404,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             }
 
                             crate::telemetry::upstream_failure(
-                                &app,
+                                app,
                                 metric_pool,
                                 i,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
                             crate::telemetry::failover(
-                                &app,
+                                app,
                                 metric_pool,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
@@ -2501,7 +2500,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // cross-protocol is handled in FirstByteBody below; same-protocol passes through.)
                 if ingress_protocol != app.lanes[i].protocol && !is_sse {
                     return translate_response_cross_protocol(
-                        &app,
+                        app,
                         i,
                         ingress_protocol,
                         op,
