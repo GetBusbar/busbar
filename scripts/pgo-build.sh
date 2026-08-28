@@ -2,7 +2,9 @@
 # PGO build creator: produce a profile-guided-optimized busbar binary in three phases.
 #
 #   1. build instrumented      (-Cprofile-generate)
-#   2. train on a traffic MIX  (openai chat + anthropic-ingress translation + SSE streaming,
+#   2. train on a traffic MIX  (concurrent + governed: openai chat passthrough at 10x weight,
+#                               anthropic-ingress translation, SSE streaming, and an auth-refusal
+#                               sliver - all as signed-key Bearer traffic through the keys chain,
 #                               against an embedded zero-dependency mock upstream)
 #   3. build optimized         (-Cprofile-use)
 #
@@ -37,16 +39,20 @@
 # The workflow asserts this marker exists and is non-trivial before shipping, so it is impossible
 # to ship a non-PGO binary and pass. Every fatal exit removes any stale marker first.
 #
-# Knobs: PGO_REQS (per-shape request count, default 2000), PGO_STREAMS (streamed requests,
-# default 200), PGO_PORT / PGO_MOCK_PORT (defaults 18080/18000), PGO_TARGET (cargo --target).
-# Requires: cargo, rustup (llvm-tools is installed on demand), python3, curl. The training mix
-# mirrors the benchmark suites (perf / xlate / stream); keep the shapes in sync when the
-# product grows a new hot path.
+# Knobs: PGO_REQS (base request count, default 2000; the openai passthrough volume shape runs
+# 10x this so its weight in the merged profile matches its weight in production), PGO_STREAMS
+# (streamed requests, default 200), PGO_CONC (loadgen keep-alive connections, default 32 - the
+# middle of the benchmark's c=8..64 range), PGO_PORT / PGO_MOCK_PORT (defaults 18080/18000),
+# PGO_TARGET (cargo --target). Requires: cargo, rustup (llvm-tools is installed on demand),
+# python3, curl. The training mix mirrors the benchmark suites (perf / xlate / stream) PLUS the
+# governed production shape (signed-key auth + group admission + per-principal reqlog); keep the
+# shapes in sync when the product grows a new hot path.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 REQS="${PGO_REQS:-2000}"
 STREAMS="${PGO_STREAMS:-200}"
+CONC="${PGO_CONC:-32}"
 PORT="${PGO_PORT:-18080}"
 MOCK_PORT="${PGO_MOCK_PORT:-18000}"
 TARGET="${PGO_TARGET:-}"
@@ -111,11 +117,13 @@ INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
 cat > "$WORK/mock.py" <<'PY'
 import http.server, json, time, sys
 PORT = int(sys.argv[1])
+# ~600 B of completion content (not a 22-byte quip): the response parse/serialize/usage-tap
+# paths should train on the body sizes a real completion has.
 BODY = json.dumps({
     "id": "chatcmpl-pgo", "object": "chat.completion", "created": 0, "model": "gpt-4o-mini",
-    "choices": [{"index": 0, "message": {"role": "assistant", "content": "profile training reply"},
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "profile training reply. " * 24},
                   "finish_reason": "stop"}],
-    "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+    "usage": {"prompt_tokens": 12, "completion_tokens": 96, "total_tokens": 108},
 }).encode()
 CHUNK = ('data: ' + json.dumps({"id": "chatcmpl-pgo", "object": "chat.completion.chunk",
          "created": 0, "model": "gpt-4o-mini",
@@ -144,7 +152,66 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(BODY)
 class S(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    # socketserver's default listen backlog is 5: a concurrent trainer ramping its egress pool
+    # overflows that, the connect errors trip busbar's breaker, and the run 503s spuriously.
+    request_queue_size = 128
 S(("127.0.0.1", PORT), H).serve_forever()
+PY
+
+# ---- embedded loadgen (zero deps: python3 stdlib) --------------------------------------------
+# Replaces the per-request `xargs -P curl` trainer. That loop spawned a fresh process AND a fresh
+# TCP connection for every request, which (a) capped training volume at under ~1k req/s of mostly
+# fork/exec, and (b) trained the accept/handshake/connection-setup path as if it ran once PER
+# REQUEST - when the benchmark that matters (c=8..64 openai passthrough on keep-alive
+# connections) runs it approximately never. The counter distribution was the inverse of
+# production. This loadgen holds PGO_CONC persistent connections busy, so the tokio scheduler,
+# hyper keep-alive read path, and the reqwest egress pool all train under real concurrency
+# (instrumented counters are per-edge counts; racy non-atomic drops under contention are
+# proportional, so concurrency loses nothing and gains the contended paths). FAIL-CLOSED: any
+# response with an unexpected status exits non-zero - the old curl loop never checked status, so
+# a trainer that silently 4xx'd every request would have profiled the refusal path as "success".
+#   argv: port conc total expected-status path [header=value ...]; body on stdin
+cat > "$WORK/loadgen.py" <<'PY'
+import http.client, sys, threading, time
+PORT, CONC, TOTAL = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+EXPECT, PATH = int(sys.argv[4]), sys.argv[5]
+HDRS = {"content-type": "application/json"}
+for kv in sys.argv[6:]:
+    k, _, v = kv.partition("="); HDRS[k] = v
+BODY = sys.stdin.buffer.read()
+lock, errs, first = threading.Lock(), [0], [None]
+def worker(n):
+    conn = http.client.HTTPConnection("127.0.0.1", PORT)
+    for _ in range(n):
+        status, data = -1, b""
+        for _attempt in (0, 1):
+            try:
+                conn.request("POST", PATH, BODY, HDRS)
+                r = conn.getresponse(); data = r.read(); status = r.status
+                if r.will_close:  # server said Connection: close (e.g. after a 401): reopen
+                    conn.close(); conn = http.client.HTTPConnection("127.0.0.1", PORT)
+                break
+            except Exception as e:
+                # A keep-alive connection the server already closed surfaces as a broken
+                # write on the NEXT request: reconnect and retry that request once.
+                data = repr(e).encode()
+                conn.close(); conn = http.client.HTTPConnection("127.0.0.1", PORT)
+        if status != EXPECT:
+            with lock:
+                errs[0] += 1
+                if first[0] is None:
+                    first[0] = (status, data[:200])
+    conn.close()
+base, extra = divmod(TOTAL, CONC)
+ts = [threading.Thread(target=worker, args=(base + (1 if i < extra else 0),)) for i in range(CONC)]
+t0 = time.time()
+for t in ts: t.start()
+for t in ts: t.join()
+dt = max(time.time() - t0, 1e-9)
+print("    %d/%d ok in %.1fs (%d req/s)" % (TOTAL - errs[0], TOTAL, dt, TOTAL / dt), file=sys.stderr)
+if errs[0]:
+    print("    FIRST FAILURE: status=%s body=%r" % first[0], file=sys.stderr)
+    sys.exit(1)
 PY
 
 # ---- busbar training config (mirrors the benchmark manifest's shape) -------------------------
@@ -160,10 +227,25 @@ admin_listen: "127.0.0.1:$((PORT + 1))"
 advanced:
   response_headers:
     server_timing: true
-# Training runs against a local mock with the open front door (empty chain): the static-token
-# module was removed in 1.5.0 and signed-key minting is pointless for a throwaway trainer.
+# Signed-key front door. Production traffic is governed - Bearer bbk_* tokens through the keys
+# arm, group admission, per-principal reqlog chains - and with the old empty chain NONE of that
+# trained: ed25519 verify, the governance admit/charge, and the governed reqlog branch were laid
+# out as cold code (the old "Bearer pgo-token" header was extracted and never verified). The
+# trainer mints one throwaway key per run against its own admin listener (the store is
+# in-memory, so the binding row only exists inside this process - exactly right for a trainer).
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: PGO_ADMIN_TOKEN } }
 auth:
-  chain: []
+  chain: [keys]
+  admin_auth: [admin-tokens]
+  signing_key: { env: PGO_SIGNING_KEY }
+# Effectively-unbounded caps: the point is to run the admission check-and-charge path hot, not
+# to exercise 429s (the refusal sliver in phase 2 covers the reject arms, lightly).
+groups:
+  bench:
+    limits:
+      - { requests: 100000000, per: minute }
+      - { concurrent: 4096 }
 providers:
   mock:
     api_key: { env: PGO_MOCK_KEY }
@@ -186,7 +268,20 @@ mock:
 YAML
 
 # ---- phase 2: train --------------------------------------------------------------------------
-log "phase 2/3: training ($REQS reqs x 3 shapes + $STREAMS streams)"
+VOLUME=$((REQS * 10))
+REFUSALS=$((REQS / 10))
+log "phase 2/3: training (c=$CONC: $VOLUME openai + $REQS large-body + $REQS xlate + $STREAMS streams + $REFUSALS refusals)"
+# The signing key is minted by the instrumented binary itself (offline, needs no config): the
+# trainer stays in the grammar of the binary it trains, and the CLI arm gets a profile too.
+PGO_SIGNING_KEY="$("./$INSTRUMENTED" --generate-signing-key 2>/dev/null)"
+[ -n "$PGO_SIGNING_KEY" ] || pgo_fail "--generate-signing-key produced no key"
+PGO_ADMIN_TOKEN="pgo-admin-$$"
+export PGO_SIGNING_KEY PGO_ADMIN_TOKEN
+# Validate the training config with the binary BEFORE serving: this names the failure that the
+# 1.5.3 grammar break (documented at the config above) produced as a silent dead trainer.
+BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
+  "./$INSTRUMENTED" --validate \
+  || pgo_fail "training config rejected by the binary it trains (--validate)"
 python3 "$WORK/mock.py" "$MOCK_PORT" & MOCK_PID=$!
 BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" PGO_MOCK_KEY=x \
   "./$INSTRUMENTED" & BUSBAR_PID=$!
@@ -198,26 +293,57 @@ done
 curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz" \
   || pgo_fail "instrumented busbar never became healthy (not host-executable, or crashed)"
 
+# Mint the run's client key on the admin listener. This also trains the admin plane (admin
+# chain, scope check, mutation limiter, audit) - one warm request on an otherwise-cold surface.
+CLIENT_TOKEN="$(curl -sS -X POST "http://127.0.0.1:$((PORT + 1))/api/v1/admin/keys" \
+  -H "authorization: Bearer $PGO_ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"name":"pgo","group":"bench","expires_in":"1h"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
+  || pgo_fail "key mint on the admin listener failed"
+case "$CLIENT_TOKEN" in bbk_*) ;; *) pgo_fail "minted client token malformed: '$CLIENT_TOKEN'" ;; esac
+
 OPENAI_BODY='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"profile training request with a moderately sized body to exercise the parser"}]}'
+# ~1.4 KB request-body variant: real prompts are not one-liners, so the ingress parse/copy
+# paths get a size distribution instead of a single 130-byte point.
+FILLER="$(printf 'profile training filler segment %.0s' $(seq 1 42))"
+OPENAI_BODY_LARGE='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"'"$FILLER"'"}]}'
 ANTH_BODY='{"model":"gpt-4o-mini","max_tokens":64,"messages":[{"role":"user","content":"profile training request for the translation path"}]}'
 STREAM_BODY='{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"streaming profile training"}]}'
 
-# shape 1: openai chat passthrough (the volume path)
-seq 1 "$REQS" | xargs -P 8 -I{} curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
-  -H "content-type: application/json" -H "authorization: Bearer pgo-token" -d "$OPENAI_BODY" \
+# warmup (uncounted): ramp the reqwest egress pool and let reliability state learn the lane
+# healthy BEFORE the volume shape, so training measures steady state, not cold-start ramp.
+printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" 500 200 \
+  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  || pgo_fail "training warmup failed"
+# shape 1: openai chat passthrough at 10x weight - THE volume path; its share of the merged
+# profile's counts should match its share of production load, so branch statistics and the
+# hot/cold split are decided by this shape.
+printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$VOLUME" 200 \
+  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
   || pgo_fail "training shape 1 (openai chat) failed"
-log "  shape 1 (openai chat) done"
-# shape 2: anthropic ingress -> openai upstream (the translation path)
-seq 1 "$REQS" | xargs -P 8 -I{} curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/v1/messages" \
-  -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
-  -H "authorization: Bearer pgo-token" -d "$ANTH_BODY" \
+log "  shape 1 (openai chat x$VOLUME) done"
+printf '%s' "$OPENAI_BODY_LARGE" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REQS" 200 \
+  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  || pgo_fail "training shape 1b (openai chat, large body) failed"
+log "  shape 1b (openai chat, large body) done"
+# shape 2: anthropic ingress -> openai upstream (the translation path). x-api-key, not Bearer:
+# that is what real anthropic-dialect clients send, and it trains the second extractor branch.
+printf '%s' "$ANTH_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REQS" 200 \
+  /v1/messages "x-api-key=$CLIENT_TOKEN" "anthropic-version=2023-06-01" \
   || pgo_fail "training shape 2 (anthropic translation) failed"
 log "  shape 2 (anthropic translation) done"
 # shape 3: SSE streaming relay
-seq 1 "$STREAMS" | xargs -P 8 -I{} curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
-  -H "content-type: application/json" -H "authorization: Bearer pgo-token" -d "$STREAM_BODY" \
+printf '%s' "$STREAM_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$STREAMS" 200 \
+  /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
   || pgo_fail "training shape 3 (SSE streaming) failed"
 log "  shape 3 (SSE streaming) done"
+# shape 4: refusal sliver (~1% of the mix, expects 401): biases the verify branch correctly
+# (valid overwhelmingly likely) while still giving the reject/finish_rejected arms real counts
+# instead of zero - small enough that refusal code is not promoted into the hot layout.
+printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$PORT" "$CONC" "$REFUSALS" 401 \
+  /v1/chat/completions "authorization=Bearer bbk_bogus.bogus" \
+  || pgo_fail "training shape 4 (auth refusal) failed"
+log "  shape 4 (auth refusal) done"
 
 # graceful stop so the runtime flushes .profraw files
 kill "$BUSBAR_PID"; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
