@@ -175,7 +175,7 @@ export ANTHROPIC_KEY=sk-ant-...
 BUSBAR_CONFIG=./config.yaml ./busbar
 ```
 
-Busbar logs a startup event indicating the listen address (`busbar listening`, with the bound address as a field). It accepts requests immediately: Prometheus/TSC calibration is deferred to a background thread, so it never blocks the hot path at boot.
+Busbar logs a startup event per listener indicating the listen address (`busbar listening`, with the bound address as a field) — on unix you'll see one line per data-plane worker, all on the same port. It accepts requests immediately: Prometheus/TSC calibration is deferred to a background thread, so it never blocks the hot path at boot.
 
 **Check liveness:**
 

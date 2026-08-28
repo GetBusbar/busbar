@@ -164,3 +164,25 @@ tools:
       pin: { mechanism: cert_spki, key: "sha256/…" }
       verify_ttl: 5s   # migrate-config carries 6h over unchanged; reconsider it — see the WARNING
 ```
+
+---
+
+## 7. Operational note: the thread-per-core data plane (unix)
+
+No config change is needed — this is a runtime-topology change, listed here only so what you
+observe after the upgrade is expected. On unix, 1.6.0 runs the data plane as N pinned
+single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port; the admin
+plane and background tasks moved to a small control-runtime thread. After upgrading you will see:
+
+- **N threads named `busbar-core-0` … `busbar-core-N-1`** (e.g. in `top -H` or `ps -L`), rather
+  than a pool of tokio workers.
+- **N listen sockets on the data port** in `ss -tlnp` / `netstat` — one per worker, via
+  `SO_REUSEPORT`. This is not a port conflict.
+- **Multiple `busbar listening` log lines** at boot, one per listener, all naming the same
+  address.
+- **`advanced.worker_threads` now sizes the data-plane worker count** (one runtime + listener
+  each), not a tokio thread pool. The default — one per core — and `TOKIO_WORKER_THREADS` as a
+  fallback are unchanged.
+
+Non-unix builds are unchanged: they keep the classic single work-stealing runtime and one
+listener.

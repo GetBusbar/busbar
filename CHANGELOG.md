@@ -122,8 +122,8 @@ If you run dashboards, read the metrics breaking change first: both request fami
   `max_requests_per_minute`. Deny-by-default is unchanged: with no grant, the ask is refused.
 - **An upstream's `notifications/resources/updated` is relayed to subscribed clients**, gated on
   the subscriber's own grant, and `server/discover` now declares `resources.subscribe: true`.
-- **Busbar serves A2A over gRPC** at `/lf.a2a.v1.A2AService/*`, on the same listener as everything
-  else — no second port, no second TLS configuration — and the agent card advertises
+- **Busbar serves A2A over gRPC** at `/lf.a2a.v1.A2AService/*`, on the same data port and data
+  plane as everything else — no second port, no second TLS configuration — and the agent card advertises
   `protocolBinding: "GRPC"`. It is the same admission path, task store, budget and audit chain as
   the JSON-RPC call beside it.
 - **Busbar serves the A2A HTTP+JSON binding** as well as JSON-RPC, so a client built against the
@@ -154,6 +154,15 @@ If you run dashboards, read the metrics breaking change first: both request fami
 
 ### Changed
 
+- **The data plane is thread-per-core on unix.** `advanced.worker_threads` (default: one per core,
+  cap 128) now sizes N pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener
+  on the data port; the admin plane and background tasks run on a separate control-runtime thread.
+  Observable after upgrade: N threads named `busbar-core-0` … `busbar-core-N-1`, N listen sockets
+  on the data port in `ss -tlnp`, and one `busbar listening` log line per listener. An accept-time
+  placement balancer hands a just-accepted connection from an overloaded worker to the least-loaded
+  one, so a skewed kernel accept distribution cannot pin hot connections onto one core. Non-unix
+  builds keep the classic single work-stealing runtime; no config change is needed anywhere. See
+  [the 1.6.0 migration guide](docs/migration-1.6.md).
 - The embedded OAuth 2.1 authorization server moved to `oauth-as` 0.9.1, a security release.
   Nothing you write changes. The discovery document no longer advertises `introspection_endpoint`,
   a path Busbar has never mounted and which answered 404.

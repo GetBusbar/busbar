@@ -87,9 +87,10 @@ runs both.
 `scripts/blocking-ffi-lint.sh` enforces one rule: **a synchronous call into a
 dlopened plugin never runs on a Tokio worker.** Every plugin call is a C-ABI hop
 into out-of-tree code with real network I/O behind it (an LDAP/AD bind, a Vault
-fetch, a JWKS round trip), so one inline call in an `async fn` parks a worker for
-the plugin's full timeout, and N concurrent callers stop the runtime polling
-anything at all, `/healthz` included. The same defect has now been found in five
+fetch, a JWKS round trip), and the data-plane workers are single-threaded
+(`current_thread`) runtimes, so **one** inline call in an `async fn` stalls that
+entire worker — every connection it owns — for the plugin's full timeout, with no
+sibling thread to steal the work. The same defect has now been found in five
 independently written places, the last of them on `/auth/token`, which is mounted
 on the data router and bypassed by the auth middleware, so an *unauthenticated*
 caller chose the concurrency.
@@ -102,7 +103,8 @@ modules are exempt: test code serves no traffic.
 
 If you are adding a plugin call, route it through the offload seam that already
 exists for its kind, and **bound it**. `spawn_blocking` alone just moves the
-exhaustion to the shared 512-thread blocking pool, so take a semaphore permit and
+exhaustion to the calling runtime's blocking pool (each data-plane runtime and the
+control runtime has its own, capped at 512 threads), so take a semaphore permit and
 **fail closed** when you cannot get one. Only a boot-time call, or one in an
 `async fn` that is provably driven off the worker pool, may be marked, and the
 marker must carry a reason naming which call and where:

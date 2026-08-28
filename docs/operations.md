@@ -70,17 +70,24 @@ config:
     runtime mutations anyway). See the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
-throughput scales with worker threads. The default is **one worker per available core**
+throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane
+worker count**, not a tokio pool size: on unix, each worker is a **pinned single-threaded runtime with
+its own `SO_REUSEPORT` listener** on the data port, and the kernel spreads accepted connections across
+them; the admin plane and background tasks run on a separate small control-runtime thread. `N: 1` on a
+one-core box is the same design, just one worker. The default is **one worker per available core**
 (`available_parallelism`, which respects CPU affinity and the cgroup **cpuset**, but **not** the CFS
-`cpu.max` bandwidth quota, which it cannot see), which gives linear scaling: ~9,750 req/s per core,
-sub-millisecond, to ~156k on 16 cores in our [benchmark](https://getbusbar.com/performance). Each worker
-carries a thread stack and, on glibc, its own malloc arena, so idle memory grows slowly with the count. For
-a **footprint-sensitive sidecar** set `advanced.worker_threads: 1` (or `2`). On a **CPU-quota-limited pod** (a
-k8s CPU *limit* on a many-core node) the default sizes to the node's full core count and oversubscribes the
-quota: **set `advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores
-you want Busbar to use. Scale up by default, tune down deliberately. *(Before 1.4.0 the default was capped
-at `min(cores, 4)`, which pinned throughput to ~4 cores regardless of box size, set the value explicitly on
-older binaries.)*
+`cpu.max` bandwidth quota, which it cannot see), capped at **128**, which gives linear scaling: ~9,750
+req/s per core, sub-millisecond, to ~156k on 16 cores in our
+[benchmark](https://getbusbar.com/performance). Each worker carries a thread stack and, on glibc, its
+own malloc arena, so idle memory grows slowly with the count. For a **footprint-sensitive sidecar** set
+`advanced.worker_threads: 1` (or `2`). On a **CPU-quota-limited pod** (a k8s CPU *limit* on a many-core
+node) the default sizes to the node's full core count and oversubscribes the quota: **set
+`advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores you
+want Busbar to use. Scale up by default, tune down deliberately. The topology is directly observable:
+the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
+shows N listen sockets on the one data port. *(Before 1.4.0 the default was capped at `min(cores, 4)`,
+which pinned throughput to ~4 cores regardless of box size, set the value explicitly on older
+binaries.)*
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
@@ -221,13 +228,14 @@ there: simply omit the `tls` block.
 
 ### Connection-level hardening (slow-loris)
 
-When Busbar terminates TLS itself, the native listener bounds the request **header-read**
+When Busbar terminates TLS itself, the native listeners bound the request **header-read**
 phase (30 s) in addition to the TLS handshake, so a client that completes the handshake
 and then trickles request headers one byte at a time cannot pin a connection open
-indefinitely. This bound applies only to reading the request headers: it never limits a
-streaming response, so long model completions are unaffected.
+indefinitely. This applies to each of the N data-plane listeners alike. The bound applies
+only to reading the request headers: it never limits a streaming response, so long model
+completions are unaffected.
 
-The plain-HTTP listener (no `tls` block) does **not** apply a header-read timeout. For an
+The plain-HTTP listeners (no `tls` block) do **not** apply a header-read timeout. For an
 **edge-facing** deployment, either enable the `tls` block (recommended) or front Busbar
 with a reverse proxy / load balancer (nginx, Caddy, Envoy, an ALB), which terminates
 client connections and provides its own slow-client protection. A plain-HTTP Busbar
@@ -628,7 +636,7 @@ durable revocation denylist immediately.
 ## Running on Windows
 
 `x86_64-pc-windows-msvc` is a published release target (`busbar-x86_64-pc-windows-msvc.zip`), and
-CI builds, lints and tests the workspace on `windows-latest`. Busbar runs there. Four behaviours
+CI builds, lints and tests the workspace on `windows-latest`. Busbar runs there. Five behaviours
 nevertheless **differ from unix**, and each one is a property an operator may have read as
 cross-platform. They are listed here rather than left to be discovered, because in every case the
 unix documentation states a guarantee that Windows does not carry.
@@ -639,6 +647,7 @@ unix documentation states a guarantee that Windows does not carry.
 | **Plugin staging** (`docs/plugins.md`) | Per-process staging dir `0700`, file `0600`; boot sweep removes staging left by a crashed prior process | Directory and file inherit the `%TEMP%` ACL — per-user in a default setup, but not the `0700` guarantee. The **boot sweep is a no-op**: it decides "is the prior pid dead" with `kill(pid, 0)`, which has no Windows implementation, so an abandoned staging directory accumulates per crash under `%TEMP%`. This costs disk, not integrity — a staged file is regenerated from the verified in-memory bytes on every load and is never trusted input. |
 | **Durable write** (`fsync` of the holding directory after a rename) | The directory entry is fsynced, so a publish survives power loss | **Not performed** — a directory cannot be opened for `fsync` on Windows and `FlushFileBuffers` on a directory handle is not the same barrier. File CONTENTS are still fsynced before the rename on every platform, so a power loss can lose the *rename* (old file, or no file) but never yields a torn one. |
 | **Orderly shutdown** | `SIGINT` and `SIGTERM` both drain in-flight requests | `SIGTERM` does not exist. Busbar handles `CTRL_C`, `CTRL_CLOSE` and `CTRL_SHUTDOWN`, which covers an interactive Ctrl+C, a closing console, `docker stop` on a Windows container, and machine shutdown. A `TerminateProcess` (Task Manager "End task", `taskkill /F`) is not interceptable by any process and does **not** drain. |
+| **Data-plane topology** (1.6.0) | Thread-per-core: `worker_threads` pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
 
 **`BUSBAR_CONFIG` is required on Windows.** The default config path is `/etc/busbar/config.yaml`,
 which on Windows is *drive-relative* and not a usable location. There is deliberately no second

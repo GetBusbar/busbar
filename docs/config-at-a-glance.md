@@ -195,7 +195,8 @@ health:                         # process-wide probe fallbacks  → #health-prob
 routing: { default_policy_timeout_ms: 1 }
 advanced:                       # internal tuning (normally omitted)  → #advanced
   { rate_sweep_interval: 256, usage_flush_interval_ms: 100,
-    worker_threads: 4, upstream_http1_only: false, upstream_h2_prior_knowledge: false,
+    worker_threads: 4,          # data-plane worker count, one runtime+listener each; omit ⇒ one per core
+    upstream_http1_only: false, upstream_h2_prior_knowledge: false,
     response_headers: { server_timing: false, route_policy: false } }  # opt-in headers → observability.md#response-headers
 config:                         # config-management policy (durable-by-default)  → #config
   { locked: false, overlay: { file: busbar-overlay.json } }

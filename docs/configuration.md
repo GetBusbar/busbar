@@ -1671,8 +1671,9 @@ advanced:
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
-not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The corresponding
-env vars are honored for one release as a deprecated fallback.
+not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
+`BUSBAR_*` env vars that used to back these knobs were removed in 1.6.0; only `TOKIO_WORKER_THREADS`
+remains, as a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value

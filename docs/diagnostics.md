@@ -2317,9 +2317,9 @@ busbar could not READ the durable audit log from the governance store at boot �
 - **Since:** 1.6.0
 - **Slug:** `tls-accept-persistent-failure`
 
-The TLS listener's accept loop is failing persistently — commonly file-descriptor exhaustion — so busbar backs off before retrying rather than spin hot on the error. The warning is already rate-limited by the backoff delay, so it fires at a human cadence, not per failed accept.
+A TLS listener's accept loop is failing persistently — commonly file-descriptor exhaustion — so busbar backs off before retrying rather than spin hot on the error. On unix each of the N data-plane workers runs its own accept loop, so the warning can fire from one worker or from several at once. The warning is already rate-limited by the backoff delay, so each loop fires at a human cadence, not per failed accept.
 
-**What to do:** Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / the systemd `LimitNOFILE`) or a resource leak holding sockets open. The listener keeps retrying with backoff and recovers on its own once accepts succeed.
+**What to do:** Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / the systemd `LimitNOFILE`) or a resource leak holding sockets open. Each listener keeps retrying with backoff and recovers on its own once accepts succeed.
 
 <a id="telemetry-slot-table-full"></a>
 ### BUSBAR-9003 — Telemetry slot table full (further label sets fall back to the metrics macros)
@@ -2383,9 +2383,9 @@ The binary hit a fatal startup condition — a misconfiguration or other boot-ti
 - **Since:** 1.6.0
 - **Slug:** `worker-threads-invalid`
 
-An explicitly-set worker-thread count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker-thread count. The operator's intended thread count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
+An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
 
-**What to do:** Set the worker-thread count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default thread count, not the value provided.
+**What to do:** Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.
 
 <a id="shutdown-signal-handler-install-failed"></a>
 ### BUSBAR-9009 — Shutdown-signal handler not installed (that signal won't trigger graceful drain)
