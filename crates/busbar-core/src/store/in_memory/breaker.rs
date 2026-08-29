@@ -16,9 +16,20 @@ pub(crate) struct OutcomeWindow {
 }
 
 impl OutcomeWindow {
+    /// The backing deque starts EMPTY and grows on demand toward `capacity`, rather than
+    /// eagerly reserving the full window up front. Eager was 16 KiB per window
+    /// (`OUTCOME_WINDOW_CAPACITY` = 1024 × 16-byte entries) allocated at CONSTRUCTION — once per
+    /// `LaneState` and AGAIN per `BreakerCell` — so a many-lane/many-pool deployment paid the
+    /// whole window's RAM for every cell that never saw 1024 outcomes. Growth is `VecDeque`'s
+    /// amortized doubling on `push_back`, entirely off the steady state: `capacity` is a power of
+    /// two, so a window that DOES fill lands on exactly the same 1024-entry buffer the eager
+    /// reserve produced (and [`Self::push`]'s pop-before-push keeps `len <= capacity` thereafter,
+    /// so no further growth ever happens) — capacity behavior at the cap is byte-identical, only
+    /// the idle-window cost changed. Construction is boot/config-apply work, never per-request
+    /// (the alloc gate pins that).
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            entries: std::collections::VecDeque::with_capacity(capacity),
+            entries: std::collections::VecDeque::new(),
             capacity,
         }
     }
