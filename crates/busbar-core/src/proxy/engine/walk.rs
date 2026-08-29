@@ -630,12 +630,18 @@ pub(crate) async fn forward_once(
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
     let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
-    // TIMEOUT RE-PROVISION (see the main forward path): only the NON-streaming request carries the
-    // failover deadline — bounding a healthy long generation stream at the failover wall-clock
-    // would truncate it and record spurious breaker failures. A stream runs under `FirstByteBody`'s
-    // ceiling; buffered reads below run under `read_deadline`.
-    let ns_deadline = (!wants_stream)
-        .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1)));
+    // TIMEOUT RE-PROVISION (mirrors the main forward path EXACTLY — the re-audit caught this
+    // path keeping the pre-fix shape, the F1 hole's second home): ONE deadline per attempt.
+    // Non-stream: the failover deadline. Stream: the client-level ceiling — bounding a stream
+    // with the (short) failover wall-clock would truncate healthy generations, but bounding it
+    // with NOTHING let a black-holed upstream hang the degraded send forever — and the degraded
+    // walk fires precisely when lanes are unhealthy, exactly where black-holing upstreams live.
+    let send_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(if wants_stream {
+            app.client_settings.upstream_request_timeout_secs.max(1)
+        } else {
+            timeout_secs.max(1)
+        });
     // Wall-clock start of the upstream call, for the `metrics.latencyMs` a native bedrock
     // ConverseStream `metadata` frame carries on the buffered-synthesis path below.
     let upstream_started = std::time::Instant::now();
@@ -656,12 +662,9 @@ pub(crate) async fn forward_once(
             None => SendOutcome::Sent(send.await),
         }
     };
-    let outcome = match ns_deadline {
-        Some(deadline) => match tokio::time::timeout_at(deadline, send_fut).await {
-            Ok(o) => o,
-            Err(_elapsed) => SendOutcome::BudgetTimeout,
-        },
-        None => send_fut.await,
+    let outcome = match tokio::time::timeout_at(send_deadline, send_fut).await {
+        Ok(o) => o,
+        Err(_elapsed) => SendOutcome::BudgetTimeout,
     };
     let res = match outcome {
         SendOutcome::Sent(r) => r.map_err(EgressSendError::Client),
@@ -698,15 +701,9 @@ pub(crate) async fn forward_once(
         }
     };
     record_upstream_rtt(upstream_started.elapsed());
-    // ONE deadline for every buffered read of this response (mirrors the main forward path): the
-    // surviving non-stream budget deadline, or the client-ceiling re-provision anchored at send
-    // start for a stream-intent response read buffered anyway (a non-2xx error body).
-    let read_deadline = ns_deadline.unwrap_or_else(|| {
-        tokio::time::Instant::from_std(
-            upstream_started
-                + std::time::Duration::from_secs(app.client_settings.upstream_request_timeout_secs),
-        )
-    });
+    // Every buffered read of this response rides the SAME deadline as the send (mirrors the
+    // main forward path): one instant, one envelope.
+    let read_deadline = send_deadline;
 
     match res {
         Ok(r) => {

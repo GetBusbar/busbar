@@ -380,6 +380,10 @@ mod tunnel {
             }
             ProxyEnvValues {
                 https: first(["HTTPS_PROXY", "https_proxy"]),
+                // Read unconditionally — hyper-util's matcher additionally skips uppercase
+                // `HTTP_PROXY` under CGI (`REQUEST_METHOD` set; the httpoxy guard). busbar is a
+                // server binary, never a CGI child, so the guard's precondition cannot hold and
+                // the unconditional read is behavior-identical where this process runs.
                 http: first(["HTTP_PROXY", "http_proxy"]),
                 all: first(["ALL_PROXY", "all_proxy"]),
                 no: first(["NO_PROXY", "no_proxy"]),

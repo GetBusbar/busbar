@@ -94,10 +94,68 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
     .expect("the stream send must resolve at the ceiling, never hang");
 
     // One lane, its only attempt timed out → the request surfaces an upstream-failure status
-    // (never a 2xx, never a hang) and the breaker recorded the transient against the pool cell.
+    // (never a 2xx, never a hang) and the breaker recorded the transient against the pool cell —
+    // asserted directly (the re-audit noted a status-only assertion under-pins the claim).
     assert!(
         resp.status().is_server_error(),
         "black-holed headers must classify as an upstream failure, got {}",
+        resp.status()
+    );
+    assert_eq!(
+        app.store.snapshot(0, crate::store::now()).err,
+        1,
+        "the ceiling expiry must record a breaker transient, not just an error status"
+    );
+    server.abort();
+}
+
+/// The SAME hole on the DEGRADED WALK (`forward_once`) — the re-audit found the first fix closed
+/// only the main path, and the degraded walk fires precisely when lanes are unhealthy: exactly
+/// where black-holing upstreams live. One lane, breaker forced Open, `least_bad` licensed → the
+/// dispatch takes `forward_once`; its stream send must ride the same ceiling envelope.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling() {
+    let (addr, server) = black_hole().await;
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "gpt-4o",
+            crate::proto::Protocol::openai(),
+            &format!("http://{addr}"),
+        ))
+        .pool("p", &[(0, 1)])
+        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .build();
+    // The only member's breaker is Open → the pool is exhausted → least_bad degrades onto it.
+    app.store.force_open_in("p", 0, crate::store::now() + 300);
+
+    let body: bytes::Bytes = serde_json::to_vec(&json!({
+        "model": "gpt-4o",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "stream": true,
+    }))
+    .unwrap()
+    .into();
+
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(30_000), // paused-clock guard; see the sibling test
+        crate::proxy::forward_with_pool(
+            &app,
+            vec![member(0)],
+            body,
+            None,
+            "p",
+            None,
+            "openai",
+            crate::handlers::CHAT,
+            None,
+        ),
+    )
+    .await
+    .expect("the degraded stream send must resolve at the ceiling, never hang");
+
+    assert!(
+        resp.status().is_server_error(),
+        "black-holed headers on the degraded walk must classify as an upstream failure, got {}",
         resp.status()
     );
     server.abort();
