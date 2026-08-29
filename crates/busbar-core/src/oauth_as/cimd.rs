@@ -93,27 +93,6 @@ fn fetch_policy() -> GuardPolicy {
     }
 }
 
-/// The client's own resolver: one that refuses. The pin below means the client never needs to
-/// resolve anything, and this makes "never needs to" into "cannot": if the pin is ever dropped,
-/// the fetch fails loudly rather than succeeding against whatever the name means the second time.
-/// (`a2a::transport` carries the same refusal for the same reason; it is client plumbing, not the
-/// guard, so each transport keeps its own rather than one plane depending on another's internals.)
-struct NoSecondLookup;
-
-impl reqwest::dns::Resolve for NoSecondLookup {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let name = name.as_str().to_string();
-        Box::pin(std::future::ready(Err(Box::<
-            dyn std::error::Error + Send + Sync,
-        >::from(format!(
-            "the client metadata document fetch resolves a name exactly once, before the guard \
-             judges the answer, and connects to the address that survived; the HTTP client asked \
-             to resolve `{name}` a second time, which is the lookup an attacker needs and must \
-             not exist"
-        )))))
-    }
-}
-
 impl CimdFetch for GuardedFetch {
     fn fetch<'a>(
         &'a self,
@@ -131,29 +110,44 @@ impl CimdFetch for GuardedFetch {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            let client = reqwest::Client::builder()
-                // A 3xx is a fresh, unvalidated URL. This fetch follows none: the document lives
-                // at the `client_id` or it is not that client's document.
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(policy.timeout)
-                .dns_resolver(Arc::new(NoSecondLookup))
-                // THE PIN. The socket goes to the address the guard judged; the request still
-                // carries the hostname, so the `Host` header, TLS SNI and the certificate's name
-                // check are all still about the name.
-                .resolve(&host, pin.socket_addr())
-                .build()
-                .map_err(|e| format!("building the fetch client failed: {e}"))?;
+            // THE PINNED ENGINE CLIENT (`EngineSpec::pinned`): the pin IS the resolver — the
+            // socket goes to the address the guard judged while the `Host` header, TLS SNI and
+            // the certificate's name check all stay on the name, and every OTHER name refuses
+            // with the one shared doctrine text. This deletes the fetch's private copy of the
+            // refuse-second-lookup resolver — the third copy of that security control in the
+            // tree, which is exactly the divergence-by-duplication failure mode `net_guard`'s
+            // header warns about. Redirect non-following is structural in hyper; the 3xx is
+            // still surfaced to `refuse_redirect` below so the refusal keeps its own wording.
+            let client = busbar_substrate::egress::engine::build_client(
+                &busbar_substrate::egress::engine::EngineSpec::pinned(
+                    Arc::from(host.as_str()),
+                    pin.socket_addr().ip(),
+                    None,
+                    Vec::new(),
+                ),
+            )
+            .map_err(|e| format!("building the fetch client failed: {e}"))?;
 
-            let resp = client
-                .get(url)
-                .send()
+            let uri: http::Uri = url
+                .parse()
+                .map_err(|e| format!("`{url}` does not parse as a URI: {e}"))?;
+            let request = busbar_substrate::egress::engine::request(
+                http::Method::GET,
+                uri,
+                http::HeaderMap::new(),
+                bytes::Bytes::new(),
+            );
+            // ONE deadline for the whole exchange, exactly the client-level total the retired
+            // reqwest builder carried: send to head, then every body chunk, under one instant.
+            let deadline = tokio::time::Instant::now() + policy.timeout;
+            let resp = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
                 .await
-                .map_err(|e| format!("fetching `{url}` failed: {e}"))?;
+                .map_err(|e| format!("fetching `{url}` failed: {}", e.into_cause()))?;
             let status = resp.status();
             net_guard::refuse_redirect(
                 status.as_u16(),
                 resp.headers()
-                    .get(reqwest::header::LOCATION)
+                    .get(http::header::LOCATION)
                     .and_then(|v| v.to_str().ok()),
             )
             .map_err(|e| e.to_string())?;
@@ -162,24 +156,39 @@ impl CimdFetch for GuardedFetch {
             }
 
             // A CAPPED READ, not a read-then-measure: the ceiling is enforced while the bytes
-            // arrive, so an oversized document costs the cap and not itself.
-            let mut resp = resp;
+            // arrive, so an oversized document costs the cap and not itself — and the deadline
+            // keeps ticking through it.
+            use http_body_util::BodyExt;
+            let mut frames = resp.into_body();
             let mut body: Vec<u8> = Vec::new();
-            while let Some(chunk) = resp
-                .chunk()
-                .await
-                .map_err(|e| format!("reading `{url}` failed: {e}"))?
-            {
-                if body.len() + chunk.len() > policy.max_body_bytes {
-                    return Err(net_guard::refuse_oversized_body(
-                        url,
-                        body.len() + chunk.len(),
-                        policy,
-                    )
-                    .expect_err("over the cap by construction")
-                    .to_string());
+            loop {
+                let frame = tokio::time::timeout_at(deadline, frames.frame())
+                    .await
+                    .map_err(|_| {
+                        format!(
+                            "reading `{url}` failed: {}",
+                            busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+                        )
+                    })?;
+                match frame {
+                    None => break,
+                    Some(Err(e)) => return Err(format!("reading `{url}` failed: {e}")),
+                    Some(Ok(frame)) => {
+                        let Ok(chunk) = frame.into_data() else {
+                            continue; // trailers carry no document bytes.
+                        };
+                        if body.len() + chunk.len() > policy.max_body_bytes {
+                            return Err(net_guard::refuse_oversized_body(
+                                url,
+                                body.len() + chunk.len(),
+                                policy,
+                            )
+                            .expect_err("over the cap by construction")
+                            .to_string());
+                        }
+                        body.extend_from_slice(&chunk);
+                    }
                 }
-                body.extend_from_slice(&chunk);
             }
             Ok(body)
         })
