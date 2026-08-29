@@ -34,8 +34,11 @@ bytes = { workspace = true }
 # macros or timers in the shipped surface.
 # The relocated egress engine adds `time` (the CONNECT-handshake wall-clock bound rides
 # `tokio::time::timeout`) and `io-util` (the tunnel speaks the CONNECT exchange through
-# `AsyncReadExt`/`AsyncWriteExt`) to the existing `net`/`sync` floor.
-tokio = { workspace = true, features = ["net", "sync", "time", "io-util"] }
+# `AsyncReadExt`/`AsyncWriteExt`) to the existing `net`/`sync` floor. The OWNED pool adds `rt`:
+# its dial tasks, connection drivers, return-path watchers and on-demand reaper are detached
+# `tokio::spawn`s (detachment IS the corpse-avoidance requirement — no caller owns a dial, so no
+# cancellation can abort one). The composed binary already carried the feature via core.
+tokio = { workspace = true, features = ["net", "sync", "time", "io-util", "rt"] }
 # S2c: the relocated breaker classifier logs one deduped warning on an unrecognized error_map value
 # via `tracing::warn!` directly (not through the diag macros, which the expanding crate feeds). The
 # classifier is otherwise pure std + axum, so this is the family's only new edge.
@@ -130,6 +133,11 @@ rcgen = { workspace = true }
 # suite) mint certificates; a dev edge so no feature is needed for `cargo test -p`. (`rustls` and
 # `rustls-pki-types` are full dependencies above — the engine owns them now.)
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
+# The owned-pool battery's ALPN-switch fixture (a TLS server that offers h2 to one connection and
+# h1-only to the next — the KnownProto transition pin) serves hyper conns over async TLS; the
+# crate is already in the shipped binary's graph via busbar-core, so this is a test-only edge to
+# an existing dependency, not a new one.
+tokio-rustls = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names

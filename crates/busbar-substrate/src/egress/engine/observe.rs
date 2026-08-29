@@ -70,6 +70,28 @@ pub struct ObservedIo<T> {
     spki: Option<PeerSpki>,
 }
 
+impl ObservedIo<MaybeHttpsStream<TokioIo<TcpStream>>> {
+    /// The observed peer identity, read ONCE by the owned pool's dial task into its
+    /// per-connection snapshot (the same fact `connected()` carries as a `Connected` extra —
+    /// exposed directly because the owned pool replays extras itself instead of through
+    /// hyper_util's pool).
+    pub(crate) fn peer_spki_snapshot(&self) -> Option<PeerSpki> {
+        self.spki.clone()
+    }
+
+    /// Whether ALPN negotiated h2 on this connection — the owned pool's protocol branch. A
+    /// plaintext hop (h2c rides prior-knowledge posture, not ALPN) is `false`.
+    pub(crate) fn negotiated_h2(&self) -> bool {
+        match &self.inner {
+            MaybeHttpsStream::Https(tls) => {
+                let (_, conn) = tls.inner().get_ref();
+                conn.alpn_protocol() == Some(b"h2")
+            }
+            MaybeHttpsStream::Http(_) => false,
+        }
+    }
+}
+
 impl<T: rt::Read + rt::Write + Connection + Unpin> Connection for ObservedIo<T> {
     fn connected(&self) -> Connected {
         let connected = self.inner.connected();

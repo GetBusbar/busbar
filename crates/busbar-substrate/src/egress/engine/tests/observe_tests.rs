@@ -49,7 +49,7 @@ fn fixture_connector(
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
-    let http = tunnel::TunnelConnector::new(http, None);
+    let http = tunnel::TunnelConnector::new(http, None, tunnel::connects_per_shard_for_tests());
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
         .https_or_http()
@@ -59,14 +59,19 @@ fn fixture_connector(
 }
 
 fn pooled_client(connector: EngineConnector) -> EngineClient {
-    let mut client =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
-    client
-        .pool_timer(hyper_util::rt::TokioTimer::new())
-        .timer(hyper_util::rt::TokioTimer::new())
-        .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Duration::from_secs(300));
-    client.build(connector)
+    // The OWNED pool over the fixture connector — the same knobs the legacy builder took here
+    // (idle cap 4, idle timeout 300s), so the spike below now pins OUR pool's extras replay.
+    EngineClient::assemble(
+        connector,
+        super::client::PoolConfig {
+            idle_cap_per_host: 4,
+            idle_timeout: Duration::from_secs(300),
+            http1_only: false,
+            h2_prior_knowledge: false,
+            h2_keepalive: None,
+            dial_bound: 4,
+        },
+    )
 }
 
 fn get(uri: String) -> http::Request<Full<Bytes>> {

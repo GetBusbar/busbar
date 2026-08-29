@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS ENGINE — hyper_util's legacy pool client over a rustls/webpki connector: the ONE
-//! owned outbound HTTP stack (owner-ruled), relocated here from `busbar-core::proxy::egress_client`
-//! so every plane (LLM/model, MCP, A2A) builds its clients from one neutral home. Core re-exports
-//! every name from its old `crate::proxy::` paths, so the LLM lanes are byte-for-byte the client
-//! this file was when it lived there.
+//! THE EGRESS ENGINE — the OWNED connection pool with dial coalescing (`pool.rs`/`client.rs`)
+//! over a rustls/webpki connector: the ONE owned outbound HTTP stack (owner-ruled), relocated
+//! here from `busbar-core::proxy::egress_client` so every plane (LLM/model, MCP, A2A) builds its
+//! clients from one neutral home. Core re-exports every name from its old `crate::proxy::`
+//! paths. The pool was `hyper_util::client::legacy::Client` until the owned-pool step: hyper
+//! (the protocol library) and the whole connector stack stay; only the legacy client's pool —
+//! whose checkout raced a fresh dial per request and dropped the losers post-SYN — went, replaced
+//! by the coalescing invariant in `pool.rs`.
 //!
 //! Born as the LLM forward-path client, replacing reqwest there. What it buys per request:
 //! the send consumes the lane's boot-precomputed `http::Uri` directly (reqwest re-parsed its
@@ -54,10 +57,14 @@ use bytes::Bytes;
 use http_body_util::Full;
 
 // THE ENGINE'S LAYERS, each its own file: the resolver (where the pin lives), the peer-identity
-// observation, and the whole-connect deadline. The CONNECT tunnel stays in this file's `tunnel`
-// module, where it moved from core verbatim.
+// observation, the whole-connect deadline — and, since the pool became OWNED, the client surface
+// (`client`: request preparation, send/retry, return path) over the checkout/dial machinery
+// (`pool`: the sharded authority map, the coalescing invariant, the on-demand reaper). The
+// CONNECT tunnel stays in this file's `tunnel` module, where it moved from core verbatim.
+mod client;
 pub mod deadline;
 pub mod observe;
+mod pool;
 pub mod resolve;
 pub mod tls;
 
@@ -73,12 +80,16 @@ pub use tls::{ClientIdentity, Trust};
 pub type EngineConnector =
     SpkiObserve<ConnectDeadline<hyper_rustls::HttpsConnector<tunnel::TunnelConnector>>>;
 
-/// The pooled egress client. `Full<Bytes>`: every engine egress body is one owned buffer.
-pub type EngineClient = hyper_util::client::legacy::Client<EngineConnector, Full<Bytes>>;
+/// The pooled egress client — the OWNED pool with dial coalescing (`client.rs`/`pool.rs`),
+/// behind the same `request()` surface the `hyper_util::client::legacy::Client` alias had.
+/// `Full<Bytes>`: every engine egress body is one owned buffer.
+pub use client::EngineClient;
 
 /// The error type `EngineClient::request` yields — named so a consumer's transport-error
-/// classification arms read as prose.
-pub type EngineError = hyper_util::client::legacy::Error;
+/// classification arms read as prose. Owned (`pool::EngineError`): carries its cause chain as
+/// error OBJECTS (`source()` intact end-to-end) so core's timeout downcast walk and substrate's
+/// `is_connect()` split both keep working byte-identically.
+pub use pool::EngineError;
 
 /// The engine's posture, one value per client build. Composed ONLY through the blessed
 /// constructors ([`EngineSpec::llm_lane`] today; the pinned-plane posture joins it as the
@@ -127,6 +138,7 @@ pub enum ProxyPosture {
 }
 
 /// The h2 keep-alive posture the LLM lanes carry (reqwest's pinned clients set none).
+#[derive(Clone, Copy)]
 pub struct H2KeepAlive {
     pub interval: Duration,
     pub timeout: Duration,
@@ -230,9 +242,29 @@ pub fn set_establishment_shards(n: usize) {
     let _ = ESTABLISHMENT_SHARDS.set(n.max(1));
 }
 
-/// The published count, 1 when the composition root has not published one.
-fn establishment_shards_or_one() -> usize {
+/// The published count, 1 when the composition root has not published one. `pub` (was private)
+/// for exactly one reader class: the cross-crate equality pin that asserts core's
+/// `shard_count()` fallback publishes the same value this returns — one derivation function,
+/// no cross-crate duplicate of the formula.
+pub fn establishment_shards_or_one() -> usize {
     ESTABLISHMENT_SHARDS.get().copied().unwrap_or(1)
+}
+
+/// The per-client dial bound, THE single source both the owned pool's coalescing
+/// invariant and the ConnectGate's permit count read (bound == permits is what composes the two
+/// into one mechanism). Worker-sharded clients (the LLM lanes) take the per-shard share of the
+/// global establishment budget; a pinned single-client posture (`EngineSpec::pinned`) IS its
+/// authority's whole budget — one client, not N shards, so the divide-by-N would leave N−1
+/// shares permanently unused. The 64-per-authority-process-wide envelope holds in both cases.
+pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
+    match pin {
+        // The presence of a pin is read here as a TOPOLOGY fact (a pinned spec builds ONE
+        // client per destination, so that client is its authority's whole establishment
+        // budget) — never as a trust decision; may-this-serve stays with
+        // `crate::trust::Approval::serves`.
+        Some(_) => tunnel::CONNECTS_PER_AUTHORITY_GLOBAL,
+        None => tunnel::connects_per_shard(),
+    }
 }
 
 /// Build ONE engine client per the spec's posture. Fallible by SIGNATURE for the postures the
@@ -270,7 +302,10 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
         // itself, bypassing the judged address — the tunnel arm is structurally absent.
         ProxyPosture::Direct => None,
     };
-    let http = tunnel::TunnelConnector::new(http, proxy);
+    // The per-client bound, resolved ONCE and handed to BOTH consumers: the gate's permits and
+    // the pool's coalescing bound — one number, one derivation, no drift.
+    let dial_bound = dial_bound_for(spec.pin.as_ref());
+    let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
 
     let tls = rustls_client_config(spec)?;
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
@@ -291,26 +326,21 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
         spec.observe_spki,
     );
 
-    let mut client =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
-    client
-        .pool_timer(hyper_util::rt::TokioTimer::new())
-        .timer(hyper_util::rt::TokioTimer::new())
-        .pool_max_idle_per_host(spec.idle_per_host)
-        .pool_idle_timeout(Duration::from_secs(spec.pool_idle_timeout_secs));
-    // h2 keep-alive: the LLM lanes' posture; the pinned postures set NONE (reqwest parity).
-    if let Some(h2) = &spec.h2_keepalive {
-        client
-            .http2_keep_alive_interval(h2.interval)
-            .http2_keep_alive_timeout(h2.timeout)
-            .http2_adaptive_window(h2.adaptive_window);
-    }
-    // Cleartext h2c opt-in (bench / in-mesh): FORCE h2 without ALPN; h1-only wins over it,
-    // preserving the old builder's apply-order.
-    if spec.h2_prior_knowledge && !spec.http1_only {
-        client.http2_only(true);
-    }
-    Ok(client.build(https))
+    // The OWNED pool over the connector stack: the same knobs the legacy builder took, resolved
+    // into the pool's config. h2 keep-alive is the LLM lanes' posture (pinned postures set NONE
+    // — reqwest parity); the cleartext h2c opt-in forces h2 without ALPN and h1-only wins over
+    // it, preserving the old builder's apply-order (the pool reads the pair the same way).
+    Ok(EngineClient::assemble(
+        https,
+        client::PoolConfig {
+            idle_cap_per_host: spec.idle_per_host,
+            idle_timeout: Duration::from_secs(spec.pool_idle_timeout_secs),
+            http1_only: spec.http1_only,
+            h2_prior_knowledge: spec.h2_prior_knowledge,
+            h2_keepalive: spec.h2_keepalive,
+            dial_bound,
+        },
+    ))
 }
 
 /// The rustls client config, per spec: webpki roots (plus the spec's extras), ALPN left to the
@@ -513,6 +543,20 @@ pub async fn send_bounded(
 #[cfg(test)]
 #[path = "tests/engine_tests.rs"]
 mod engine_tests;
+
+/// The owned-pool pinning battery (h1/coalescing/error rows): the byte-level wire
+/// differential against the legacy client, the dial-coalescing invariant under bursts/cancels,
+/// FIFO fairness, park-at-cap, idle-FIN, the take_message retry boundary with its over-retry
+/// falsifier, the DOA checkout retry, and the error-chain classification contract.
+#[cfg(test)]
+#[path = "tests/pool_tests.rs"]
+mod pool_tests;
+
+/// The owned-pool h2 rows: singleflight + the `:authority` differential, the last-checkout idle
+/// clock, the generation-guarded clear, and the KnownProto transition rule (ALPN-switch fixture).
+#[cfg(test)]
+#[path = "tests/pool_h2_tests.rs"]
+mod pool_h2_tests;
 
 /// The pin-as-resolver contract: one-name table, doctrine-text byte-parity with the reqwest
 /// resolver, and the client-level zero-lookup proof through the real `build_client` wiring.
@@ -831,11 +875,12 @@ mod tunnel {
         pub fn new(
             inner: hyper_util::client::legacy::connect::HttpConnector<super::EgressResolver>,
             config: Option<Arc<ProxyConfig>>,
+            dial_bound: usize,
         ) -> Self {
             Self {
                 inner,
                 config,
-                gate: Arc::new(ConnectGate::new()),
+                gate: Arc::new(ConnectGate::new(dial_bound)),
             }
         }
     }
@@ -869,11 +914,12 @@ mod tunnel {
     /// not unbounded — every send runs under the attempt's one deadline envelope, so a
     /// connect starved past the budget classifies as the transport timeout it is and fails
     /// over.
-    const CONNECTS_PER_AUTHORITY_GLOBAL: usize = 64;
+    pub(super) const CONNECTS_PER_AUTHORITY_GLOBAL: usize = 64;
 
     /// This shard's share of the global budget. Reads the composition root's published
     /// establishment-shard count (1 when unset — tools/tests), never a per-request read:
-    /// computed once per gate slot at first CONNECT to an authority.
+    /// resolved once per client build (`dial_bound_for`) into the gate's permit count AND the
+    /// owned pool's coalescing bound — the same number, so bound == permits by construction.
     pub(super) fn connects_per_shard() -> usize {
         (CONNECTS_PER_AUTHORITY_GLOBAL / super::establishment_shards_or_one()).max(1)
     }
@@ -883,12 +929,16 @@ mod tunnel {
     /// whichever socket is actually dialed). Growth is bounded by the number of distinct
     /// configured authorities; entries are never evicted because that set is config-sized.
     pub(crate) struct ConnectGate {
+        /// The per-authority permit count — the per-client bound this gate was built with
+        /// (per-shard share for sharded clients, the undivided global for pinned postures).
+        bound: usize,
         slots: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
     }
 
     impl ConnectGate {
-        fn new() -> Self {
+        fn new(bound: usize) -> Self {
             Self {
+                bound,
                 slots: std::sync::Mutex::new(std::collections::HashMap::new()),
             }
         }
@@ -898,7 +948,7 @@ mod tunnel {
             let mut slots = self.slots.lock().expect("connect-gate lock");
             slots
                 .entry(authority.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(connects_per_shard())))
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.bound)))
                 .clone()
         }
     }
@@ -1086,7 +1136,7 @@ mod tunnel {
     #[cfg(test)]
     impl ConnectGate {
         pub(super) fn new_for_tests() -> Self {
-            Self::new()
+            Self::new(connects_per_shard())
         }
         pub(super) fn slot_for_tests(&self, authority: &str) -> Arc<tokio::sync::Semaphore> {
             self.slot(authority)

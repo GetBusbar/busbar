@@ -20,9 +20,9 @@
 // re-exports `HopSpec` from there so `busbar_core::egress::seam::HopSpec` still resolves.
 pub mod seam;
 
-// THE EGRESS ENGINE — the one owned outbound HTTP stack (hyper_util legacy pool over rustls,
-// with the boot-armed CONNECT tunnel), relocated from busbar-core's `proxy::egress_client` per
-// the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
+// THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over
+// rustls, with the boot-armed CONNECT tunnel), relocated from busbar-core's `proxy::egress_client`
+// per the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
 pub mod engine;
 
 // The differential-harness FIXTURE SERVERS (recording rustls TLS/mTLS servers, the plaintext

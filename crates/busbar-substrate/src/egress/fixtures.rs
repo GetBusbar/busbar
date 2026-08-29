@@ -154,6 +154,7 @@ pub struct HttpFixture {
     pub addr: SocketAddr,
     records: SharedRecords,
     request_lines: Arc<Mutex<Vec<String>>>,
+    request_heads: Arc<Mutex<Vec<String>>>,
 }
 
 impl HttpFixture {
@@ -164,6 +165,13 @@ impl HttpFixture {
     /// Every request line the fixture served, across all connections.
     pub fn request_lines(&self) -> Vec<String> {
         self.request_lines.lock().expect("request lines").clone()
+    }
+
+    /// Every full request HEAD (request line + headers, verbatim bytes to the blank line) the
+    /// fixture served — what the owned-pool wire differential byte-compares between the legacy
+    /// client and the owned client (request-target form, Host presence and formatting).
+    pub fn request_heads(&self) -> Vec<String> {
+        self.request_heads.lock().expect("request heads").clone()
     }
 }
 
@@ -247,8 +255,10 @@ pub fn spawn_http(response: CannedResponse, max_requests_per_connection: usize) 
     let addr = listener.local_addr().expect("local addr");
     let records: SharedRecords = Arc::new(Mutex::new(Vec::new()));
     let request_lines = Arc::new(Mutex::new(Vec::new()));
+    let request_heads = Arc::new(Mutex::new(Vec::new()));
     let recorder = Arc::clone(&records);
     let lines = Arc::clone(&request_lines);
+    let heads = Arc::clone(&request_heads);
     let response = response.render();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -259,13 +269,18 @@ pub fn spawn_http(response: CannedResponse, max_requests_per_connection: usize) 
             }));
             recorder.lock().expect("records").push(Arc::clone(&record));
             let lines = Arc::clone(&lines);
+            let heads = Arc::clone(&heads);
             let response = response.clone();
             std::thread::spawn(move || {
                 for _ in 0..max_requests_per_connection {
-                    let Some(line) = read_one_request(&mut stream) else {
+                    let Some(head) = read_one_request(&mut stream) else {
                         break;
                     };
-                    lines.lock().expect("lines").push(line);
+                    lines
+                        .lock()
+                        .expect("lines")
+                        .push(head.lines().next().unwrap_or_default().to_string());
+                    heads.lock().expect("heads").push(head);
                     record.lock().expect("record").requests += 1;
                     if stream
                         .write_all(&response)
@@ -282,12 +297,13 @@ pub fn spawn_http(response: CannedResponse, max_requests_per_connection: usize) 
         addr,
         records,
         request_lines,
+        request_heads,
     }
 }
 
 /// Read one HTTP/1.1 request off the stream: the head to its blank line, then exactly
-/// `content-length` body bytes so the next read starts at the next request. Returns the request
-/// line, or `None` on a closed/broken connection.
+/// `content-length` body bytes so the next read starts at the next request. Returns the full
+/// request HEAD text, or `None` on a closed/broken connection.
 fn read_one_request<S: Read>(stream: &mut S) -> Option<String> {
     let mut head: Vec<u8> = Vec::with_capacity(512);
     let mut buf = [0u8; 512];
@@ -320,7 +336,7 @@ fn read_one_request<S: Read>(stream: &mut S) -> Option<String> {
         }
         remaining -= n;
     }
-    Some(head_text.lines().next().unwrap_or_default().to_string())
+    Some(head_text.into_owned())
 }
 
 /// The fixture server's rustls config: ring provider named explicitly (the composed test binary
