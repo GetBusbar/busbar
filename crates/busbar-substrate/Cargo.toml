@@ -28,7 +28,10 @@ bytes = { workspace = true }
 # the relocated guard needs tokio's `net` API; the relocated verify-on-call gate (`trust::verify`)
 # single-flights its refresh through a `tokio::sync::Mutex`, so it needs `sync` too. Still no runtime,
 # macros or timers in the shipped surface.
-tokio = { workspace = true, features = ["net", "sync"] }
+# The relocated egress engine adds `time` (the CONNECT-handshake wall-clock bound rides
+# `tokio::time::timeout`) and `io-util` (the tunnel speaks the CONNECT exchange through
+# `AsyncReadExt`/`AsyncWriteExt`) to the existing `net`/`sync` floor.
+tokio = { workspace = true, features = ["net", "sync", "time", "io-util"] }
 # S2c: the relocated breaker classifier logs one deduped warning on an unrecognized error_map value
 # via `tracing::warn!` directly (not through the diag macros, which the expanding crate feeds). The
 # classifier is otherwise pure std + axum, so this is the family's only new edge.
@@ -74,13 +77,28 @@ ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 # The egress differential-harness FIXTURES (`egress::fixtures`): real rustls TLS/mTLS/redirect
 # servers with rcgen-minted certificates, shared by this crate's own engine tests AND (via the
-# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. All four edges are
-# OPTIONAL and enabled only by `test-support` — a normal build of this crate carries none of them,
+# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. These two edges
+# are OPTIONAL and enabled only by `test-support` — a normal build of this crate carries neither,
 # so the fixtures cost the shipped binary nothing. (This crate's own test binary reaches the same
 # crates through [dev-dependencies] below, so `cargo test -p busbar-substrate` needs no feature.)
-rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+# THE EGRESS ENGINE (`egress::engine`, relocated verbatim from busbar-core's
+# `proxy::egress_client`): hyper_util's legacy pool client over a rustls/webpki connector plus the
+# owned scheme-scoped CONNECT tunnel. The engine is the ONE outbound stack every plane builds its
+# clients from (owner-ruled), and substrate is its neutral home, so the client/TLS edges move down
+# here with it — all already in the composed binary's graph via core, which now re-exports instead
+# of owning (net zero for the shipped build; see R10 in the design's risk register). `rustls` stops
+# being test-only in the same act: the engine's ClientConfig is production surface.
+rustls = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+# The tunnel connector implements `tower::Service<http::Uri>` — the same seam every connector in
+# the hyper_util stack speaks.
+tower = { workspace = true }
 # The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
@@ -99,8 +117,8 @@ hex = { workspace = true }
 # it is used only by those moved tests, so it is a dev edge here.
 rcgen = { workspace = true }
 # The egress fixture servers (`egress::fixtures`, compiled under `cfg(test)` for this crate's own
-# suite) run real rustls handshakes; dev edges so no feature is needed for `cargo test -p`.
-rustls = { workspace = true }
+# suite) parse PEM and mint certificates; dev edges so no feature is needed for `cargo test -p`.
+# (`rustls` itself is a full dependency above — the engine owns it now.)
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
 
@@ -122,4 +140,4 @@ openapi-schema = ["dep:schemars"]
 # The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
 # this feature too, so the crates whose test binaries link this one (core's differential harness)
 # can spawn the same fixture servers this crate's own engine tests drive.
-test-support = ["dep:rustls", "dep:rustls-pki-types", "dep:rcgen"]
+test-support = ["dep:rustls-pki-types", "dep:rcgen"]

@@ -177,6 +177,11 @@ static DATA_WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 /// Publish the data-plane worker count. First call wins; later calls are ignored (boot runs once).
 pub fn set_data_workers(n: usize) {
     let _ = DATA_WORKERS.set(n.max(1));
+    // The egress engine's connect gate sizes its per-shard establishment share from this same
+    // topology fact, and the engine lives in substrate, which cannot name core — so the publish
+    // FORWARDS in the same boot act: one composition-root call, two subscribers, no second
+    // source of the number.
+    busbar_substrate::egress::engine::set_establishment_shards(n);
 }
 
 thread_local! {
@@ -195,14 +200,6 @@ pub fn set_worker_id(id: usize) {
 /// The current thread's worker id, or `usize::MAX` for a non-worker thread.
 pub(crate) fn worker_id() -> usize {
     WORKER_ID.with(|w| w.get())
-}
-
-/// The published data-worker count, 1 when the composition root has not published one (tools,
-/// tests, single-runtime builds). Reads the same OnceLock `worker_stripes` derives from, WITHOUT
-/// the machine-derived fallback: consumers of this getter size PACING budgets (the egress
-/// connect gate), where "unpublished" honestly means one runtime, not N cores.
-pub(crate) fn data_workers_or_one() -> usize {
-    DATA_WORKERS.get().copied().unwrap_or(1)
 }
 
 /// Stripe count for per-worker striped store state: one stripe per data worker PLUS one shared

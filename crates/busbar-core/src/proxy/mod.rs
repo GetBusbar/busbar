@@ -113,7 +113,6 @@ tokio::task_local! {
 }
 
 mod egress;
-mod egress_client;
 mod engine;
 mod hooks;
 mod lazy_body;
@@ -126,7 +125,26 @@ mod select;
 pub(crate) mod usage;
 mod wire;
 pub use egress::*;
-pub(crate) use egress_client::*;
+// THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
+// one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
+// re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
+// `EgressClient as Client`, appbuild's builder, the forward/health request assembly, the tests)
+// keeps resolving unchanged. `pub` rather than `pub(crate)` deliberately: some of these names
+// (`EgressConnector`) have no remaining in-core reader after the move, and an externally-visible
+// re-export cannot rot into an unused-import warning while the path contract stands.
+pub use busbar_substrate::egress::engine::{
+    egress_request, install_proxy_tunnel_if_configured, EngineClient as EgressClient,
+    EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
+};
+
+/// Build ONE egress client shard on the LLM-lane posture. An infallible shim over the engine's
+/// fallible builder (`busbar_substrate::egress::engine::build_client`, where the parity ledger
+/// now lives): the LLM posture carries no extra trust root and no client identity — the only
+/// arms a build can fail on — so the panic path here is unreachable by construction.
+pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
+    busbar_substrate::egress::engine::build_client(spec)
+        .expect("the LLM-lane engine posture has no failing build arm")
+}
 pub(crate) use engine::*;
 pub(crate) use hooks::*;
 pub use lazy_body::*;

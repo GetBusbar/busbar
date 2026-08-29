@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OWNED LLM-EGRESS HTTP CLIENT — hyper_util's legacy pool client over a
-//! rustls/webpki connector, replacing reqwest on the forward path. What this buys per request:
+//! THE EGRESS ENGINE — hyper_util's legacy pool client over a rustls/webpki connector: the ONE
+//! owned outbound HTTP stack (owner-ruled), relocated here from `busbar-core::proxy::egress_client`
+//! so every plane (LLM/model, MCP, A2A) builds its clients from one neutral home. Core re-exports
+//! every name from its old `crate::proxy::` paths, so the LLM lanes are byte-for-byte the client
+//! this file was when it lived there.
+//!
+//! Born as the LLM forward-path client, replacing reqwest there. What it buys per request:
 //! the send consumes the lane's boot-precomputed `http::Uri` directly (reqwest re-parsed its
 //! `Url` to a `Uri` through the full WHATWG parser at EVERY send), the request is hand-assembled
 //! from the prebuilt header map (no `RequestBuilder` machinery, no redirect-policy hook, no
@@ -47,26 +52,76 @@ use bytes::Bytes;
 use http_body_util::Full;
 
 /// The connector stack: TCP (+ boot-detected CONNECT tunnel when a proxy env is set) + rustls.
-pub(crate) type EgressConnector = hyper_rustls::HttpsConnector<tunnel::TunnelConnector>;
+pub type EngineConnector = hyper_rustls::HttpsConnector<tunnel::TunnelConnector>;
 
-/// The pooled egress client. `Full<Bytes>`: every LLM egress body is one owned buffer.
-pub(crate) type EgressClient = hyper_util::client::legacy::Client<EgressConnector, Full<Bytes>>;
+/// The pooled egress client. `Full<Bytes>`: every engine egress body is one owned buffer.
+pub type EngineClient = hyper_util::client::legacy::Client<EngineConnector, Full<Bytes>>;
 
-/// The error type `EgressClient::request` yields — named so the engine's transport-error
+/// The error type `EngineClient::request` yields — named so a consumer's transport-error
 /// classification arms read as prose.
-pub(crate) type EgressError = hyper_util::client::legacy::Error;
+pub type EngineError = hyper_util::client::legacy::Error;
 
-/// Inputs the builder needs — the same subset `UpstreamClientSettings` snapshots (plus the
-/// per-shard idle division the caller already computes).
-pub(crate) struct EgressClientSpec {
-    pub(crate) idle_per_host: usize,
-    pub(crate) pool_idle_timeout_secs: u64,
-    pub(crate) http1_only: bool,
-    pub(crate) h2_prior_knowledge: bool,
+/// The engine's posture, one value per client build. Composed ONLY through the blessed
+/// constructors ([`EngineSpec::llm_lane`] today; the pinned-plane posture joins it as the
+/// migration proceeds), so no call site ever assembles a posture by hand and "no new knobs" stays
+/// structural rather than reviewed.
+pub struct EngineSpec {
+    pub idle_per_host: usize,
+    pub pool_idle_timeout_secs: u64,
+    pub http1_only: bool,
+    pub h2_prior_knowledge: bool,
 }
 
-/// Build ONE egress client shard per the parity ledger above.
-pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
+impl EngineSpec {
+    /// TODAY'S LLM-LANE POSTURE, exactly: webpki trust, system DNS, no pin, no client identity,
+    /// boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP keepalive 60s — the
+    /// values the parity ledger above documents, parameterized only by the four inputs
+    /// `UpstreamClientSettings` snapshots (plus the per-shard idle division the caller already
+    /// computes).
+    pub fn llm_lane(
+        idle_per_host: usize,
+        pool_idle_timeout_secs: u64,
+        http1_only: bool,
+        h2_prior_knowledge: bool,
+    ) -> Self {
+        EngineSpec {
+            idle_per_host,
+            pool_idle_timeout_secs,
+            http1_only,
+            h2_prior_knowledge,
+        }
+    }
+}
+
+// ── ESTABLISHMENT TOPOLOGY, published once by the composition root ──────────────────────────────
+// The connect gate (tunnel module below) sizes each shard's establishment share as a constant
+// GLOBAL budget divided by the number of client shards the process runs — one gate per built
+// client, one client per data worker on the LLM lanes. That worker count is a core/binary
+// topology fact and substrate cannot name core (the dependency points the other way), so the
+// fact is PUBLISHED down: core's `set_data_workers` forwards the same number here in the same
+// boot act, one composition-root call with two subscribers. Unpublished honestly means ONE
+// runtime (tools, tests, embedded uses) — the exact rule core's own `data_workers_or_one`
+// applied — because a consumer sizing a PACING budget must never guess N cores where one
+// runtime exists.
+
+/// The published establishment-shard count. Set once, before anything builds; immutable.
+static ESTABLISHMENT_SHARDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Publish the shard count. First call wins; later calls are ignored (boot runs once).
+pub fn set_establishment_shards(n: usize) {
+    let _ = ESTABLISHMENT_SHARDS.set(n.max(1));
+}
+
+/// The published count, 1 when the composition root has not published one.
+fn establishment_shards_or_one() -> usize {
+    ESTABLISHMENT_SHARDS.get().copied().unwrap_or(1)
+}
+
+/// Build ONE engine client per the spec's posture. Fallible by SIGNATURE for the postures the
+/// migration adds (a private extra root or client identity that does not parse must fail the
+/// build loudly); the LLM-lane posture has no failing arm, which is what lets core's infallible
+/// `build_egress_client` shim stand over this without a panic path in practice.
+pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
     // The mock/bench upstreams are plain http; TLS wraps only https targets (below).
     http.enforce_http(false);
@@ -85,7 +140,7 @@ pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
 
     let tls = rustls_client_config();
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
-    let https: EgressConnector = if spec.http1_only {
+    let https: EngineConnector = if spec.http1_only {
         builder.https_or_http().enable_http1().wrap_connector(http)
     } else {
         builder
@@ -109,7 +164,7 @@ pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
     if spec.h2_prior_knowledge && !spec.http1_only {
         client.http2_only(true);
     }
-    client.build(https)
+    Ok(client.build(https))
 }
 
 /// The rustls client config: webpki roots, ALPN left to the connector builder. The crypto
@@ -149,7 +204,7 @@ fn rustls_client_config() -> rustls::ClientConfig {
 /// Assemble one egress request from the boot-precomputed parts: the lane's `http::Uri` and the
 /// caller-built header map, body as one owned buffer. No builder, no validation re-runs — every
 /// component was validated when it was made.
-pub(crate) fn egress_request(
+pub fn egress_request(
     uri: http::Uri,
     headers: http::HeaderMap,
     body: Bytes,
@@ -162,10 +217,10 @@ pub(crate) fn egress_request(
 }
 
 #[cfg(test)]
-#[path = "tests/egress_client_tests.rs"]
-mod egress_client_tests;
+#[path = "tests/engine_tests.rs"]
+mod engine_tests;
 
-pub(crate) use tunnel::install_proxy_tunnel_if_configured;
+pub use tunnel::install_proxy_tunnel_if_configured;
 
 /// The owned CONNECT tunnel for the proxy-env parity case (owner-ruled: full tunnel, not the
 /// boot-refusal interim). Constructed ONLY when a proxy env var is present at boot; the direct
@@ -178,7 +233,7 @@ mod tunnel {
     /// `Proxy-Authorization`. Parsed ONCE at boot; shared by refcount from the per-scheme slots
     /// of [`ProxyConfig`].
     #[cfg_attr(test, derive(Debug))] // tests unwrap_err() around it; production never prints it
-    pub(crate) struct ProxySpec {
+    pub struct ProxySpec {
         /// Proxy endpoint as the plain `host:port` CONNECT dial string.
         host: String,
         port: u16,
@@ -193,7 +248,7 @@ mod tunnel {
     /// and `Matcher::intercept` (NO_PROXY first, then the slot picked by `dst.scheme_str()`) —
     /// the machinery reqwest 0.12 delegates its implicit env behavior to.
     #[cfg_attr(test, derive(Debug))]
-    pub(crate) struct ProxyConfig {
+    pub struct ProxyConfig {
         https: Option<Arc<ProxySpec>>,
         http: Option<Arc<ProxySpec>>,
         no_proxy: NoProxy,
@@ -431,7 +486,7 @@ mod tunnel {
     /// Resolve the proxy env at boot: absent → direct (the common arm), present-and-valid →
     /// install the scheme-scoped config for every client build, present-and-garbage → refuse to
     /// start (fail-loud beats silently egressing direct past a configured proxy).
-    pub(crate) fn install_proxy_tunnel_if_configured() -> Result<(), String> {
+    pub fn install_proxy_tunnel_if_configured() -> Result<(), String> {
         let config = resolve_config(&ProxyEnvValues::from_process_env())?;
         let _ = INSTALLED.set(config);
         Ok(())
@@ -440,7 +495,7 @@ mod tunnel {
     /// What the client builder wires in: the boot decision, or `None` for a build that runs
     /// before/without `install_proxy_tunnel_if_configured` (tests, tools) — direct, like reqwest
     /// built without proxy env.
-    pub(crate) fn installed_proxy() -> Option<Arc<ProxyConfig>> {
+    pub fn installed_proxy() -> Option<Arc<ProxyConfig>> {
         INSTALLED.get().cloned().flatten()
     }
 
@@ -449,7 +504,7 @@ mod tunnel {
     /// SNI, against the target's cert) runs over the established tunnel — the proxy sees only
     /// `CONNECT host:port`, never a decrypted byte.
     #[derive(Clone)]
-    pub(crate) struct TunnelConnector {
+    pub struct TunnelConnector {
         inner: hyper_util::client::legacy::connect::HttpConnector,
         config: Option<Arc<ProxyConfig>>,
         /// Per-shard connect pacing — see [`ConnectGate`]. Shared by clones of this connector
@@ -459,7 +514,7 @@ mod tunnel {
     }
 
     impl TunnelConnector {
-        pub(crate) fn new(
+        pub fn new(
             inner: hyper_util::client::legacy::connect::HttpConnector,
             config: Option<Arc<ProxyConfig>>,
         ) -> Self {
@@ -502,11 +557,11 @@ mod tunnel {
     /// over.
     const CONNECTS_PER_AUTHORITY_GLOBAL: usize = 64;
 
-    /// This shard's share of the global budget. Reads the composition root's published worker
-    /// count (1 when unset — tools/tests), never a per-request read: computed once per gate
-    /// slot at first CONNECT to an authority.
+    /// This shard's share of the global budget. Reads the composition root's published
+    /// establishment-shard count (1 when unset — tools/tests), never a per-request read:
+    /// computed once per gate slot at first CONNECT to an authority.
     pub(super) fn connects_per_shard() -> usize {
-        (CONNECTS_PER_AUTHORITY_GLOBAL / crate::state::data_workers_or_one()).max(1)
+        (CONNECTS_PER_AUTHORITY_GLOBAL / super::establishment_shards_or_one()).max(1)
     }
 
     /// Per-shard registry of per-authority connect semaphores. Keys are the DIALED authority

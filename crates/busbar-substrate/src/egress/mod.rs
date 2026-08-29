@@ -20,6 +20,11 @@
 // re-exports `HopSpec` from there so `busbar_core::egress::seam::HopSpec` still resolves.
 pub mod seam;
 
+// THE EGRESS ENGINE — the one owned outbound HTTP stack (hyper_util legacy pool over rustls,
+// with the boot-armed CONNECT tunnel), relocated from busbar-core's `proxy::egress_client` per
+// the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
+pub mod engine;
+
 // The differential-harness FIXTURE SERVERS (recording rustls TLS/mTLS servers, the plaintext
 // redirect canary, resolver doubles). Test machinery only: compiled for this crate's own suite and,
 // under `test-support`, for the dependent test binaries that drive the two egress stacks against
@@ -331,5 +336,5 @@ impl PinnedClientPool {
 // it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep
 // their coverage under a default build.
 #[cfg(all(test, any(feature = "plane-mcp", feature = "plane-a2a")))]
-#[path = "tests.rs"]
+#[path = "tests/pinned_pool_tests.rs"]
 mod tests;

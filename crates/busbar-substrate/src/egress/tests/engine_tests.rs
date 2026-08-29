@@ -31,12 +31,7 @@ fn egress_request_uses_precomputed_parts_verbatim() {
 #[test]
 fn builder_smoke_all_shapes() {
     for (h1, h2c) in [(false, false), (true, false), (false, true), (true, true)] {
-        let _ = build_egress_client(&EgressClientSpec {
-            idle_per_host: 4,
-            pool_idle_timeout_secs: 300,
-            http1_only: h1,
-            h2_prior_knowledge: h2c,
-        });
+        build_client(&EngineSpec::llm_lane(4, 300, h1, h2c)).expect("the LLM-lane posture builds");
     }
 }
 
@@ -378,13 +373,13 @@ async fn connect_gate_bounds_per_authority_establishment() {
         &a,
         &gate.slot_for_tests("other.test:443")
     ));
-    // Exactly the per-shard share of the GLOBAL budget (64 / published worker count): the
-    // next establishment past the bound WAITS until one finishes.
+    // Exactly the per-shard share of the GLOBAL budget (64 / the published establishment-shard
+    // count): the next establishment past the bound WAITS until one finishes.
     let share = tunnel::connects_per_shard_for_tests();
     assert_eq!(
         share,
-        64 / crate::state::data_workers_or_one(),
-        "the share must divide the constant global budget by the worker count"
+        64 / super::establishment_shards_or_one(),
+        "the share must divide the constant global budget by the shard count"
     );
     let mut held = Vec::new();
     for _ in 0..share {

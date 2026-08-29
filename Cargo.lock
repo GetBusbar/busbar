@@ -705,7 +705,11 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac",
+ "http",
+ "http-body-util",
  "httpdate",
+ "hyper-rustls",
+ "hyper-util",
  "indexmap",
  "metrics",
  "rcgen",
@@ -718,7 +722,9 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.11.0",
  "tokio",
+ "tower",
  "tracing",
+ "webpki-roots",
 ]
 
 [[package]]
