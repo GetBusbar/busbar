@@ -398,3 +398,77 @@ async fn connect_gate_bounds_per_authority_establishment() {
         "a finished establishment frees the slot FIFO-fair"
     );
 }
+
+/// The reqwest-parity userinfo move on the plane-facing assembly: `user:pass@` leaves the URI
+/// (so it can never sit in hyper's per-authority pool key, which hyper traces at debug level) and
+/// becomes an `Authorization: Basic` header marked sensitive — unless the caller set its own
+/// Authorization, which wins. The LLM `egress_request` path is deliberately untouched by this
+/// (lane URIs are boot-validated; the forward path keeps zero per-request branches).
+#[test]
+fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
+    use base64::Engine as _;
+    let req = request(
+        http::Method::POST,
+        "https://user:hunter2@sink.test:8443/log".parse().unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    assert_eq!(req.uri().to_string(), "https://sink.test:8443/log");
+    let auth = req
+        .headers()
+        .get(http::header::AUTHORIZATION)
+        .expect("the userinfo must become Basic credentials");
+    assert!(auth.is_sensitive(), "the moved credential is sensitive");
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("user:hunter2")
+    );
+    assert_eq!(auth.to_str().unwrap(), expected);
+
+    // A lone username is an empty password (RFC 7617's shape, reqwest's behaviour).
+    let req = request(
+        http::Method::GET,
+        "https://tok@sink.test/".parse().unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("tok:")
+    );
+    assert_eq!(
+        req.headers()
+            .get(http::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        expected
+    );
+
+    // An explicit Authorization wins over the URL's, but the userinfo still leaves the URI.
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer explicit"),
+    );
+    let req = request(
+        http::Method::GET,
+        "https://user:pass@sink.test/".parse().unwrap(),
+        headers,
+        Bytes::new(),
+    );
+    assert_eq!(req.uri().to_string(), "https://sink.test/");
+    assert_eq!(
+        req.headers().get(http::header::AUTHORIZATION).unwrap(),
+        "Bearer explicit"
+    );
+
+    // No userinfo: untouched, no header invented.
+    let req = request(
+        http::Method::GET,
+        "https://sink.test/".parse().unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    assert!(req.headers().get(http::header::AUTHORIZATION).is_none());
+}

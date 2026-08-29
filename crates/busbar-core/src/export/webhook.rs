@@ -19,8 +19,7 @@ use crate::export::projection::Projection;
 use crate::export::PayloadCache;
 use crate::limits::admission::AdmissionGate;
 use crate::observability::{mask_userinfo, validate_webhook_url};
-use reqwest::header::{HeaderName, HeaderValue};
-use reqwest::Client;
+use http::header::{HeaderName, HeaderValue};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -50,11 +49,11 @@ struct Target {
 /// (Whether the request-log payload is BUILT at all is decided earlier, by the union-of-projections
 /// compute gate on the `App` — see `crate::export::projection::ProjectionUnion`.)
 static TARGETS: OnceLock<Vec<Target>> = OnceLock::new();
-/// The exporter's OWN delivery client. It used to borrow the shared upstream pool; since the LLM
-/// egress moved to the owned hyper client, webhook delivery — a background, seconds-cadence
-/// push with its own SSRF posture — keeps reqwest and builds its client here, ONLY when at least
-/// one webhook sink is actually configured (the default config pays nothing).
-static CLIENT: OnceLock<Client> = OnceLock::new();
+/// The exporter's OWN delivery client — an ENGINE client on the cold open-web posture, built ONLY
+/// when at least one webhook sink is actually configured (the default config pays nothing). Its
+/// own client rather than the shared upstream pool because webhook delivery is a background,
+/// seconds-cadence push with its own SSRF posture.
+static CLIENT: OnceLock<crate::proxy::EgressClient> = OnceLock::new();
 
 /// Configure the webhook sinks once at startup from the resolved `export:` block — one [`Target`] per
 /// NAMED `module: request-log-webhook` instance, in config order. Each URL is validated HERE (SSRF
@@ -77,23 +76,19 @@ pub(crate) fn configure(cfg: &ExportCfg) {
         );
     }
     if !targets.is_empty() {
-        // Delivery posture matches the old shared pool where it matters: 10s connect bound; the
-        // per-DELIVERY total timeout is each target's own `delivery_timeout_secs` (applied per
-        // request below), so no client-level total timeout is needed. A TLS-init failure disables
-        // webhook delivery loudly instead of panicking boot.
-        match Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-        {
-            Ok(client) => {
-                let _ = TARGETS.set(targets);
-                let _ = CLIENT.set(client);
-            }
-            Err(e) => crate::diagnostics::diag_error!(
-                crate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
-                "failed to build the webhook delivery client: {e}; disabling every webhook exporter"
-            ),
-        }
+        // Delivery posture matches the retired reqwest client where it matters: 10s connect bound
+        // (the engine's connect deadline, now spanning TLS too), reqwest-default pooling (unbounded
+        // idle per host, 90s idle timeout — sinks are operator-configured hosts, exactly the shape
+        // the LLM lanes pool for); the per-DELIVERY total timeout is each target's own
+        // `delivery_timeout_secs` (applied per request below), so no client-level total is needed.
+        let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+            usize::MAX,
+            90,
+            false,
+            false,
+        ));
+        let _ = TARGETS.set(targets);
+        let _ = CLIENT.set(client);
     }
 }
 
@@ -157,27 +152,37 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
         let payload = cache.get(target.projection);
         crate::state::spawn_detached(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
-            let body = payload.to_string();
-            let mut req = client
-                .post(url.as_str())
-                .header(
-                    reqwest::header::CONTENT_TYPE,
-                    crate::proxy::APPLICATION_JSON,
-                )
-                .body(body)
-                .timeout(timeout);
+            let Ok(uri) = url.as_str().parse::<http::Uri>() else {
+                // Structurally unreachable: the target survived `validate_webhook_url` at boot.
+                warn_webhook_delivery_failed(url.as_str(), Err("target URL does not parse".into()));
+                return;
+            };
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+            );
             if let Some((name, value)) = &auth {
                 if let (Ok(n), Ok(v)) = (
                     HeaderName::from_bytes(name.as_bytes()),
                     HeaderValue::from_str(value),
                 ) {
-                    req = req.header(n, v);
+                    headers.insert(n, v);
                 }
             }
-            match req.send().await {
+            let req = busbar_substrate::egress::engine::request(
+                http::Method::POST,
+                uri,
+                headers,
+                bytes::Bytes::from(payload.to_string()),
+            );
+            // This target's own per-delivery deadline over the whole send — the same span the
+            // retired per-request reqwest `.timeout()` covered.
+            let deadline = tokio::time::Instant::now() + timeout;
+            match busbar_substrate::egress::engine::send_bounded(&client, req, deadline).await {
                 Ok(resp) if resp.status().is_success() => {}
                 Ok(resp) => warn_webhook_delivery_failed(url.as_str(), Ok(resp.status())),
-                Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e)),
+                Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e.into_cause())),
             }
         });
     }
@@ -186,10 +191,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 /// The delivery-failure warn, factored into ONE place so the userinfo masking cannot be reintroduced
 /// as a leak on only one of the two failure arms. Relocated from `observability` alongside the
 /// delivery it guards.
-pub(crate) fn warn_webhook_delivery_failed(
-    url: &str,
-    outcome: Result<reqwest::StatusCode, reqwest::Error>,
-) {
+pub(crate) fn warn_webhook_delivery_failed(url: &str, outcome: Result<http::StatusCode, String>) {
     match outcome {
         Ok(status) => crate::diagnostics::diag_debug!(
             crate::diagnostics::WEBHOOK_DELIVERY_NON_2XX,
@@ -197,10 +199,12 @@ pub(crate) fn warn_webhook_delivery_failed(
             status = status.as_u16(),
             "request-log webhook delivery returned a non-2xx status; this log was dropped"
         ),
+        // The cause string is URL-free by construction (hyper errors never carry the URL — the
+        // `without_url()` this arm used to need was only ever stripping reqwest's addition).
         Err(e) => crate::diagnostics::diag_debug!(
             crate::diagnostics::WEBHOOK_DELIVERY_TRANSPORT_ERROR,
             webhook_url = mask_userinfo(url),
-            error_kind = %e.without_url(),
+            error_kind = %e,
             "request-log webhook delivery failed (transport error); this log was dropped"
         ),
     }

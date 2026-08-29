@@ -375,12 +375,21 @@ fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, Strin
 /// map, body as one owned buffer. No builder machinery, no validation re-runs — every component
 /// was validated when it was made. The method-parameterized generalization of [`egress_request`]
 /// for the plane hops (a card fetch is a GET, a relay a POST, a plugin hop whatever it named).
+///
+/// ONE reqwest-parity transformation runs here, because these callers take OPERATOR-SPELLED URLs:
+/// URL userinfo (`https://user:pass@host/…`) is stripped from the URI and moved to an
+/// `Authorization: Basic` header (reqwest has done exactly this since 0.11.10). Left in place,
+/// the userinfo never reaches the wire (hyper's request line is origin-form and `Host` derives
+/// from the host alone) but it WOULD sit in hyper's per-authority pool key — which hyper traces
+/// at debug level, turning an operator's embedded credential into a log leak. An explicitly-set
+/// `Authorization` header wins over the URL's.
 pub fn request(
     method: http::Method,
     uri: http::Uri,
-    headers: http::HeaderMap,
+    mut headers: http::HeaderMap,
     body: Bytes,
 ) -> http::Request<Full<Bytes>> {
+    let uri = strip_userinfo_into_basic_auth(uri, &mut headers);
     let mut req = http::Request::new(Full::new(body));
     *req.method_mut() = method;
     *req.uri_mut() = uri;
@@ -388,14 +397,57 @@ pub fn request(
     req
 }
 
-/// Assemble one LLM egress request from the boot-precomputed parts — [`request`], POST (the one
-/// method the forward path speaks).
+/// The reqwest-parity userinfo move (see [`request`]). A URI without userinfo — every hot-path
+/// URI — passes through untouched; a rebuild that fails (an authority that stops parsing without
+/// its userinfo cannot really happen: removing bytes cannot invalidate a parsed authority) keeps
+/// the original URI rather than inventing a refusal at request-assembly time.
+fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap) -> http::Uri {
+    let Some(authority) = uri.authority() else {
+        return uri;
+    };
+    let Some((userinfo, host_port)) = authority.as_str().rsplit_once('@') else {
+        return uri;
+    };
+    let Ok(bare) = host_port.parse::<http::uri::Authority>() else {
+        return uri;
+    };
+    if !headers.contains_key(http::header::AUTHORIZATION) {
+        use base64::Engine as _;
+        let creds = if userinfo.contains(':') {
+            userinfo.to_string()
+        } else {
+            // A lone username is an empty password — RFC 7617's shape, reqwest's behaviour.
+            format!("{userinfo}:")
+        };
+        let value = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(creds)
+        );
+        if let Ok(value) = http::HeaderValue::from_str(&value) {
+            let mut value = value;
+            value.set_sensitive(true);
+            headers.insert(http::header::AUTHORIZATION, value);
+        }
+    }
+    let mut parts = uri.into_parts();
+    parts.authority = Some(bare);
+    http::Uri::from_parts(parts).expect("removing userinfo keeps the URI well-formed")
+}
+
+/// Assemble one LLM egress request from the boot-precomputed parts, POST (the one method the
+/// forward path speaks). Deliberately NOT [`request`]: the lane's `http::Uri` was validated at
+/// boot (no userinfo can survive config validation), so the forward path keeps zero per-request
+/// branches — byte-for-byte the assembly it has always been.
 pub fn egress_request(
     uri: http::Uri,
     headers: http::HeaderMap,
     body: Bytes,
 ) -> http::Request<Full<Bytes>> {
-    request(http::Method::POST, uri, headers, body)
+    let mut req = http::Request::new(Full::new(body));
+    *req.method_mut() = http::Method::POST;
+    *req.uri_mut() = uri;
+    *req.headers_mut() = headers;
+    req
 }
 
 /// One hop's transport failure, classified — the neutral vocabulary a seam consumer maps onto its

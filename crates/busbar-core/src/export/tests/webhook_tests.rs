@@ -113,9 +113,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FieldCapture {
 }
 
 /// The request-log DELIVERY path lives in the webhook exporter now: its delivery-failure warn masks
-/// any embedded userinfo in BOTH the `webhook_url` field AND the reqwest error Display, for BOTH the
-/// transport-error and non-2xx arms. Drives a REAL POST to an unroutable TEST-NET host so the
-/// exporter's own delivery code runs (not a hand-copy).
+/// any embedded userinfo in BOTH the `webhook_url` field AND the flattened transport cause, for
+/// BOTH the transport-error and non-2xx arms. Drives a REAL POST through the engine to an
+/// unroutable TEST-NET host so the exporter's own delivery shape runs (not a hand-copy) — and the
+/// engine's cause is URL-free BY CONSTRUCTION, which is the property this test holds in place.
 #[tokio::test]
 async fn delivery_failure_masks_userinfo() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -126,21 +127,25 @@ async fn delivery_failure_masks_userinfo() {
 
     let url = "https://user:hunter2@192.0.2.1/log";
 
-    // Transport-error arm: a POST to an unroutable RFC 5737 TEST-NET-1 host fails fast.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(200))
-        .build()
-        .unwrap();
-    let err = client
-        .post(url)
-        .body("{}")
-        .send()
+    // Transport-error arm: a POST to an unroutable RFC 5737 TEST-NET-1 host fails fast (the
+    // 200ms deadline bounds it), through the same engine client + send the exporter uses.
+    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+        1, 4, false, false,
+    ));
+    let req = busbar_substrate::egress::engine::request(
+        http::Method::POST,
+        url.parse().expect("a URI"),
+        http::HeaderMap::new(),
+        bytes::Bytes::from_static(b"{}"),
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
+    let err = busbar_substrate::egress::engine::send_bounded(&client, req, deadline)
         .await
         .expect_err("post to an unroutable host must fail");
-    warn_webhook_delivery_failed(url, Err(err));
+    warn_webhook_delivery_failed(url, Err(err.into_cause()));
 
     // Non-2xx arm.
-    warn_webhook_delivery_failed(url, Ok(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+    warn_webhook_delivery_failed(url, Ok(http::StatusCode::INTERNAL_SERVER_ERROR));
 
     let events = cap.0.lock().unwrap().join("\n");
     assert!(
