@@ -119,14 +119,25 @@ pub(crate) enum CheckedOut {
 }
 
 impl CheckedOut {
-    /// Delivered-conn liveness, checked by the WAITER on receipt: a conn that died between the
-    /// deliverer's check and the waiter waking is dead-on-arrival — dropped, and the waiter
-    /// re-enters checkout (legacy `CheckedOutClosedValue` recovery, a checkout-level retry
-    /// exempt from the request-level `take_message()` accounting).
+    /// Delivered-conn liveness, checked by the WAITER on receipt: a REUSED conn that died between
+    /// the deliverer's check and the waiter waking is dead-on-arrival — dropped, and the waiter
+    /// re-enters checkout (legacy `CheckedOutClosedValue` recovery, a checkout-level retry exempt
+    /// from the request-level `take_message()` accounting). A FRESH conn is never gated on this —
+    /// see the checkout arm and [`CheckedOut::reused`].
     pub(crate) fn is_live(&self) -> bool {
         match self {
             CheckedOut::H1 { sender, .. } => sender.is_ready() && !sender.is_closed(),
             CheckedOut::H2 { sender, .. } => sender.is_ready() && !sender.is_closed(),
+        }
+    }
+
+    /// Whether this conn came off the pool (a return-path or idle delivery) rather than out of a
+    /// fresh dial. The checkout-level DOA retry reads this: legacy's `CheckedOutClosedValue`
+    /// recovery only ever applied to a value won FROM THE POOL — a fresh connect's conn was never
+    /// liveness-gated, and its death before dispatch surfaced through the send, terminally.
+    pub(crate) fn reused(&self) -> bool {
+        match self {
+            CheckedOut::H1 { reused, .. } | CheckedOut::H2 { reused, .. } => *reused,
         }
     }
 }
@@ -362,11 +373,26 @@ pub(crate) async fn checkout(
 
         match rx.await {
             Ok(Ok(conn)) => {
-                if conn.is_live() {
+                // The DOA re-checkout is for REUSED conns only. A fresh dial's conn is handed to
+                // the caller live or not: legacy never liveness-gated a fresh connect — a conn
+                // that died between connect-complete and dispatch surfaced through the send,
+                // terminally (`take_message()` on a fresh conn is the Canceled arm, never a
+                // retry). The first cut of this pool ran the DOA retry on fresh conns too, and
+                // against a peer that ACCEPTS the connect and then kills the conn that is an
+                // unbounded redial storm for one logical request: under TLS 1.3 an mTLS server
+                // that refuses the client's certificate does so AFTER the client's handshake
+                // completes, so every dial "succeeds", can be delivered, die on arrival, and
+                // re-enter checkout — the a2a mtls isolation test caught its peer taking two
+                // handshakes for one GET (dev CI run 33275270894), and widening the
+                // delivery-to-liveness-check window turns that into hundreds.
+                if conn.is_live() || !conn.reused() {
                     return Ok(conn);
                 }
-                // Dead on arrival: the conn died between the deliverer's liveness check and this
-                // waiter waking. Drop it and re-enter checkout — the checkout-level retry.
+                // Dead on arrival: a REUSED conn died between the deliverer's liveness check and
+                // this waiter waking (return-path delivery racing a peer FIN). Drop it and
+                // re-enter checkout — the checkout-level retry, legacy's `CheckedOutClosedValue`
+                // recovery. Terminates structurally: the reused population strictly decreases,
+                // and a fresh conn's delivery exits above.
             }
             Ok(Err(dial)) => return Err(EngineError::from_dial(dial)),
             // The sender side was dropped without a delivery. Deliverers always send or park, so

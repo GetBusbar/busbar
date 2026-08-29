@@ -1119,6 +1119,91 @@ async fn a_dead_on_arrival_delivery_re_enters_checkout() {
     assert_eq!(records[0].requests, 1, "the request was sent exactly once");
 }
 
+/// THE FRESH HALF of the DOA boundary: a conn delivered as a FRESH dial's conn that is already
+/// dead when the waiter wakes goes to the CALLER and errors terminally — it never re-enters
+/// checkout and never starts another dial.
+///
+/// This is the boundary legacy drew without a line of code: `hyper_util` never liveness-gated a
+/// fresh connect's conn (only a pooled value could be `CheckedOutClosedValue`), so a conn that
+/// died between connect-complete and dispatch surfaced through the send, terminally. The first
+/// cut of the owned pool ran the DOA re-checkout on fresh conns too, and against a peer that
+/// ACCEPTS the connect and then kills the conn that was an UNBOUNDED redial loop for one logical
+/// request: under TLS 1.3 an mTLS server that refuses the client certificate does so after the
+/// client's own handshake completes, so every dial "succeeds", can be delivered, die on arrival,
+/// and re-enter checkout for another full handshake. The a2a mtls isolation test caught its peer
+/// recording TWO refused handshakes for one GET (dev CI run 33275270894, `[Ok(1), Err, Err]`
+/// where the shape pins `[Ok(1), Err]`); widening the delivery-to-liveness-check window by 2ms
+/// turned that into hundreds. Only the REUSED arm re-checks out (the test above), which is what
+/// makes the checkout-level retry terminate structurally.
+#[tokio::test]
+async fn a_dead_on_arrival_fresh_conn_is_terminal_never_re_dialed() {
+    // A victim server that closes instantly: the conn is dead the moment it exists — the same
+    // observable shape as a post-handshake TLS refusal landing before the waiter wakes.
+    let dead_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+    let dead_addr = dead_listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in dead_listener.incoming() {
+            drop(stream);
+        }
+    });
+
+    // The client's own dials BLOCK: the only conn it can get is the one this test delivers, and
+    // the call count exposes any redial the DOA path would start.
+    let script = ScriptedDial::new(|_| DialScript::Block);
+    let client = client_over(EgressResolver::Custom(script.clone()), cfg(1));
+    let uri = format!("http://freshdoa.test:{}/v1/x", dead_addr.port());
+    let key = key_of(&uri);
+
+    let c1 = client.clone();
+    let uri2 = uri.clone();
+    let task = tokio::spawn(async move { c1.request(get(&uri2)).await });
+    eventually("the request parks as a waiter", || {
+        pool::snapshot_authority(client.inner_for_tests(), &key).is_some_and(|s| s.waiters == 1)
+    })
+    .await;
+
+    // An already-dead conn, delivered through the dial-success walk marked FRESH.
+    let dead = raw_h1_conn(dead_addr).await;
+    eventually("the victim conn observes its close", || {
+        dead_is_closed(&dead)
+    })
+    .await;
+    pool::deliver_fresh_h1_for_tests(
+        client.inner_for_tests(),
+        &key,
+        dead,
+        pool::ConnSnapshot {
+            spki: None,
+            negotiated_h2: false,
+        },
+    );
+
+    // The caller ERRORS, promptly — under the fresh-DOA-re-checkout defect it re-parked forever
+    // (the timeout is the red half of this pin, not a race allowance).
+    let err = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("a fresh conn dead on arrival errors the caller — it must not re-enter checkout")
+        .expect("join")
+        .expect_err("a fresh conn dead on arrival is real and terminal");
+    assert!(
+        !err.is_connect(),
+        "the conn was established — legacy surfaced this timing through the send, never as \
+         connect-class"
+    );
+    assert_eq!(
+        client.retry_bounces_for_tests(),
+        0,
+        "a fresh conn never enters the request-level retry loop either"
+    );
+    assert_eq!(
+        script.calls(),
+        1,
+        "the one original (still-blocked) dial is all that ever existed — no redial"
+    );
+    let snap = pool::snapshot_authority(client.inner_for_tests(), &key).expect("authority");
+    assert_eq!(snap.waiters, 0, "the waiter did not re-park");
+}
+
 /// Hand-shake a bare h1 conn (no pool) — the DOA test's delivery vehicle.
 async fn raw_h1_conn(addr: SocketAddr) -> hyper::client::conn::http1::SendRequest<Full<Bytes>> {
     let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
