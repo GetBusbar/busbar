@@ -152,10 +152,21 @@ else
   # not a flag ld64/link.exe know, hence the Linux gate). Today's only non-PGO target is Windows,
   # so this case is empty in practice — it exists so a Linux target that ever declares pgo:false
   # cannot silently lose the relocations the BOLT pass refuses to run without.
+  # The full flag set mirrors pgo-build.sh's EMIT_RELOCS derivation exactly (strip=debuginfo to
+  # keep the emitted .rela.* sections the profile's strip=true would delete; the A53 erratum
+  # rewrite disabled on the +lse arm64 build it cannot protect; the armv8.0-compat build keeps
+  # the erratum fix and therefore emits no relocs and is not BOLTable — see pgo-build.sh).
   EMIT_RELOCS=""
-  case "$SPEC_TRIPLE" in
-    *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs" ;;
-  esac
+  if [ "$SPEC_BASELINE" != "true" ]; then
+    case "$SPEC_TRIPLE" in
+      aarch64-*-linux-*)
+        EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,--no-fix-cortex-a53-843419 -Cstrip=debuginfo"
+        ;;
+      *-linux-*)
+        EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Cstrip=debuginfo"
+        ;;
+    esac
+  fi
   # Same LSE parity as pgo-build.sh's arm (see the LSE_FLAG definition there): the default arm64
   # Linux artifact raises its floor to armv8.1 (+lse); the baseline variant, and every non-arm64
   # target, does not. Today's only non-PGO target is Windows, so this is parity-by-construction
