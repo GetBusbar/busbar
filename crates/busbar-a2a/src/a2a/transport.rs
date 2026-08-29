@@ -173,16 +173,18 @@ impl Resolver for TokioResolver {
 /// every tick is a private key crossing the resolver seam on every tick, and a key that fails to
 /// resolve at 03:00 would silently stop a registration being re-verified rather than stopping the
 /// operator at boot.
-pub(crate) type ClientIdentities = BTreeMap<String, reqwest::Identity>;
+pub(crate) type ClientIdentities =
+    BTreeMap<String, busbar_substrate::egress::engine::ClientIdentity>;
 
 /// RESOLVE EVERY `agents.<name>.client_identity` INTO A USABLE CLIENT CERTIFICATE. FAIL-CLOSED.
 ///
 /// The PEM bytes come through [`busbar_substrate::tls::read_pem`] — the same function busbar's own inbound
 /// listener loads its cert and key with — so there is exactly one place in the tree that turns a
 /// [`busbar_api::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
-/// read. The cert and the key are concatenated because that is the single buffer
-/// `reqwest::Identity::from_pem` takes; the pairing is checked there, by the TLS stack, rather than
-/// by a second parser here.
+/// read. The cert and the key are concatenated because that is the single buffer the engine's
+/// `ClientIdentity::from_pem` takes (`reqwest::Identity::from_pem` parity, pinned by the R4
+/// corpus); the pairing is checked at the handshake, by the TLS stack, rather than by a second
+/// parser here.
 ///
 /// An error is returned rather than logged and skipped. A registration whose client certificate did
 /// not load is a registration that can never be contacted, and a deployment that boots into that
@@ -210,7 +212,7 @@ pub(crate) fn resolve_client_identities(
         );
         // NEVER echoes the buffer: the error is the TLS stack's own, and the buffer holds a private
         // key.
-        let id = reqwest::Identity::from_pem(&pem).map_err(|e| {
+        let id = busbar_substrate::egress::engine::ClientIdentity::from_pem(&pem).map_err(|e| {
             format!(
                 "`agents.{name}.client_identity`: the certificate ({}) and key ({}) are not a \
                  usable client identity: {e}",
@@ -238,10 +240,10 @@ pub(crate) struct ReqwestTransport {
     /// upstream-chosen number of bytes and measuring afterwards.
     max_body_bytes: usize,
     timeout: Duration,
-    /// Additional trust anchors, accumulated by [`Self::trusting_root`] (test-only) so the full set can
-    /// be re-registered as one host-side [`busbar_substrate::plane_host::trust_anchor`] ref. EMPTY in production —
-    /// the platform's roots are the roots.
-    extra_roots: Vec<reqwest::Certificate>,
+    /// Additional trust anchors (DER), accumulated by [`Self::trusting_root`] (test-only) so the full set
+    /// can be re-registered as one host-side [`busbar_substrate::plane_host::trust_anchor`] ref. EMPTY in
+    /// production — the platform's roots are the roots.
+    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
     /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_plugin::hot::EgressDesc);
     /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
@@ -284,15 +286,24 @@ impl ReqwestTransport {
     /// that could be attached after the fact is an identity that could be attached to the transport
     /// a different agent is being fetched with. The parsed key is handed to the host registry ONCE
     /// here (at boot), not per hop — this transport keeps only the opaque ref.
-    pub(crate) fn presenting(mut self, identity: reqwest::Identity) -> Self {
+    pub(crate) fn presenting(
+        mut self,
+        identity: busbar_substrate::egress::engine::ClientIdentity,
+    ) -> Self {
         self.client_identity_ref = busbar_substrate::plane_host::identity::register(identity);
         self
     }
 
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
-        self.extra_roots
-            .push(reqwest::Certificate::from_pem(pem).expect("a PEM certificate"));
+        {
+            use rustls_pki_types::pem::PemObject;
+            self.extra_roots.extend(
+                rustls_pki_types::CertificateDer::pem_slice_iter(pem)
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("a PEM certificate"),
+            );
+        }
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =
@@ -533,7 +544,7 @@ impl LiveCardFetch {
 
     /// The production bundle for a plane whose registrations name client certificates.
     ///
-    /// Takes the identities by reference and clones per agent, because a `reqwest::Identity` is a
+    /// Takes the identities by reference and clones per agent, because a `ClientIdentity` is a
     /// parsed key that several transports may need over a process lifetime and the caller resolved
     /// them once.
     pub(crate) fn presenting(policy: FetchPolicy, identities: &ClientIdentities) -> Self {

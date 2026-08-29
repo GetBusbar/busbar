@@ -6,8 +6,9 @@
 use super::*;
 
 /// A self-signed client identity (cert + key concatenated as one PEM buffer, the single form
-/// `reqwest::Identity::from_pem` takes), built the way the a2a boot resolver builds one.
-fn an_identity() -> reqwest::Identity {
+/// `ClientIdentity::from_pem` takes — `reqwest::Identity::from_pem` parity by the R4 corpus),
+/// built the way the a2a boot resolver builds one.
+fn an_identity() -> crate::egress::engine::ClientIdentity {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["client.test".to_string()]).expect("params");
@@ -17,7 +18,7 @@ fn an_identity() -> reqwest::Identity {
         pem.push(b'\n');
     }
     pem.extend_from_slice(kp.serialize_pem().as_bytes());
-    reqwest::Identity::from_pem(&pem).expect("a usable client identity")
+    crate::egress::engine::ClientIdentity::from_pem(&pem).expect("a usable client identity")
 }
 
 #[test]

@@ -371,19 +371,90 @@ fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, Strin
     })
 }
 
-/// Assemble one egress request from the boot-precomputed parts: the lane's `http::Uri` and the
-/// caller-built header map, body as one owned buffer. No builder, no validation re-runs — every
-/// component was validated when it was made.
-pub fn egress_request(
+/// Assemble one egress request from precomputed parts: method, `http::Uri`, caller-built header
+/// map, body as one owned buffer. No builder machinery, no validation re-runs — every component
+/// was validated when it was made. The method-parameterized generalization of [`egress_request`]
+/// for the plane hops (a card fetch is a GET, a relay a POST, a plugin hop whatever it named).
+pub fn request(
+    method: http::Method,
     uri: http::Uri,
     headers: http::HeaderMap,
     body: Bytes,
 ) -> http::Request<Full<Bytes>> {
     let mut req = http::Request::new(Full::new(body));
-    *req.method_mut() = http::Method::POST;
+    *req.method_mut() = method;
     *req.uri_mut() = uri;
     *req.headers_mut() = headers;
     req
+}
+
+/// Assemble one LLM egress request from the boot-precomputed parts — [`request`], POST (the one
+/// method the forward path speaks).
+pub fn egress_request(
+    uri: http::Uri,
+    headers: http::HeaderMap,
+    body: Bytes,
+) -> http::Request<Full<Bytes>> {
+    request(http::Method::POST, uri, headers, body)
+}
+
+/// One hop's transport failure, classified — the neutral vocabulary a seam consumer maps onto its
+/// own taxonomy (the plane split is connect-class vs everything-that-reached-the-wire; a deadline
+/// is the latter, exactly as the reqwest per-request timeout classified: `is_connect()` false).
+pub enum HopError {
+    /// The connection could not be established (TCP, tunnel, TLS, resolver refusal) — hyper's
+    /// `is_connect` class, which `reqwest::Error::is_connect` wrapped.
+    Connect(String),
+    /// The hop reached the wire and failed after — reset, protocol error, peer refusal past the
+    /// handshake (the TLS 1.3 identityless-mTLS shape the differential harness pinned).
+    Io(String),
+    /// The caller's deadline elapsed before the head arrived.
+    Deadline,
+}
+
+/// The one wording a deadline failure carries — shared by [`send_bounded`] and a body pump that
+/// enforces the same deadline over its chunk reads (reqwest's per-request timeout spanned the
+/// whole exchange INCLUDING the body, and the engine keeps that discipline).
+pub const HOP_DEADLINE_CAUSE: &str = "governed egress hop exceeded its deadline";
+
+impl HopError {
+    /// The connect-class test, mirroring `reqwest::Error::is_connect` for the seam's fail-over
+    /// classification.
+    pub fn is_connect(&self) -> bool {
+        matches!(self, HopError::Connect(_))
+    }
+
+    /// The flattened cause chain (already URL-free: hyper errors never carry the URL — that was
+    /// only ever reqwest's addition, so there is nothing to strip).
+    pub fn into_cause(self) -> String {
+        match self {
+            HopError::Connect(cause) | HopError::Io(cause) => cause,
+            HopError::Deadline => HOP_DEADLINE_CAUSE.to_string(),
+        }
+    }
+}
+
+/// Send one request under an absolute deadline, classifying the failure ([`HopError`]). The
+/// deadline handle stays the CALLER'S: reqwest's per-request `.timeout()` bounded the whole
+/// exchange including the body read, so a caller that streams keeps enforcing the same instant
+/// over its chunk loop — this bounds only the exchange up to the response head.
+pub async fn send_bounded(
+    client: &EngineClient,
+    req: http::Request<Full<Bytes>>,
+    deadline: tokio::time::Instant,
+) -> Result<http::Response<hyper::body::Incoming>, HopError> {
+    match tokio::time::timeout_at(deadline, client.request(req)).await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => {
+            let cause = super::with_cause(&e);
+            if e.is_connect() {
+                Err(HopError::Connect(cause))
+            } else {
+                Err(HopError::Io(cause))
+            }
+        }
+        Err(_elapsed) => Err(HopError::Deadline),
+    }
 }
 
 #[cfg(test)]

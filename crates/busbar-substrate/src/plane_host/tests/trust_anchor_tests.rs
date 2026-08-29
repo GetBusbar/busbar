@@ -5,14 +5,14 @@
 
 use super::*;
 
-/// A self-signed root certificate, parsed as a `reqwest::Certificate` the way the a2a boot resolver
-/// parses a `trusting_root` PEM.
-fn a_root() -> reqwest::Certificate {
+/// A self-signed root certificate, parsed to DER the way the a2a boot resolver parses a
+/// `trusting_root` PEM.
+fn a_root() -> rustls_pki_types::CertificateDer<'static> {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["root.test".to_string()]).expect("params");
     let cert = params.self_signed(&kp).expect("self-signed");
-    reqwest::Certificate::from_pem(cert.pem().as_bytes()).expect("a usable root certificate")
+    cert.der().clone()
 }
 
 #[test]

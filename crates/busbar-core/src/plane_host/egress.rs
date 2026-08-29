@@ -249,17 +249,6 @@ fn close_and_remove(id: u64) -> bool {
     }
 }
 
-/// Classify a transport error into the neutral [`EgressFailClass`] the plane fails over on: a connect/
-/// TLS/redirect-follow failure is `Connect` (the "unreachable" class), anything else that reached the
-/// wire is `Io`. The plane maps this onto its own taxonomy (the mcp `Unreachable` vs `Io` split).
-fn classify_transport_error(err: &reqwest::Error) -> EgressFailClass {
-    if err.is_connect() {
-        EgressFailClass::Connect
-    } else {
-        EgressFailClass::Io
-    }
-}
-
 /// The observed peer identity: the SubjectPublicKeyInfo PIN of the leaf certificate the
 /// (already-verified) TLS handshake produced, in the ONE canonical spelling
 /// (`sha256/<base64>` — [`super::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
@@ -270,17 +259,14 @@ fn classify_transport_error(err: &reqwest::Error) -> EgressFailClass {
 /// (lifted to [`super::spki`]), so a governed hop hands back the string the plane's own spelling
 /// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
 /// leaf bytes.
-fn observed_identity(resp: &reqwest::Response) -> Vec<u8> {
-    let Some(info) = resp.extensions().get::<reqwest::tls::TlsInfo>() else {
-        return Vec::new();
-    };
-    let Some(der) = info.peer_certificate() else {
-        return Vec::new();
-    };
-    match super::spki::pin(der) {
-        Ok(pin) => pin.into_bytes(),
-        Err(_) => Vec::new(), // an unwalkable certificate proves no pin — honestly absent.
-    }
+fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
+    // The ENGINE computed the pin once at connect time (`SpkiObserve`, the same `spki::pin` walk)
+    // and the pool replayed it onto this response's extensions — per-connection-correctly, so a
+    // pooled response is attributed to ITS connection's certificate. Absent on a plaintext hop
+    // and on an unwalkable certificate: honestly absent, never a pass.
+    busbar_substrate::egress::engine::peer_spki(resp)
+        .map(|pin| pin.as_bytes().to_vec())
+        .unwrap_or_default()
 }
 
 /// Build the [`crate::net_guard::GuardPolicy`] for a hop from the host's allowlist-scope stance. Only
@@ -309,7 +295,7 @@ fn guard_policy(scope: u32) -> crate::net_guard::GuardPolicy {
 /// header, if any, is already among these), and the one-shot request body.
 struct ReqSpec {
     /// The request method/verb (defaults to `GET` when the plane sent none).
-    method: reqwest::Method,
+    method: http::Method,
     /// The header set the host forwards verbatim, plus the injected credential header (if any).
     headers: Vec<(String, String)>,
     /// The one-shot request body (empty ⇒ a bodyless request).
@@ -322,7 +308,7 @@ fn build_req_spec(d: &EgressDesc) -> ReqSpec {
     let method = read_sized_field!(d, EgressDesc, verb_ptr)
         .zip(read_sized_field!(d, EgressDesc, verb_len))
         .and_then(|(ptr, len)| method_of(ptr, len))
-        .unwrap_or(reqwest::Method::GET);
+        .unwrap_or(http::Method::GET);
     let headers = match (
         read_sized_field!(d, EgressDesc, headers_ptr),
         read_sized_field!(d, EgressDesc, headers_len),
@@ -353,11 +339,11 @@ fn build_req_spec(d: &EgressDesc) -> ReqSpec {
 /// the plane decodes both with one parser. `content-type` is surfaced whenever present (the plane keys
 /// SSE-vs-JSON on it); `Location` is surfaced whenever present (a redirect the plane refuses). Values
 /// are surfaced VERBATIM — the host lower-cases and interprets nothing; that stays plane-side.
-fn pack_response_headers(resp: &reqwest::Response) -> Vec<u8> {
+fn pack_response_headers(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
     let mut pairs: Vec<(&str, String)> = Vec::new();
     for (name, header) in [
-        ("content-type", reqwest::header::CONTENT_TYPE),
-        ("location", reqwest::header::LOCATION),
+        ("content-type", http::header::CONTENT_TYPE),
+        ("location", http::header::LOCATION),
     ] {
         if let Some(value) = resp.headers().get(&header).and_then(|v| v.to_str().ok()) {
             pairs.push((name, value.to_string()));
@@ -379,15 +365,16 @@ fn pack_header_records(pairs: &[(&str, String)]) -> Vec<u8> {
     out
 }
 
-/// Parse the request VERB bytes into a [`reqwest::Method`], or `None` (⇒ default `GET`) when absent or
-/// malformed.
-fn method_of(ptr: *const u8, len: usize) -> Option<reqwest::Method> {
+/// Parse the request VERB bytes into an [`http::Method`] (the same token set
+/// `reqwest::Method::from_bytes` accepted — it was this type re-exported), or `None` (⇒ default
+/// `GET`) when absent or malformed.
+fn method_of(ptr: *const u8, len: usize) -> Option<http::Method> {
     if ptr.is_null() || len == 0 {
         return None;
     }
     // SAFETY: `(ptr, len)` is a live borrowed range for the call (ABI borrow discipline).
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    reqwest::Method::from_bytes(bytes).ok()
+    http::Method::from_bytes(bytes).ok()
 }
 
 /// Parse the packed header set: a sequence of records, each `u32 name_len` (LE), `name_len` name
@@ -641,7 +628,7 @@ fn open_http(
                 policy,
                 &spec,
                 identity,
-                &extra_roots,
+                extra_roots,
                 pinned,
                 timeout,
                 &head_tx,
@@ -767,8 +754,8 @@ fn run_http_stream(
     https: bool,
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
-    identity: Option<reqwest::Identity>,
-    extra_roots: &[reqwest::Certificate],
+    identity: Option<busbar_substrate::egress::engine::ClientIdentity>,
+    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
     pinned: Option<std::net::SocketAddr>,
     timeout: Duration,
     head_tx: &SyncSender<HeadMsg>,
@@ -805,20 +792,25 @@ fn run_http_stream(
                 }
             },
         };
-        // THE PINNED CLIENT, from the ONE shared core builder ([`crate::egress::build_pinned_client`]):
-        // connects to the judged address, refuses a second lookup, follows no redirect (a 3xx is an
-        // unguarded URL), reads the peer certificate off the verified handshake, and now carries the
-        // canonical connection knobs (tcp_nodelay / connect_timeout / pool_idle_timeout) this path had
-        // lacked. The mutual-TLS identity is resolved host-side from the plane's opaque ref — offering
-        // it ASKS FOR NOTHING (presented only when the peer's `CertificateRequest` asks), and there is
-        // no knob anywhere that turns verification off. The total deadline rides the REQUEST below, not
-        // the client.
-        let client = match crate::egress::build_pinned_client(
-            host_name,
-            socket_addr,
-            Arc::new(crate::egress::RefuseSecondLookup),
-            identity,
-            extra_roots,
+        // THE PINNED ENGINE CLIENT, from the ONE engine builder
+        // ([`busbar_substrate::egress::engine::build_client`] on the `EngineSpec::pinned`
+        // posture): the PIN IS THE RESOLVER (the socket goes to the judged address while Host,
+        // SNI and the certificate name check stay on the hostname; every other name refuses with
+        // the doctrine text), no redirect is ever followed (structural in hyper — a 3xx is an
+        // unguarded URL), the peer certificate is observed off the verified handshake at connect
+        // time, and the connection knobs (nodelay / connect deadline / pool idle) are the
+        // reqwest-parity values. The mutual-TLS identity is resolved host-side from the plane's
+        // opaque ref — offering it ASKS FOR NOTHING (presented only when the peer's
+        // `CertificateRequest` asks), and there is no knob anywhere that turns verification off.
+        // The total deadline rides the REQUEST below, not the client. One client per open — no
+        // reuse across opens yet, so the wire cadence matches the per-open client it replaces.
+        let client = match busbar_substrate::egress::engine::build_client(
+            &busbar_substrate::egress::engine::EngineSpec::pinned(
+                Arc::from(host_name),
+                socket_addr.ip(),
+                identity,
+                extra_roots,
+            ),
         ) {
             Ok(client) => client,
             Err(e) => {
@@ -831,32 +823,72 @@ fn run_http_stream(
         };
         // The outbound request: the plane's verb (default GET), its forwarded headers, and its
         // one-shot body. The credential header (if any) is already in `spec.headers` — injected
-        // host-side from the resolved ref, so no plane-held plaintext reaches this builder. The total
-        // deadline is applied here because the shared client carries none.
-        let mut builder = client.request(spec.method.clone(), url).timeout(timeout);
-        for (name, value) in &spec.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
-        if !spec.body.is_empty() {
-            builder = builder.body(spec.body.clone());
-        }
-        let mut resp = match builder.send().await {
-            Ok(resp) => resp,
+        // host-side from the resolved ref, so no plane-held plaintext reaches this builder. The
+        // total deadline is an ABSOLUTE instant taken here (reqwest's per-request `.timeout()`
+        // started at send and spanned the WHOLE exchange including the body; the engine keeps
+        // that discipline — `send_bounded` up to the head, the pump loop below for the body).
+        let uri: http::Uri = match url.parse() {
+            Ok(uri) => uri,
             Err(e) => {
-                // The real transport failure: classify it (connect vs io) FIRST (the connect verdict is
-                // read off the original error), then strip the url and flatten the cause chain so the
-                // cause is URL-FREE — the url is surfaced SEPARATELY, so a plane includes or strips it
-                // as it chooses (mcp uses the url-free cause directly; a2a re-inserts the url). This is
-                // exactly the `without_url()`-then-flatten the mcp transport does today.
-                let class = classify_transport_error(&e);
-                let e = e.without_url();
+                // Structurally unreachable (`split_url` already recognised this URL); classified
+                // as the builder-stage failure it would have been (`is_connect` false ⇒ Io).
                 let _ = head_tx.send(HeadMsg::Fault {
-                    class,
-                    cause: crate::egress::with_cause(&e),
+                    class: EgressFailClass::Io,
+                    cause: format!("egress target does not parse as a URI: {e}"),
                 });
                 return;
             }
         };
+        let mut headers = http::HeaderMap::new();
+        for (name, value) in &spec.headers {
+            match (
+                http::header::HeaderName::from_bytes(name.as_bytes()),
+                http::HeaderValue::from_str(value),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    headers.append(name, value);
+                }
+                _ => {
+                    // reqwest recorded an invalid header as a builder error surfaced at send
+                    // (`is_connect` false ⇒ the Io class); the engine refuses at the same class,
+                    // naming the header.
+                    let _ = head_tx.send(HeadMsg::Fault {
+                        class: EgressFailClass::Io,
+                        cause: format!("egress request header {name:?} is not a valid header"),
+                    });
+                    return;
+                }
+            }
+        }
+        let req = busbar_substrate::egress::engine::request(
+            spec.method.clone(),
+            uri,
+            headers,
+            bytes::Bytes::from(spec.body.clone()),
+        );
+        let deadline = tokio::time::Instant::now() + timeout;
+        let resp =
+            match busbar_substrate::egress::engine::send_bounded(&client, req, deadline).await {
+                Ok(resp) => resp,
+                Err(hop) => {
+                    // The real transport failure, already classified (connect vs everything that
+                    // reached the wire — a deadline is the latter, reqwest's own timeout class) and
+                    // already URL-FREE (hyper errors never carry the URL; that was only ever
+                    // reqwest's addition) — the url is surfaced SEPARATELY, so a plane includes or
+                    // strips it as it chooses (mcp uses the url-free cause directly; a2a re-inserts
+                    // the url).
+                    let class = if hop.is_connect() {
+                        EgressFailClass::Connect
+                    } else {
+                        EgressFailClass::Io
+                    };
+                    let _ = head_tx.send(HeadMsg::Fault {
+                        class,
+                        cause: hop.into_cause(),
+                    });
+                    return;
+                }
+            };
         let status = resp.status().as_u16();
         // READ THE CERTIFICATE BEFORE THE BODY — it belongs to THIS connection.
         let spki = observed_identity(&resp);
@@ -875,30 +907,48 @@ fn run_http_stream(
             return; // the opener went away before we connected; nothing to stream to.
         }
 
-        // PUMP THE BODY, one network chunk per loop. `stop` (close / cancel) wins the race so a task
-        // parked in `chunk().await` unblocks promptly rather than after the next byte.
+        // PUMP THE BODY, one network chunk per loop — `frame()` filtered to data frames, the same
+        // hyper frames `resp.chunk()` yielded underneath reqwest, same cadence. `stop` (close /
+        // cancel) wins the race so a task parked on the next frame unblocks promptly rather than
+        // after the next byte; the DEADLINE arm keeps reqwest's whole-exchange timeout discipline
+        // (its per-request `.timeout()` kept ticking through the body and failed the stream at
+        // the instant — so does this).
+        use http_body_util::BodyExt;
+        let mut body = resp.into_body();
         loop {
             tokio::select! {
                 biased;
                 () = stop.notified() => break,
-                chunk = resp.chunk() => match chunk {
-                    Ok(Some(bytes)) => {
-                        // A blocking send on a full channel is the backpressure seam (the a2a
-                        // `Continue` cadence); a disconnect means the plane closed — stop.
-                        if chunk_tx.send(ChunkMsg::Data(bytes.to_vec())).is_err() {
-                            break;
+                () = tokio::time::sleep_until(deadline) => {
+                    let _ = chunk_tx.send(ChunkMsg::Err(
+                        busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE.to_string(),
+                    ));
+                    break;
+                }
+                frame = body.frame() => match frame {
+                    Some(Ok(frame)) => {
+                        // Data frames stream; trailers (the only other frame kind) have no seam
+                        // vocabulary and are skipped — exactly what `chunk()` did.
+                        if let Ok(data) = frame.into_data() {
+                            // A blocking send on a full channel is the backpressure seam (the a2a
+                            // `Continue` cadence); a disconnect means the plane closed — stop.
+                            if !data.is_empty()
+                                && chunk_tx.send(ChunkMsg::Data(data.to_vec())).is_err()
+                            {
+                                break;
+                            }
                         }
                     }
-                    Ok(None) => {
-                        let _ = chunk_tx.send(ChunkMsg::End);
+                    Some(Err(e)) => {
+                        // Carry the FLATTENED cause chain, not the bare `Display` — a2a's live
+                        // `post_stream` reports a mid-body failure with `with_cause(&e)` (a bare
+                        // Display alone drops the reset/timeout/certificate reason in the source
+                        // chain). Same flattening the plane's own path produced.
+                        let _ = chunk_tx.send(ChunkMsg::Err(crate::egress::with_cause(&e)));
                         break;
                     }
-                    Err(e) => {
-                        // Carry the FLATTENED cause chain, not the bare `Display` — a2a's live
-                        // `post_stream` reports a mid-body failure with `with_cause(&e)` (its
-                        // `reqwest::Error` Display alone drops the reset/timeout/certificate reason in
-                        // the source chain). Byte-identical to what the plane's own path produced.
-                        let _ = chunk_tx.send(ChunkMsg::Err(crate::egress::with_cause(&e)));
+                    None => {
+                        let _ = chunk_tx.send(ChunkMsg::End);
                         break;
                     }
                 }

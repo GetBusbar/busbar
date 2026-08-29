@@ -12,8 +12,8 @@
 //! Registered ONCE, at boot (a config generation), not per hop — a private key re-read on every tick is
 //! a key crossing the resolver seam on every tick. The map is process-wide because the ref the plane
 //! holds is minted from a process atomic (the same discipline the egress and credential registries
-//! use); the identity is a parsed, immutable [`reqwest::Identity`] that several hops may present over a
-//! process lifetime.
+//! use); the identity is a parsed, immutable engine [`ClientIdentity`] that several hops may present
+//! over a process lifetime.
 
 // PARTLY UNMOUNTED. `resolve` is live at the egress chokepoint today; `register` is the boot-time
 // entry the plane calls when its egress call sites are flipped onto the seam (CLUSTER-3 Stage B), and
@@ -21,19 +21,20 @@
 // not-yet-mounted pieces.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use crate::egress::engine::ClientIdentity;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// The process-wide client-identity registry, keyed by the opaque `client_identity_ref` the plane holds.
-static REGISTRY: LazyLock<Mutex<HashMap<u64, reqwest::Identity>>> =
+static REGISTRY: LazyLock<Mutex<HashMap<u64, ClientIdentity>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The next client-identity ref. `0` is the reserved "none" ref (a hop presenting no identity), so refs
 /// start at `1`.
 static NEXT_REF: AtomicU64 = AtomicU64::new(1);
 
-fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, reqwest::Identity>> {
+fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, ClientIdentity>> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -41,7 +42,7 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, reqwest::Identity>>
 /// into `egress_open`. The ONLY thing about the identity that crosses the seam is this `u64`; the
 /// parsed key stays host-side in the registry.
 #[must_use]
-pub fn register(identity: reqwest::Identity) -> u64 {
+pub fn register(identity: ClientIdentity) -> u64 {
     let client_identity_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
     registry().insert(client_identity_ref, identity);
     client_identity_ref
@@ -52,7 +53,7 @@ pub fn register(identity: reqwest::Identity) -> u64 {
 /// presenting no certificate, and an mTLS peer closes the handshake itself rather than the host
 /// forging one — exactly the posture the a2a transport takes when a registration names no identity.
 #[must_use]
-pub fn resolve(client_identity_ref: u64) -> Option<reqwest::Identity> {
+pub fn resolve(client_identity_ref: u64) -> Option<ClientIdentity> {
     if client_identity_ref == 0 {
         return None;
     }

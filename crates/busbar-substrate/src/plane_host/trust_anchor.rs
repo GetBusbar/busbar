@@ -19,27 +19,29 @@
 //! Registered ONCE, at boot (a config generation), not per hop — a re-parse of the same PEM on every
 //! tick is wasted work and a needless allocation. The map is process-wide because the ref the plane
 //! holds is minted from a process atomic (the same discipline the egress, credential and identity
-//! registries use); the anchors are parsed, immutable [`reqwest::Certificate`]s several hops may add
-//! over a process lifetime.
+//! registries use); the anchors are parsed, immutable DER certificates (`CertificateDer`) several
+//! hops may add over a process lifetime — the form the engine's `Trust::WebpkiPlus` joins to the
+//! webpki store, parsed from PEM at registration so a garbage root still fails at parse time.
 
 // PARTLY UNMOUNTED. `resolve` is live at the egress chokepoint today; `register` is the boot-time
 // entry the plane calls when its egress call sites are flipped onto the seam (the a2a `trusting_root`
 // path), and is reached only by tests until then. The same posture `identity` records.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use rustls_pki_types::CertificateDer;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// The process-wide trust-anchor registry, keyed by the opaque `trust_anchor_ref` the plane holds.
-static REGISTRY: LazyLock<Mutex<HashMap<u64, Vec<reqwest::Certificate>>>> =
+static REGISTRY: LazyLock<Mutex<HashMap<u64, Vec<CertificateDer<'static>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The next trust-anchor ref. `0` is the reserved "none" ref (a hop adding no extra roots), so refs
 /// start at `1`.
 static NEXT_REF: AtomicU64 = AtomicU64::new(1);
 
-fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<reqwest::Certificate>>> {
+fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<CertificateDer<'static>>>> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -48,7 +50,7 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<reqwest::Certif
 /// crosses the seam is this `u64`; the parsed certificates stay host-side in the registry. Registering
 /// an EMPTY set still mints a live (nonzero) ref — it simply resolves to no extra roots.
 #[must_use]
-pub fn register(roots: Vec<reqwest::Certificate>) -> u64 {
+pub fn register(roots: Vec<CertificateDer<'static>>) -> u64 {
     let trust_anchor_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
     registry().insert(trust_anchor_ref, roots);
     trust_anchor_ref
@@ -59,7 +61,7 @@ pub fn register(roots: Vec<reqwest::Certificate>) -> u64 {
 /// unknown ref: the hop is made trusting only the platform roots, exactly as a hop that named no
 /// anchor at all — fail-closed (a stale ref widens trust NOWHERE).
 #[must_use]
-pub fn resolve(trust_anchor_ref: u64) -> Vec<reqwest::Certificate> {
+pub fn resolve(trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
     if trust_anchor_ref == 0 {
         return Vec::new();
     }

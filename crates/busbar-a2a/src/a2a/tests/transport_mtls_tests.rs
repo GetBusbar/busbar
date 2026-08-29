@@ -136,10 +136,13 @@ const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
 /// point at it, spell the registration the operator would spell, and run the real
 /// [`resolve_client_identities`] over it.
 ///
-/// A test that handed `ReqwestTransport` a `reqwest::Identity` it built itself would prove the
+/// A test that handed `ReqwestTransport` a `ClientIdentity` it built itself would prove the
 /// transport presents a certificate and say nothing about whether the GRAMMAR can name one — which
 /// is the half of this defect that lived in `config.rs`.
-pub(super) fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Identity {
+pub(super) fn identity_from_config(
+    cert_pem: &str,
+    key_pem: &str,
+) -> busbar_substrate::egress::engine::ClientIdentity {
     // A monotonic counter, not a clock read: two tests can read the same nanosecond, and a
     // colliding path means one test reads a file another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

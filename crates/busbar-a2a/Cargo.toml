@@ -48,6 +48,10 @@ busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
 reqwest = { workspace = true, features = ["http2"] }
+# The transport's extra trust anchors are DER (`CertificateDer`) now that the hostless hop rides
+# the engine (`Trust::WebpkiPlus`); parsed from PEM at registration, same fail-at-parse posture as
+# the retired `reqwest::Certificate::from_pem`.
+rustls-pki-types = { workspace = true }
 tonic = { workspace = true }
 tonic-types = { workspace = true }
 prost = { workspace = true }
