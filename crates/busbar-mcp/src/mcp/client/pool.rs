@@ -261,35 +261,37 @@ impl McpConnectionPool {
     ///
     /// The check runs BEFORE the cache is consulted for a NEW address and the cache is keyed on the
     /// result, so there is no ordering in which an unchecked address gets a client. The client is
-    /// built by the shared core backend ([`busbar_substrate::egress::build_pinned_client`]): pinned to the
-    /// judged address, refusing a second lookup, `tls_info` on so the peer SPKI is observable, and
-    /// the canonical connection knobs. No total deadline is baked into the pooled client — every send
-    /// site applies its own on the request (see [`super::transport::HttpTransport::send`] and
-    /// [`crate::mcp::upstream::exchange`]).
+    /// built by the ONE egress engine ([`busbar_substrate::egress::engine::build_client`] on the
+    /// `EngineSpec::pinned` posture): the pin IS the resolver (the socket goes to the judged
+    /// address, every other name refuses with the doctrine text), the peer SPKI is observed at
+    /// connect, and the connection knobs are the canonical reqwest-parity values. No total deadline
+    /// is baked into the pooled client — every send site applies its own on the request (see
+    /// [`super::transport::HttpTransport::send`] and [`crate::mcp::upstream::exchange`]).
     pub(crate) async fn client_for(
         &self,
         url: &str,
         policy: SsrfPolicy,
-    ) -> Result<(reqwest::Client, PinnedTarget), SsrfRefusal> {
+    ) -> Result<(busbar_substrate::egress::engine::EngineClient, PinnedTarget), SsrfRefusal> {
         let target = super::ssrf::pin_upstream(url, policy).await?;
         // THE KEY CONTAINS THE PINNED ADDRESS (`busbar_substrate::egress::PinnedClientPool` keys on it): keying
         // by host alone would let a pooled client re-resolve on its next new connection — the TOCTOU
         // the pin closes, reintroduced by the cache in front of it.
-        let client = self
-            .clients
-            .client_for(target.host(), target.socket_addr(), || {
-                busbar_substrate::egress::build_pinned_client(
-                    target.host(),
-                    target.socket_addr(),
-                    Arc::new(busbar_substrate::egress::RefuseSecondLookup),
-                    None,
-                    &[],
-                )
-                .map_err(|e| SsrfRefusal::Unresolvable {
-                    host: target.host().to_string(),
-                    reason: format!("could not build a pinned HTTP client: {e}"),
-                })
-            })?;
+        let client =
+            self.clients
+                .client_for((target.host().to_string(), target.socket_addr()), || {
+                    busbar_substrate::egress::engine::build_client(
+                        &busbar_substrate::egress::engine::EngineSpec::pinned(
+                            Arc::from(target.host()),
+                            target.socket_addr().ip(),
+                            None,
+                            Vec::new(),
+                        ),
+                    )
+                    .map_err(|e| SsrfRefusal::Unresolvable {
+                        host: target.host().to_string(),
+                        reason: format!("could not build a pinned HTTP client: {e}"),
+                    })
+                })?;
         Ok((client, target))
     }
 }

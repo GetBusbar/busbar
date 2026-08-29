@@ -210,6 +210,9 @@ rustls-pki-types = { version = "1", default-features = false, features = ["std"]
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
+# delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
+serde_urlencoded = "0.7"
 # `serde_yaml` (dtolnay) is archived — its last release is literally `0.9.34+deprecated`.
 # `serde_yaml_ng` is the maintained, API-compatible fork; the `package` rename keeps every
 # `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the

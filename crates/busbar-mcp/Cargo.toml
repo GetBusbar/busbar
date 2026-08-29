@@ -57,6 +57,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+# The engine-built token exchange (`upstream::exchange`): request assembly is `http` parts, the
+# body read rides `http-body-util`, and the form encodes through `serde_urlencoded` — the crate
+# reqwest's `.form()` was, so the wire bytes are unchanged.
+http = { workspace = true }
+http-body-util = { workspace = true }
+serde_urlencoded = { workspace = true }
 indexmap = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }

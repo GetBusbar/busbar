@@ -609,14 +609,21 @@ fn open_http(
     let mut spec = build_req_spec(d);
     inject_credential(d, &mut spec);
 
+    // The two OPAQUE refs travel beside their resolutions: they are the identity/anchor halves of
+    // the host client-pool key (two registrations with different identities against one address
+    // must never share a connection), and the refs — not the parsed secrets — are the honest key.
+    let d_client_identity_ref = d.client_identity_ref;
+    let d_trust_anchor_ref = read_sized_field!(d, EgressDesc, trust_anchor_ref).unwrap_or(0);
+
     let (head_tx, head_rx) = sync_channel::<HeadMsg>(1);
     let (chunk_tx, chunk_rx) = sync_channel::<ChunkMsg>(CHUNK_CHANNEL_DEPTH);
     let stop = Arc::new(tokio::sync::Notify::new());
     let stop_task = Arc::clone(&stop);
 
-    // The streaming task owns its own current-thread runtime and the response for its whole life —
-    // the response and the runtime NEVER cross a thread. It reports the connect head once, then
-    // pumps chunks until EOF, error, or the `stop` notify.
+    // The streaming task keeps its own OS thread (the hop's blocking sends are the backpressure
+    // seam), driving its future on the SHARED egress runtime's context so the pooled connections
+    // it opens outlive this open (see `egress_runtime`). It reports the connect head once, then
+    // pumps chunks until EOF, error, or the `stop` notify; the response never crosses a thread.
     let join = std::thread::Builder::new()
         .name("busbar-egress".into())
         .spawn(move || {
@@ -627,8 +634,8 @@ fn open_http(
                 https,
                 policy,
                 &spec,
-                identity,
-                extra_roots,
+                (d_client_identity_ref, identity),
+                (d_trust_anchor_ref, extra_roots),
                 pinned,
                 timeout,
                 &head_tx,
@@ -745,6 +752,44 @@ fn open_http(
     StatusClass::Ok
 }
 
+/// THE SHARED EGRESS RUNTIME — the driver every governed hop's sockets, timers and connection
+/// tasks register with, so a POOLED connection outlives the open that dialed it. The per-open
+/// current-thread runtime this replaces died with its open, taking every connection task and
+/// socket registration with it — under that shape a host-side client pool would hold only handles
+/// to dead connections and every "reuse" would quietly redial (or worse, race a stale checkout).
+/// One lazily-built runtime with ONE worker thread: the worker drives I/O readiness and the
+/// per-connection tasks hyper spawns; each hop's own future is still polled on its own
+/// `busbar-egress` thread (`Runtime::block_on` from a foreign thread), so the blocking
+/// backpressure sends stall only their own hop, exactly the pre-pool discipline.
+fn egress_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    if let Some(rt) = RT.get() {
+        return Ok(rt);
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("busbar-egress-drv")
+        .enable_all()
+        .build()
+        .map_err(|e| format!("egress runtime: {e}"))?;
+    // A lost race builds one extra runtime, immediately dropped — boot-adjacent and harmless.
+    Ok(RT.get_or_init(|| rt))
+}
+
+/// THE HOST-SIDE PINNED CLIENT POOL, keyed `(host, judged address, client_identity_ref,
+/// trust_anchor_ref)`. The destination half is the resolve-then-pin doctrine (an address nobody
+/// judged is not in the map — see the pool type's own header); the REF half exists because this
+/// one chokepoint serves every registration of every plane, and a connection carrying one
+/// registration's client certificate must never serve another's hop. Refs are the honest key:
+/// they are minted per registration at boot, so equality of refs IS equality of posture. Bounded
+/// at the pool's default cap; eviction drops the pool's clone, releasing idle sockets.
+type HostClientKey = (String, std::net::SocketAddr, u64, u64);
+fn host_client_pool() -> &'static busbar_substrate::egress::PinnedClientPool<HostClientKey> {
+    static POOL: std::sync::OnceLock<busbar_substrate::egress::PinnedClientPool<HostClientKey>> =
+        std::sync::OnceLock::new();
+    POOL.get_or_init(busbar_substrate::egress::PinnedClientPool::default)
+}
+
 /// The body of the streaming thread: resolve-then-pin, connect, report the head, pump chunks.
 #[allow(clippy::too_many_arguments)]
 fn run_http_stream(
@@ -754,27 +799,33 @@ fn run_http_stream(
     https: bool,
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
-    identity: Option<busbar_substrate::egress::engine::ClientIdentity>,
-    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    identity: (
+        u64,
+        Option<busbar_substrate::egress::engine::ClientIdentity>,
+    ),
+    extra_roots: (u64, Vec<rustls_pki_types::CertificateDer<'static>>),
     pinned: Option<std::net::SocketAddr>,
     timeout: Duration,
     head_tx: &SyncSender<HeadMsg>,
     chunk_tx: &SyncSender<ChunkMsg>,
     stop: &tokio::sync::Notify,
 ) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let (client_identity_ref, identity) = identity;
+    let (trust_anchor_ref, extra_roots) = extra_roots;
+    let rt = match egress_runtime() {
         Ok(rt) => rt,
         Err(e) => {
             let _ = head_tx.send(HeadMsg::Fault {
                 class: EgressFailClass::Fault,
-                cause: format!("egress runtime: {e}"),
+                cause: e,
             });
             return;
         }
     };
+    // `Runtime::block_on` from this foreign thread: the future is POLLED HERE (so the blocking
+    // channel sends below stall only this hop's thread, exactly as before), while every socket,
+    // timer and spawned connection task registers with the SHARED runtime's driver — which is
+    // what lets a pooled connection survive this open and serve the next one.
     rt.block_on(async move {
         // THE PINNED SOCKET ADDRESS. Either the plane's ALREADY-JUDGED pin (Design A — the host
         // resolves NOTHING, honoring the survivor the plane's own resolve-then-pin produced), or, when
@@ -792,7 +843,7 @@ fn run_http_stream(
                 }
             },
         };
-        // THE PINNED ENGINE CLIENT, from the ONE engine builder
+        // THE PINNED ENGINE CLIENT, from the HOST POOL over the ONE engine builder
         // ([`busbar_substrate::egress::engine::build_client`] on the `EngineSpec::pinned`
         // posture): the PIN IS THE RESOLVER (the socket goes to the judged address while Host,
         // SNI and the certificate name check stay on the hostname; every other name refuses with
@@ -802,15 +853,28 @@ fn run_http_stream(
         // reqwest-parity values. The mutual-TLS identity is resolved host-side from the plane's
         // opaque ref — offering it ASKS FOR NOTHING (presented only when the peer's
         // `CertificateRequest` asks), and there is no knob anywhere that turns verification off.
-        // The total deadline rides the REQUEST below, not the client. One client per open — no
-        // reuse across opens yet, so the wire cadence matches the per-open client it replaces.
-        let client = match busbar_substrate::egress::engine::build_client(
-            &busbar_substrate::egress::engine::EngineSpec::pinned(
-                Arc::from(host_name),
-                socket_addr.ip(),
-                identity,
-                extra_roots,
+        // The total deadline rides the REQUEST below, not the client. The pool key carries the
+        // identity/anchor REFS beside the judged destination — this chokepoint serves many
+        // registrations, and two identities against one address must never share a connection —
+        // so a repeated hop to a warm key reuses its connection instead of paying a fresh
+        // TCP+TLS handshake (the 4s idle doctrine bounds how stale a reused socket can be).
+        let client = match host_client_pool().client_for(
+            (
+                host_name.to_string(),
+                socket_addr,
+                client_identity_ref,
+                trust_anchor_ref,
             ),
+            || {
+                busbar_substrate::egress::engine::build_client(
+                    &busbar_substrate::egress::engine::EngineSpec::pinned(
+                        Arc::from(host_name),
+                        socket_addr.ip(),
+                        identity,
+                        extra_roots,
+                    ),
+                )
+            },
         ) {
             Ok(client) => client,
             Err(e) => {

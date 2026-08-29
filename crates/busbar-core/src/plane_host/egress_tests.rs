@@ -3,8 +3,8 @@
 
 //! EGRESS-slot tests, driven over the REAL recovery path and the REAL guarded transport against a
 //! loopback HTTP mock. The plaintext hop's observed identity is honestly EMPTY (nothing was proved);
-//! the SPKI-population path is the same `reqwest::tls::TlsInfo::peer_certificate` seam the a2a
-//! transport pin tests already exercise against real TLS.
+//! the SPKI-population path is the engine's connect-time observation (`PeerSpki` on the response),
+//! which the a2a transport pin tests already exercise against real TLS.
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
@@ -618,6 +618,50 @@ fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
         assert!(
             !cause.is_empty(),
             "the guard's own reason is surfaced as the cause"
+        );
+    });
+}
+
+/// STEP-6 REUSE, proven on the wire: two sequential opens to ONE warm destination ride ONE
+/// fixture-recorded connection — the second hop pays no TCP handshake. This is the whole point of
+/// the host-side client pool (and of the shared egress runtime under it: a pooled connection's
+/// driver must outlive the open that dialed it). The timing line is evidence, not an assertion —
+/// wall-clock deltas flake on shared runners; the connection count does not.
+#[test]
+fn a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing() {
+    use busbar_substrate::egress::fixtures::{spawn_http, CannedResponse};
+    let fixture = spawn_http(CannedResponse::ok("warm"), 8);
+    let url = format!("http://{}/hop", fixture.addr);
+    let desc = http_desc(url.as_bytes());
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut timings = Vec::new();
+        for round in 1..=2 {
+            let started = std::time::Instant::now();
+            let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+            let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+            assert_eq!(class, StatusClass::Ok, "open {round} must succeed");
+            // SAFETY: Ok ⇒ the out-param is initialized.
+            let open = unsafe { out.assume_init() };
+            assert_eq!(open.head.status_code, 200);
+            let got = drain(vt, host, open.id);
+            timings.push(started.elapsed());
+            assert_eq!(got, b"warm", "round {round} streams the body");
+            assert_eq!((vt.egress_close.unwrap())(host, open.id), StatusClass::Ok);
+        }
+        eprintln!(
+            "[egress-reuse] first hop (fresh dial) {:?}; second hop (pooled connection) {:?}",
+            timings[0], timings[1]
+        );
+        let records = fixture.records();
+        assert_eq!(
+            records.len(),
+            1,
+            "both hops must ride ONE connection — the repeat hop redialed: {records:?}"
+        );
+        assert_eq!(
+            records[0].requests, 2,
+            "the one connection must have served both requests"
         );
     });
 }

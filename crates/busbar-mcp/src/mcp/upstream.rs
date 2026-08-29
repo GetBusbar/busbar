@@ -671,24 +671,49 @@ pub(super) async fn exchange(
         .client_for(&req.token_url, policy)
         .await
         .map_err(|e| format!("the token endpoint could not be reached: {e}"))?;
-    let form = req.form_fields();
-    let response = client
-        .post(&req.token_url)
-        // The CALLER'S deadline, on the request: the pooled client is cached per destination with
-        // whatever timeout its first builder passed, and this call site must not inherit somebody
-        // else's. See `HttpTransport::send`, which states the rule for the dispatch path.
-        .timeout(timeout)
-        .form(&form)
-        .send()
+    // The form body: `serde_urlencoded::to_string` is BYTE-IDENTICAL to what reqwest's `.form()`
+    // produced — that method was this exact call plus the content-type header set below.
+    let form = serde_urlencoded::to_string(req.form_fields())
+        .map_err(|e| format!("the RFC 8693 exchange form could not be encoded: {e}"))?;
+    let uri: http::Uri = req
+        .token_url
+        .parse()
+        .map_err(|e| format!("the token endpoint is not a valid URI: {e}"))?;
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
+    let request = busbar_substrate::egress::engine::request(
+        http::Method::POST,
+        uri,
+        headers,
+        bytes::Bytes::from(form),
+    );
+    // The CALLER'S deadline, on the request: the pooled client is cached per destination and this
+    // call site must not inherit somebody else's; the same ABSOLUTE deadline spans the body read
+    // below, exactly as reqwest's per-request timeout did. The fault cause is URL-free by
+    // construction (hyper errors never carry the URL — reqwest's did, which an operator may have
+    // written userinfo into; that was the `without_url()` this path used to need).
+    let deadline = tokio::time::Instant::now() + timeout;
+    let response = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
         .await
-        // `without_url()`: a reqwest error's Display carries the URL, which an operator may have
-        // written userinfo into.
-        .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.without_url()))?;
+        .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?;
+    let body = {
+        use http_body_util::BodyExt;
+        let collected = tokio::time::timeout_at(deadline, response.into_body().collect())
+            .await
+            .map_err(|_| {
+                format!(
+                    "the RFC 8693 exchange body could not be read: {}",
+                    busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
+                )
+            })?;
+        collected
+            .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?
+            .to_bytes()
+    };
     if !(200..300).contains(&status) {
         // The BODY is deliberately not echoed: an authorization server's error body can carry the
         // subject token back in a diagnostic, and this string reaches busbar's own caller.

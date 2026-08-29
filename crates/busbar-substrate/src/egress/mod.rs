@@ -104,8 +104,6 @@ pub enum ChunkFlow {
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-// The pool's collections are needed only where the pool is — behind the same plane gate.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 use std::{collections::HashMap, sync::Mutex};
 
 /// How long the connect phase of one hop may take. Bounds only the connect, not the whole request —
@@ -249,30 +247,30 @@ pub fn build_pinned_client(
 /// only ever to the already-judged target.)
 ///
 /// The owner supplies the client BUILD closure, so a per-registration identity or a test trust
-/// anchor stays a property of the owner and never has to enter this key: all clients in one pool
-/// share the owner's fixed posture, and only the destination varies.
+/// anchor stays a property of the owner and never has to enter this key — where a pool serves ONE
+/// owner's fixed posture (the MCP dispatch pool), only the destination varies. The host-side
+/// vtable pool is the exception the KEY TYPE parameter exists for: it serves MANY registrations
+/// through one chokepoint, so its key carries the identity/anchor refs alongside the destination —
+/// two registrations with different identities against one address must not share a connection.
 ///
-/// Gated to `any(plane-mcp, plane-a2a)`: the type is available wherever a plane (or the egress
-/// backend's own unit tests) can consume it. Its one PRODUCTION consumer is now the MCP dispatch pool
-/// — the A2A card-fetch/relay transport moved its hop onto the hostless egress seam (which builds and
-/// owns its per-open client host-side), so under a `plane-a2a`-only *non-test* build the pool has no
-/// constructor and is `allow(dead_code)`; the egress unit tests still exercise it under either plane.
-/// The plugin egress vtable holds a single streamed connection per open, so it builds directly with
-/// [`build_pinned_client`] and needs no pool.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub struct PinnedClientPool {
-    clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
+/// The value is the engine client ([`engine::EngineClient`]) — a cheap-clone handle over a shared
+/// connection pool; dropping the last clone closes its idle sockets, so whole-entry eviction keeps
+/// its meaning. Its production consumers are the MCP dispatch/token-exchange pool and the host
+/// egress chokepoint's per-registration pool.
+pub struct PinnedClientPool<K = (String, SocketAddr)> {
+    clients: Mutex<HashMap<K, engine::EngineClient>>,
     max: usize,
 }
 
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-impl std::fmt::Debug for PinnedClientPool {
+impl<K> std::fmt::Debug for PinnedClientPool<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `reqwest::Client` has no useful Debug and the keys are resolved internal addresses. Size
+        // The client handle has no useful Debug and the keys are resolved internal addresses. Size
         // only.
         f.debug_struct("PinnedClientPool")
-            .field("pinned_clients", &self.len())
+            .field(
+                "pinned_clients",
+                &self.clients.lock().map(|m| m.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -280,24 +278,19 @@ impl std::fmt::Debug for PinnedClientPool {
 /// The cap a [`PinnedClientPool::default`] holds — enough distinct pinned clients that a busy fleet
 /// keeps its live upstreams warm, bounded so a DNS round-robin cannot grow the map without end. A
 /// pool that wants a different cap builds with [`PinnedClientPool::with_capacity`].
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 const DEFAULT_MAX_PINNED_CLIENTS: usize = 64;
 
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-impl Default for PinnedClientPool {
+impl<K> Default for PinnedClientPool<K> {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_MAX_PINNED_CLIENTS)
     }
 }
 
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-impl PinnedClientPool {
+impl<K> PinnedClientPool<K> {
     /// A pool that holds at most `max` distinct pinned clients. A bound rather than an unbounded map
     /// because the key contains a RESOLVED ADDRESS, and an upstream whose DNS round-robins across a
     /// large pool would otherwise grow one client per address it ever answered with. Eviction is
-    /// whole-entry: dropping a `reqwest::Client` closes its idle sockets.
+    /// whole-entry: dropping the pool's clone of an engine client releases its idle sockets.
     pub fn with_capacity(max: usize) -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
@@ -312,16 +305,16 @@ impl PinnedClientPool {
     pub fn len(&self) -> usize {
         self.clients.lock().map(|m| m.len()).unwrap_or(0)
     }
+}
 
-    /// Return a client pinned to `(host, addr)`, building one with `build` on a miss. The build runs
-    /// only for a NEW destination; a repeated one returns the cached clone.
+impl<K: Eq + std::hash::Hash + Clone> PinnedClientPool<K> {
+    /// Return the client pooled under `key`, building one with `build` on a miss. The build runs
+    /// only for a NEW key; a repeated one returns the cached clone.
     pub fn client_for<E>(
         &self,
-        host: &str,
-        addr: SocketAddr,
-        build: impl FnOnce() -> Result<reqwest::Client, E>,
-    ) -> Result<reqwest::Client, E> {
-        let key = (host.to_string(), addr);
+        key: K,
+        build: impl FnOnce() -> Result<engine::EngineClient, E>,
+    ) -> Result<engine::EngineClient, E> {
         if let Ok(map) = self.clients.lock() {
             if let Some(c) = map.get(&key) {
                 return Ok(c.clone());
@@ -343,9 +336,8 @@ impl PinnedClientPool {
     }
 }
 
-// The backend's own tests exercise the pinned-client pool, which exists only where a plane consumes
-// it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep
-// their coverage under a default build.
-#[cfg(all(test, any(feature = "plane-mcp", feature = "plane-a2a")))]
+// The backend's own tests exercise the pinned-client pool — ungated with the pool itself, whose
+// production consumers now include the plane-independent host egress chokepoint.
+#[cfg(test)]
 #[path = "tests/pinned_pool_tests.rs"]
 mod tests;

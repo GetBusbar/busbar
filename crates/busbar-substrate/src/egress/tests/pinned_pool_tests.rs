@@ -6,7 +6,8 @@
 //! properties are asserted HERE once rather than re-proven per plane. The plane-level suites (the
 //! a2a real-TLS / body-cap / zero-second-lookup harness) then exercise the same machinery end to end.
 
-use super::{build_pinned_client, PinnedClientPool, RefuseSecondLookup};
+use super::engine::{build_client, EngineClient, EngineSpec};
+use super::{PinnedClientPool, RefuseSecondLookup};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -16,10 +17,16 @@ fn addr(n: u16) -> SocketAddr {
     format!("127.0.0.1:{n}").parse().expect("a socket address")
 }
 
-/// Build a pinned client for `addr`, to the production posture. Returns the `reqwest::Client` without
-/// touching the network.
-fn build(host: &str, at: SocketAddr) -> reqwest::Client {
-    build_pinned_client(host, at, Arc::new(RefuseSecondLookup), None, &[]).expect("a built client")
+/// Build a pinned ENGINE client for `addr`, to the production posture. Building does not connect,
+/// so no network is touched.
+fn build(host: &str, at: SocketAddr) -> EngineClient {
+    build_client(&EngineSpec::pinned(
+        Arc::from(host),
+        at.ip(),
+        None,
+        Vec::new(),
+    ))
+    .expect("a built client")
 }
 
 /// A REPEATED destination reuses one client; a DISTINCT one builds a second. This is the whole point
@@ -30,15 +37,14 @@ fn the_pool_reuses_a_client_for_a_repeated_pinned_destination() {
     let a = addr(8001);
 
     let _first = pool
-        .client_for("host.test", a, || {
-            Ok::<_, reqwest::Error>(build("host.test", a))
+        .client_for(("host.test".to_string(), a), || {
+            Ok::<_, String>(build("host.test", a))
         })
         .expect("first build");
     let _again = pool
         .client_for(
-            "host.test",
-            a,
-            || -> Result<reqwest::Client, reqwest::Error> {
+            ("host.test".to_string(), a),
+            || -> Result<EngineClient, String> {
                 panic!("a repeated destination must NOT rebuild — the cached client is reused")
             },
         )
@@ -47,8 +53,8 @@ fn the_pool_reuses_a_client_for_a_repeated_pinned_destination() {
 
     let b = addr(8002);
     let _second = pool
-        .client_for("host.test", b, || {
-            Ok::<_, reqwest::Error>(build("host.test", b))
+        .client_for(("host.test".to_string(), b), || {
+            Ok::<_, String>(build("host.test", b))
         })
         .expect("distinct build");
     assert_eq!(
@@ -64,13 +70,13 @@ fn the_pool_reuses_a_client_for_a_repeated_pinned_destination() {
 fn a_different_pinned_address_for_the_same_host_is_a_different_pooled_client() {
     let pool = PinnedClientPool::with_capacity(64);
     let _one = pool
-        .client_for("host.test", addr(9001), || {
-            Ok::<_, reqwest::Error>(build("host.test", addr(9001)))
+        .client_for(("host.test".to_string(), addr(9001)), || {
+            Ok::<_, String>(build("host.test", addr(9001)))
         })
         .expect("build one");
     let _two = pool
-        .client_for("host.test", addr(9002), || {
-            Ok::<_, reqwest::Error>(build("host.test", addr(9002)))
+        .client_for(("host.test".to_string(), addr(9002)), || {
+            Ok::<_, String>(build("host.test", addr(9002)))
         })
         .expect("build two");
     assert_eq!(
@@ -88,8 +94,8 @@ fn the_pool_is_bounded_and_evicts_over_capacity() {
     for port in [7001u16, 7002, 7003] {
         let a = addr(port);
         let _c = pool
-            .client_for("host.test", a, || {
-                Ok::<_, reqwest::Error>(build("host.test", a))
+            .client_for(("host.test".to_string(), a), || {
+                Ok::<_, String>(build("host.test", a))
             })
             .expect("build");
     }
