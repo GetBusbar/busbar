@@ -408,9 +408,15 @@ async fn client_secret_is_core_injected_only() {
         secret_form_field: Some("client_secret".into()),
         headers: vec![],
     };
-    let (_status, echoed) = execute_hop(hop_client(), &hop, Some("REAL-SECRET-XYZ"), &allowed)
-        .await
-        .expect("hop executes");
+    let (_status, echoed) = execute_hop(
+        hop_client(),
+        &hop,
+        Some("REAL-SECRET-XYZ"),
+        &allowed,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .expect("hop executes");
     assert!(
         echoed.contains("client_secret=REAL-SECRET-XYZ"),
         "the CORE injects the real secret value into the hop form: {echoed}"
@@ -735,7 +741,14 @@ async fn execute_hop_refuses_non_allowlisted_host() {
         secret_form_field: Some("client_secret".into()),
         headers: vec![],
     };
-    let r = execute_hop(hop_client(), &hop, Some("REAL-SECRET-XYZ"), &empty).await;
+    let r = execute_hop(
+        hop_client(),
+        &hop,
+        Some("REAL-SECRET-XYZ"),
+        &empty,
+        std::time::Duration::from_secs(10),
+    )
+    .await;
     assert!(
         r.is_err(),
         "a hop to a non-allowlisted host must be refused (secret never sent)"
@@ -772,9 +785,15 @@ async fn execute_hop_refuses_a_crlf_injected_header() {
         secret_form_field: None,
         headers: vec![("X-Evil".into(), "a\r\nInjected: 1".into())],
     };
-    assert!(execute_hop(hop_client(), &hop, None, &allowed)
-        .await
-        .is_err());
+    assert!(execute_hop(
+        hop_client(),
+        &hop,
+        None,
+        &allowed,
+        std::time::Duration::from_secs(10)
+    )
+    .await
+    .is_err());
     mock.abort();
 }
 
@@ -819,9 +838,15 @@ async fn execute_hop_does_not_follow_redirect() {
         secret_form_field: Some("client_secret".into()),
         headers: vec![],
     };
-    let (status, _body) = execute_hop(hop_client(), &hop, Some("SECRET"), &allowed)
-        .await
-        .expect("hop returns the 302 itself");
+    let (status, _body) = execute_hop(
+        hop_client(),
+        &hop,
+        Some("SECRET"),
+        &allowed,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .expect("hop returns the 302 itself");
     assert_eq!(
         status, 302,
         "the hop must NOT follow the redirect (else the secret is re-POSTed to the target)"
@@ -835,11 +860,8 @@ async fn execute_hop_does_not_follow_redirect() {
 async fn execute_hop_times_out_on_a_hanging_endpoint() {
     let (url, mock) = mock_hang_endpoint().await;
     let allowed = allowed_hosts_for(&url);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(300))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
+    // The 300ms bound rides the hop's own timeout argument now — the knob the retired
+    // client-level reqwest timeout carried.
     let hop = LoginHop {
         method: "POST".into(),
         url,
@@ -849,7 +871,13 @@ async fn execute_hop_times_out_on_a_hanging_endpoint() {
     };
     let r = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        execute_hop(&client, &hop, None, &allowed),
+        execute_hop(
+            hop_client(),
+            &hop,
+            None,
+            &allowed,
+            std::time::Duration::from_millis(300),
+        ),
     )
     .await
     .expect("execute_hop returns within the outer bound (did not hang)");
@@ -1597,9 +1625,15 @@ async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_
     };
 
     // PUBLIC client: no secret configured.
-    let (status, body) = execute_hop(hop_client(), &hop, None, &allowed)
-        .await
-        .expect("hop runs");
+    let (status, body) = execute_hop(
+        hop_client(),
+        &hop,
+        None,
+        &allowed,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .expect("hop runs");
     assert_eq!(status, 200);
     assert!(
         !body.contains("client_secret"),
@@ -1611,9 +1645,15 @@ async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_
     );
 
     // CONFIDENTIAL client: the placeholder is replaced by the real value, not duplicated.
-    let (status, body) = execute_hop(hop_client(), &hop, Some("s3cr3t"), &allowed)
-        .await
-        .expect("hop runs");
+    let (status, body) = execute_hop(
+        hop_client(),
+        &hop,
+        Some("s3cr3t"),
+        &allowed,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .expect("hop runs");
     assert_eq!(status, 200);
     assert!(
         body.contains("client_secret=s3cr3t"),

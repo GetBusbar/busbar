@@ -535,6 +535,7 @@ async fn callback(
                         &hop,
                         m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
                         &m.allowed_hosts,
+                        Duration::from_secs(HOP_TIMEOUT_SECS),
                     )
                     .await
                     {
@@ -806,17 +807,20 @@ fn clear_and(mut resp: Response) -> Response {
 /// not hold the callback future open indefinitely.
 const HOP_TIMEOUT_SECS: u64 = 10;
 
-/// The ONE pooled HTTP client every hop reuses (connection pooling; not a fresh `Client::new()` per
-/// callback). Bounded by [`HOP_TIMEOUT_SECS`] and — critically — with redirects DISABLED: an
-/// auto-followed 3xx could bounce the core-injected secret/bearer to an off-allowlist host.
-fn hop_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+/// The ONE pooled HTTP client every hop reuses (connection pooling; not a fresh client per
+/// callback) — the ENGINE on the cold open-web posture. Redirect non-following is STRUCTURAL now
+/// (an auto-followed 3xx could bounce the core-injected secret/bearer to an off-allowlist host);
+/// the [`HOP_TIMEOUT_SECS`] total the retired reqwest builder carried client-level rides each hop
+/// as an absolute deadline in [`execute_hop`].
+fn hop_client() -> &'static crate::proxy::EgressClient {
+    static CLIENT: std::sync::OnceLock<crate::proxy::EgressClient> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(HOP_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("static hop http client")
+        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+            usize::MAX,
+            90,
+            false,
+            false,
+        ))
     })
 }
 
@@ -913,7 +917,7 @@ fn vet_hop_url(url: &str, allowed: &std::collections::HashSet<String>) -> Result
 fn sanitize_hop_header(
     name: &str,
     value: &str,
-) -> Result<(reqwest::header::HeaderName, reqwest::header::HeaderValue), ()> {
+) -> Result<(http::header::HeaderName, http::header::HeaderValue), ()> {
     let bad = |s: &str| s.contains('\r') || s.contains('\n') || s.contains('\0');
     if bad(name) || bad(value) {
         return Err(());
@@ -921,8 +925,8 @@ fn sanitize_hop_header(
     if FORBIDDEN_HOP_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
         return Err(());
     }
-    let hn = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?;
-    let hv = reqwest::header::HeaderValue::from_str(value).map_err(|_| ())?;
+    let hn = http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?;
+    let hv = http::header::HeaderValue::from_str(value).map_err(|_| ())?;
     Ok((hn, hv))
 }
 
@@ -933,10 +937,11 @@ fn sanitize_hop_header(
 /// built (so the secret is never sent to an off-allowlist host), and the module's extra `headers` are
 /// SANITIZED (CR/LF/NUL + hop-control headers rejected).
 async fn execute_hop(
-    http: &reqwest::Client,
+    http: &crate::proxy::EgressClient,
     hop: &busbar_api::LoginHop,
     client_secret: Option<&str>,
     allowed: &std::collections::HashSet<String>,
+    timeout: Duration,
 ) -> Result<(u16, String), ()> {
     // VET THE URL FIRST — a refusal here means no request is built and no secret leaves the process.
     vet_hop_url(&hop.url, allowed)?;
@@ -964,17 +969,38 @@ async fn execute_hop(
             None => form.retain(|(k, _)| k != field),
         }
     }
-    let method =
-        reqwest::Method::from_bytes(hop.method.as_bytes()).unwrap_or(reqwest::Method::POST);
-    let mut req = http.request(method, &hop.url).form(&form);
+    let method = http::Method::from_bytes(hop.method.as_bytes()).unwrap_or(http::Method::POST);
+    let uri: http::Uri = hop.url.parse().map_err(|_| ())?;
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
     for (name, value) in &hop.headers {
         // Any invalid/forbidden header fails the WHOLE hop closed (a plugin injecting CRLF is hostile).
         let (hn, hv) = sanitize_hop_header(name, value)?;
-        req = req.header(hn, hv);
+        headers.append(hn, hv);
     }
-    let resp = req.send().await.map_err(|_| ())?;
+    // The exact call reqwest's `.form()` was — wire bytes unchanged.
+    let body = serde_urlencoded::to_string(&form).map_err(|_| ())?;
+    let request =
+        busbar_substrate::egress::engine::request(method, uri, headers, bytes::Bytes::from(body));
+    // The hop's total, send THROUGH body read under one absolute deadline — the client-level
+    // timeout the retired reqwest builder carried, now the caller's argument (production passes
+    // [`HOP_TIMEOUT_SECS`]; the hang test shortens it, which is what a client-level knob allowed).
+    let deadline = tokio::time::Instant::now() + timeout;
+    let resp = busbar_substrate::egress::engine::send_bounded(http, request, deadline)
+        .await
+        .map_err(|_| ())?;
     let status = resp.status().as_u16();
-    let body = resp.text().await.map_err(|_| ())?;
+    let body = {
+        use http_body_util::BodyExt;
+        let collected = tokio::time::timeout_at(deadline, resp.into_body().collect())
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+        String::from_utf8_lossy(&collected.to_bytes()).into_owned()
+    };
     Ok((status, body))
 }
 
