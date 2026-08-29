@@ -2,8 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The owned egress client's building blocks: request assembly is byte-exact from precomputed
-//! parts, the capped collector honors its cap, and the h1-only/h2c precedence mirrors the old
-//! reqwest builder's apply-order.
+//! parts, the h1-only/h2c precedence mirrors the old reqwest builder's apply-order, and the
+//! proxy-env machinery matches reqwest 0.12's scoping — per-scheme slot resolution
+//! (HTTPS_PROXY/HTTP_PROXY with ALL_PROXY fallback), scheme-scoped selection, and the full
+//! NO_PROXY rule set (host, domain suffix, IP literal, CIDR). Every proxy test drives the parse/
+//! resolve/select functions directly — NEVER by mutating process env, which races under the
+//! parallel test runner.
 
 use super::*;
 
@@ -51,10 +55,119 @@ fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
     assert!(tunnel::parse_proxy_for_tests("http://u:p@proxy.corp").is_ok());
 }
 
+/// Precedence resolution, table-driven over the pure value bag (reqwest via hyper-util
+/// `matcher::Builder::build`: scheme-specific var first, ALL_PROXY fallback for BOTH slots).
+/// Each row: (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY) → (https slot host:port, http slot host:port).
+#[test]
+fn resolve_config_matches_reqwest_precedence() {
+    /// (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, expected https slot, expected http slot).
+    type Row = (
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+    let rows: &[Row] = &[
+        // No proxy env at all → no config (the direct arm every known deployment takes).
+        (None, None, None, None, None),
+        // HTTPS_PROXY alone scopes to https targets ONLY — http targets go direct, never
+        // through the https proxy (gap (b): we used to send them through it).
+        (Some("hs.corp:1"), None, None, Some("hs.corp:1"), None),
+        // HTTP_PROXY alone scopes to http targets ONLY (gap (a): we used to ignore it and go
+        // direct — the dangerous direction).
+        (None, Some("h.corp:2"), None, None, Some("h.corp:2")),
+        // ALL_PROXY alone fills BOTH slots.
+        (
+            None,
+            None,
+            Some("all.corp:3"),
+            Some("all.corp:3"),
+            Some("all.corp:3"),
+        ),
+        // Scheme-specific var beats ALL_PROXY for its scheme; ALL_PROXY still fills the other.
+        (
+            Some("hs.corp:1"),
+            None,
+            Some("all.corp:3"),
+            Some("hs.corp:1"),
+            Some("all.corp:3"),
+        ),
+        (
+            None,
+            Some("h.corp:2"),
+            Some("all.corp:3"),
+            Some("all.corp:3"),
+            Some("h.corp:2"),
+        ),
+        // All three set: each scheme var wins its own slot.
+        (
+            Some("hs.corp:1"),
+            Some("h.corp:2"),
+            Some("all.corp:3"),
+            Some("hs.corp:1"),
+            Some("h.corp:2"),
+        ),
+    ];
+    for (https, http, all, want_https, want_http) in rows {
+        let env = tunnel::ProxyEnvValuesForTests {
+            https: https.map(String::from),
+            http: http.map(String::from),
+            all: all.map(String::from),
+            no: None,
+        };
+        let config = tunnel::resolve_config_for_tests(&env).unwrap();
+        match (want_https, want_http) {
+            (None, None) => assert!(
+                config.is_none(),
+                "no proxy vars must resolve to no config: {https:?}/{http:?}/{all:?}"
+            ),
+            _ => {
+                let config = config.expect("some slot is set, a config must exist");
+                let got_https = tunnel::select_for_tests(&config, true, "api.example.com");
+                let got_http = tunnel::select_for_tests(&config, false, "api.example.com");
+                assert_eq!(
+                    got_https.as_deref(),
+                    *want_https,
+                    "https slot for {https:?}/{http:?}/{all:?}"
+                );
+                assert_eq!(
+                    got_http.as_deref(),
+                    *want_http,
+                    "http slot for {https:?}/{http:?}/{all:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A garbage value in ANY set proxy var fails resolution loudly — busbar refuses to boot rather
+/// than silently egressing direct past a configured proxy (documented deviation from reqwest's
+/// silent fall-through).
+#[test]
+fn resolve_config_fail_louds_on_garbage_in_any_slot() {
+    for (https, http, all) in [
+        (Some("https://tls-proxy.corp"), None, None),
+        (None, Some("http://"), None),
+        (None, None, Some("https://tls-proxy.corp")),
+    ] {
+        let env = tunnel::ProxyEnvValuesForTests {
+            https: https.map(String::from),
+            http: http.map(String::from),
+            all: all.map(String::from),
+            no: None,
+        };
+        assert!(
+            tunnel::resolve_config_for_tests(&env).is_err(),
+            "garbage in {https:?}/{http:?}/{all:?} must refuse to resolve"
+        );
+    }
+}
+
 #[test]
 fn no_proxy_suffix_matching_is_conventional() {
-    let spec = tunnel::test_spec("proxy.corp", 3128, None, &["example.com", "internal"]);
-    let via = |host: &str| !spec_bypasses(&spec, host);
+    let config = tunnel::test_config("proxy.corp", 3128, None, "example.com, internal");
+    let via = |host: &str| tunnel::select_for_tests(&config, true, host).is_some();
     assert!(!via("example.com"), "exact NO_PROXY entry bypasses");
     assert!(!via("api.example.com"), "domain suffix bypasses");
     assert!(
@@ -63,11 +176,99 @@ fn no_proxy_suffix_matching_is_conventional() {
     );
     assert!(!via("INTERNAL"), "matching is case-insensitive");
     assert!(via("api.openai.com"), "unlisted hosts tunnel");
-    let all = tunnel::test_spec("proxy.corp", 3128, None, &["*"]);
+    let all = tunnel::test_config("proxy.corp", 3128, None, "*");
     assert!(
-        spec_bypasses(&all, "api.openai.com"),
+        tunnel::select_for_tests(&all, true, "api.openai.com").is_none(),
         "`*` disables tunneling"
     );
+    // Leading dots are equivalent to none (curl/reqwest): `.example.com` ≡ `example.com`.
+    assert!(tunnel::no_proxy_matches_for_tests(
+        ".example.com",
+        "example.com"
+    ));
+    assert!(tunnel::no_proxy_matches_for_tests(
+        ".example.com",
+        "api.example.com"
+    ));
+}
+
+/// NO_PROXY IP-literal and CIDR matching (gap (c)) — the matrix over families, boundary prefix
+/// lengths (/0, /8, /32, /128), containment edges, and the documented non-special-casing of
+/// v6-mapped addresses.
+#[test]
+fn no_proxy_ip_and_cidr_matrix() {
+    let m = tunnel::no_proxy_matches_for_tests;
+    // IP literals: exact match only, and never as a domain suffix.
+    assert!(m("10.1.2.3", "10.1.2.3"));
+    assert!(!m("10.1.2.3", "10.1.2.30"));
+    assert!(!m("10.1.2.3", "110.1.2.3"));
+    assert!(m("::1", "::1"));
+    assert!(m("::1", "[::1]"), "bracketed v6 literal hosts match too");
+    // v4 CIDR containment, boundary prefixes.
+    assert!(m("10.0.0.0/8", "10.255.255.255"));
+    assert!(m("10.0.0.0/8", "10.0.0.1"));
+    assert!(!m("10.0.0.0/8", "11.0.0.0"));
+    assert!(!m("10.0.0.0/8", "9.255.255.255"));
+    assert!(m("0.0.0.0/0", "203.0.113.7"), "/0 matches every v4 address");
+    assert!(m("192.168.1.42/32", "192.168.1.42"), "/32 is exact");
+    assert!(!m("192.168.1.42/32", "192.168.1.43"));
+    // Non-octet-aligned prefix: the partial-byte mask must apply.
+    assert!(m("192.168.1.0/25", "192.168.1.127"));
+    assert!(!m("192.168.1.0/25", "192.168.1.128"));
+    // v6 CIDR containment, boundary prefixes.
+    assert!(m("fd00::/8", "fd12:3456::1"));
+    assert!(!m("fd00::/8", "fe80::1"));
+    assert!(m("::/0", "2001:db8::1"), "/0 matches every v6 address");
+    assert!(m("2001:db8::1/128", "2001:db8::1"), "/128 is exact");
+    assert!(!m("2001:db8::1/128", "2001:db8::2"));
+    // Families never cross — INCLUDING v6-mapped forms: `::ffff:10.0.0.1` is a v6 address, so a
+    // v4 block does not match it (same as ipnet/reqwest, which do not special-case mapped
+    // addresses).
+    assert!(!m("10.0.0.0/8", "::ffff:10.0.0.1"));
+    assert!(!m("::/0", "10.0.0.1"), "a v6 catch-all does not catch v4");
+    assert!(
+        !m("0.0.0.0/0", "2001:db8::1"),
+        "a v4 catch-all does not catch v6"
+    );
+    // An IP-literal host never matches domain entries (reqwest checks IP hosts only against
+    // IP/CIDR entries).
+    assert!(!m("0.0.1", "10.0.0.1"));
+    // A malformed CIDR degrades to a never-matching domain entry, exactly as ipnet parse
+    // failure does under reqwest — it must not poison the other entries.
+    assert!(!m("10.0.0.0/40", "10.0.0.1"));
+    assert!(m("10.0.0.0/40, example.com", "example.com"));
+}
+
+/// Scheme-scoped selection with NO_PROXY layered on top: exclusion applies to both slots.
+#[test]
+fn selection_is_scheme_scoped_and_no_proxy_excludes_both() {
+    let env = tunnel::ProxyEnvValuesForTests {
+        https: Some("hs.corp:1".to_string()),
+        http: Some("h.corp:2".to_string()),
+        all: None,
+        no: Some("internal.corp, 10.0.0.0/8".to_string()),
+    };
+    let config = tunnel::resolve_config_for_tests(&env).unwrap().unwrap();
+    assert_eq!(
+        tunnel::select_for_tests(&config, true, "api.openai.com").as_deref(),
+        Some("hs.corp:1")
+    );
+    assert_eq!(
+        tunnel::select_for_tests(&config, false, "api.openai.com").as_deref(),
+        Some("h.corp:2")
+    );
+    for is_https in [true, false] {
+        assert!(
+            tunnel::select_for_tests(&config, is_https, "db.internal.corp").is_none(),
+            "NO_PROXY domain excludes the {} slot",
+            if is_https { "https" } else { "http" }
+        );
+        assert!(
+            tunnel::select_for_tests(&config, is_https, "10.20.30.40").is_none(),
+            "NO_PROXY CIDR excludes the {} slot",
+            if is_https { "https" } else { "http" }
+        );
+    }
 }
 
 /// The full CONNECT exchange against a scripted proxy: the proxy must see the exact
@@ -105,16 +306,16 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     });
 
     // A connector wired to the scripted proxy (installed_proxy() is process-global; tests wire
-    // the spec directly so parallel tests never race an env var or the OnceLock).
-    let spec = tunnel::test_spec(
+    // the config directly so parallel tests never race an env var or the OnceLock).
+    let config = tunnel::test_config(
         &addr.ip().to_string(),
         addr.port(),
         Some("Basic dTpw".to_string()),
-        &[],
+        "",
     );
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
     http.enforce_http(false);
-    let connector = tunnel::TunnelConnector::new(http, Some(spec));
+    let connector = tunnel::TunnelConnector::new(http, Some(config));
     let tls = super::rustls_client_config();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
@@ -150,15 +351,12 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
 }
 
 /// `install_proxy_tunnel_if_configured` is Ok in a clean environment (the common arm every boot
-/// takes). Env-var permutations are covered by the direct parser tests above — mutating process
-/// env in a parallel test binary is a race, so none of these tests do it.
+/// takes). Env-var permutations are covered by the direct resolve/select tests above — mutating
+/// process env in a parallel test binary is a race, so none of these tests do it.
 #[test]
 fn install_is_ok_without_proxy_env() {
-    if super::proxy_env().is_none() {
+    let env = tunnel::ProxyEnvValuesForTests::from_process_env();
+    if env.https.is_none() && env.http.is_none() && env.all.is_none() {
         assert!(install_proxy_tunnel_if_configured().is_ok());
     }
-}
-
-fn spec_bypasses(spec: &std::sync::Arc<tunnel::ProxySpec>, host: &str) -> bool {
-    tunnel::bypasses_for_tests(spec, host)
 }
