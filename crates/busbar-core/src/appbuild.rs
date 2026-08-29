@@ -873,12 +873,12 @@ pub fn build_app_from_config(
         // configured proxy — the dangerous direction for an egress-controlled deployment.
         crate::proxy::install_proxy_tunnel_if_configured()?;
         let make_one = || {
-            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec {
-                idle_per_host: idle_per_host_per_shard,
-                pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
+            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                idle_per_host_per_shard,
+                cfg.limits.pool_idle_timeout_secs,
                 http1_only,
                 h2_prior_knowledge,
-            })
+            ))
         };
         crate::state::UpstreamClients::build(shard_count, make_one)
     };

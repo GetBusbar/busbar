@@ -91,6 +91,8 @@ rcgen = { workspace = true, optional = true }
 # of owning (net zero for the shipped build; see R10 in the design's risk register). `rustls` stops
 # being test-only in the same act: the engine's ClientConfig is production surface.
 rustls = { workspace = true }
+# `hyper::rt::{Read, Write}` — the I/O vocabulary the engine's `ObservedIo` stream delegates.
+hyper = { workspace = true }
 hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
 webpki-roots = { workspace = true }

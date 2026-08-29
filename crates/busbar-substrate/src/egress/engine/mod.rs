@@ -46,13 +46,30 @@
 //!     any other).
 //!   * decompression: none before (no gzip/brotli features), none now.
 
+use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
 
-/// The connector stack: TCP (+ boot-detected CONNECT tunnel when a proxy env is set) + rustls.
-pub type EngineConnector = hyper_rustls::HttpsConnector<tunnel::TunnelConnector>;
+// THE ENGINE'S LAYERS, each its own file: the resolver (where the pin lives), the peer-identity
+// observation, and the whole-connect deadline. The CONNECT tunnel stays in this file's `tunnel`
+// module, where it moved from core verbatim.
+pub mod deadline;
+pub mod observe;
+pub mod resolve;
+
+pub use deadline::ConnectDeadline;
+pub use observe::{peer_spki, ObservedIo, PeerSpki, SpkiObserve};
+pub use resolve::{EgressResolver, ResolveNames};
+
+/// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
+/// tunnel when a proxy env is set) + rustls, the whole connect under one wall-clock deadline,
+/// with the peer identity observed on the way out. ONE concrete type for every posture — the
+/// per-posture differences are VALUES inside the layers, never per-request branches.
+pub type EngineConnector =
+    SpkiObserve<ConnectDeadline<hyper_rustls::HttpsConnector<tunnel::TunnelConnector>>>;
 
 /// The pooled egress client. `Full<Bytes>`: every engine egress body is one owned buffer.
 pub type EngineClient = hyper_util::client::legacy::Client<EngineConnector, Full<Bytes>>;
@@ -70,14 +87,39 @@ pub struct EngineSpec {
     pub pool_idle_timeout_secs: u64,
     pub http1_only: bool,
     pub h2_prior_knowledge: bool,
+    /// Destination pinning. `None` = the LLM lanes (their destination is operator config,
+    /// guarded at apply). `Some` makes DNS structural: the resolver becomes the pin itself
+    /// ([`EgressResolver::Pinned`]) and `dns` below is never consulted.
+    pub pin: Option<PinnedDest>,
+    /// DNS when unpinned.
+    pub dns: Dns,
+    /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the LLM lanes (no
+    /// walk, no hash per connect); on for every pinned posture.
+    pub observe_spki: bool,
+}
+
+/// The pin: exactly one hostname answered with exactly one already-judged address. The judged
+/// PORT stays on the URI (the resolver answers port 0 and `HttpConnector` takes the port from
+/// the destination) — reqwest's documented `.resolve()` behaviour.
+pub struct PinnedDest {
+    pub host: Arc<str>,
+    pub addr: IpAddr,
+}
+
+/// DNS posture when no pin is installed.
+pub enum Dns {
+    /// `getaddrinfo` — reqwest's default and `HttpConnector`'s default.
+    System,
+    /// Caller-supplied (tests: the counting resolver that proves "zero engine lookups").
+    Custom(Arc<dyn ResolveNames>),
 }
 
 impl EngineSpec {
-    /// TODAY'S LLM-LANE POSTURE, exactly: webpki trust, system DNS, no pin, no client identity,
-    /// boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP keepalive 60s — the
-    /// values the parity ledger above documents, parameterized only by the four inputs
-    /// `UpstreamClientSettings` snapshots (plus the per-shard idle division the caller already
-    /// computes).
+    /// TODAY'S LLM-LANE POSTURE, exactly: webpki trust, system DNS, no pin, no observation, no
+    /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
+    /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
+    /// four inputs `UpstreamClientSettings` snapshots (plus the per-shard idle division the
+    /// caller already computes).
     pub fn llm_lane(
         idle_per_host: usize,
         pool_idle_timeout_secs: u64,
@@ -89,6 +131,9 @@ impl EngineSpec {
             pool_idle_timeout_secs,
             http1_only,
             h2_prior_knowledge,
+            pin: None,
+            dns: Dns::System,
+            observe_spki: false,
         }
     }
 }
@@ -122,7 +167,17 @@ fn establishment_shards_or_one() -> usize {
 /// build loudly); the LLM-lane posture has no failing arm, which is what lets core's infallible
 /// `build_egress_client` shim stand over this without a panic path in practice.
 pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
-    let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+    // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
+    // `dns` posture is structurally unreachable — not "unused", absent from the connector.
+    let resolver = match (&spec.pin, &spec.dns) {
+        (Some(pin), _) => EgressResolver::Pinned {
+            host: Arc::clone(&pin.host),
+            addr: pin.addr,
+        },
+        (None, Dns::System) => EgressResolver::system(),
+        (None, Dns::Custom(names)) => EgressResolver::Custom(Arc::clone(names)),
+    };
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     // The mock/bench upstreams are plain http; TLS wraps only https targets (below).
     http.enforce_http(false);
     http.set_connect_timeout(Some(Duration::from_secs(10)));
@@ -140,7 +195,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
 
     let tls = rustls_client_config();
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
-    let https: EngineConnector = if spec.http1_only {
+    let https = if spec.http1_only {
         builder.https_or_http().enable_http1().wrap_connector(http)
     } else {
         builder
@@ -148,6 +203,14 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
             .enable_all_versions()
             .wrap_connector(http)
     };
+    // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
+    // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
+    // of the latent black-hole-TLS gap on the LLM lanes). Then the peer-identity observation,
+    // a per-connect branch that is pass-through when `observe_spki` is off.
+    let https: EngineConnector = SpkiObserve::new(
+        ConnectDeadline::new(https, super::EGRESS_CONNECT_TIMEOUT),
+        spec.observe_spki,
+    );
 
     let mut client =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new());
@@ -219,6 +282,19 @@ pub fn egress_request(
 #[cfg(test)]
 #[path = "tests/engine_tests.rs"]
 mod engine_tests;
+
+/// The pin-as-resolver contract: one-name table, doctrine-text byte-parity with the reqwest
+/// resolver, and the client-level zero-lookup proof through the real `build_client` wiring.
+#[cfg(test)]
+#[path = "tests/resolver_tests.rs"]
+mod resolver_tests;
+
+/// The R1 extras-propagation spike (pooled reuse carries `PeerSpki` on every response), SNI
+/// preservation under the pin with its wrong-name refusing twin, the R2 URI-port-wins proof, and
+/// the whole-connect deadline against a black-holing TLS peer.
+#[cfg(test)]
+#[path = "tests/observe_tests.rs"]
+mod observe_tests;
 
 pub use tunnel::install_proxy_tunnel_if_configured;
 
@@ -505,7 +581,7 @@ mod tunnel {
     /// `CONNECT host:port`, never a decrypted byte.
     #[derive(Clone)]
     pub struct TunnelConnector {
-        inner: hyper_util::client::legacy::connect::HttpConnector,
+        inner: hyper_util::client::legacy::connect::HttpConnector<super::EgressResolver>,
         config: Option<Arc<ProxyConfig>>,
         /// Per-shard connect pacing — see [`ConnectGate`]. Shared by clones of this connector
         /// (hyper clones the service per connect), NOT across shards: each worker paces its own
@@ -515,7 +591,7 @@ mod tunnel {
 
     impl TunnelConnector {
         pub fn new(
-            inner: hyper_util::client::legacy::connect::HttpConnector,
+            inner: hyper_util::client::legacy::connect::HttpConnector<super::EgressResolver>,
             config: Option<Arc<ProxyConfig>>,
         ) -> Self {
             Self {

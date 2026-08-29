@@ -135,16 +135,27 @@ pub const EGRESS_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 /// the invariant ("exactly once") and the name it was asked about, so a log line is actionable.
 pub struct RefuseSecondLookup;
 
+/// THE ONE SOURCE of the second-lookup refusal text. Two resolvers quote it — this reqwest-facing
+/// [`RefuseSecondLookup`] and the engine's pinned resolver arm
+/// (`engine::EgressResolver::Pinned`) — and the message is asserted byte-for-byte in logs and
+/// tests, so both call this function rather than each holding a copy that could drift. The message
+/// names the invariant ("exactly once") and the name that was asked about, so a log line is
+/// actionable.
+pub fn refuse_second_lookup_message(name: &str) -> String {
+    format!(
+        "a governed egress resolves each name exactly once, before the guard judges the answer, \
+         and connects to the address that survived; the HTTP client asked to resolve `{name}` a \
+         second time, which is the DNS-rebind window the pin exists to close and must not happen"
+    )
+}
+
 impl reqwest::dns::Resolve for RefuseSecondLookup {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let name = name.as_str().to_string();
         Box::pin(std::future::ready(Err(Box::<
             dyn std::error::Error + Send + Sync,
-        >::from(format!(
-            "a governed egress resolves each name exactly once, before the guard judges the answer, \
-             and connects to the address that survived; the HTTP client asked to resolve `{name}` a \
-             second time, which is the DNS-rebind window the pin exists to close and must not happen"
-        )))))
+        >::from(
+            refuse_second_lookup_message(name.as_str()),
+        ))))
     }
 }
 

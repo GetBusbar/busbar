@@ -126,6 +126,26 @@ impl TlsFixture {
     pub fn records(&self) -> Vec<ConnRecord> {
         snapshot(&self.records)
     }
+
+    /// Snapshot once `pred` holds, polling with a bound. A client learns about a REFUSED
+    /// handshake the moment it sends its alert — often before the server thread has finished
+    /// writing what it observed — so a test that asserts on a refusal's record waits for the
+    /// record to settle rather than racing the fixture thread. Panics at the bound: a record
+    /// that never settles is a fixture defect, not a pass.
+    pub fn records_when(&self, pred: impl Fn(&[ConnRecord]) -> bool) -> Vec<ConnRecord> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let records = self.records();
+            if pred(&records) {
+                return records;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture records never settled: {records:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
 
 /// A live plaintext fixture: request lines and connection records for the redirect canary and the

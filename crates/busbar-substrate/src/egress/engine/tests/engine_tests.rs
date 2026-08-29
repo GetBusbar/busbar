@@ -308,7 +308,9 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
         Some("Basic dTpw".to_string()),
         "",
     );
-    let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(
+        EgressResolver::system(),
+    );
     http.enforce_http(false);
     let connector = tunnel::TunnelConnector::new(http, Some(config));
     let tls = super::rustls_client_config();
