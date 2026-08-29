@@ -241,6 +241,8 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 `busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state, so it belongs in CI. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
 
+Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](docs/getting-started.md#step-1-get-the-binary) picks for you in one glance.
+
 ---
 
 ## Kubernetes

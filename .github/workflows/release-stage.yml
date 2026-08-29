@@ -682,6 +682,9 @@ jobs:
           # all -- that is what makes "no way for 1 to be different" a property of the graph rather
           # than a promise in a comment.
           fields = ("target", "runner", "pgo", "archive", "plugin_asset")
+          # `triple` rides along too: the rust triple cargo builds. It defaults to the target id
+          # itself — only a VARIANT artifact (same triple, different ISA floor, e.g. the arm64
+          # armv8.0 compat build) declares it explicitly in the manifest.
           # ONLY THE PUBLISHED TARGETS. `.github/release-targets.json` also declares targets that are
           # NOT release downloads: the two musl binaries (`published: false`, `packaged_into` an
           # image) and the two `kind: image` entries, whose "target" is not a Rust triple and whose
@@ -701,16 +704,17 @@ jobs:
                   "must say whether it is a release download or an input to something else."
                   % ", ".join(missing))
           shipped = [t for t in spec["targets"] if t["published"]]
-          inc = [{k: t[k] for k in fields} for t in shipped]
+          inc = [dict({k: t[k] for k in fields}, triple=t.get("triple", t["target"]))
+                 for t in shipped]
           assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in shipped]
           assets += [a.replace("{tag}", tag) for a in spec["metadata_assets"]]
           # A FLOOR, BECAUSE A LOOP OVER A DISCOVERED SET WITH NO FLOOR PASSES WHEN THE SET IS EMPTY.
           # Both the build matrix and the verify matrix are enumerated from this output; a truncated
           # or mis-parsed manifest would otherwise build nothing, verify nothing, and report green
           # all the way to a published release with no assets on it.
-          if len(inc) < 5:
+          if len(inc) < 6:
               raise SystemExit(
-                  "release-targets.json declares %d PUBLISHED targets; busbar ships 5. Refusing to "
+                  "release-targets.json declares %d PUBLISHED targets; busbar ships 6. Refusing to "
                   "run a build matrix and a verify matrix over a set this small: an empty "
                   "expectation list passes for a release that published nothing." % len(inc))
           print("matrix=" + json.dumps({"include": inc}))
@@ -753,6 +757,7 @@ jobs:
     uses: ./.github/workflows/build-artifact.yml
     with:
       target: ${{ matrix.target }}
+      triple: ${{ matrix.triple }}
       runner: ${{ matrix.runner }}
       archive: ${{ matrix.archive }}
       tag: ${{ needs.plan.outputs.tag }}
@@ -1058,8 +1063,8 @@ jobs:
           # A FLOOR FIRST. Every comparison below is between sets, and all three being empty is the
           # state in which every comparison is trivially satisfied -- the false green this whole
           # design exists to make impossible.
-          if len(declared) < 5:
-              print("::error::the declared target set has %d entries; busbar ships 5. Set equality "
+          if len(declared) < 6:
+              print("::error::the declared target set has %d entries; busbar ships 6. Set equality "
                     "between three empty sets is not a check." % len(declared), file=sys.stderr)
               fail = True
           for label, got in (("built", built), ("verified", verified)):
@@ -1173,13 +1178,20 @@ jobs:
           STAGING_TAG: ${{ needs.plan.outputs.staging_tag }}
           SHA: ${{ needs.plan.outputs.sha }}
           DIGEST: ${{ needs.stage-image.outputs.digest }}
+          COMPAT_DIGEST: ${{ needs.stage-image.outputs.digest_armv8 }}
         run: |
           set -euo pipefail
           # AN EMPTY DIGEST IS A REFUSAL, NOT A FIELD. docker.yml's output plumbing is a chain of
           # third-party action outputs; if any link goes quiet the expression above interpolates to
           # "" and a record with no digest would turn the promote's strongest check into a no-op.
+          # The armv8.0 compat digest gets the same treatment: it is a release artifact of equal
+          # standing, so a record that lost it would let the compat tag silently never publish.
           if [ -z "${DIGEST:-}" ]; then
             echo "::error::stage-image reported no manifest digest. Refusing to write a staged"                  "record the promote could not verify against. Re-run this workflow." >&2
+            exit 1
+          fi
+          if [ -z "${COMPAT_DIGEST:-}" ]; then
+            echo "::error::stage-image reported no armv8.0 compat image digest. The compat arm64"                  "image is a first-class release artifact; a record without it would promote the"                  "default image and silently drop the compat one. Re-run this workflow." >&2
             exit 1
           fi
           # THE RECORD MUST MATCH THE REGISTRY BEFORE IT IS WRITTEN, not only when it is consumed.
@@ -1191,8 +1203,16 @@ jobs:
             echo "::error::docker.io getbusbar/busbar:${STAGING_TAG} resolves to '${hub:-<none>}'"                  "but this run's build reported '${DIGEST}'. The record would name bytes the"                  "registry does not serve. Refusing to write it; re-run this workflow." >&2
             exit 1
           fi
-          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             '{version: $version, tag: $tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
-              digest: $digest, run_id: $run_id, recorded_at: $recorded_at}'             | tee staged.json
+          # Same registry re-derivation for the armv8.0 compat staging tag (docker.yml derives the
+          # name as <staging_tag>-armv8.0; this is the same derivation, in the same run).
+          hub_compat="$(curl -fsS --max-time 30 -I             -H "Authorization: Bearer $tok"             -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json'             "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${STAGING_TAG}-armv8.0"             | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}')"
+          if [ "$hub_compat" != "$COMPAT_DIGEST" ]; then
+            echo "::error::docker.io getbusbar/busbar:${STAGING_TAG}-armv8.0 resolves to"                  "'${hub_compat:-<none>}' but this run's build reported '${COMPAT_DIGEST}'."                  "Refusing to write a record naming compat bytes the registry does not serve." >&2
+            exit 1
+          fi
+          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg compat_digest "$COMPAT_DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             '{version: $version, tag: $tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
+              digest: $digest, compat_digest: $compat_digest,
+              run_id: $run_id, recorded_at: $recorded_at}'             | tee staged.json
           {
             echo "### Staged and recorded"
             echo

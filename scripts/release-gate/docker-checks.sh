@@ -111,6 +111,68 @@ else
     "expected ${ghcr_ver}, observed ${ghcr_latest:-<nothing>}. Users pulling from GHCR without a tag get a different release. Same fix as the Docker Hub case."
 fi
 
+# ── docker:armv8 — the armv8.0-compatible arm64 variant, four names, its own digest ────────────
+# The compat image (armv8.0 boards, RPi4-class) is a DIFFERENT digest from the main manifest by
+# construction: a single-arch baseline image vs the two-arch (+lse arm64) index. So it gets its
+# own pin/pointer agreement rows rather than joining the equality above — and an explicit
+# inequality, because the failure worth catching is the fast build shipping under the compat
+# name (it boots everywhere EXCEPT the boards the name exists for).
+v8_pin=""
+resolve_v8_pin() { v8_pin="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "${V}-armv8.0")"; [ -n "$v8_pin" ]; }
+if retry 6 15 resolve_v8_pin; then
+  if [ -n "$hub_ver" ] && [ "$v8_pin" = "$hub_ver" ]; then
+    record "docker:hub-armv8-pin" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is the SAME digest as :${V}" \
+      "the compat name must carry the armv8.0 baseline build, not the default (+lse) manifest. Fix: re-run docker.yml's promote for v${V} after confirming the staged -armv8.0 tag holds the baseline image."
+  else
+    record "docker:hub-armv8-pin" PASS "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 resolves (own digest)" "$v8_pin"
+  fi
+else
+  record "docker:hub-armv8-pin" FAIL "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 does not resolve" \
+    "the armv8.0-compatible arm64 image (RPi4-class boards) never got its version pin. Fix: re-run docker.yml with promote_to=${V} (idempotent)."
+fi
+
+v8_float=""
+resolve_v8_float() {
+  v8_float="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" armv8.0)"
+  [ -n "$v8_float" ] && [ "$v8_float" = "$v8_pin" ]
+}
+if [ -z "$v8_pin" ]; then
+  record "docker:hub-armv8-floating" FAIL "cannot compare :armv8.0 — :${V}-armv8.0 did not resolve" "see docker:hub-armv8-pin."
+elif retry 6 15 resolve_v8_float; then
+  record "docker:hub-armv8-floating" PASS "${DOCKERHUB_IMAGE}:armv8.0 is the SAME digest as :${V}-armv8.0" "$v8_float"
+else
+  record "docker:hub-armv8-floating" FAIL "${DOCKERHUB_IMAGE}:armv8.0 is NOT the ${V}-armv8.0 image" \
+    "expected ${v8_pin}, observed ${v8_float:-<nothing>}. \`docker pull ${DOCKERHUB_IMAGE}:armv8.0\` — the documented tag for armv8.0 boards — serves a different release. Fix: re-run docker.yml with promote_to=${V}."
+fi
+
+ghcr_v8_pin=""
+resolve_ghcr_v8_pin() {
+  ghcr_v8_pin="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" "${V}-armv8.0")"
+  [ -n "$ghcr_v8_pin" ] && [ "$ghcr_v8_pin" = "$v8_pin" ]
+}
+if [ -z "$v8_pin" ]; then
+  record "docker:ghcr-armv8-pin" FAIL "cannot compare GHCR — the Docker Hub compat digest is unknown" "see docker:hub-armv8-pin."
+elif retry 6 15 resolve_ghcr_v8_pin; then
+  record "docker:ghcr-armv8-pin" PASS "ghcr.io/${GHCR_REPO}:${V}-armv8.0 digest == Docker Hub's" "$ghcr_v8_pin"
+else
+  record "docker:ghcr-armv8-pin" FAIL "ghcr.io/${GHCR_REPO}:${V}-armv8.0 is not the same image as Docker Hub's" \
+    "expected ${v8_pin}, observed ${ghcr_v8_pin:-<nothing>}. Same cross-registry rule as docker:ghcr-version."
+fi
+
+ghcr_v8_float=""
+resolve_ghcr_v8_float() {
+  ghcr_v8_float="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" armv8.0)"
+  [ -n "$ghcr_v8_float" ] && [ -n "$ghcr_v8_pin" ] && [ "$ghcr_v8_float" = "$ghcr_v8_pin" ]
+}
+if [ -z "$ghcr_v8_pin" ]; then
+  record "docker:ghcr-armv8-floating" FAIL "cannot compare ghcr :armv8.0 — :${V}-armv8.0 did not resolve there" "see docker:ghcr-armv8-pin."
+elif retry 6 15 resolve_ghcr_v8_float; then
+  record "docker:ghcr-armv8-floating" PASS "ghcr.io/${GHCR_REPO}:armv8.0 is the SAME digest as :${V}-armv8.0" "$ghcr_v8_float"
+else
+  record "docker:ghcr-armv8-floating" FAIL "ghcr.io/${GHCR_REPO}:armv8.0 is NOT the ${V}-armv8.0 image" \
+    "expected ${ghcr_v8_pin}, observed ${ghcr_v8_float:-<nothing>}. Same fix as the Docker Hub case."
+fi
+
 # ── docker:label — the image's own claim about which version it is ─────────────────────────────
 # Pulled fresh, by DIGEST-backed tag, with any local copy removed first: a cached layer set for the
 # same tag name would let a stale image answer for a fresh one.

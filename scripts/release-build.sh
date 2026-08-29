@@ -71,6 +71,13 @@ for t in spec["targets"]:
     if t["target"] == want:
         for k in ("pgo", "archive", "exe"):
             print("SPEC_%s=%s" % (k.upper(), shlex.quote(str(t[k]).lower() if k == "pgo" else str(t[k]))))
+        # `triple`: the rust target triple cargo builds. For every ordinary target it IS the
+        # target id; a VARIANT artifact (same triple, different ISA floor — today only the
+        # arm64 armv8.0 compat build) declares its own `target` id (which names the asset) and
+        # points `triple` at the shared rust triple. `baseline` marks that variant: build for
+        # the armv8.0 baseline, i.e. WITHOUT the +lse floor the default arm64 artifact raises.
+        print("SPEC_TRIPLE=%s" % shlex.quote(t.get("triple", t["target"])))
+        print("SPEC_BASELINE=%s" % shlex.quote(str(t.get("baseline", False)).lower()))
         break
 else:
     sys.exit("release-build.sh: target %r is not declared in .github/release-targets.json. Add it "
@@ -104,7 +111,15 @@ if ! printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'; th
 EOF
   exit 1
 fi
-echo "[release-build] target=$TARGET pgo=$SPEC_PGO archive=$SPEC_ARCHIVE key=${BUSBAR_RELEASE_PUBKEY:0:12}…"
+echo "[release-build] target=$TARGET triple=$SPEC_TRIPLE pgo=$SPEC_PGO baseline=$SPEC_BASELINE archive=$SPEC_ARCHIVE key=${BUSBAR_RELEASE_PUBKEY:0:12}…"
+
+# THE BASELINE SWITCH, EXPORTED ONCE, HERE, FOR BOTH ARMS. scripts/pgo-build.sh reads it (and the
+# non-PGO arm below mirrors it) to decide whether the arm64 +lse floor applies. It is a manifest
+# FIELD, not a second build path: the compat artifact takes the same single build step with one
+# parameter flipped, exactly like `pgo` does.
+if [ "$SPEC_BASELINE" = "true" ]; then
+  export BUSBAR_ARM64_BASELINE=1
+fi
 
 mkdir -p "$EVIDENCE_DIR" "$OUT_DIR"
 rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified"
@@ -116,9 +131,9 @@ rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified"
 # reason the cross targets could not train a profile is gone; the one target that still declares
 # pgo:false says why, in .github/release-targets.json, next to the flag.
 if [ "$SPEC_PGO" = "true" ]; then
-  PGO_TARGET="$TARGET" scripts/pgo-build.sh
-  BIN="target/pgo/${TARGET}/release/${SPEC_EXE}"
-  MARKER="target/pgo/${TARGET}/release/busbar.pgo-verified"
+  PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
+  BIN="target/pgo/${SPEC_TRIPLE}/release/${SPEC_EXE}"
+  MARKER="target/pgo/${SPEC_TRIPLE}/release/busbar.pgo-verified"
   # pgo-build.sh writes the marker ONLY after a non-empty merged profile fed a successful
   # -Cprofile-use build, so a missing marker after a zero exit is a script contract violation, not
   # a build variation. verify-artifact.py's `pgo_applied` row re-asserts its contents against the
@@ -138,11 +153,21 @@ else
   # so this case is empty in practice — it exists so a Linux target that ever declares pgo:false
   # cannot silently lose the relocations the BOLT pass refuses to run without.
   EMIT_RELOCS=""
-  case "$TARGET" in
+  case "$SPEC_TRIPLE" in
     *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs" ;;
   esac
-  RUSTFLAGS="${EMIT_RELOCS}" cargo build --release -p busbar --target "$TARGET"
-  BIN="target/${TARGET}/release/${SPEC_EXE}"
+  # Same LSE parity as pgo-build.sh's arm (see the LSE_FLAG definition there): the default arm64
+  # Linux artifact raises its floor to armv8.1 (+lse); the baseline variant, and every non-arm64
+  # target, does not. Today's only non-PGO target is Windows, so this is parity-by-construction
+  # rather than a live branch — the same reason the EMIT_RELOCS mirror above exists.
+  LSE_FLAG=""
+  if [ "$SPEC_BASELINE" != "true" ]; then
+    case "$SPEC_TRIPLE" in
+      aarch64-*-linux-*) LSE_FLAG="-Ctarget-feature=+lse" ;;
+    esac
+  fi
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release -p busbar --target "$SPEC_TRIPLE"
+  BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }
 

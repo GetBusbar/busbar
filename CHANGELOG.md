@@ -64,6 +64,18 @@ If you run dashboards, read the metrics breaking change first: both request fami
 
 ### Added
 
+- **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
+  (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
+  entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's
+  per-operation helper calls — which were measuring about 12% of self-time under concurrent load
+  on ARM servers. Every 2016+ arm64 core qualifies (AWS Graviton, Ampere, Google Axion, Apple,
+  Raspberry Pi 5). For ARMv8.0 boards (Raspberry Pi 4 class), a first-class compat build ships
+  alongside it in every release: `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` and the
+  `getbusbar/busbar:armv8.0` image tag (pin `:X.Y.Z-armv8.0`) — byte-for-byte the previous arm64
+  recipe, built, PGO-trained, verified, signed and attested by the same pipeline. `busbar
+  --build-info` now reports `target-features=` (`+lse` on the default arm64 build, `default`
+  otherwise) so a running binary identifies which one it is. See "Running on 64-bit ARM" in
+  [the operations guide](docs/operations.md).
 - **`-c`/`--config` and `--providers` flags make config input flag-first.** `-c <path>` /
   `--config <path>` (also `--config=<path>`) names config.yaml with precedence **flag >
   `BUSBAR_CONFIG` env > `/etc/busbar/config.yaml`**; `--providers <path>` (also `--providers=<path>`)

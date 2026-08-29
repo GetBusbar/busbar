@@ -633,6 +633,32 @@ durable revocation denylist immediately.
 > Limit windows are per-process, and the caps are enforced per node even over a shared store
 > (see the fleet caveat above).
 
+## Running on 64-bit ARM — two builds, one release
+
+Every release ships **two** 64-bit ARM Linux artifacts. They are the same code and the same
+release pipeline; the only difference is the CPU generation they target:
+
+| Build | ISA floor | Use it on | Binary asset | Docker tag |
+| --- | --- | --- | --- | --- |
+| Default | ARMv8.1+ | AWS Graviton, Ampere, Google Axion, NVIDIA Grace, Raspberry Pi 5, Apple Silicon under Linux — anything 2016+ | `busbar-aarch64-unknown-linux-gnu.tar.gz` | `getbusbar/busbar` (the multi-arch manifest's `linux/arm64` entry) |
+| ARMv8.0 compat | ARMv8.0 | Raspberry Pi 4 / Pi 400 / CM4 and other Cortex-A72/A53-class boards | `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` | `getbusbar/busbar:armv8.0` (pin: `:X.Y.Z-armv8.0`) |
+
+**Why two:** ARMv8.1 added native atomic read-modify-write instructions (LSE). Built for the
+ARMv8.0 baseline, every atomic operation compiles to a helper-function call instead — measured at
+about 12% of self-time under concurrent load on an ARM server — so the default build raises its
+floor to ARMv8.1 and gets the native instructions. A Docker multi-arch manifest cannot carry two
+`linux/arm64` variants under one tag, which is why the compat build has its own explicitly
+suffixed name rather than hiding inside `latest`.
+
+**Symptoms of the wrong choice:** the default build on an ARMv8.0 board dies immediately with
+`SIGILL` / "illegal instruction" — switch to the `-armv8.0` artifact. The compat build on modern
+hardware runs correctly but leaves atomic-heavy throughput on the table — switch to the default.
+A running binary identifies itself: `busbar --build-info` prints `target-features=+lse` (default)
+or `target-features=default` (compat).
+
+Both artifacts are built by the same pipeline (PGO included), verified by the same per-artifact
+contract, cosign-signed/attested identically, and promoted in the same release step.
+
 ## Running on Windows
 
 `x86_64-pc-windows-msvc` is a published release target (`busbar-x86_64-pc-windows-msvc.zip`), and

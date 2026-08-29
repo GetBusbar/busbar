@@ -90,6 +90,13 @@ on:
       digest:
         description: "Manifest digest of the image this run pushed (staging path only)."
         value: ${{ jobs.publish.outputs.digest }}
+      digest_armv8:
+        description: >-
+          Manifest digest of the armv8.0-compatible arm64 image pushed under
+          <staging_tag>-armv8.0 (staging path only). A separate image on purpose: one multi-arch
+          manifest cannot carry two arm64 variants, so the +lse build IS the manifest's
+          linux/arm64 entry and the armv8.0 build lives under its own suffixed name.
+        value: ${{ jobs.publish.outputs.digest_armv8 }}
   workflow_dispatch:
     inputs:
       staging_tag:
@@ -191,6 +198,22 @@ jobs:
           docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:latest" "${DOCKERHUB_IMAGE}:${V}"
           docker buildx imagetools create -t "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}:${V}"
 
+          # 3. The armv8.0 compat variant, SAME order and same rules: immutable pin (X.Y.Z-armv8.0)
+          #    first on Docker Hub, GHCR mirror, floating `armv8.0` pointer last. The compat image
+          #    is a first-class artifact; its names move in the same promote or the promote fails.
+          if [ "$src" != "$V" ]; then
+            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:${V}-armv8.0" "${DOCKERHUB_IMAGE}:${src}-armv8.0"
+          fi
+          if docker buildx imagetools inspect "${DOCKERHUB_IMAGE}:${V}-armv8.0" >/dev/null 2>&1; then
+            docker buildx imagetools create -t "${GHCR_IMAGE}:${V}-armv8.0" "${DOCKERHUB_IMAGE}:${V}-armv8.0"
+            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:armv8.0" "${DOCKERHUB_IMAGE}:${V}-armv8.0"
+            docker buildx imagetools create -t "${GHCR_IMAGE}:armv8.0" "${GHCR_IMAGE}:${V}-armv8.0"
+          else
+            # Only reachable in the src==V recovery arm (move `latest` onto an already-published
+            # version): a version cut before the dual-arm64 split has no compat pin to point at.
+            echo "::warning::${DOCKERHUB_IMAGE}:${V}-armv8.0 does not exist (version predates the dual arm64 artifacts); leaving the armv8.0 pointer untouched."
+          fi
+
       # PARTIAL PROMOTE IS DETECTABLE, NOT SILENT. `imagetools create` exiting 0 says the API call
       # was accepted; it does not say the registry now serves that name, and "the pin published but
       # `latest` never moved" is precisely the class of defect that shipped 1.5.3. So the promote is
@@ -233,8 +256,38 @@ jobs:
               fail=1
             fi
           done
+          # The armv8.0 compat names, same external re-derivation. When the compat pin exists it
+          # must agree with its three sibling names AND must be a DIFFERENT digest from the main
+          # manifest (a two-arch index and a single-arch armv8.0 image can never be the same
+          # bytes; equality would mean the fast build got published under the compat name).
+          v8_v="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "${V}-armv8.0" || true)"
+          v8_f="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar armv8.0 || true)"
+          ghcr_v8_v="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "${V}-armv8.0" || true)"
+          ghcr_v8_f="$(reg_digest ghcr.io ghcr.io getbusbar/busbar armv8.0 || true)"
+          echo "docker.io ${V}-armv8.0 = ${v8_v:-<none>}"
+          echo "docker.io armv8.0     = ${v8_f:-<none>}"
+          echo "ghcr.io   ${V}-armv8.0 = ${ghcr_v8_v:-<none>}"
+          echo "ghcr.io   armv8.0     = ${ghcr_v8_f:-<none>}"
+          if [ -z "$v8_v" ]; then
+            # Mirrors the promote's recovery arm: a pre-dual-arm64 version legitimately has no
+            # compat pin. Any version that staged one had it created above or the job already died.
+            echo "::warning::docker.io/getbusbar/busbar:${V}-armv8.0 does not resolve; skipping the compat-name assertions (pre-dual-arm64 version recovery only)."
+          else
+            if [ "$v8_v" = "$hub_v" ]; then
+              echo "::error::${V}-armv8.0 resolves to the SAME digest as ${V}. The compat name must carry the armv8.0 baseline build, not the default manifest."
+              fail=1
+            fi
+            for pair in "docker.io armv8.0:$v8_f" "ghcr.io ${V}-armv8.0:$ghcr_v8_v" "ghcr.io armv8.0:$ghcr_v8_f"; do
+              name="${pair%%:*}"; got="${pair#*:}"
+              if [ "$got" != "$v8_v" ] || [ -z "$got" ]; then
+                echo "::error::PARTIAL PROMOTE (compat): ${name} resolves to '${got:-<none>}' but docker.io/${V}-armv8.0 is '${v8_v}'. Re-run docker.yml with promote_to=${V} (idempotent) and re-run this assertion."
+                fail=1
+              fi
+            done
+          fi
           [ "$fail" = 0 ] || exit 1
           echo "PASS: docker.io ${V}, docker.io latest, ghcr.io ${V} and ghcr.io latest all resolve to ${hub_v}."
+          [ -z "$v8_v" ] || echo "PASS: docker.io ${V}-armv8.0, docker.io armv8.0, ghcr.io ${V}-armv8.0 and ghcr.io armv8.0 all resolve to ${v8_v}."
 
   # Static musl binaries, one per architecture, built on native runners (no QEMU).
   build-binaries:
@@ -244,13 +297,35 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        # THREE PARALLEL LEGS, TWO ARM64 VARIANTS. `arm64` is the DEFAULT arm64 image: it raises
+        # its ISA floor to armv8.1 (+lse — native atomic instructions; the armv8.0 baseline's
+        # outline-atomics helper calls measured 12.1% of self-time on an arm64 server profile) and
+        # becomes the multi-arch manifest's linux/arm64 entry, so every cloud/desktop arm64 pull
+        # (all 2016+ cores: Graviton, Ampere, Neoverse, Apple, Raspberry Pi 5) gets the fast build.
+        # `arm64-armv8.0` is byte-for-byte TODAY'S recipe — no +lse — for armv8.0 boards (Raspberry
+        # Pi 4 class Cortex-A72), published under its own explicit `-armv8.0` tag suffix because a
+        # Docker manifest cannot distinguish armv8.0 from armv8.1 under one name.
+        #   baseline  "1" flips scripts/pgo-build.sh to the armv8.0 baseline (empty = default).
+        #   headroom  whether this leg also builds the bundled headroom plugin. The compat leg
+        #             does not: the plugin cdylib is built inside rust:alpine WITHOUT these
+        #             RUSTFLAGS, so the arm64 leg's plugin artifacts are the identical bytes the
+        #             compat image build reuses — building them twice would just be slower.
         include:
           - arch: amd64
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            baseline: ""
+            headroom: true
           - arch: arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            baseline: ""
+            headroom: true
+          - arch: arm64-armv8.0
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            baseline: "1"
+            headroom: false
     steps:
       - uses: actions/checkout@v7
 
@@ -263,7 +338,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Keyed by ARCH, not target: the two arm64 legs share a triple but differ in RUSTFLAGS
+          # (+lse vs baseline), and a shared cache would hand one leg the other's build products.
+          key: ${{ matrix.arch }}
 
       # PGO release build (scripts/pgo-build.sh): instrumented build -> on-host training (native-arch
       # runner, so the musl-static instrumented binary executes locally) -> optimized build.
@@ -279,6 +356,9 @@ jobs:
           # to verify any plugin (headroom-hook bundled-image smoke test, 2026-08-02).
           BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
           PGO_TARGET: ${{ matrix.target }}
+          # "1" only on the armv8.0 compat leg: pgo-build.sh then omits the +lse floor, for BOTH
+          # its instrumented and optimized phases (see the LSE_FLAG comment there).
+          BUSBAR_ARM64_BASELINE: ${{ matrix.baseline }}
           # musl-gcc drives both the C compiles (bundled SQLite) and the final link.
           CC: musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
@@ -371,7 +451,11 @@ jobs:
       # (lands at the workspace root), so this becomes a subdirectory of that checkout rather than
       # a true sibling. Safe here because busbar's own build (PGO, above) already completed before
       # this checkout happens, so nothing scans this directory as part of busbar's own workspace.
+      # The headroom steps below are gated on `matrix.headroom` (see the matrix comment): the
+      # armv8.0 compat leg reuses the arm64 leg's plugin artifacts, which are identical bytes —
+      # the cdylib is built inside rust:alpine, untouched by this leg's RUSTFLAGS.
       - name: Checkout headroom-hook (first-party plugin source, pinned)
+        if: ${{ matrix.headroom }}
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/headroom-hook
@@ -406,6 +490,7 @@ jobs:
       # depend on an assumption about x86_64-musl's default-linking cdylib support that was never
       # cleanly confirmed either way.
       - name: Build headroom-hook cdylib + extract matching runtime libs (musl-native container)
+        if: ${{ matrix.headroom }}
         run: |
           set -euo pipefail
           mkdir -p headroom-libs
@@ -427,9 +512,11 @@ jobs:
         shell: bash
 
       - name: Build busbar-plugin-pack (host target, build tool only)
+        if: ${{ matrix.headroom }}
         run: cargo build --release -p busbar-plugin-pack
 
       - name: Package + sign the headroom-hook plugin tarball
+        if: ${{ matrix.headroom }}
         env:
           BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
         run: |
@@ -465,6 +552,7 @@ jobs:
       # /lib. Named per-arch so the publish job (single image build spanning both arches) can stage
       # each into its own arch-specific Docker build context directory.
       - uses: actions/upload-artifact@v7
+        if: ${{ matrix.headroom }}
         with:
           name: busbar-headroom-libs-${{ matrix.arch }}
           path: |
@@ -474,6 +562,7 @@ jobs:
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
+        if: ${{ matrix.headroom }}
         with:
           name: busbar-headroom-${{ matrix.arch }}
           path: plugin-dist/busbar-headroom-${{ matrix.arch }}.tar.gz
@@ -485,6 +574,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.push.outputs.digest }}
+      digest_armv8: ${{ steps.push-armv8.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
 
@@ -510,6 +600,16 @@ jobs:
           # cdylib..." step for why these are required and how this was verified end to end).
           mv staged/busbar-headroom-libs-amd64/* plugins/amd64/lib/
           mv staged/busbar-headroom-libs-arm64/* plugins/arm64/lib/
+          # armv8.0 compat image: its OWN build context directory, mirroring exactly what the
+          # Dockerfile COPYs (Dockerfile + providers.yaml + docker/config.yaml + the binary),
+          # with the BASELINE binary sitting at binaries/arm64/ — the same TARGETARCH path the
+          # unmodified Dockerfile reads, so the compat image is the same image in every respect
+          # except which arm64 binary it carries.
+          mkdir -p compat-armv8.0/binaries/arm64 compat-armv8.0/docker
+          mv staged/busbar-arm64-armv8.0/busbar compat-armv8.0/binaries/arm64/busbar
+          chmod +x compat-armv8.0/binaries/arm64/busbar
+          cp Dockerfile providers.yaml compat-armv8.0/
+          cp docker/config.yaml compat-armv8.0/docker/config.yaml
 
       - uses: docker/setup-buildx-action@v4
 
@@ -589,6 +689,36 @@ jobs:
             ${{ steps.meta.outputs.labels }}
             org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
 
+      # ── THE armv8.0 COMPAT IMAGE ────────────────────────────────────────────────────────────
+      # A Docker multi-arch manifest cannot carry two arm64 variants under one tag, so the +lse
+      # build above IS the manifest's linux/arm64 entry and the armv8.0-compatible build (for
+      # RPi4-class boards without the armv8.1 atomics) publishes under the SAME throwaway tag
+      # with an explicit `-armv8.0` suffix. Never `latest`, never `X.Y.Z` — the promote job owns
+      # those and mints `X.Y.Z-armv8.0` + the floating `armv8.0` pointer from these bytes.
+      - name: Resolve the armv8.0 compat tag
+        id: compat
+        run: |
+          set -euo pipefail
+          base="${{ inputs.staging_tag }}"
+          [ -n "$base" ] || base="test"
+          echo "tag=${base}-armv8.0" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the armv8.0 compat image (linux/arm64 only, suffixed tag)
+        id: push-armv8
+        uses: docker/build-push-action@v7
+        with:
+          context: compat-armv8.0
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.compat.outputs.tag }}
+            ${{ env.GHCR_IMAGE }}:${{ steps.compat.outputs.tag }}
+          # Same labels, same deterministic version-label override, same reasoning as the main
+          # push above: verify-deploy's check (d) must read X.Y.Z off the compat image too.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
@@ -598,6 +728,13 @@ jobs:
       - name: Sign GHCR image (keyless)
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${GHCR_IMAGE}@${DIGEST}"
+
+      # The compat image gets the IDENTICAL supply-chain treatment: it is a first-class release
+      # artifact, not a side build, so its digest is cosign-signed and attested the same way.
+      - name: Sign GHCR armv8.0 compat image (keyless)
+        env:
+          DIGEST: ${{ steps.push-armv8.outputs.digest }}
         run: cosign sign --yes "${GHCR_IMAGE}@${DIGEST}"
 
       - name: Attest build provenance (Docker Hub)
@@ -613,3 +750,55 @@ jobs:
           subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub, armv8.0 compat)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.push-armv8.outputs.digest }}
+          push-to-registry: false
+
+      - name: Attest build provenance (GHCR, armv8.0 compat)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.push-armv8.outputs.digest }}
+          push-to-registry: true
+
+  # CONSUMER-SIDE PROOF THAT THE TWO ARM64 VARIANTS ARE THE VARIANTS THEY CLAIM TO BE. Pulled
+  # back from the registry (never reused from the build) on a REAL arm64 runner — which has the
+  # armv8.1 atomics, so it can execute BOTH variants — and interrogated via the build-provenance
+  # stamp: the default image must report `target-features=+lse`, the compat image must report the
+  # baseline (`target-features=default`). Without this, swapping the two binaries in the publish
+  # step would ship green: both boot, both answer --version, and only an armv8.0 board (or a
+  # perf profile) would ever notice. Failing this job fails the whole workflow_call, so the
+  # staging record is never written over a mislabeled variant.
+  verify-arm64-variants:
+    name: verify the two arm64 image variants (real arm64 runner)
+    needs: publish
+    if: ${{ inputs.promote_to == '' }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Pull both staged arm64 images and assert their ISA variants
+        env:
+          BASE_TAG: ${{ inputs.staging_tag != '' && inputs.staging_tag || 'test' }}
+        run: |
+          set -euo pipefail
+          default_img="${DOCKERHUB_IMAGE}:${BASE_TAG}"
+          compat_img="${DOCKERHUB_IMAGE}:${BASE_TAG}-armv8.0"
+          docker rmi -f "$default_img" "$compat_img" 2>/dev/null || true
+          docker pull "$default_img"
+          docker pull "$compat_img"
+          def_info="$(docker run --rm "$default_img" --build-info)"
+          cmp_info="$(docker run --rm "$compat_img" --build-info)"
+          echo "default arm64: $def_info"
+          echo "armv8.0 compat: $cmp_info"
+          case "$def_info" in
+            *"target-features=+lse"*) ;;
+            *) echo "::error::the DEFAULT arm64 image does not self-report target-features=+lse — it would ship the armv8.0 baseline (outline-atomics calls on every atomic op) under the fast name." >&2; exit 1 ;;
+          esac
+          case "$cmp_info" in
+            *"target-features=default"*) ;;
+            *) echo "::error::the armv8.0 compat image reports unexpected target features — it must be the baseline build (no +lse), or armv8.0 boards (RPi4-class) get an illegal-instruction crash." >&2; exit 1 ;;
+          esac
+          echo "PASS: default arm64 image is +lse (armv8.1 floor); ${BASE_TAG}-armv8.0 is the armv8.0 baseline."

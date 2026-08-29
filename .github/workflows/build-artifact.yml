@@ -42,7 +42,17 @@ on:
   workflow_call:
     inputs:
       target:
-        description: The rust target triple to build. THE parameter this pipeline takes.
+        description: >-
+          The target id from .github/release-targets.json. THE parameter this pipeline takes; it
+          names the asset (busbar-<target>.<archive>) and selects the manifest row every other
+          per-target fact comes from. For every ordinary target it IS the rust triple.
+        required: true
+        type: string
+      triple:
+        description: >-
+          The rust target triple cargo builds, from the manifest's `triple` field (== `target`
+          for every non-variant entry). Only the toolchain-install step needs it here — the build
+          script re-reads the manifest itself, so this cannot become a second source of truth.
         required: true
         type: string
       runner:
@@ -75,7 +85,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
-          targets: ${{ inputs.target }}
+          targets: ${{ inputs.triple }}
 
       # THE BUILD. One step, one script, one env block, five targets.
       #

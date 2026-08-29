@@ -83,7 +83,7 @@ use busbar_core::REQUEST_ACTIVITY_TICKS;
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
-         target={target} target-cpu={cpu}",
+         target={target} target-cpu={cpu} target-features={features}",
         profile = env!("BUSBAR_BUILD_PROFILE"),
         opt = env!("BUSBAR_BUILD_OPT_LEVEL"),
         lto = env!("BUSBAR_BUILD_LTO"),
@@ -95,6 +95,10 @@ pub(crate) fn build_info_line() -> String {
         pgo = env!("BUSBAR_BUILD_PGO"),
         target = env!("BUSBAR_BUILD_TARGET"),
         cpu = env!("BUSBAR_BUILD_TARGET_CPU"),
+        // `+lse` on the default arm64 Linux release (armv8.1 ISA floor), `default` everywhere
+        // else — including the armv8.0-compatible arm64 variant, which is exactly how the two
+        // arm64 artifacts identify themselves from the binary alone (see build.rs).
+        features = env!("BUSBAR_BUILD_TARGET_FEATURES"),
     )
 }
 

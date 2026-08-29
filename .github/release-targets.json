@@ -100,6 +100,35 @@
       "packaged_into": ""
     },
     {
+      "_variant_comment": [
+        "THE armv8.0-COMPATIBLE ARM64 BUILD, FIRST-CLASS AND EXPLICITLY NAMED. The default",
+        "aarch64-unknown-linux-gnu artifact above raises its ISA floor to armv8.1 (+lse: native",
+        "atomic instructions instead of outline-atomics helper calls, which measured 12.1% of",
+        "self-time on an arm64 server profile). Every 2016+ arm64 server/desktop core has LSE",
+        "(Graviton, Ampere, Neoverse, Apple, Raspberry Pi 5); armv8.0 boards -- Raspberry Pi 4",
+        "class Cortex-A72 -- do not, and would SIGILL on the +lse binary. This entry IS the",
+        "historical baseline build of that same triple, unchanged, under a name that says so.",
+        "`triple` is the rust triple cargo builds (shared with the default artifact); `target`",
+        "stays unique because it names the asset (busbar-<target>.<archive>), the receipts and",
+        "the verify-matrix leg. `baseline: true` is the one parameter that differs -- read by",
+        "scripts/release-build.sh, same one-pipeline rule as `pgo`, never a second build step."
+      ],
+      "target": "aarch64-unknown-linux-gnu-armv8.0",
+      "triple": "aarch64-unknown-linux-gnu",
+      "baseline": true,
+      "runner": "ubuntu-24.04-arm",
+      "pgo": true,
+      "archive": "tar.gz",
+      "exe": "busbar",
+      "arch": "aarch64",
+      "format": "elf",
+      "linkage": "dynamic",
+      "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz",
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
+    },
+    {
       "target": "x86_64-apple-darwin",
       "runner": "macos-15-intel",
       "pgo": true,

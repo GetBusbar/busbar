@@ -59,6 +59,19 @@ fn main() {
         .map(|s| s.to_string())
         .unwrap_or_else(|| "default".into());
 
+    // target-feature, if pinned via RUSTFLAGS (`-Ctarget-feature=<list>`); else the rustc default
+    // feature set for the target, reported as `default`. The default arm64 Linux release raises
+    // its ISA floor with `+lse` here (native atomics, armv8.1+); the armv8.0-compatible variant
+    // carries no flag and honestly reports `default` — which is how the two arm64 artifacts stay
+    // tellable-apart from the binary alone (`busbar --build-info`), the same misdiagnosis-proofing
+    // the pgo field exists for. NOTE: the value must never contain spaces (it is one token of the
+    // space-separated stamp line); rustc feature lists are comma-separated, so they never do.
+    let target_features = flags
+        .iter()
+        .find_map(|f| f.split("target-feature=").nth(1))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "default".into());
+
     // lto is not exposed to build scripts; surface what CAN be seen (a -Clto flag if any) and defer
     // the profile-table `lto = "fat"` guarantee to scripts/profile-lock.sh. Reported honestly as
     // "(profile-table; see Cargo.toml)" when governed by the profile rather than a flag.
@@ -72,6 +85,7 @@ fn main() {
     println!("cargo:rustc-env=BUSBAR_BUILD_OPT_LEVEL={opt_level}");
     println!("cargo:rustc-env=BUSBAR_BUILD_TARGET={target}");
     println!("cargo:rustc-env=BUSBAR_BUILD_TARGET_CPU={target_cpu}");
+    println!("cargo:rustc-env=BUSBAR_BUILD_TARGET_FEATURES={target_features}");
     println!("cargo:rustc-env=BUSBAR_BUILD_LTO={lto}");
     println!(
         "cargo:rustc-env=BUSBAR_BUILD_PGO={}",

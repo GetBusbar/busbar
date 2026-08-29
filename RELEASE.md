@@ -48,13 +48,15 @@ impossible to overwrite: a broken one is permanent. `release.yml` runs, in order
    not listed, does not resolve as `releases/latest`, and creates no git tag.
 5. **build + attach** — the target binaries, SBOM, OpenAPI asset and build-provenance
    **attestation** (verify with `--repo GetBusbar/busbar`), all onto the draft.
-6. **`stage-image`** — `docker.yml` pushes the multi-arch image under `staging-<sha>` and nothing
-   else. Really pullable, really runnable, and no user is looking at that name.
+6. **`stage-image`** — `docker.yml` pushes the multi-arch image under `staging-<sha>` — plus the
+   armv8.0-compatible arm64 image under `staging-<sha>-armv8.0` — and nothing else. Really
+   pullable, really runnable, and no user is looking at those names.
 7. **`verify-staged`** — the gate. `verify-deploy.yml` in staging mode: pull the image FRESH
    (`docker rmi` first), boot it, download and EXECUTE the release binary, check `--version`, run
    the documented quickstart both ways, verify the attestation, verify every asset downloads.
-8. **`promote-image`** — only on green. Manifest-only retag of the exact verified digest to
-   `X.Y.Z` then `latest` on Docker Hub and GHCR. No rebuild.
+8. **`promote-image`** — only on green. Manifest-only retag of the exact verified digests to
+   `X.Y.Z` then `latest`, and the armv8.0 compat names (`X.Y.Z-armv8.0`, then the floating
+   `armv8.0` pointer), on Docker Hub and GHCR. No rebuild.
 9. **`promote-release`** — push the git tag, publish the draft, then re-derive the git tag, the
    draft flag, the latest flag and the `/releases/latest` redirect from outside and fail loud if
    any one of them did not move.

@@ -340,6 +340,7 @@ fn build_info_line_format_is_locked() {
         "pgo=",
         "target=",
         "target-cpu=",
+        "target-features=",
     ] {
         assert!(
             line.contains(key),

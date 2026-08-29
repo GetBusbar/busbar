@@ -857,6 +857,53 @@ jobs:
             exit 1
           fi
 
+      - name: "(b2) the armv8.0 compat names: X.Y.Z-armv8.0 pin + armv8.0 pointer, both registries"
+        # POST-PUBLICATION ONLY, same reason as (a)/(b). The compat image is a DIFFERENT digest
+        # from the main manifest by construction (single-arch armv8.0 baseline vs two-arch index),
+        # so it gets its own four-name agreement check rather than joining (a)'s equality — and an
+        # explicit inequality against the main digest, because the failure mode worth catching is
+        # the fast build shipping under the compat name (it would boot everywhere except the
+        # armv8.0 boards the name exists for).
+        if: ${{ inputs.stage != 'staging' }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          main_digest="${{ steps.dockerhub.outputs.ver_digest }}"
+          fail=0
+          pin=""
+          for i in $(seq 1 20); do
+            pin="$(/tmp/reg-digest.sh auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "${V}-armv8.0" || true)"
+            [ -n "$pin" ] && break
+            echo "  ...docker.io:${V}-armv8.0 not resolvable yet (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$pin" ]; then
+            echo "FAIL: registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 did not resolve after retries — the armv8.0 compat image (RPi4-class boards) never got its version pin."
+            exit 1
+          fi
+          echo "PASS: docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 resolves ($pin)"
+          if [ -n "$main_digest" ] && [ "$pin" = "$main_digest" ]; then
+            echo "FAIL: ${V}-armv8.0 resolves to the SAME digest as ${V} — the compat name must carry the armv8.0 baseline build, not the default (+lse) manifest."
+            fail=1
+          fi
+          for name in "auth.docker.io registry-1.docker.io armv8.0" "ghcr.io ghcr.io ${V}-armv8.0" "ghcr.io ghcr.io armv8.0"; do
+            read -r auth_host reg_host tag <<< "$name"
+            got=""
+            for i in $(seq 1 20); do
+              got="$(/tmp/reg-digest.sh "$auth_host" "$reg_host" "getbusbar/busbar" "$tag" || true)"
+              [ -n "$got" ] && [ "$got" = "$pin" ] && break
+              echo "  ...${reg_host}:${tag} not yet == ${V}-armv8.0 digest (attempt $i/20), retrying in 15s"
+              sleep 15
+            done
+            if [ "$got" = "$pin" ]; then
+              echo "PASS: ${reg_host} getbusbar/busbar:${tag} digest == :${V}-armv8.0 digest ($got)"
+            else
+              echo "FAIL: ${reg_host} getbusbar/busbar:${tag} digest (${got:-<none>}) != :${V}-armv8.0 digest ($pin)"
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ]
+
       - name: "(c) GitHub Release vX.Y.Z exists with expected assets"
         run: |
           set -euo pipefail
@@ -1073,6 +1120,22 @@ jobs:
           else
             echo "FAIL: running image label org.opencontainers.image.version == '${label}', expected '${V}'"
             echo "::error::(d) ${IMG} should be busbar ${V} but the image inside reports org.opencontainers.image.version='${label}'. The tag and the bytes disagree. Fix: check docker.yml's label_version input for this build."
+            fail=1
+          fi
+          # THE armv8.0 COMPAT IMAGE, SAME LABEL ASSERTION. Its name is the image-under-test's name
+          # plus the `-armv8.0` suffix in both modes (staging-<sha>-armv8.0 / X.Y.Z-armv8.0). It is
+          # linux/arm64-only, so this amd64 runner pulls it with an explicit --platform and reads
+          # the label WITHOUT running it — executing it is docker.yml's verify-arm64-variants job,
+          # on a real arm64 runner, at staging time.
+          IMG8="${IMG}-armv8.0"
+          docker rmi -f "$IMG8" >/dev/null 2>&1 || true
+          docker pull --platform linux/arm64 "$IMG8"
+          label8="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMG8")"
+          if [ "$label8" = "$V" ]; then
+            echo "PASS: armv8.0 compat image label org.opencontainers.image.version == ${V} (image: ${IMG8})"
+          else
+            echo "FAIL: armv8.0 compat image label org.opencontainers.image.version == '${label8}', expected '${V}'"
+            echo "::error::(d) ${IMG8} should be busbar ${V} but reports org.opencontainers.image.version='${label8}'. The compat tag and its bytes disagree."
             fail=1
           fi
           # THE UNTAGGED PULL IS A POST-PUBLICATION ASSERTION. `docker pull getbusbar/busbar` with no

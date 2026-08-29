@@ -94,6 +94,25 @@ case "$EFFECTIVE_TRIPLE" in
   *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs" ;;
   *)         EMIT_RELOCS="" ;;
 esac
+# ARM64 ATOMICS (LSE): rustc's aarch64-linux targets default to the armv8.0 baseline, where every
+# atomic RMW compiles to an outline-atomics helper call — measured at 12.1% of self-time on a
+# Graviton profile. The DEFAULT arm64 release therefore raises its floor to armv8.1 (+lse: native
+# LDADD/CAS/SWP), which every 2016+ arm64 server and desktop core has (Graviton, Ampere, Apple,
+# Neoverse, RPi5). Older armv8.0 boards (RPi4-class Cortex-A72) get their own explicitly-suffixed
+# `armv8.0` artifact, built with BUSBAR_ARM64_BASELINE=1 — that build IS the historical baseline
+# build, byte-for-byte the same recipe minus this flag.
+# The flag joins BOTH the instrumented (phase 1) and optimized (phase 3) builds: a profile gathered
+# on a different ISA variant than the one it optimizes is a training mismatch. Linux-only gate on
+# purpose: aarch64-apple-darwin's default target-cpu already includes LSE, and non-arm64 triples
+# have no such feature. Not applied to x86_64 anywhere, so those builds are byte-identical to before.
+if [ "${BUSBAR_ARM64_BASELINE:-0}" = "1" ]; then
+  LSE_FLAG=""
+else
+  case "$EFFECTIVE_TRIPLE" in
+    aarch64-*-linux-*) LSE_FLAG="-Ctarget-feature=+lse" ;;
+    *)                 LSE_FLAG="" ;;
+  esac
+fi
 # THE deterministic output path (see fail-closed rule above).
 OUT="target/pgo/${TARGET_SEG}release/busbar"
 # Positive-proof marker: written only after a verified PGO build; the workflow gates on it.
@@ -136,8 +155,11 @@ rm -f "$MARKER" 2>/dev/null || true
 # ---- phase 1: instrumented build ------------------------------------------------------------
 log "phase 1/3: instrumented build"
 rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
+# $LSE_FLAG joins the INSTRUMENTED build too (not just the optimized one): the training profile
+# must be gathered on the same ISA variant the optimized build targets, or the profile is a
+# statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-RUSTFLAGS="-Cprofile-generate=$PROF_DIR" \
+RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
@@ -485,9 +507,10 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # this env is ever dropped — but the explicit signal is the contract. A plain `cargo build --release`
 # sets neither and correctly reports `pgo=false`, which is the whole point of the stamp.
 # $EMIT_RELOCS rides along on Linux targets only — the BOLT prerequisite documented at its
-# definition near the top of this file.
+# definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
+# here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}" \
+BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
@@ -502,6 +525,12 @@ BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}" \
   echo "profile_bytes=$MERGED_SIZE"
   echo "profraw_count=$RAW_COUNT"
   echo "target=${TARGET:-<host>}"
+  # Which ISA variant this arm64 binary is: `+lse` (armv8.1 floor, the default arm64 artifact) or
+  # `baseline` (armv8.0-compatible, the explicitly-suffixed compat artifact / any non-arm64 target).
+  # Extra marker keys are ignored by older readers; verify-artifact.py's pgo_applied row parses
+  # key=value lines generically.
+  echo "target_features=${LSE_FLAG:+lse}"
+  echo "arm64_baseline=${BUSBAR_ARM64_BASELINE:-0}"
   echo "train_runs=$TRAIN_RUNS"
   echo "reqs_per_shape=$REQS"
   echo "streams=$STREAMS"

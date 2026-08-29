@@ -458,10 +458,28 @@ def row_pgo_applied(ctx) -> str:
     )
     if fields.get("pgo-verified") != "1":
         raise RowFailure("the PGO proof marker is not marked verified:\n%s" % text)
-    if fields.get("target") != ctx.target:
+    # The marker names the RUST TRIPLE pgo-build.sh actually built. For every ordinary target
+    # that IS the target id; a variant artifact (same triple, different ISA floor — the arm64
+    # armv8.0 compat build) declares `triple` in release-targets.json, and the marker must name
+    # that shared triple. Comparing against the target id there would reject every variant's
+    # genuine marker while still accepting nothing false: the leg-mixup this row exists to catch
+    # is a marker from a DIFFERENT triple's leg.
+    expected_triple = ctx.spec.get("triple", ctx.target)
+    if fields.get("target") != expected_triple:
         raise RowFailure(
-            "the PGO proof marker names target %r but this artifact is %r. A marker from another "
-            "leg is not proof about this one." % (fields.get("target"), ctx.target)
+            "the PGO proof marker names target %r but this artifact builds triple %r. A marker "
+            "from another leg is not proof about this one." % (fields.get("target"), expected_triple)
+        )
+    # And BECAUSE two legs can now share a triple, the marker's baseline flag is what keeps them
+    # from vouching for each other: pgo-build.sh records arm64_baseline=1 on the armv8.0 build
+    # and 0 on the default (+lse) build, and it must match what this target declares.
+    want_baseline = "1" if ctx.spec.get("baseline", False) else "0"
+    if fields.get("arm64_baseline", "0") != want_baseline:
+        raise RowFailure(
+            "the PGO proof marker records arm64_baseline=%r but this target declares baseline=%r. "
+            "The armv8.0 compat build and the default (+lse) build share a triple; this flag is "
+            "what proves the marker belongs to THIS variant and not its sibling."
+            % (fields.get("arm64_baseline", "0"), want_baseline)
         )
     for key in ("profile_bytes", "profraw_count"):
         try:

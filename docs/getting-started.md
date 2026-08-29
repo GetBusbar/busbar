@@ -80,6 +80,22 @@ Drops `busbar` and `providers.yaml` where you run it (no sudo). To install onto 
 
 **Or download manually**: grab the archive for your platform from the [latest release](https://github.com/GetBusbar/busbar/releases/latest) (Linux `x86_64`/`aarch64`, macOS Intel/Apple Silicon, Windows `x86_64`), plus the provider catalog from [getbusbar.com/providers.yaml](https://getbusbar.com/providers.yaml). The binary is self-contained (no runtime, no virtualenv, no dependencies):
 
+**Which 64-bit ARM Linux build do I need?** There are two, of equal standing — they are the same
+release, built for two CPU generations:
+
+| Your hardware | Download this |
+| --- | --- |
+| Any cloud ARM (AWS Graviton, Ampere, Google Axion), Raspberry Pi 5, Apple Silicon running Linux, anything 2016+ | `busbar-aarch64-unknown-linux-gnu.tar.gz` (the default) |
+| Raspberry Pi 4 / Pi 400 / CM4, or other older ARMv8.0 boards (Cortex-A72/A53 class) | `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` |
+
+The default build requires ARMv8.1 or newer so it can use the CPU's native atomic instructions —
+measurably faster under concurrency, and every ARM server or desktop chip made since 2016 has
+them. The `-armv8.0` build is the same binary recipe without that requirement, so it runs on the
+Raspberry Pi 4 generation. If you pick wrong in the fast direction nothing breaks; if you run the
+default build on a Pi 4 it stops immediately with an "illegal instruction" error — switch to the
+`-armv8.0` download. Not sure what you have? `busbar --build-info` on the running binary prints
+`target-features=+lse` for the default build and `target-features=default` for the compat one.
+
 ```bash
 tar -xzf busbar-*.tar.gz   # extracts the `busbar` binary
 chmod +x busbar
@@ -95,7 +111,7 @@ docker run -d -p 8080:8080 \
   getbusbar/busbar
 ```
 
-The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
+The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
 
 The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
 

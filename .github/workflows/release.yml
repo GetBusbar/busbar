@@ -165,6 +165,17 @@ jobs:
               exit 1
             fi
             echo "Docker Hub tag ${V} is free (HTTP ${code} on HEAD manifest)."
+            # Same pre-flight for the armv8.0 compat pin the promote also mints: discovering it
+            # taken AFTER the main promote landed would strand a half-promoted release.
+            code8="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
+              -H "Authorization: Bearer $tok" \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json' \
+              "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${V}-armv8.0" || echo 000)"
+            if [ "$code8" = "200" ]; then
+              echo "::error::getbusbar/busbar:${V}-armv8.0 ALREADY EXISTS on Docker Hub. The compat pin is minted by the same promote as ${V}; a taken compat name means this version cannot be published completely. Same fix as the main pin."
+              exit 1
+            fi
+            echo "Docker Hub tag ${V}-armv8.0 is free (HTTP ${code8} on HEAD manifest)."
           else
             echo "::warning::could not obtain an anonymous Docker Hub pull token; skipping the tag-immutability pre-flight. The promote step will still refuse to overwrite an existing tag, just later."
           fi
@@ -452,6 +463,11 @@ jobs:
           r_sha="$(jq -r .qa_sha staged/staged.json)"
           r_staging="$(jq -r .staging_tag staged/staged.json)"
           r_digest="$(jq -r .digest staged/staged.json)"
+          # The armv8.0 compat image the same stage pushed under <staging_tag>-armv8.0. The
+          # promote mints ${VERSION}-armv8.0 from it, so it gets every re-verification the main
+          # digest gets. `// empty` so a record written before the dual-arm64 split reads as
+          # empty and is refused below, not promoted blind.
+          r_compat_digest="$(jq -r '.compat_digest // empty' staged/staged.json)"
 
           # 3. INTERNAL CONSISTENCY. Same sha implies same Cargo.toml implies same version, so any
           #    disagreement means the record and this commit are not describing each other.
@@ -460,6 +476,8 @@ jobs:
           [ "$r_version" = "$VERSION" ]   || { echo "::error::record version ${r_version} != Cargo.toml version ${VERSION}"; fail=1; }
           [ "$r_staging" = "$EXPECTED_STAGING_TAG" ] || { echo "::error::record staging_tag ${r_staging} != derived ${EXPECTED_STAGING_TAG}"; fail=1; }
           case "$r_digest" in sha256:*) : ;; *) echo "::error::record digest '${r_digest}' is not a sha256 manifest digest"; fail=1 ;; esac
+          case "$r_compat_digest" in sha256:*) : ;; *) echo "::error::record compat_digest '${r_compat_digest:-<absent>}' is not a sha256 manifest digest. The armv8.0 compat image is promoted by the same run; a record without it predates the dual-arm64 split — re-run 'Release stage' on this sha."; fail=1 ;; esac
+          [ "$r_compat_digest" != "$r_digest" ] || { echo "::error::record compat_digest equals the main digest — the compat name would carry the default manifest, not the armv8.0 baseline build"; fail=1; }
           [ "$fail" = 0 ] || { echo "::error::STAGED RECORD INCONSISTENT. Refusing to promote it. Re-run 'Release stage' on ${SHA:0:7} and then re-run this workflow."; exit 1; }
 
           # 4. THE REGISTRY, RE-DERIVED FROM OUTSIDE. What `docker pull` would resolve for the
@@ -492,6 +510,18 @@ jobs:
               exit 1
             fi
           done
+          # Same tag->digest re-derivation for the compat staging name the promote copies from.
+          hub8="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "${r_staging}-armv8.0" || true)"
+          ghcr8="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "${r_staging}-armv8.0" || true)"
+          echo "docker.io ${r_staging}-armv8.0 = ${hub8:-<none>}"
+          echo "ghcr.io   ${r_staging}-armv8.0 = ${ghcr8:-<none>}"
+          for pair in "docker.io:$hub8" "ghcr.io:$ghcr8"; do
+            got="${pair#*:}"
+            if [ "$got" != "$r_compat_digest" ]; then
+              echo "::error::STALE STAGED RECORD (compat): ${pair%%:*} serves '${got:-<none>}' for ${r_staging}-armv8.0, but the record says '${r_compat_digest}'. Fix: re-run 'Release stage' on ${SHA:0:7}, then re-run this workflow."
+              exit 1
+            fi
+          done
 
           # 5. THE ATTESTATION, WITH THE USER'S OWN COMMAND. The staged digest carries a GitHub
           #    build-provenance attestation recorded at build time; the promote preserves it only
@@ -500,6 +530,11 @@ jobs:
           gh attestation verify "oci://index.docker.io/getbusbar/busbar:${r_staging}" \
             --repo "$GITHUB_REPOSITORY" \
             || { echo "::error::the staged image's build-provenance attestation does not verify. Refusing to promote unattestable bytes."; exit 1; }
+          # The compat image carries its OWN attestation (a different digest is a different
+          # subject); identical treatment, identical refusal.
+          gh attestation verify "oci://index.docker.io/getbusbar/busbar:${r_staging}-armv8.0" \
+            --repo "$GITHUB_REPOSITORY" \
+            || { echo "::error::the staged armv8.0 compat image's build-provenance attestation does not verify. Refusing to promote unattestable bytes."; exit 1; }
 
           # 6. THE DRAFT. It must exist, still be a DRAFT (published means this version is already
           #    out and plan should have no-opped), be ANCHORED TO THIS SHA (release-stage re-anchors
@@ -539,7 +574,7 @@ jobs:
   # docker.yml's `promote` job re-derives all four names from the registry afterwards and fails loud
   # if only some of them moved, so a partial promote is red rather than silent.
   promote-image:
-    name: promote the image (X.Y.Z + latest, no rebuild)
+    name: promote the image (X.Y.Z + latest + the armv8.0 compat names, no rebuild)
     needs: [plan, resolve-staged]
     uses: ./.github/workflows/docker.yml
     with:
