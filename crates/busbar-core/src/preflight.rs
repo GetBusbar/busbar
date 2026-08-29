@@ -858,21 +858,32 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     .build()
                     .map_err(|e| format!("fetch runtime: {e}"))?;
                 rt.block_on(async {
-                    // Do NOT follow redirects: the SSRF guard above only vets the ORIGINAL url, so a
-                    // 3xx `Location` from the semi-trusted plugin registry could otherwise bounce the
+                    // The ENGINE, on a cold one-shot posture (`llm_lane` values, one idle slot):
+                    // webpki trust, system DNS, boot-env proxy — and redirect non-following is
+                    // STRUCTURAL now (hyper follows nothing), where reqwest needed
+                    // `Policy::none()`: the SSRF guard above only vets the ORIGINAL url, so a 3xx
+                    // `Location` from the semi-trusted plugin registry could otherwise bounce the
                     // fetch to an internal/cloud-metadata target with no re-check — the same
-                    // redirect-SSRF vector the OTLP exporter and provider clients already close. With
-                    // `Policy::none()` a redirect arrives as a 3xx status and falls into the
-                    // non-success arm below.
-                    let client = reqwest::Client::builder()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .build()
-                        .map_err(|e| format!("fetch client: {e}"))?;
+                    // redirect-SSRF vector the OTLP exporter and provider clients already close.
+                    // A redirect arrives as a 3xx status and falls into the non-success arm below.
+                    let client = crate::proxy::build_egress_client(
+                        &crate::proxy::EgressClientSpec::llm_lane(1, 4, false, false),
+                    );
+                    let uri: http::Uri = url
+                        .parse()
+                        .map_err(|e| format!("GET {url}: not a valid URI: {e}"))?;
+                    let request = busbar_substrate::egress::engine::request(
+                        http::Method::GET,
+                        uri,
+                        http::HeaderMap::new(),
+                        bytes::Bytes::new(),
+                    );
                     let resp = client
-                        .get(&url)
-                        .send()
+                        .request(request)
                         .await
-                        .map_err(|e| format!("GET {url}: {e}"))?;
+                        .map_err(|e| {
+                            format!("GET {url}: {}", busbar_substrate::egress::with_cause(&e))
+                        })?;
                     let status = resp.status();
                     if !status.is_success() {
                         if status.is_redirection() {
@@ -887,7 +898,12 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     // byte — the fast, cheap path for the common case of an honest oversized response.
                     // Not load-bearing on its own (a dishonest/absent header falls through to the
                     // streamed cap below), just an early exit.
-                    if let Some(len) = resp.content_length() {
+                    if let Some(len) = resp
+                        .headers()
+                        .get(http::header::CONTENT_LENGTH)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok())
+                    {
                         if len as usize > cap {
                             return Err(format!(
                                 "GET {url}: declared Content-Length {len} exceeds the {cap}-byte \
@@ -895,11 +911,13 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                             ));
                         }
                     }
-                    // Stream with a running byte counter (never `resp.bytes()`, which buffers the
-                    // ENTIRE — possibly multi-gigabyte — body before any cap could apply) so a
-                    // mistyped or compromised URL serving an unbounded body is rejected with a clear
-                    // error instead of OOMing busbar on boot or `/plugins/reload`.
-                    let (bytes, end) = crate::proxy::read_capped(resp.bytes_stream(), cap).await;
+                    // Stream with a running byte counter (never a whole-body buffer, which would
+                    // hold the ENTIRE — possibly multi-gigabyte — body before any cap could apply)
+                    // so a mistyped or compromised URL serving an unbounded body is rejected with a
+                    // clear error instead of OOMing busbar on boot or `/plugins/reload`.
+                    use http_body_util::BodyExt;
+                    let (bytes, end) =
+                        crate::proxy::read_capped(resp.into_body().into_data_stream(), cap).await;
                     match end {
                         crate::proxy::ReadEnd::Complete => Ok(bytes.to_vec()),
                         crate::proxy::ReadEnd::Truncated => Err(format!(
