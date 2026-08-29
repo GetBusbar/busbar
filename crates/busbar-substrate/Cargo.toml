@@ -72,6 +72,15 @@ indexmap = { workspace = true }
 # no `App`/`Store` reach, so it names only these two new leaf edges.
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
+# The egress differential-harness FIXTURES (`egress::fixtures`): real rustls TLS/mTLS/redirect
+# servers with rcgen-minted certificates, shared by this crate's own engine tests AND (via the
+# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. All four edges are
+# OPTIONAL and enabled only by `test-support` — a normal build of this crate carries none of them,
+# so the fixtures cost the shipped binary nothing. (This crate's own test binary reaches the same
+# crates through [dev-dependencies] below, so `cargo test -p busbar-substrate` needs no feature.)
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
 # The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
@@ -89,6 +98,11 @@ hex = { workspace = true }
 # self-signed client identities and roots (the way the a2a boot resolver builds one) with `rcgen`;
 # it is used only by those moved tests, so it is a dev edge here.
 rcgen = { workspace = true }
+# The egress fixture servers (`egress::fixtures`, compiled under `cfg(test)` for this crate's own
+# suite) run real rustls handshakes; dev edges so no feature is needed for `cargo test -p`.
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
@@ -105,4 +119,7 @@ openapi-schema = ["dep:schemars"]
 # test binary (core's, which also dual-compiles the mcp/a2a plane tests). Never on in a normal build;
 # core enables it from its own `test-support` feature and its dev-dependency edge. Mirrors core's own
 # `test-support`, which likewise reveals a test-only surface to the crate that links its tests.
-test-support = []
+# The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
+# this feature too, so the crates whose test binaries link this one (core's differential harness)
+# can spawn the same fixture servers this crate's own engine tests drive.
+test-support = ["dep:rustls", "dep:rustls-pki-types", "dep:rcgen"]

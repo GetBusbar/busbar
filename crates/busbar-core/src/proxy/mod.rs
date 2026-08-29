@@ -297,6 +297,15 @@ mod stop_sequence_cap_degrade_tests;
 #[path = "tests/egress_dropped_controls_audit_tests.rs"]
 mod egress_dropped_controls_audit_tests;
 
+/// THE EGRESS DIFFERENTIAL HARNESS: both outbound stacks (the owned hyper engine and the pinned
+/// reqwest client) driven against the same recording fixtures, their observable outcomes —
+/// status, body, observed peer SPKI, error CLASS — compared row by row. This is the gate every
+/// step of the one-egress-stack migration re-runs; the fixtures live in
+/// `busbar_substrate::egress::fixtures` so the substrate engine tests drive the same servers.
+#[cfg(test)]
+#[path = "tests/egress_differential_tests.rs"]
+mod egress_differential_tests;
+
 /// THE ALLOCATION-COUNT PERF GATE (deterministic CI perf-regression gate). Drives one openai>openai
 /// passthrough request through the real forward path and asserts the per-request heap-allocation
 /// count has not regressed past a committed bound — so a stray per-request allocation (the "FIX-9"

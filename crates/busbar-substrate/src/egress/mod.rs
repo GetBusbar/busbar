@@ -20,6 +20,13 @@
 // re-exports `HopSpec` from there so `busbar_core::egress::seam::HopSpec` still resolves.
 pub mod seam;
 
+// The differential-harness FIXTURE SERVERS (recording rustls TLS/mTLS servers, the plaintext
+// redirect canary, resolver doubles). Test machinery only: compiled for this crate's own suite and,
+// under `test-support`, for the dependent test binaries that drive the two egress stacks against
+// the same fixtures (busbar-core's differential harness). Never part of a shipped build.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
+
 /// One buffered outbound round trip, reduced to what a caller reads back.
 ///
 /// `Default` is the empty response — status `0`, no location, no body, no observed identity — used
