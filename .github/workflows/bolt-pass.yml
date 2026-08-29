@@ -1,0 +1,158 @@
+name: BOLT pass
+
+# POST-LINK LAYOUT OPTIMIZATION (LLVM BOLT), THE HALF OF IT THAT IS HONEST ON GITHUB INFRASTRUCTURE.
+#
+# The BOLT pass has two halves with very different hardware needs:
+#
+#   RECORDING  `perf record` sampling the release binary under the benchmark mix. This CANNOT run
+#              here: GitHub-hosted runners expose no usable PMU, so perf cycle sampling does not
+#              work on them, full stop. It runs on real hardware (the EC2 benchmark host), against
+#              the STAGED image for the release being cut — the same "benchmark the staged bytes"
+#              rule release-stage.yml documents. Its output is a BOLT .fdata profile.
+#
+#   REWRITING  perf2bolt/llvm-bolt over the binary + profile. This needs no PMU at all and runs
+#              fine on a GitHub runner — which is exactly what this workflow does, via
+#              scripts/bolt-pass.sh (the fail-closed recipe: relocation guard, exact proven flags,
+#              and the output binary must actually execute before success is declared). The
+#              measured win that justifies the pass: +38% req/s with iTLB-load-misses down 83%,
+#              recorded against the aarch64 release binary.
+#
+# WHAT THIS WORKFLOW IS, PRECISELY: bookkeeping around the rewrite. It takes the staged image tag
+# (the binary's source of truth — the exact bytes the profile was recorded against), takes the
+# .fdata artifact the recording produced, runs the pass on a runner of the binary's own
+# architecture so the output can be executed as verification, and uploads the result.
+#
+# WHAT IT DELIBERATELY DOES NOT DO, AND THE SEAM THAT LEAVES. It mints no name, pushes no image,
+# touches no draft, and writes nothing into the staged-manifest record — release-order-lint's R10
+# ("main never rebuilds, qa never names") stays exactly as true as before this file existed. The
+# BOLTed binary lands as the `busbar-bolt-<arch>` artifact of THIS run and nothing downstream
+# consumes it yet: wiring it into what release-stage.yml stages and records (so the promoted bytes
+# are the BOLTed bytes) is a deliberate release-pipeline decision that has not been taken, not an
+# oversight. Until it is, this workflow proves the pass works on the staged bytes and preserves
+# the artifact; it changes nothing about what ships.
+#
+# HOW THE .fdata GETS HERE, STATED HONESTLY: GitHub artifacts can only be created from inside a
+# workflow run, so the recording host cannot upload one directly. Today the path is a run that
+# receives the capture (any job that ends with upload-artifact on the profile) whose run id is
+# then handed to this workflow. Making that hand-off first-class is part of the same open
+# integration question as the seam above.
+on:
+  # DISPATCH-ONLY, AND THAT IS A DESIGN STATEMENT: nothing about a push, a tag, or a schedule can
+  # cause a rewrite, because the profile is born on hardware GitHub does not have and arrives by
+  # human hand-off. No `v*` trigger (release-order-lint R1), no workflow_call: nothing in the
+  # release graph depends on this yet — see the seam note above.
+  workflow_dispatch:
+    inputs:
+      staging_tag:
+        description: >-
+          The release-stage staging tag (staging-<sha12>) to take the binary from. The binary is
+          extracted from getbusbar/busbar:<staging_tag> — the exact bytes the profile was recorded
+          against, which is a BOLT correctness requirement, not a preference: a profile converted
+          or applied against different bytes mis-attributes every sample.
+        required: true
+        type: string
+      arch:
+        description: >-
+          Which architecture's binary to optimize. Also picks the runner: the pass runs on the
+          binary's own architecture so scripts/bolt-pass.sh can EXECUTE the output as its
+          verification step (a rewrite that exits green but emits a crashing binary is the
+          observed failure mode; execution is the only proof).
+        required: true
+        type: choice
+        options: [amd64, arm64]
+      fdata_run_id:
+        description: >-
+          The id of the workflow run whose artifact holds the BOLT .fdata profile recorded on the
+          benchmark host (see the header for how a capture becomes an artifact).
+        required: true
+        type: string
+      fdata_artifact:
+        description: >-
+          Name of that run's .fdata artifact. Empty means the convention busbar-fdata-<arch>.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read  # download the .fdata artifact from another run in this repo
+
+jobs:
+  bolt:
+    name: BOLT rewrite (${{ inputs.arch }})
+    # Native runner for the chosen arch — the execution verification depends on it (see the input).
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Ubuntu 24.04's packaged BOLT. scripts/bolt-pass.sh finds the tools under
+      # /usr/lib/llvm-20/bin itself, so no PATH surgery here.
+      - name: Install LLVM BOLT
+        run: sudo apt-get update && sudo apt-get install -y bolt-20
+
+      # AUTHENTICATED PULL, same reasoning as everywhere else in this repo: Docker Hub's anonymous
+      # quota is per source IP and GitHub runner IPs are shared, so an anonymous pull can be
+      # throttled for reasons unrelated to busbar. Same credentials docker.yml uses; safe to
+      # reference unconditionally because this workflow is dispatch-only (never pull_request, so
+      # secrets are always present).
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The binary comes OUT OF THE STAGED IMAGE, not from a fresh build: rebuilding here would
+      # produce bytes the profile was never recorded against (and would be a second build path,
+      # the defect class this repo has already paid for). A tag that does not resolve is a hard
+      # failure — an unknown staging tag means the profile and the binary cannot be matched up.
+      - name: Extract the release binary from the staged image
+        env:
+          STAGING_TAG: ${{ inputs.staging_tag }}
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          case "$STAGING_TAG" in
+            staging-*) ;;
+            *) echo "::error::'${STAGING_TAG}' is not a staging-<sha12> tag. This workflow only reads throwaway staging names; it never touches X.Y.Z or latest." >&2; exit 1 ;;
+          esac
+          ref="getbusbar/busbar:${STAGING_TAG}"
+          docker pull --platform "linux/${ARCH}" "$ref"
+          cid="$(docker create --platform "linux/${ARCH}" "$ref")"
+          docker cp "$cid":/busbar busbar-staged
+          docker rm "$cid" >/dev/null
+          ls -l busbar-staged
+          file busbar-staged
+
+      - name: Download the .fdata profile artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.fdata_artifact != '' && inputs.fdata_artifact || format('busbar-fdata-{0}', inputs.arch) }}
+          run-id: ${{ inputs.fdata_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: fdata
+
+      # Exactly one profile, located by extension rather than by an assumed filename, and zero or
+      # several is a refusal: guessing which profile to apply is how the wrong layout ships green.
+      - name: Run the BOLT pass (fail-closed)
+        run: |
+          set -euo pipefail
+          mapfile -t profiles < <(find fdata -type f -name '*.fdata')
+          if [ "${#profiles[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one .fdata file in the downloaded artifact, found ${#profiles[@]}. Refusing to guess which profile to apply." >&2
+            find fdata -type f >&2 || true
+            exit 1
+          fi
+          scripts/bolt-pass.sh \
+            --binary busbar-staged \
+            --fdata "${profiles[0]}" \
+            --out busbar-bolt
+
+      # THE SEAM (see the header): the BOLTed binary is preserved as this run's artifact and
+      # nothing consumes it yet. A future release-stage integration would take it from here.
+      - name: Upload the BOLTed binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: busbar-bolt-${{ inputs.arch }}
+          path: busbar-bolt
+          if-no-files-found: error
+          retention-days: 90

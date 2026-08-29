@@ -130,7 +130,18 @@ else
   # the two arms must differ in PGO and in nothing else, or "same build" is a claim rather than a
   # fact. (No `--locked`: pgo-build.sh does not pass it either, and the lockfile freshness gate is
   # `gate`'s job, upstream of this one.)
-  cargo build --release -p busbar --target "$TARGET"
+  #
+  # That parity includes the BOLT prerequisite: Linux targets link with --emit-relocs, same case
+  # and same flag as pgo-build.sh (see the comment at its EMIT_RELOCS definition — llvm-bolt on
+  # aarch64 emits a segfaulting binary when the input carries no relocations; harmless on x86_64;
+  # not a flag ld64/link.exe know, hence the Linux gate). Today's only non-PGO target is Windows,
+  # so this case is empty in practice — it exists so a Linux target that ever declares pgo:false
+  # cannot silently lose the relocations the BOLT pass refuses to run without.
+  EMIT_RELOCS=""
+  case "$TARGET" in
+    *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs" ;;
+  esac
+  RUSTFLAGS="${EMIT_RELOCS}" cargo build --release -p busbar --target "$TARGET"
   BIN="target/${TARGET}/release/${SPEC_EXE}"
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }

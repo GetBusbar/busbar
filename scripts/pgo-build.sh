@@ -78,6 +78,22 @@ TARGET="${PGO_TARGET:-}"
 TARGET_FLAG="${TARGET:+--target $TARGET}"
 # The target-triple path segment cargo inserts under --target-dir when --target is used.
 TARGET_SEG="${TARGET:+$TARGET/}"
+# BOLT PREREQUISITE: Linux release binaries are linked with --emit-relocs so the shipped ELF keeps
+# its relocation sections. scripts/bolt-pass.sh (the post-link layout-optimization pass) REQUIRES
+# them: llvm-bolt on aarch64 emits a binary that SEGFAULTS when its input was linked without
+# relocations — proven on real hardware, where the same pass over an --emit-relocs build ran clean.
+# Harmless on x86_64 (extra .rela.* sections; no code or layout change), so BOTH Linux
+# architectures get it rather than one arch quietly differing from the other. Meaningless off
+# Linux (ld64/link.exe have no such flag, and BOLT does not apply), hence the gate on the
+# EFFECTIVE triple — the explicit --target when given, the host otherwise, so a host build on a
+# Linux box gets the same link a --target build does. Applied to the OPTIMIZED build only: the
+# instrumented binary trains and is never shipped. release-build.sh's non-PGO arm mirrors this
+# (same case, same flag) so the two arms stay byte-identical minus the profile.
+EFFECTIVE_TRIPLE="${TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+case "$EFFECTIVE_TRIPLE" in
+  *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs" ;;
+  *)         EMIT_RELOCS="" ;;
+esac
 # THE deterministic output path (see fail-closed rule above).
 OUT="target/pgo/${TARGET_SEG}release/busbar"
 # Positive-proof marker: written only after a verified PGO build; the workflow gates on it.
@@ -441,8 +457,10 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # build script ALSO detects `-Cprofile-use` in CARGO_ENCODED_RUSTFLAGS, so PGO is recorded even if
 # this env is ever dropped — but the explicit signal is the contract. A plain `cargo build --release`
 # sets neither and correctly reports `pgo=false`, which is the whole point of the stamp.
+# $EMIT_RELOCS rides along on Linux targets only — the BOLT prerequisite documented at its
+# definition near the top of this file.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED" \
+BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}" \
   cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
