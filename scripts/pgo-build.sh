@@ -142,6 +142,21 @@ RUSTFLAGS="-Cprofile-generate=$PROF_DIR" \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
 [ -x "$INSTRUMENTED" ] || pgo_fail "instrumented binary missing at $INSTRUMENTED"
+# BUILD-TIME PROFRAW PURGE. RUSTFLAGS applies -Cprofile-generate to BUILD SCRIPTS and PROC MACROS
+# too (host == target on every runner this trains on), and each one that EXECUTES during the
+# build above dumps its own .profraw into $PROF_DIR (the flag's embedded default path). On a
+# cold cache that is dozens of files - measured: 57 of a 61-file merge were compile-time dumps,
+# and proc_macro2/syn/regex_automata token-loop counters outranked the gateway's real hot path
+# in the merged profile. Two harms: shared std/core generics (slice iters, fmt glue) carry the
+# SAME symbol+hash in a proc macro and in busbar, so llvm-profdata SUMS compile-time counts into
+# serving-path functions and -Cprofile-use lays code out for the noise; and the drift detector's
+# trainer ranking drowns in it. A warm cache runs few or no build scripts, so warm and cold
+# builds shipped DIFFERENT profiles - the cold one (every CI release) the polluted one. Purge
+# everything the build dumped BEFORE any training execution runs; every .profraw that feeds the
+# merge after this line comes from the trainer's own invocations of the instrumented binary
+# (keygen, --validate, and the per-run gateways). Fail-closed unchanged: the per-run run<N>_*
+# flush proofs and the merge-time re-checks below still gate on the files that matter.
+rm -f "$PROF_DIR"/*.profraw
 
 # ---- embedded mock upstream (zero deps: python3 stdlib) --------------------------------------
 # Speaks just enough OpenAI chat-completions for training: fixed JSON reply, and a paced SSE
@@ -311,6 +326,18 @@ YAML
 # the top). The shapes' RELATIVE weights - openai volume at 10x, large-body and anthropic
 # translation at 1x, the stream count, the ~1% refusal sliver - are unchanged; only the absolute
 # per-run counts shrink, and the merge sums them back across runs.
+#
+# SIGNED-TOKEN COVERAGE, verified (do not add a dedicated "signed" shape): every shape below
+# ALREADY sends a signed busbar token - the minted bbk_* Bearer/x-api-key credential IS the
+# 1.5.0 Ed25519 signed token (there is no other bearer-credential shape), so ed25519 verify,
+# the generation gate, AND the per-request hex digesting all train at full volume. The
+# drift-check once flagged `hex::ToHex::encode_hex` (the reqlog chain digest, reached via
+# ingress finish_inner -> busbar_api::auth::sha256_hex on every governed request) as a trainer
+# gap; the calibration profile disproved it - sha256_hex carried one call per counted request
+# (8052 across 3 runs at PGO_REQS=400) with 32-iteration hex-loop counters inside - the symbol
+# merely INLINES AWAY in the instrumented binary while production's optimized binary outlines
+# it. scripts/pgo-drift-check.sh now classifies that case (instrumentation-invisible) instead
+# of misreporting it as a scenario gap.
 RUN_VOLUME=$((REQS * 10 / RUN_DIV))
 RUN_REQS=$((REQS / RUN_DIV))
 RUN_STREAMS=$((STREAMS / RUN_DIV))

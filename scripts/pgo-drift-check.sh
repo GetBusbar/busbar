@@ -29,6 +29,22 @@
 #      not a top slice, because the two sides weigh differently - see below - and "below the
 #      trainer's top slice" would flag half of production's wrapper frames as false gaps.)
 #
+#      A MISS requires the symbol to be PRESENT in the profile with zero counters. A production
+#      symbol with NO profdata entry AT ALL is classified separately as INSTRUMENTATION-INVISIBLE,
+#      not as a gap: the merged profile carries an entry (zero-count included) for every function
+#      the instrumented binary codegen'd, so "absent" means rustc inlined the function away in the
+#      instrumented build - its code executes inside its CALLERS' counters and can never appear
+#      under its own name, no matter what scenario the trainer runs. Proven on real data: the w6
+#      capture's `<hybrid_array::Array<u8,..> as hex::ToHex>::encode_hex` frame (the reqlog chain
+#      digest, called from ingress finish_inner -> busbar_api::auth::sha256_hex on EVERY governed
+#      request) has no profdata entry, while sha256_hex - which it inlines into - carried 8052
+#      calls and a 257664-iteration hex loop (8052 x 32 bytes) in the calibration profile: the
+#      trainer trains that code on every signed-token request, and a MISS row for it was a false
+#      positive by the detector's own "zero counters" definition. RESIDUAL RISK, named: a truly
+#      untrained symbol that ALSO inlined away everywhere is classified invisible rather than
+#      MISS - but its (outlined) callers are equally untrained and surface as real MISS rows, and
+#      the overlap gate still sees the heat mismatch, so the drift does not go dark.
+#
 # Ranking choices (deliberate): the trainer side ranks by llvm-profdata's max internal block
 # count - its native hotness measure. The folded side uses INCLUSIVE weight for the broad
 # top-3N containment set but SELF weight for the missing table (a missing entry must be an
@@ -61,7 +77,19 @@
 # is ed25519/curve25519-heavy. Default = measured 27 minus 17 points of noise headroom per the
 # calibration rule (healthy-measured minus 15-20). Re-measure and raise the bar once a folded
 # capture of governed (signed-key) production traffic exists - against such a capture the
-# expected healthy overlap is substantially higher than 27%.
+# expected healthy overlap is substantially higher than 27%. Two calibration follow-ups,
+# both re-measured on a fresh 3-run trainer profile from this tree (22% overlap - gate green):
+#   * The 40th symbol (hex ToHex encode_hex) first read as a MISS; investigation showed it
+#     inlines into busbar_api::auth::sha256_hex in the instrumented binary and DOES train on
+#     every governed request (one call per request; a 32-iteration hex loop inside) - the
+#     instrumentation-invisible classification above exists because of exactly that reading.
+#   * Six reqwest/hyper client rows (RequestBuilder::send, the reqwest-typed hyper_util legacy
+#     pool/dispatch frames) read as MISS against this tree: w6 also PREDATES the owned-egress
+#     cutover (proxy/egress_client.rs replaced reqwest on the forward path), so those frames
+#     are code the current binary NO LONGER RUNS per request. They are present-with-zero (the
+#     crates are still linked for other duties), so they rank as genuine MISS rows - read them
+#     as capture staleness, not trainer gaps, and expect them to vanish with a post-cutover
+#     folded capture. A stale capture can OVERSTATE gaps; it cannot hide a new one.
 #
 # SYMBOL NORMALIZATION (the whole game - the two sides name functions differently):
 #   * profdata names are raw Rust v0 mangled symbols, sometimes prefixed "cgu-object;"; the
@@ -185,20 +213,22 @@ function norm(s) {
 # ---- side A: trainer functions from merged.profdata ------------------------------------------
 # ONE full text-dump pass yields every function with its max internal block count (the counter
 # weight). Format: mangled-name line, "# Func Hash:", hash, "# Num Counters:", n, "# Counter
-# Values:", n values, then optional value-profile sections. This full list serves two roles:
-# the ranked hot slice (sorted head) and the complete never-executed membership test for the
-# missing table. Zero-weight functions are dropped: linked but never run by the trainer.
+# Values:", n values, then optional value-profile sections. This full list serves three roles:
+# the ranked hot slice (sorted head), the executed-set membership test for the missing table,
+# and - zero-count entries INCLUDED - the instrumented-function roster that separates a genuine
+# MISS (present with zero counters: codegen'd, never run) from an instrumentation-invisible
+# symbol (no entry at all: inlined away in the instrumented binary - see the header).
 "$LLVM_PROFDATA" show --all-functions --text "$PROFDATA_FILE" 2>/dev/null | awk '
   /^# Func Hash:/ { fname = prev; next }
   /^# Counter Values:/ { incnt = 1; max = 0; next }
-  /^#/ || /^$/ { if (incnt && fname != "") { if (max > 0) printf "%d\t%s\n", max, fname
+  /^#/ || /^$/ { if (incnt && fname != "") { printf "%d\t%s\n", max, fname
                                              fname = "" }
                  incnt = 0; next }
   incnt { if ($1 + 0 > max) max = $1 + 0; next }
   { prev = $0 }
-  END { if (incnt && fname != "" && max > 0) printf "%d\t%s\n", max, fname }
+  END { if (incnt && fname != "") printf "%d\t%s\n", max, fname }
 ' > "$WORK/train.raw"
-[ -s "$WORK/train.raw" ] || die "no nonzero function counters in $PROFDATA_FILE (wrong file, or llvm-profdata/profile version mismatch)"
+[ -s "$WORK/train.raw" ] || die "no functions in $PROFDATA_FILE (wrong file, or llvm-profdata/profile version mismatch)"
 
 # Cross-check the ranking against llvm-profdata's own --topn when this llvm-profdata has it
 # (detected, not assumed - older builds lack the flag): --topn ranks by the same max internal
@@ -217,11 +247,16 @@ fi
 # bare symbol column (weights pass through untouched), then normalize/filter/aggregate.
 # Aggregation is MAX across CGU copies, not sum: the copies are the same code laid out twice,
 # and the hotter copy is the honest hotness estimate. Output: weight \t norm-key \t display.
+# train.norm keeps the zero-count rows (the instrumented roster); train.all is the EXECUTED
+# subset that the ranking and the executed-membership test have always used.
 sed 's/^\([0-9]*\)\t.*;/\1\t/' "$WORK/train.raw" | "$DEMANGLER" | awk -F'\t' "$AWK_LIB"'
   { s = norm($2); if (s == "" || deny(s)) next
-    if ($1 + 0 > w[s]) { w[s] = $1 + 0; disp[s] = $2 } }
+    if (!(s in w) || $1 + 0 > w[s]) { w[s] = $1 + 0; disp[s] = $2 } }
   END { for (s in w) printf "%d\t%s\t%s\n", w[s], s, disp[s] }
-' | sort -rn > "$WORK/train.all"
+' > "$WORK/train.norm"
+awk -F'\t' '$1 > 0' "$WORK/train.norm" | sort -rn > "$WORK/train.all"
+[ -s "$WORK/train.all" ] || die "no nonzero function counters in $PROFDATA_FILE (profile from a run that served nothing?)"
+cut -f2 "$WORK/train.norm" > "$WORK/train.instr"
 head -n "$TOP" "$WORK/train.all" > "$WORK/train.top"
 [ -s "$WORK/train.top" ] || die "trainer hot set empty after normalization/deny-filter (profile from a non-Rust binary?)"
 
@@ -253,7 +288,9 @@ sort -t"$(printf '\t')" -k2,2rn "$WORK/prod.norm" | head -n "$TOP" \
 # ---- compare ---------------------------------------------------------------------------------
 # matches(): exact on norm keys, or >=25-char prefix either way (perf truncation - see header).
 # Overlap gate: trainer top-N found anywhere in production's inclusive top-3N.
-# Missing table: production self top-N with ZERO presence in the trainer's full profile.
+# Missing table: production self top-N with ZERO presence in the trainer's EXECUTED set, split
+# by the instrumented roster - present-with-zero is a genuine MISS, absent-entirely is
+# INSTRUMENTATION-INVISIBLE (inlined away in the instrumented binary; see the header).
 RESULT="$(awk -F'\t' '
   function matches(a, b) {
     if (a == b) return 1
@@ -265,6 +302,7 @@ RESULT="$(awk -F'\t' '
   FILENAME == ARGV[2] { tall[++nt] = $2; next }
   FILENAME == ARGV[3] { ttop[++nc] = $2; next }
   FILENAME == ARGV[4] { pw[++nq] = $1; ptop[nq] = $2; pdisp[nq] = $3; next }
+  FILENAME == ARGV[5] { tinstr[++ni] = $1; next }
   END {
     hit = 0
     for (i = 1; i <= nc; i++) {
@@ -276,32 +314,43 @@ RESULT="$(awk -F'\t' '
     for (i = 1; i <= nq; i++) {
       found = 0
       for (j = 1; j <= nt && !found; j++) if (matches(ptop[i], tall[j])) found = 1
-      if (!found) printf "MISS\t%d\t%s\n", pw[i], pdisp[i]
+      if (found) continue
+      instr = 0
+      for (j = 1; j <= ni && !instr; j++) if (matches(ptop[i], tinstr[j])) instr = 1
+      printf "%s\t%d\t%s\n", (instr ? "MISS" : "INVIS"), pw[i], pdisp[i]
     }
   }
-' "$WORK/prod.broad" "$WORK/train.all" "$WORK/train.top" "$WORK/prod.top")"
+' "$WORK/prod.broad" "$WORK/train.all" "$WORK/train.top" "$WORK/prod.top" "$WORK/train.instr")"
 
 OVERLAP_PCT="$(printf '%s\n' "$RESULT" | awk -F'\t' '$1 == "OVERLAP" { print $2 }')"
 OVERLAP_HIT="$(printf '%s\n' "$RESULT" | awk -F'\t' '$1 == "OVERLAP" { print $3 }')"
 OVERLAP_OF="$(printf '%s\n' "$RESULT" | awk -F'\t' '$1 == "OVERLAP" { print $4 }')"
 [ -n "$OVERLAP_PCT" ] || die "internal: comparison produced no overlap line"
 MISS_COUNT="$(printf '%s\n' "$RESULT" | grep -c '^MISS' || true)"
+INVIS_COUNT="$(printf '%s\n' "$RESULT" | grep -c '^INVIS' || true)"
 PROD_N="$(wc -l < "$WORK/prod.top" | tr -d ' ')"
 
-echo "[pgo-drift] trainer profile : $PROFDATA_FILE ($(wc -l < "$WORK/train.all" | tr -d ' ') executed functions)"
+echo "[pgo-drift] trainer profile : $PROFDATA_FILE ($(wc -l < "$WORK/train.all" | tr -d ' ') executed functions, $(wc -l < "$WORK/train.instr" | tr -d ' ') instrumented)"
 echo "[pgo-drift] production folded: $FOLDED_FILE"
 echo "[pgo-drift] demangler=$DEMANGLER top=$TOP broad=3x=$((TOP * 3))"
 echo "[pgo-drift]"
 echo "[pgo-drift] trainer-heat overlap: ${OVERLAP_PCT}% (${OVERLAP_HIT}/${OVERLAP_OF} of the trainer's top-$TOP appear in production's inclusive top-$((TOP * 3)))"
-echo "[pgo-drift] trainer coverage    : $((PROD_N - MISS_COUNT))/$PROD_N of production's self-weight top-$TOP were executed by the trainer"
+echo "[pgo-drift] trainer coverage    : $((PROD_N - MISS_COUNT - INVIS_COUNT))/$PROD_N of production's self-weight top-$TOP were executed by the trainer ($INVIS_COUNT instrumentation-invisible, $MISS_COUNT genuine gaps)"
 echo "[pgo-drift]"
 if [ "$MISS_COUNT" -eq 0 ]; then
-  echo "[pgo-drift] every production-hot symbol was executed by the trainer: no scenario gaps."
+  echo "[pgo-drift] every instrumentable production-hot symbol was executed by the trainer: no scenario gaps."
 else
   echo "[pgo-drift] production-hot symbols the trainer NEVER executed - each is a trainer-scenario gap"
   echo "[pgo-drift] (ranked by production self weight; % is share of production's total counted self weight):"
   printf '%s\n' "$RESULT" | awk -F'\t' -v total="$TOTAL_SELF" '
     $1 == "MISS" { printf "[pgo-drift]   %6.2f%%  %14d  %s\n", $2 * 100 / total, $2, $3 }'
+fi
+if [ "$INVIS_COUNT" -gt 0 ]; then
+  echo "[pgo-drift]"
+  echo "[pgo-drift] instrumentation-invisible (no profdata entry: inlined away in the instrumented binary,"
+  echo "[pgo-drift] trains inside its callers' counters - NOT a trainer gap; informational only):"
+  printf '%s\n' "$RESULT" | awk -F'\t' -v total="$TOTAL_SELF" '
+    $1 == "INVIS" { printf "[pgo-drift]   %6.2f%%  %14d  %s\n", $2 * 100 / total, $2, $3 }'
 fi
 echo "[pgo-drift]"
 if [ "$OVERLAP_PCT" -lt "$MIN_OVERLAP" ]; then
