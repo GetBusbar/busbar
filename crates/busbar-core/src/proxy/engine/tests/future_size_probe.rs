@@ -9,9 +9,11 @@
 //! CI red instead of shaving throughput invisibly. Re-baseline DOWNWARD freely; raise only with
 //! a written reason in the same commit.
 
-/// Committed bound: measured 5,152 bytes when this tripwire landed (pre-shrink), +448 headroom
-/// for legitimate small growth. The shrink wave re-baselines this downward.
-const FORWARD_FUTURE_MAX_BYTES: usize = 5_600;
+/// Committed bound: measured 3,352 bytes after the wave-8a shrink (was 5,152 when this tripwire
+/// landed — the cold policy-decision and buffered cross-protocol-translate arms are boxed off the
+/// union, the `first_hop_v` rebind slot is gone, and the two wrapper layers no longer double-store
+/// their parameters), +448 headroom for legitimate small growth. Re-baseline DOWNWARD freely.
+const FORWARD_FUTURE_MAX_BYTES: usize = 3_800;
 
 #[test]
 fn forward_future_size_is_pinned() {

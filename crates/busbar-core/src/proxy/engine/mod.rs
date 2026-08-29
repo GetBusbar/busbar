@@ -117,19 +117,27 @@ pub(crate) async fn forward_with_pool(
 /// ad-hoc anthropic-dialect routes use this so a GROUP/SSO principal — whose bearer token is not a
 /// virtual-key secret and so never resolves via the `lookup` fallback — still projects
 /// `rate_headroom` / `identity` into a pool's routing policy, matching the universal dispatch path.
+// A plain fn returning `Either<ready(400), forward_future>` rather than an async fn (wave-8a
+// future-shrink): an async fn layer here stored its ten parameters in ITS coroutine and then moved
+// them into `forward_with_pool_parsed`'s — double-stored per-request state (+280 bytes of
+// await-boundary memcpy) for a wrapper whose only own work is one synchronous parse. The parse runs
+// eagerly at call time — every caller `.await`s the returned future immediately, and `LazyBody::
+// parse` is pure CPU with no I/O, so nothing observable moves — and the parameters land in exactly
+// one coroutine. The malformed-body 400 contract is unchanged (`Either::Left` resolves to the same
+// `ingress_error` on first poll).
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn forward_with_pool_keyed(
-    app: &Arc<App>,
+pub(crate) fn forward_with_pool_keyed<'a>(
+    app: &'a Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
-    caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
-    pool_name: &str,
-    affinity_key: Option<&str>,
-    ingress_protocol: &str,
+    caller_token: Option<&'a str>,
+    resolved_gov_key: Option<&'a std::sync::Arc<crate::governance::VirtualKey>>,
+    pool_name: &'a str,
+    affinity_key: Option<&'a str>,
+    ingress_protocol: &'a str,
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
-) -> Response {
+) -> impl std::future::Future<Output = Response> + 'a {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
     // eager parse — `LazyBody::parse` goes through the identical `crate::json` guard + parser).
     let _parse = crate::profile::start(crate::profile::Stage::InboundParse);
@@ -137,16 +145,16 @@ pub(crate) async fn forward_with_pool_keyed(
         Ok(v) => v,
         Err(_) => {
             tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
-            return ingress_error(
+            return futures::future::Either::Left(std::future::ready(ingress_error(
                 ingress_protocol,
                 StatusCode::BAD_REQUEST,
                 KIND_INVALID_REQUEST,
                 "We could not parse the JSON body of your request.",
-            );
+            )));
         }
     };
     drop(_parse);
-    forward_with_pool_parsed(
+    futures::future::Either::Right(forward_with_pool_parsed(
         app,
         cands,
         body,
@@ -159,8 +167,7 @@ pub(crate) async fn forward_with_pool_keyed(
         ingress_protocol,
         op,
         usage_sink,
-    )
-    .await
+    ))
 }
 
 /// The forward implementation. `v` is the request body ALREADY parsed by the caller (the ingress
@@ -171,126 +178,141 @@ pub(crate) async fn forward_with_pool_keyed(
 // Plumbing function: each parameter is an independent request input (state, candidates, body, parsed
 // body, caller token, pool name, affinity key, ingress protocol, usage sink) with no natural grouping.
 #[allow(clippy::too_many_arguments)]
-// `level = crate::observability::HOTPATH_LEVEL` (the tracing seam): at the default info
-// filter this span is DISABLED at the callsite (one relaxed atomic check) instead of allocating a
-// span + formatting three fields on every request. The info-level events on the rejection paths
-// carry their own pool/policy fields, so no info-level log line loses context; run with
-// `RUST_LOG=busbar=debug` to get the span back. Routed through the named constant (not a
-// hand-picked `"debug"` literal) so the hot-path level is set in exactly one place — see
-// `observability::HOTPATH_LEVEL`'s doc for why it is DEBUG and not the `TRACE` variant.
+// THE "forward" SPAN, HAND-ROLLED (wave-8a future-shrink): this is a plain fn returning an
+// `.instrument(span)`-wrapped async block rather than `#[tracing::instrument]` on an async fn.
+// Behavior is identical — same span name/level/fields, created before the first poll, entered on
+// every poll — but the macro's expansion nests an async move block INSIDE the async fn, storing
+// every parameter TWICE in the coroutine (once as the outer async fn's slots, once as the inner
+// block's captures): a measured +376 bytes of per-request state-machine memcpy on the hot path.
+// Here the parameters move into the async block exactly once.
+//
+// `HOTPATH_LEVEL` (the tracing seam): at the default info filter this span is DISABLED at the
+// callsite (one relaxed atomic check) instead of allocating a span + formatting three fields on
+// every request. The info-level events on the rejection paths carry their own pool/policy fields,
+// so no info-level log line loses context; run with `RUST_LOG=busbar=debug` to get the span back.
+// Routed through the named constant (not a hand-picked `"debug"` literal) so the hot-path level is
+// set in exactly one place — see `observability::HOTPATH_LEVEL`'s doc for why it is DEBUG and not
+// the `TRACE` variant.
 // `request_id`: declared `Empty` here (no value at span-open time — the id isn't stamped until the
-// function body runs, see the `Span::current().record` call below) and filled in as a native `u64`
+// async block runs, see the `Span::current().record` call below) and filled in as a native `u64`
 // field, NEVER `format!`'d into a string: `tracing`'s field-recording writes the integer straight
 // into the span, so tagging every event this span covers (including the debug-disabled default —
-// the record call is a no-op there, same one-relaxed-atomic-check cost `skip_all` already pays)
-// costs no per-request allocation.
-#[tracing::instrument(
-    level = HOTPATH_LEVEL,
-    name = "forward",
-    skip_all,
-    fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), transport = op.transport().name(), request_id = tracing::field::Empty)
-)]
-pub(crate) async fn forward_with_pool_parsed(
-    app: &Arc<App>,
+// the record call is a no-op there, the same one-relaxed-atomic-check cost) costs no per-request
+// allocation.
+pub(crate) fn forward_with_pool_parsed<'a>(
+    app: &'a Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
     mut v: Option<LazyBody>,
-    req_content_type: &str,
-    caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
-    pool_name: &str,
-    affinity_key: Option<&str>,
-    ingress_protocol: &str,
+    req_content_type: &'a str,
+    caller_token: Option<&'a str>,
+    resolved_gov_key: Option<&'a std::sync::Arc<crate::governance::VirtualKey>>,
+    pool_name: &'a str,
+    affinity_key: Option<&'a str>,
+    ingress_protocol: &'a str,
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
-) -> Response {
-    // The per-request correlation id (settled design: a single `u64` off a boot-seeded monotonic
-    // atomic — see `App::next_request_id`/`state::seed_request_id_counter` — never a UUID/String).
-    // Stamped ONCE here, the earliest per-request point (before `RequestCtx` is even built), and
-    // threaded into `forward_with_pool_parsed_inner` (which stores it on `RequestCtx::request_id`
-    // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
-    // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
-    // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-    let _wrap = crate::profile::start(crate::profile::Stage::WrapSetup);
-    let request_id = app.next_request_id();
-    // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
-    // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
-    // the default info filter: `record` on a disabled span is the same single relaxed check
-    // `#[tracing::instrument(level = "debug")]` already costs on the hot path.
-    tracing::Span::current().record("request_id", request_id);
-    // ── STAGE TAPS: response ── capture the shape BEFORE `v` moves into the dispatch core, fire
-    // AFTER the response head is known. `outcome`: a gate-produced rejection (marker extension) is
-    // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
-    // response this fires at response-HEAD time (status known, body still flowing) — stream-tail
-    // outcomes are a later increment. ZERO COST when no response tap is configured.
-    let completion_shape = if app.tap_hooks_response.is_empty() {
-        None
-    } else {
-        // `stream` is a captured head key — read it via `probe` (no DOM needed); the SHAPE capture
-        // reads arbitrary body fields, so materialize the DOM (taps are configured — the DOM was
-        // going to be built for the request stages anyway).
-        let stream = v
-            .as_ref()
-            .and_then(|b| b.probe().get("stream"))
-            .and_then(|s| s.as_bool())
-            .unwrap_or(false);
-        let dom: Option<&Value> = match v.as_mut() {
-            Some(l) => l.ensure_dom().ok().map(|m| &*m),
-            None => None,
-        };
-        Some(capture_stage_shape(
-            dom,
-            &body,
-            req_content_type,
-            pool_name,
-            ingress_protocol,
-            Some(op.operation),
-            stream,
-            request_id,
-        ))
-    };
-    drop(_wrap);
-    let resp = forward_with_pool_parsed_inner(
-        app,
-        cands,
-        body,
-        v,
-        req_content_type,
-        caller_token,
-        resolved_gov_key,
-        pool_name,
-        affinity_key,
-        ingress_protocol,
-        op,
-        usage_sink,
-        request_id,
-    )
-    .await;
-    if let Some(shape) = completion_shape {
-        let outcome = if resp.extensions().get::<GateRejected>().is_some() {
-            "rejected_by_gate"
-        } else if resp.status().is_success() {
-            "ok"
+) -> impl std::future::Future<Output = Response> + 'a {
+    use tracing::Instrument;
+    let span = tracing::span!(
+        HOTPATH_LEVEL,
+        "forward",
+        pool = %pool_name,
+        ingress = %ingress_protocol,
+        op = op.name(),
+        transport = op.transport().name(),
+        request_id = tracing::field::Empty
+    );
+    async move {
+        // The per-request correlation id (settled design: a single `u64` off a boot-seeded monotonic
+        // atomic — see `App::next_request_id`/`state::seed_request_id_counter` — never a UUID/String).
+        // Stamped ONCE here, the earliest per-request point (before `RequestCtx` is even built), and
+        // threaded into `forward_with_pool_parsed_inner` (which stores it on `RequestCtx::request_id`
+        // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
+        // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
+        // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
+        let _wrap = crate::profile::start(crate::profile::Stage::WrapSetup);
+        let request_id = app.next_request_id();
+        // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
+        // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
+        // the default info filter: `record` on a disabled span is the same single relaxed check
+        // `#[tracing::instrument(level = "debug")]` already costs on the hot path.
+        tracing::Span::current().record("request_id", request_id);
+        // ── STAGE TAPS: response ── capture the shape BEFORE `v` moves into the dispatch core, fire
+        // AFTER the response head is known. `outcome`: a gate-produced rejection (marker extension) is
+        // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
+        // response this fires at response-HEAD time (status known, body still flowing) — stream-tail
+        // outcomes are a later increment. ZERO COST when no response tap is configured.
+        let completion_shape = if app.tap_hooks_response.is_empty() {
+            None
         } else {
-            "failed"
+            // `stream` is a captured head key — read it via `probe` (no DOM needed); the SHAPE capture
+            // reads arbitrary body fields, so materialize the DOM (taps are configured — the DOM was
+            // going to be built for the request stages anyway).
+            let stream = v
+                .as_ref()
+                .and_then(|b| b.probe().get("stream"))
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
+            let dom: Option<&Value> = match v.as_mut() {
+                Some(l) => l.ensure_dom().ok().map(|m| &*m),
+                None => None,
+            };
+            Some(capture_stage_shape(
+                dom,
+                &body,
+                req_content_type,
+                pool_name,
+                ingress_protocol,
+                Some(op.operation),
+                stream,
+                request_id,
+            ))
         };
-        fire_stage_taps(
-            &app.tap_hooks_response,
-            &shape,
-            crate::hooks::wire::HookStageProjection {
-                at: "response",
-                model: None,
-                attempt_number: None,
-                remaining_candidates: None,
-                previous_failure: None,
-                outcome: Some(outcome),
-                status: Some(resp.status().as_u16()),
-            },
-            resolved_gov_key.and_then(|k| k.group.as_deref()),
-            &app.groups_registry,
-        );
+        drop(_wrap);
+        let resp = forward_with_pool_parsed_inner(
+            app,
+            cands,
+            body,
+            v,
+            req_content_type,
+            caller_token,
+            resolved_gov_key,
+            pool_name,
+            affinity_key,
+            ingress_protocol,
+            op,
+            usage_sink,
+            request_id,
+        )
+        .await;
+        if let Some(shape) = completion_shape {
+            let outcome = if resp.extensions().get::<GateRejected>().is_some() {
+                "rejected_by_gate"
+            } else if resp.status().is_success() {
+                "ok"
+            } else {
+                "failed"
+            };
+            fire_stage_taps(
+                &app.tap_hooks_response,
+                &shape,
+                crate::hooks::wire::HookStageProjection {
+                    at: "response",
+                    model: None,
+                    attempt_number: None,
+                    remaining_candidates: None,
+                    previous_failure: None,
+                    outcome: Some(outcome),
+                    status: Some(resp.status().as_u16()),
+                },
+                resolved_gov_key.and_then(|k| k.group.as_deref()),
+                &app.groups_registry,
+            );
+        }
+        resp
     }
-    resp
+    .instrument(span)
 }
 
 /// RAII refund for the headers-time `spend_budget` unit across the BUFFERED forward path's
@@ -1351,7 +1373,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     },
                     None => &NULL_BODY_POLICY,
                 };
-                let outcome = decide_policy_order(
+                // Box::pin: the policy-decision future (~1.6 KB, and its region set this fn's
+                // coroutine union max) is COLD on the default path — it runs ONLY for a pool that
+                // resolved a non-default `route:` policy, a path that already builds heap
+                // projections (candidates Vec, budget chain, RoutingRequest) per decision. Awaited
+                // inline it inflated the per-request future EVERY default-pool request carried;
+                // boxed, the allocation lands only on policy-routed requests. (Same cold-arm
+                // pattern as the exhaustion boxes below; the concurrent GATE firing above already
+                // heap-allocates its futures via `join_all`.)
+                let outcome = Box::pin(decide_policy_order(
                     app,
                     resolved,
                     &cands,
@@ -1365,7 +1395,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     wants_stream,
                     caller_token,
                     resolved_gov_key,
-                )
+                ))
                 .await;
                 match outcome {
                     // The policy returned a usable ranked order — record its name (for the
@@ -1576,9 +1606,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // value the accessor returns (pool override else all-pools default), same passthrough-40x logic.
     let upstream_creds = app.pool_upstream_creds(pool_name);
 
-    // PREPARE ends here (dispatch loop begins).
+    // PREPARE ends here (dispatch loop begins). From here on, `v` IS the first-hop body: the loop
+    // consumes it on hop 1 (`v.take()` / the pristine short-circuit) and failover hops 2+ re-parse
+    // the retained `body` bytes. (This used to be a `first_hop_v = v` rebind for the name alone —
+    // dropped because the extra binding cost the coroutine a second 80-byte `Option<LazyBody>` slot
+    // held across every await of the attempt loop; wave-8a future-shrink.)
     drop(_prep);
-    let mut first_hop_v = v;
     for attempt in 0..=max_cap {
         // Check deadline first (propagated across hops)
         if request_ctx.expired(now()) {
@@ -1710,19 +1743,18 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and `body` was
         // re-serialized in lockstep by the rewrite pass — the check stays sound.
         let head_pristine = ingress_protocol == egress_name
-            && first_hop_v
-                .as_ref()
+            && v.as_ref()
                 .is_some_and(|l| head_provably_pristine(app, i, l.probe()));
         let payload = if head_pristine {
             // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
             // from the retained pristine bytes, unchanged. `Bytes::clone` = refcount bump.
-            first_hop_v = None;
+            v = None;
             body.clone()
         } else {
             let hop_v: Option<Value> = if !body_is_json {
                 None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
             } else {
-                let parsed = match first_hop_v.take() {
+                let parsed = match v.take() {
                     // First hop: consume the carried body — the memoized DOM when one was
                     // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
                     // bytes (the parse the old eager path performed at ingress).
@@ -2590,7 +2622,16 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // translate egress.read_response → IR → ingress.write_response. (Streaming
                 // cross-protocol is handled in FirstByteBody below; same-protocol passes through.)
                 if ingress_protocol != app.lanes[i].protocol && !is_sse {
-                    return translate_response_cross_protocol(
+                    // Box::pin: the buffered cross-protocol translate future (~2.4 KB — the
+                    // whole-body read + codec arms) is COLD relative to the pinned hot path (the
+                    // same-protocol passthrough never enters, nor does any streaming response),
+                    // and the path it serves already buffers the entire upstream body and
+                    // materializes a DOM to translate — one boxed future is noise there. Awaited
+                    // inline it set this fn's coroutine union max, so every same-proto request
+                    // carried its bytes as await-boundary memcpy. (Same cold-arm pattern as the
+                    // exhaustion boxes below and the boxed path-model ingress arms in
+                    // `ingress::dispatch`.)
+                    return Box::pin(translate_response_cross_protocol(
                         app,
                         i,
                         ingress_protocol,
@@ -2608,7 +2649,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         upstream_started,
                         chosen_policy_name,
                         false, // main hot path, not the degraded FallbackPool/LeastBad path
-                    )
+                    ))
                     .await;
                 }
 
