@@ -197,6 +197,14 @@ pub(crate) fn worker_id() -> usize {
     WORKER_ID.with(|w| w.get())
 }
 
+/// The published data-worker count, 1 when the composition root has not published one (tools,
+/// tests, single-runtime builds). Reads the same OnceLock `worker_stripes` derives from, WITHOUT
+/// the machine-derived fallback: consumers of this getter size PACING budgets (the egress
+/// connect gate), where "unpublished" honestly means one runtime, not N cores.
+pub(crate) fn data_workers_or_one() -> usize {
+    DATA_WORKERS.get().copied().unwrap_or(1)
+}
+
 /// Stripe count for per-worker striped store state: one stripe per data worker PLUS one shared
 /// FALLBACK stripe (the last) for every non-worker thread. Constant for the process lifetime
 /// (`set_data_workers` runs before anything builds; the machine-derived fallback is stable).

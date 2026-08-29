@@ -482,14 +482,32 @@ mod tunnel {
     /// gate makes establishment PACED AND FAIR (FIFO semaphore per authority): 16 in-flight
     /// connects per shard × the worker count keeps the global burst under a backlog-128
     /// provider's accept capacity, waves cannot synchronize, and steady state converges.
-    /// Established, pooled connections never touch this — it prices only the storm.
+    /// Established, pooled connections never touch this — it prices only the storm. The
+    /// permit ends when the SOCKET exists (post-dial, post-CONNECT on the tunneled arm); TLS
+    /// handshakes ride ABOVE this layer un-permitted — the accept queue (where the measured
+    /// collapse lived) is protected, provider-side handshake CPU is rate-shaped but not
+    /// concurrency-capped.
     ///
-    /// 16 is a constant, not a knob: it is sized to the SMALLEST commodity accept backlog
-    /// (128) divided by the largest common worker count with headroom, and per the design
-    /// rule the topology carries no tuning surface. Permit wait time is not unbounded — every
-    /// send runs under the attempt's one deadline envelope, so a connect starved past the
-    /// budget classifies as the transport timeout it is and fails over.
-    const CONNECTS_PER_AUTHORITY_PER_SHARD: usize = 16;
+    /// The GLOBAL establishment budget per authority — a constant, not a knob — sized to half
+    /// the smallest commodity accept backlog (128) so a whole-process burst fits a
+    /// backlog-128 provider with headroom. Each shard's share is this divided by the worker
+    /// count (floor 1), computed once per gate slot: 4 workers → 16/shard (the bench-proven
+    /// shape), 64 workers → 1/shard (64 global), 128 workers → 1/shard (128 global — the one
+    /// arithmetic overrun, at the topology cap, bounded to exactly the backlog rather than
+    /// 16x it). The re-audit caught the first cut of this constant (a flat 16/shard) silently
+    /// scaling its guarantee with N — this form keeps the burst bound worker-count-invariant,
+    /// the campaign's own "1-core box behaves like a 16-core box" bar. Permit wait time is
+    /// not unbounded — every send runs under the attempt's one deadline envelope, so a
+    /// connect starved past the budget classifies as the transport timeout it is and fails
+    /// over.
+    const CONNECTS_PER_AUTHORITY_GLOBAL: usize = 64;
+
+    /// This shard's share of the global budget. Reads the composition root's published worker
+    /// count (1 when unset — tools/tests), never a per-request read: computed once per gate
+    /// slot at first CONNECT to an authority.
+    pub(super) fn connects_per_shard() -> usize {
+        (CONNECTS_PER_AUTHORITY_GLOBAL / crate::state::data_workers_or_one()).max(1)
+    }
 
     /// Per-shard registry of per-authority connect semaphores. Keys are the DIALED authority
     /// (the target for direct connects, the proxy for tunneled ones — the storm lands on
@@ -511,11 +529,7 @@ mod tunnel {
             let mut slots = self.slots.lock().expect("connect-gate lock");
             slots
                 .entry(authority.to_string())
-                .or_insert_with(|| {
-                    Arc::new(tokio::sync::Semaphore::new(
-                        CONNECTS_PER_AUTHORITY_PER_SHARD,
-                    ))
-                })
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(connects_per_shard())))
                 .clone()
         }
     }
@@ -696,6 +710,9 @@ mod tunnel {
 
     #[cfg(test)]
     pub(super) use parse_proxy as parse_proxy_for_tests;
+
+    #[cfg(test)]
+    pub(super) use connects_per_shard as connects_per_shard_for_tests;
 
     #[cfg(test)]
     impl ConnectGate {

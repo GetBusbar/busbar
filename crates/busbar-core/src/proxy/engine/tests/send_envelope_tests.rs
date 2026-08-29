@@ -158,5 +158,10 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
         "black-holed headers on the degraded walk must classify as an upstream failure, got {}",
         resp.status()
     );
+    assert_eq!(
+        app.store.snapshot(0, crate::store::now()).err,
+        1,
+        "the degraded-path ceiling expiry must record the breaker transient too"
+    );
     server.abort();
 }

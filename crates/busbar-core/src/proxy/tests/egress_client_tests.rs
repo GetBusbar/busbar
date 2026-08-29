@@ -378,14 +378,21 @@ async fn connect_gate_bounds_per_authority_establishment() {
         &a,
         &gate.slot_for_tests("other.test:443")
     ));
-    // Exactly 16 permits: the 17th connect WAITS until one establishment finishes.
+    // Exactly the per-shard share of the GLOBAL budget (64 / published worker count): the
+    // next establishment past the bound WAITS until one finishes.
+    let share = tunnel::connects_per_shard_for_tests();
+    assert_eq!(
+        share,
+        64 / crate::state::data_workers_or_one(),
+        "the share must divide the constant global budget by the worker count"
+    );
     let mut held = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..share {
         held.push(a.clone().try_acquire_owned().expect("within the bound"));
     }
     assert!(
         a.clone().try_acquire_owned().is_err(),
-        "the 17th concurrent establishment must queue, not dial"
+        "the establishment past the per-shard share must queue, not dial"
     );
     drop(held.pop());
     assert!(
