@@ -92,7 +92,12 @@ pub(crate) struct EgressTarget {
     /// cutover: it anchors the byte-differential proof (`egress_target_tests` pins `uri` == `url`
     /// == the reference composition), keeping the old parser in the tree AS the reference the
     /// precomputed `uri` can never silently drift from.
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// `#[cfg(test)]`, not resident in a release build: the WHATWG parse still RUNS at boot in
+    /// every build (same fail-loud validation, same refusal text — see `build_egress_targets`),
+    /// but the parsed value is dropped rather than stored per `(operation, stream)` entry per
+    /// lane — a reference only tests read has no business occupying idle RSS.
+    #[cfg(test)]
     pub(crate) url: reqwest::Url,
     /// The SAME absolute URL as a pre-parsed `http::Uri` (wave-7 stage A): the hyper-owned egress
     /// client sends this directly, so the per-request WHATWG re-parse reqwest performed at send
@@ -149,15 +154,21 @@ pub(crate) fn build_egress_targets(
             };
             let (wire_path, canonical_uri) = sign_and_wire_path_parts(&path);
             let composed = format!("{base_url}{wire_path}");
+            // The WHATWG parse runs in EVERY build — same boot-time fail-loud validation, same
+            // refusal text — but the parsed `Url` is stored only under `cfg(test)`, where it is
+            // the byte-differential reference (`egress_target_tests`); see `EgressTarget::url`.
             let url = reqwest::Url::parse(&composed).map_err(|e| {
                 format!("egress URL '{composed}' (protocol '{protocol}') does not parse: {e}")
             })?;
+            #[cfg(not(test))]
+            drop(url);
             let uri: axum::http::Uri = composed.parse().map_err(|e| {
                 format!("egress URI '{composed}' (protocol '{protocol}') does not parse: {e}")
             })?;
             out.insert(
                 (op, stream),
                 EgressTarget {
+                    #[cfg(test)]
                     url,
                     uri,
                     canonical_uri,

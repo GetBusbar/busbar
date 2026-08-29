@@ -2472,3 +2472,91 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 // Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
 // tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
 // `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
+
+// ── PLANELESS CONFIGS GET AN INERT `PlaneBreakers` (idle-RSS doctrine) ───────────────────────
+//
+// "What is not configured must not be loaded": a config with no mounted plane, no `tools:`/
+// `agents:` registration and no plane pools must not pay for the 8 placeholder breaker cells
+// (a preallocated 1024-slot outcome window each, plus per-worker padded counter stripes —
+// ~130 KiB of idle RSS). These pin the four arms of the apply-time decision in
+// `build_app_from_config` and the inert handle's fail-closed guards.
+
+/// Boot with a planeless config yields the INERT handle; a second planeless apply REUSES it
+/// (same `Arc`); the first apply that carries plane content upgrades to a PROVISIONED handle at
+/// apply time; and a provisioned prior is reused even when the plane content disappears again
+/// (learned reliability survives every apply).
+#[test]
+fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
+    crate::metrics::init();
+    let planeless = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
+        ))
+    };
+    let build = |cfg, prior: Option<&crate::state::App>| {
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            prior,
+        )
+        .expect("boot must succeed")
+        .0
+    };
+
+    // Arm 1: no plane content, no prior → inert.
+    let app = build(planeless(), None);
+    assert!(
+        !app.plane_breakers.is_provisioned(),
+        "a planeless config must get the inert handle"
+    );
+    // The inert guards fail CLOSED (refuse / no-op), never index the empty lane table.
+    assert!(
+        matches!(
+            app.plane_breakers.try_admit("tool:x", 0),
+            Err(crate::store::Unavailable::Shedding)
+        ),
+        "inert admit must refuse, not panic"
+    );
+    app.plane_breakers.record_success("tool:x", 0);
+    app.plane_breakers.release("tool:x", 0, 7);
+    assert_eq!(app.plane_breakers.retry_after_secs("tool:x", 0), 1);
+
+    // Arm 2: still planeless with an inert prior → the SAME handle (no re-allocation per apply).
+    let app2 = build(planeless(), Some(&app));
+    assert!(
+        std::sync::Arc::ptr_eq(&app.plane_breakers, &app2.plane_breakers),
+        "an inert prior must be reused across a planeless apply"
+    );
+
+    // Arm 3: plane content appears (a `tool_pools:` set here — any of the plane signals works) →
+    // upgraded to a provisioned handle AT APPLY, not on a request path.
+    let mut with_pool = planeless();
+    with_pool.tool_pools.insert(
+        "search".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["search-eu".to_string(), "search-us".to_string()],
+            ..Default::default()
+        },
+    );
+    let app3 = build(with_pool, Some(&app2));
+    assert!(
+        app3.plane_breakers.is_provisioned(),
+        "the first apply carrying plane content must provision the breakers"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&app2.plane_breakers, &app3.plane_breakers),
+        "the provisioned handle is a fresh build, not the inert prior"
+    );
+
+    // Arm 4: plane content removed again → the PROVISIONED prior is kept (learned reliability
+    // survives every apply; an apply never downgrades).
+    let app4 = build(planeless(), Some(&app3));
+    assert!(
+        std::sync::Arc::ptr_eq(&app3.plane_breakers, &app4.plane_breakers),
+        "a provisioned prior must survive an apply that removes the plane content"
+    );
+}

@@ -72,6 +72,14 @@ pub struct PlaneBreakers {
     /// Deliberately NOT operator-tunable per `tools:`/`agents:` — that absence stays until someone
     /// asks, as `docs/circuit-breaker.md` already discloses.
     cfg: BreakerCfg,
+    /// FALSE for the [`Self::new_inert`] handle a planeless config gets: the lane table is EMPTY
+    /// (none of the [`MAX_POOL_MEMBERS`] placeholder cells — their preallocated outcome windows
+    /// and per-worker counter stripes — exist), and every recording/admission method is a
+    /// structural no-op/refusal instead of an index into a table that is not there. "What is not
+    /// configured must not be loaded": with no `tools:`/`agents:`/plane pools there is no plane
+    /// dispatch, so nothing can reach these methods — the guards are defense in depth (fail
+    /// closed, never panic), not a live branch any configured deployment pays.
+    provisioned: bool,
 }
 
 /// The CEILING on a `tool_pools:`/`agent_pools:` member list, enforced at config validation
@@ -85,8 +93,35 @@ pub struct PlaneBreakers {
 pub const MAX_POOL_MEMBERS: usize = 8;
 
 impl PlaneBreakers {
+    /// The INERT handle for a config with NO plane content (no `tools:`, no `agents:`, no
+    /// `tool_pools:`/`agent_pools:`, no mounted plane): an EMPTY lane table — the 8 placeholder
+    /// cells' preallocated state (a 1024-slot outcome window each, per-worker padded counter
+    /// stripes, a semaphore) is ~130 KiB of idle RSS that a planeless deployment never touches.
+    /// `build_app_from_config` upgrades to [`Self::new`] on the first apply whose config carries
+    /// plane content (boot-time work; nothing learned is lost — an inert handle never recorded
+    /// anything), and a provisioned prior is ALWAYS reused (learned reliability survives every
+    /// apply, including one that removes the last plane section).
+    pub(crate) fn new_inert() -> Self {
+        Self {
+            health: HealthState::new(Vec::new()),
+            cfg: BreakerCfg {
+                // Same posture as `new` below — the cfg is inert anyway (no cell ever admits).
+                bench_below_trip_threshold: false,
+                ..BreakerCfg::default()
+            },
+            provisioned: false,
+        }
+    }
+
+    /// TRUE for a handle built by [`Self::new`] (the full placeholder lane table exists), FALSE
+    /// for the inert planeless handle — the apply-time upgrade gate in `build_app_from_config`.
+    pub(crate) fn is_provisioned(&self) -> bool {
+        self.provisioned
+    }
+
     pub(crate) fn new() -> Self {
         Self {
+            provisioned: true,
             health: HealthState::new(
                 (0..MAX_POOL_MEMBERS)
                     .map(|_| LaneData {
@@ -164,6 +199,12 @@ impl PlaneBreakers {
     // on) neither this nor [`Self::admit`] has a caller.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<u64, Unavailable> {
+        // Inert (planeless config): structurally unreachable — no plane is mounted, so nothing
+        // dispatches — but fail CLOSED rather than index the empty lane table if a future caller
+        // ever gets here.
+        if !self.provisioned {
+            return Err(Unavailable::Shedding);
+        }
         self.health
             .try_admit_breaker(key, lane, HealthState::now_secs())
     }
@@ -193,12 +234,18 @@ impl PlaneBreakers {
     /// already consumed the HalfOpen state, so this is a no-op there and only reverts a probe the
     /// dispatch genuinely abandoned (refused before any leg went out).
     pub(crate) fn release(&self, key: &str, lane: usize, probe_epoch: u64) {
+        if !self.provisioned {
+            return; // inert: nothing was ever admitted (see `try_admit`).
+        }
         self.health.release_probe_owned_in(key, lane, probe_epoch);
     }
 
     /// The wire answered and busbar could serve it. Closes a half-open probe, dilutes the
     /// error-rate window — the success half of the one disposition pipeline.
     pub fn record_success(&self, key: &str, lane: usize) {
+        if !self.provisioned {
+            return; // inert: nothing was ever dispatched (see `try_admit`).
+        }
         self.health.record_success_in(key, lane);
     }
 
@@ -214,6 +261,9 @@ impl PlaneBreakers {
         sig: &crate::breaker::CanonicalSignal,
     ) -> crate::breaker::Disposition {
         let disposition = crate::breaker::classify(sig);
+        if !self.provisioned {
+            return disposition; // inert: nothing was ever dispatched (see `try_admit`).
+        }
         match disposition {
             crate::breaker::Disposition::ClientFault => self.health.record_client_fault(lane),
             crate::breaker::Disposition::TransientUpstream => {
@@ -272,6 +322,9 @@ impl PlaneBreakers {
     /// with `429` + `Retry-After`). The floor covers `ProbeInFlight`, whose honest answer is "next
     /// tick" and whose remaining cooldown reads 0.
     pub fn retry_after_secs(&self, key: &str, lane: usize) -> u64 {
+        if !self.provisioned {
+            return 1; // inert: the floor `ProbeInFlight` also answers (see `try_admit`).
+        }
         self.health
             .cooldown_remaining_in(key, lane, HealthState::now_secs())
             .max(1)

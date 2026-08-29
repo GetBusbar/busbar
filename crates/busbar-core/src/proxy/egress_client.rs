@@ -119,16 +119,31 @@ pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
 /// exactly the composed busbar binary, and a boot-time panic CI caught. Explicit therefore, never
 /// ambient.
 fn rustls_client_config() -> rustls::ClientConfig {
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("ring provider supports the default TLS protocol versions")
-    .with_root_certificates(roots)
-    .with_no_client_auth()
+    // ONE root store and ONE crypto provider, shared by refcount across every client shard
+    // (`ClientConfig` holds both behind `Arc`s, and both builder seams take `Into<Arc<_>>`).
+    // This builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s `make_one`),
+    // and `TLS_SERVER_ROOTS.to_vec()` materializes the ~150-anchor trust store on the heap —
+    // N private copies of identical, immutable data was pure idle RSS scaling with core count.
+    // Same anchors, same provider, same cipher-suite story; only the duplication is gone.
+    static ROOTS: std::sync::OnceLock<std::sync::Arc<rustls::RootCertStore>> =
+        std::sync::OnceLock::new();
+    static PROVIDER: std::sync::OnceLock<std::sync::Arc<rustls::crypto::CryptoProvider>> =
+        std::sync::OnceLock::new();
+    let roots = ROOTS
+        .get_or_init(|| {
+            std::sync::Arc::new(rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            })
+        })
+        .clone();
+    let provider = PROVIDER
+        .get_or_init(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .clone();
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("ring provider supports the default TLS protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }
 
 /// Assemble one egress request from the boot-precomputed parts: the lane's `http::Uri` and the

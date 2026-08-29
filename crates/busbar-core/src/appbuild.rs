@@ -1505,10 +1505,31 @@ pub fn build_app_from_config(
         // way the HTTP client pool and governance state are — a config swap must not un-trip a
         // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
         // store-or-RAM rule).
-        plane_breakers: prior.map_or_else(
-            || Arc::new(crate::store::PlaneBreakers::new()),
-            |p| Arc::clone(&p.plane_breakers),
-        ),
+        // "What is not configured must not be loaded": a config with NO plane content — no mounted
+        // plane slot, no `tools:`/`agents:` registration, no `tool_pools:`/`agent_pools:` — gets the
+        // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
+        // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
+        // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
+        // including one that removes the last plane section); an inert prior is upgraded HERE — at
+        // apply, boot-only work — the first time plane content appears, losing nothing (an inert
+        // handle never recorded anything). Note `MCP_RUNTIME_SLOT` is a companion slot inserted on
+        // every MCP-compiled build, so the gate reads the DECL keys (config-conditional), never it.
+        plane_breakers: {
+            let planes_configured = crate::plane::registry::plane_decls()
+                .iter()
+                .any(|d| plane_slots.contains_key(d.key))
+                || !cfg.tool_defs.def_names().is_empty()
+                || !cfg.agent_defs.def_names().is_empty()
+                || !cfg.tool_pools.is_empty()
+                || !cfg.agent_pools.is_empty();
+            match prior {
+                Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
+                    Arc::clone(&p.plane_breakers)
+                }
+                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new()),
+                _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
+            }
+        },
         // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
         // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
         // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
