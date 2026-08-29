@@ -44,26 +44,41 @@ fn denied_entry_increments_the_gate_counter() {
     );
 }
 
-/// The inbound-shed 503's `Retry-After` is DERIVED from `store::SHED_RETRY_FLOOR_MS`, not a bare
-/// hardcoded `"1"` that drifts silently the day the floor changes. The header must equal the floor
-/// rounded UP to whole seconds — the same value the shedding taxonomy advertises for this condition.
-#[test]
-fn inbound_shed_retry_after_is_derived_from_the_shed_floor() {
-    let resp = inbound_overloaded_response();
-    let hv = resp
-        .headers()
-        .get(axum::http::header::RETRY_AFTER)
-        .expect("a shed 503 carries a Retry-After");
-    let expected = crate::store::SHED_RETRY_FLOOR_MS.div_ceil(1000);
-    assert_eq!(
-        hv.to_str().unwrap(),
-        expected.to_string(),
-        "Retry-After must track SHED_RETRY_FLOOR_MS (whole seconds, rounded up), not a hardcoded constant"
-    );
+/// THE QUEUEING CONTRACT (replaces the instant-503 shed, whose fail/retry storm collapsed the
+/// gateway under a 12k-client herd on the rig): an over-cap arrival WAITS FIFO and is admitted
+/// the moment a slot frees; a waiter whose caller gives up leaves the queue with no residue; and
+/// the memory bound holds throughout — never more than N permits exist.
+#[tokio::test]
+async fn a_saturated_gate_queues_fifo_and_cancelled_waiters_leave_cleanly() {
+    let gate = std::sync::Arc::new(AdmissionGate::new(1, "test-queue"));
+    let held = gate.enter_queued().await;
+
+    // Two queued waiters, in order.
+    let g1 = gate.clone();
+    let first = tokio::spawn(async move { g1.enter_queued().await });
+    tokio::task::yield_now().await;
+    let g2 = gate.clone();
+    let second = tokio::spawn(async move { g2.enter_queued().await });
+    tokio::task::yield_now().await;
+    assert!(!first.is_finished() && !second.is_finished(), "both parked");
+
+    // The FIRST waiter (FIFO) is admitted when the slot frees; the second still waits.
+    drop(held);
+    let first_permit = first.await.expect("first waiter admitted");
+    tokio::task::yield_now().await;
     assert!(
-        expected >= 1,
-        "a sub-second floor still rounds up to at least one whole second"
+        !second.is_finished(),
+        "FIFO: the second waiter keeps waiting"
     );
+
+    // A cancelled waiter leaves no residue: abort the second, free the slot, and a FRESH
+    // arrival gets it immediately (a leaked queue position would starve it).
+    second.abort();
+    drop(first_permit);
+    let fresh = tokio::time::timeout(std::time::Duration::from_secs(5), gate.enter_queued())
+        .await
+        .expect("a cancelled waiter must not hold the freed slot");
+    drop(fresh);
 }
 
 /// CONCURRENT-CAP BOUNDARY at N > 1: a gate of N permits admits EXACTLY N in-flight holders and

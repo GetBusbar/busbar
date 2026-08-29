@@ -98,25 +98,19 @@ EFFECTIVE_TRIPLE="${TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
 #      sections; the BOLTed artifact is stripped after the pass, and the un-BOLTed shipped
 #      binary carries symbols+relocs as the price of post-link optimizability (~ single-digit
 #      MiB, inside the artifact-contract floors, which bound only minimums).
-#   2. rustc's aarch64-linux targets pass --fix-cortex-a53-843419 by default, and binutils
-#      refuses to combine that erratum rewrite with --emit-relocs. The DEFAULT arm64 build is
-#      +lse (armv8.1): a Cortex-A53 (armv8.0) cannot execute it AT ALL, so the erratum
-#      workaround protects nothing there and is disabled explicitly.
-#   3. The armv8.0-compat arm64 build (BUSBAR_ARM64_BASELINE=1) is the one artifact A53-class
-#      cores DO run — it must keep the erratum fix, therefore it CANNOT emit relocs, therefore
-#      it is not BOLTable. Honest trade, stated here: BOLT applies to the default artifacts;
-#      the compat build ships the plain PGO binary (still stripped, as before).
+#   2. (Disproven candidate, recorded so nobody re-adds it: the aarch64 erratum rewrite
+#      --fix-cortex-a53-843419 COEXISTS with --emit-relocs — the profiler-box builds carry
+#      both and link clean; binutils has no --no- negation for it either. strip=true was the
+#      whole failure.)
+#   3. The armv8.0-compat arm64 build (BUSBAR_ARM64_BASELINE=1) is not BOLTed (BOLT applies to
+#      the default artifacts), so it keeps the historical fully-stripped link with no emitted
+#      relocs — byte-for-byte the pre-BOLT recipe.
 if [ "${BUSBAR_ARM64_BASELINE:-0}" = "1" ]; then
   EMIT_RELOCS=""
 else
   case "$EFFECTIVE_TRIPLE" in
-    aarch64-*-linux-*)
-      EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,--no-fix-cortex-a53-843419 -Cstrip=debuginfo"
-      ;;
-    *-linux-*)
-      EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Cstrip=debuginfo"
-      ;;
-    *) EMIT_RELOCS="" ;;
+    *-linux-*) EMIT_RELOCS="-Clink-arg=-Wl,--emit-relocs -Cstrip=debuginfo" ;;
+    *)         EMIT_RELOCS="" ;;
   esac
 fi
 # ARM64 ATOMICS (LSE): rustc's aarch64-linux targets default to the armv8.0 baseline, where every
