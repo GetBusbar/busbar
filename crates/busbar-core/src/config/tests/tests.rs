@@ -1793,6 +1793,13 @@ models:
     );
     assert_eq!(l.request_body_max_bytes, DEFAULT_REQUEST_BODY_MAX_BYTES);
     assert_eq!(l.pool_max_idle_per_host, DEFAULT_POOL_MAX_IDLE_PER_HOST);
+    // THE COUPLING IS THE CONTRACT (post-at-cap dial-churn regime): the idle cap's default must
+    // never sit below the admission bound — see DEFAULT_POOL_MAX_IDLE_PER_HOST's doc for the
+    // measured mass-close/redial-storm mechanism a lower default arms.
+    assert!(
+        DEFAULT_POOL_MAX_IDLE_PER_HOST >= DEFAULT_MAX_INBOUND_CONCURRENT,
+        "the default idle cap must cover the admissible working set"
+    );
     assert_eq!(l.pool_idle_timeout_secs, DEFAULT_POOL_IDLE_TIMEOUT_SECS);
     assert_eq!(
         l.pool_idle_timeout_secs, 300,

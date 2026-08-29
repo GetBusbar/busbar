@@ -4025,17 +4025,23 @@ pub(crate) const REQUEST_BODY_MAX_BYTES_FLOOR: usize = 64 * 1024;
 pub(crate) const REQUEST_BODY_MAX_BYTES_CEIL: usize = 1024 * 1024 * 1024;
 /// Default max idle keep-alive connections the upstream client pools per host. Mirrors `main.rs`.
 ///
-/// Sized for the sustained-throughput regime, not the idle-footprint regime: under an LLM-latency
-/// workload the in-flight connection count is `RPS × upstream_latency` (Little's law) — e.g. 40k RPS
-/// against a 20 ms upstream needs ~800 sockets held open concurrently. A small idle cap (the former
-/// 64) forces reqwest to CLOSE every connection beyond the cap the instant a request completes, so
-/// the next request re-pays a full TCP + TLS handshake on the hot path — connection CHURN that both
-/// caps sustained RPS and inflates tail latency. 1024 lets the pool retain the working set for a
-/// 4-core box saturating a 20 ms upstream without reconnecting, at a bounded idle-socket cost
-/// (idle keep-alives are cheap; the OS reclaims them and `pool_idle_timeout`/`tcp_keepalive` bound
-/// their lifetime). Operators with many distinct upstream hosts can lower it; high-RPS single-host
-/// deployments are the ones this default protects.
-const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 1024;
+/// EQUAL TO `DEFAULT_MAX_INBOUND_CONCURRENT` BY DESIGN, and the coupling is the point: the
+/// upstream working set is bounded by inbound admission (each in-flight request holds at most one
+/// upstream connection), so an idle cap BELOW the admissible working set cannot bound anything
+/// useful — it can only convert every lull into a mass-close and every following burst into a
+/// redial storm. Measured on the rig (the "post-at-cap dial-churn regime"): with the former 1024
+/// cap, an at-cap window built a ~7,100-connection working set, the window's end slammed it to
+/// 1,024 in under a second, and the next burst locked into ~9,400 upstream dials/s — 188,535
+/// connects in one 20s window against 26,263 in a clean one — with 54% of CPU burned in the
+/// kernel's ephemeral-port scan (`__inet_hash_connect` over a TIME_WAIT-saturated port space) and
+/// goodput collapsed from ~53k to ~7.5-39k rps. With the cap at the admission bound the working
+/// set survives lulls, the next window reuses warm sockets, and the regime cannot arm. The
+/// history below still holds for the LOWER bound (the former 64 forced hot-path churn); this
+/// raises the ceiling to the one resource bound that is real. Idle-socket cost stays bounded:
+/// an idle keep-alive is far cheaper than the live request the admission cap already permits,
+/// `pool_idle_timeout`/`tcp_keepalive` bound its lifetime, and the OS reclaims under pressure.
+/// Operators with many distinct upstream hosts can lower it, exactly as before.
+const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = DEFAULT_MAX_INBOUND_CONCURRENT;
 /// Default idle keep-alive lifetime (seconds) for pooled upstream connections.
 ///
 /// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty LLM workload the warm
