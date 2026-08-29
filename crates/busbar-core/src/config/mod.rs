@@ -4042,6 +4042,13 @@ pub(crate) const REQUEST_BODY_MAX_BYTES_CEIL: usize = 1024 * 1024 * 1024;
 /// `pool_idle_timeout`/`tcp_keepalive` bound its lifetime, and the OS reclaims under pressure.
 /// Operators with many distinct upstream hosts can lower it, exactly as before.
 const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = DEFAULT_MAX_INBOUND_CONCURRENT;
+// THE COUPLING IS THE CONTRACT, enforced at compile time: the idle cap's default must never sit
+// below the admission bound, or the dial-churn regime above re-arms. A future edit that decouples
+// the two constants fails to BUILD, not to bench.
+const _: () = assert!(
+    DEFAULT_POOL_MAX_IDLE_PER_HOST >= DEFAULT_MAX_INBOUND_CONCURRENT,
+    "the default idle cap must cover the admissible working set"
+);
 /// Default idle keep-alive lifetime (seconds) for pooled upstream connections.
 ///
 /// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty LLM workload the warm
