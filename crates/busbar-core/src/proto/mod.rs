@@ -912,10 +912,8 @@ pub(crate) fn lane_protocol_name(name: &str) -> Option<&'static str> {
         .map(|d| d.name)
 }
 
-pub(crate) fn convert_headers(
-    headers: Vec<(HeaderName, HeaderValue)>,
-) -> reqwest::header::HeaderMap {
-    let mut map = reqwest::header::HeaderMap::new();
+pub(crate) fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::header::HeaderMap {
+    let mut map = http::header::HeaderMap::new();
     for (name, value) in headers {
         map.insert(name, value);
     }

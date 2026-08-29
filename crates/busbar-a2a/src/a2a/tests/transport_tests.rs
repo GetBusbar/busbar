@@ -55,17 +55,16 @@ struct CountingResolver {
     lookups: Arc<AtomicUsize>,
     /// What the fetch path is told: the address the guard would judge and pin.
     judged: IpAddr,
-    /// What the CLIENT is told, if it ever asks. A different server, so an answer from here is
-    /// visible in the response body rather than inferred.
-    rebound: SocketAddr,
 }
 
 impl CountingResolver {
-    fn new(judged: IpAddr, rebound: SocketAddr) -> Self {
+    // NOTE THE ABSENCE: the `rebound` address used to feed the transport's client-side resolver
+    // double; the engine's pin left no client-side resolver to hand it to, so the hostile half of
+    // the fixture lives entirely in the second server (whose silence the test asserts).
+    fn new(judged: IpAddr, _rebound: SocketAddr) -> Self {
         Self {
             lookups: Arc::new(AtomicUsize::new(0)),
             judged,
-            rebound,
         }
     }
 
@@ -78,29 +77,6 @@ impl Resolver for CountingResolver {
     fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
         self.lookups.fetch_add(1, Ordering::SeqCst);
         Ok(vec![self.judged])
-    }
-}
-
-/// The client-side half. Shares the counter, and answers the HOSTILE address.
-struct ClientSideResolver {
-    lookups: Arc<AtomicUsize>,
-    rebound: SocketAddr,
-}
-
-impl reqwest::dns::Resolve for ClientSideResolver {
-    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        self.lookups.fetch_add(1, Ordering::SeqCst);
-        let addrs: reqwest::dns::Addrs = Box::new(std::iter::once(self.rebound));
-        Box::pin(std::future::ready(Ok(addrs)))
-    }
-}
-
-impl CountingResolver {
-    fn client_side(&self) -> Arc<ClientSideResolver> {
-        Arc::new(ClientSideResolver {
-            lookups: Arc::clone(&self.lookups),
-            rebound: self.rebound,
-        })
     }
 }
 
@@ -287,8 +263,10 @@ fn a_host_that_resolves_differently_on_the_second_lookup_never_gets_a_second_loo
     // Honest on the lookup the guard makes; hostile on any lookup the client makes.
     let resolver = CountingResolver::new(honest.ip(), hostile);
     let policy = FetchPolicy::default();
-    let transport =
-        ReqwestTransport::with_client_resolver(&policy, resolver.client_side() as Arc<_>);
+    // The transport no longer TAKES a client-side resolver to mis-consult: the hop runs on the
+    // pinned engine host-side, whose resolver is the pin itself. The counting below therefore
+    // covers the ONE guard lookup; the hostile server's silence covers the rest.
+    let transport = ReqwestTransport::new(&policy);
 
     let resp = one_hop(
         &resolver,

@@ -22,7 +22,11 @@ busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 axum = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
+# The differential harness's REFERENCE stack only (`egress::build_pinned_client` + the reqwest
+# resolver seams + the fixture resolver doubles): optional, enabled by `test-support` for the
+# dependent test binaries; this crate's own tests reach it through [dev-dependencies]. A shipped
+# build resolves NO reqwest edge from this crate.
+reqwest = { workspace = true, optional = true }
 bytes = { workspace = true }
 # `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
 # the relocated guard needs tokio's `net` API; the relocated verify-on-call gate (`trust::verify`)
@@ -145,4 +149,4 @@ openapi-schema = ["dep:schemars"]
 # The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
 # this feature too, so the crates whose test binaries link this one (core's differential harness)
 # can spawn the same fixture servers this crate's own engine tests drive.
-test-support = ["dep:rcgen"]
+test-support = ["dep:rcgen", "dep:reqwest"]

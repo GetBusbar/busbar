@@ -80,7 +80,7 @@ pub(crate) struct Lane {
     /// a clone of this map is byte-identical to the per-request build; the request path takes the
     /// clone (one buffer copy) iff the resolved credential mode is `Own` — Passthrough carries the
     /// CALLER's credential and always builds live.
-    pub(crate) prebuilt_auth: Option<reqwest::header::HeaderMap>,
+    pub(crate) prebuilt_auth: Option<http::header::HeaderMap>,
 }
 
 impl Lane {

@@ -47,7 +47,14 @@ busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
-reqwest = { workspace = true, features = ["http2"] }
+# `http` under its own name (Method/header vocabulary the engine-era transport speaks); the
+# reqwest edge is GONE from the production graph — the plane's hops ride the engine host-side,
+# and reqwest survives only in [dev-dependencies] for the live-server test batteries.
+http = { workspace = true }
+# TEST MACHINERY ONLY: the plane's live-server test batteries compile into the LIBRARY under
+# `test-support` and drive reqwest as a client against the fixtures — optional on that feature,
+# absent from every shipped build; plain `cargo test -p` reaches it via [dev-dependencies].
+reqwest = { workspace = true, features = ["http2", "json"], optional = true }
 # The transport's extra trust anchors are DER (`CertificateDer`) now that the hostless hop rides
 # the engine (`Trust::WebpkiPlus`); parsed from PEM at registration, same fail-at-parse posture as
 # the retired `reqwest::Certificate::from_pem`.
@@ -115,6 +122,7 @@ test-support = [
     "busbar-core/test-support",
     "busbar-core/plane-mcp",
     "busbar-core/plane-a2a",
+    "dep:reqwest",
 ]
 
 [dev-dependencies]

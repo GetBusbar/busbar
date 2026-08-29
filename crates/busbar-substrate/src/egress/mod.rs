@@ -102,6 +102,8 @@ pub enum ChunkFlow {
 }
 
 use std::net::SocketAddr;
+// `Arc` is named only by the reqwest reference stack below — gated with it.
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Mutex};
@@ -131,6 +133,12 @@ pub const EGRESS_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 /// dropped, the hop fails LOUDLY with this message rather than quietly resolving the name a second
 /// time — which is the lookup a DNS-rebinding attacker needs and must not exist. The message names
 /// the invariant ("exactly once") and the name it was asked about, so a log line is actionable.
+// THE REQWEST REFERENCE STACK, from here to `build_pinned_client`: the retired production client
+// the differential harness keeps driving as its reference implementation (design ruling: reqwest
+// stays a dev-dependency forever for exactly this). Compiled only for this crate's own tests and
+// for the dependent test binaries (`test-support`) — a shipped build carries none of it, and the
+// `reqwest` edge below it is optional on the same feature.
+#[cfg(any(test, feature = "test-support"))]
 pub struct RefuseSecondLookup;
 
 /// THE ONE SOURCE of the second-lookup refusal text. Two resolvers quote it — this reqwest-facing
@@ -147,6 +155,7 @@ pub fn refuse_second_lookup_message(name: &str) -> String {
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl reqwest::dns::Resolve for RefuseSecondLookup {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(std::future::ready(Err(Box::<
@@ -160,8 +169,10 @@ impl reqwest::dns::Resolve for RefuseSecondLookup {
 /// Hands a shared resolver to the client, which wants a concrete type. Lets a test install a counting
 /// resolver where production installs [`RefuseSecondLookup`], so "the client performed no lookup of
 /// its own" is an assertion rather than an intention.
+#[cfg(any(test, feature = "test-support"))]
 struct DelegatingDns(Arc<dyn reqwest::dns::Resolve>);
 
+#[cfg(any(test, feature = "test-support"))]
 impl reqwest::dns::Resolve for DelegatingDns {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         self.0.resolve(name)
@@ -185,7 +196,9 @@ pub fn with_cause(err: &dyn std::error::Error) -> String {
     out
 }
 
-/// THE ONE CANONICAL PINNED CLIENT, built to the strongest posture every plane now shares.
+/// THE PINNED REQWEST CLIENT — the REFERENCE the differential harness drives beside the engine
+/// (every production consumer now builds `EngineSpec::pinned`; see the gate note above
+/// [`RefuseSecondLookup`]).
 ///
 /// Every knob here is load-bearing:
 /// * `redirect: none` — a 3xx is a fresh, fully untrusted URL that the GUARD must see; a client that
@@ -204,6 +217,7 @@ pub fn with_cause(err: &dyn std::error::Error) -> String {
 /// There is deliberately NO total-request timeout on the client: it is applied per REQUEST, because a
 /// pooled client serves callers with different deadlines. Turning certificate verification off
 /// appears nowhere — a pin obtained that way would be strictly worse than no pin.
+#[cfg(any(test, feature = "test-support"))]
 pub fn build_pinned_client(
     host: &str,
     addr: SocketAddr,

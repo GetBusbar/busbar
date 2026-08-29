@@ -377,6 +377,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac",
+ "http",
  "http-body-util",
  "indexmap",
  "prost",

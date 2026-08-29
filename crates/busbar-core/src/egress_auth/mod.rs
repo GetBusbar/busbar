@@ -341,7 +341,7 @@ pub(crate) fn prebuild_auth(
     credential: &Arc<dyn CredentialProvider>,
     api_key: &str,
     signing_host: &str,
-) -> Option<reqwest::header::HeaderMap> {
+) -> Option<http::header::HeaderMap> {
     if !credential.is_lane_constant() {
         return None;
     }

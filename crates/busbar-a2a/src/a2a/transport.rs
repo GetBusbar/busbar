@@ -70,7 +70,6 @@
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_substrate::egress::seam;
@@ -229,13 +228,6 @@ pub(crate) fn resolve_client_identities(
 /// backend ([`busbar_core::egress`]) — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
-    /// The resolver a plane-supplied client would have been given. VESTIGIAL under the seam (Design A):
-    /// the hop now runs host-side, where the host installs its own [`busbar_substrate::egress::RefuseSecondLookup`]
-    /// and — because every hop carries the already-judged pinned address — performs NO lookup at all. It
-    /// is kept only so the test constructor that asserts "the client did not perform a second lookup"
-    /// still stands one up; the assertion holds precisely because nothing consults it.
-    #[allow(dead_code)]
-    dns: Arc<dyn reqwest::dns::Resolve>,
     /// Body ceiling, mirrored from the policy so the read stops at the cap rather than buffering an
     /// upstream-chosen number of bytes and measuring afterwards.
     max_body_bytes: usize,
@@ -258,19 +250,13 @@ pub(crate) struct ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    // NOTE THE ABSENCE: this transport used to hold a client-side DNS resolver so a test could
+    // assert "the client performed no lookup of its own". The hop runs host-side on the pinned
+    // ENGINE now, whose resolver IS the pin (a table, no I/O; any other name refuses with the
+    // doctrine text) — the property is structural and pinned by the engine's own suite, so there
+    // is no client-side resolver left to hand a counting double to.
     pub(crate) fn new(policy: &FetchPolicy) -> Self {
-        Self::with_client_resolver(
-            policy,
-            Arc::new(busbar_substrate::egress::RefuseSecondLookup),
-        )
-    }
-
-    pub(crate) fn with_client_resolver(
-        policy: &FetchPolicy,
-        dns: Arc<dyn reqwest::dns::Resolve>,
-    ) -> Self {
         Self {
-            dns,
             max_body_bytes: policy.max_body_bytes,
             timeout: CARD_FETCH_TIMEOUT,
             extra_roots: Vec::new(),
@@ -369,7 +355,7 @@ impl ReqwestTransport {
     fn execute(
         &self,
         _what: &'static str,
-        method: reqwest::Method,
+        method: http::Method,
         hop: Hop<'_>,
         timeout: Duration,
     ) -> Result<HttpResponse, String> {
@@ -419,7 +405,7 @@ impl Transport for ReqwestTransport {
     fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
         self.execute(
             "agent card fetch",
-            reqwest::Method::GET,
+            http::Method::GET,
             Hop {
                 url,
                 addr,
@@ -446,9 +432,9 @@ impl RelayTransport for ReqwestTransport {
         body: &[u8],
     ) -> Result<HttpResponse, String> {
         // PARSED, NOT MATCHED. The verb comes off the framing that composed the request, and
-        // `reqwest::Method` is the type that already knows which tokens are methods — a table here
+        // `http::Method` is the type that already knows which tokens are methods — a table here
         // would be a second, shorter answer to a question the http crate has answered once.
-        let method = reqwest::Method::from_bytes(http_method.as_bytes())
+        let method = http::Method::from_bytes(http_method.as_bytes())
             .map_err(|_| format!("`{http_method}` is not an HTTP method"))?;
         // A BODY-LESS REQUEST SENDS NO BODY. A zero-length body on a `GET` is not the same request
         // as no body at all: it puts `content-length: 0` on a request the specification defines

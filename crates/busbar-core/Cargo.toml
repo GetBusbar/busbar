@@ -52,7 +52,11 @@ busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
-reqwest = { workspace = true, features = ["http2"] }
+# TEST MACHINERY ONLY since the egress-symmetry migration: every production hop rides the engine,
+# and the remaining reqwest sites are the `test_support` mock-driving helpers this feature-gated
+# edge serves (the differential harness's reference stack lives in substrate under the same
+# discipline). Optional + `test-support`; plain `cargo test -p` reaches it via [dev-dependencies].
+reqwest = { workspace = true, features = ["http2"], optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
@@ -158,7 +162,7 @@ txn-fence-red = []
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate/test-support", "dep:rmcp"]
+test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a

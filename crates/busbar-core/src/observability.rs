@@ -114,7 +114,7 @@ fn base64_encode(input: &[u8]) -> String {
 /// A URL with no userinfo, or a string that does not parse as a URL, yields `(endpoint unchanged,
 /// None)` — we must not mangle a credential-free endpoint, and validation already accepted it. Pure,
 /// so it is unit-testable without process-wide state.
-fn split_otlp_credentials(endpoint: &str) -> (String, Option<reqwest::header::HeaderValue>) {
+fn split_otlp_credentials(endpoint: &str) -> (String, Option<http::header::HeaderValue>) {
     let Ok(mut parsed) = url::Url::parse(endpoint) else {
         return (endpoint.to_string(), None);
     };
@@ -144,7 +144,7 @@ fn split_otlp_credentials(endpoint: &str) -> (String, Option<reqwest::header::He
     // `HeaderValue::from_str` only fails on bytes a header value cannot carry; a base64 token is pure
     // ASCII from `[A-Za-z0-9+/=]`, so this never fails. If it somehow did, drop the credential rather
     // than panic on the startup path — the export simply goes out unauthenticated.
-    let auth = reqwest::header::HeaderValue::from_str(&format!("{OTLP_AUTH_SCHEME}{token}")).ok();
+    let auth = http::header::HeaderValue::from_str(&format!("{OTLP_AUTH_SCHEME}{token}")).ok();
     (clean, auth)
 }
 

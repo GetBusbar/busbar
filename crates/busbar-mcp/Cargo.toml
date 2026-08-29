@@ -54,7 +54,6 @@ rmcp = { workspace = true }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
-reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 # The engine-built token exchange (`upstream::exchange`): request assembly is `http` parts, the
@@ -63,6 +62,11 @@ serde_yaml = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 serde_urlencoded = { workspace = true }
+# TEST MACHINERY ONLY: the plane's test batteries compile into the LIBRARY under `test-support`
+# (the dependent-test-binary pattern), and they drive reqwest as a client against the fixtures —
+# so the edge is optional on that feature and absent from every shipped build; plain
+# `cargo test -p` reaches it via [dev-dependencies].
+reqwest = { workspace = true, features = ["http2", "json"], optional = true }
 indexmap = { workspace = true }
 futures = { workspace = true }
 base64 = { workspace = true }
@@ -123,6 +127,7 @@ test-support = [
     "busbar-core/test-support",
     "busbar-core/plane-mcp",
     "busbar-core/plane-a2a",
+    "dep:reqwest",
 ]
 
 [dev-dependencies]

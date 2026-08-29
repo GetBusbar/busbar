@@ -13,7 +13,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::Stream;
-use reqwest::StatusCode;
+use http::StatusCode;
 use serde_json::Value;
 
 use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
