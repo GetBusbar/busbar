@@ -121,8 +121,11 @@ pub(crate) struct FirstByteBody<S, P> {
     /// Capped at `MAX_TRANSLATED_BODY_BYTES`, but TAIL-anchored, not head-truncated: every dialect's
     /// `usage` object sits at (or near) the END of the response JSON, so once the body exceeds the
     /// cap this buffer drops from the FRONT (oldest bytes) rather than refusing new bytes, keeping
-    /// the LAST `cap` bytes at all times. A `VecDeque` so the drop is O(1) amortized per byte
-    /// (`pop_front`) instead of an O(cap) `Vec::drain` on every over-cap chunk. `taps_nonstream_usage`
+    /// the LAST `cap` bytes at all times. A contiguous `Vec<u8>` (memcpy appends via
+    /// `extend_from_slice` on the hot path — it was once a `VecDeque` extended byte-by-byte; the
+    /// drop site's comment records the trade): the front drop is `drain(..excess)`, one memmove of
+    /// the kept tail per over-cap chunk, paid only on the RARE over-cap response and never on the
+    /// common path. `taps_nonstream_usage`
     /// gates this: the client stream is untouched either way (verbatim relay, below). The SSE /
     /// translation paths never touch this (they bill via `translate.usage()`).
     nonstream_buf: Vec<u8>,
