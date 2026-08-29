@@ -124,6 +124,14 @@ schemars = { workspace = true, optional = true }
 # The relocated `governance::signing` known-answer tests hex-encode the derived subkey seeds they pin
 # and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
 [dev-dependencies]
+# The reqwest REFERENCE stack (`build_pinned_client`, `RefuseSecondLookup`, the fixture resolver
+# doubles) is compiled under `cfg(any(test, feature = "test-support"))`, and this crate's OWN
+# suite drives it (pinned_pool_tests, resolver_tests assert doctrine-text parity against the
+# reqwest resolver) — so the plain `cfg(test)` arm needs the crate as a dev edge, exactly as the
+# reqwest-retirement commit stated. Without it, `cargo test -p busbar-substrate` (no features)
+# does not compile; workspace runs only ever worked through feature unification from core's
+# `test-support` edge. Same workspace-pinned version as the optional production entry above.
+reqwest = { workspace = true }
 hex = { workspace = true }
 # The relocated `plane_host::identity`/`plane_host::trust_anchor` registry tests build throw-away
 # self-signed client identities and roots (the way the a2a boot resolver builds one) with `rcgen`;

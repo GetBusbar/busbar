@@ -52,6 +52,12 @@ pub(crate) struct ClientInner {
     /// at build time by [`super::dial_bound_for`] — the same value the gate's permits use, so
     /// bound == permits and the gate's semaphore is never contended by pool-issued dials.
     pub(crate) dial_bound: usize,
+    /// Test observability for the idle-reuse retry: how many times a REUSED conn handed a
+    /// request back (`take_message()`) and the send loop went around again. Test-only so the
+    /// bounce arm is pinned DIRECTLY, not inferred from wire side effects a liveness-pop
+    /// recovery would produce identically.
+    #[cfg(test)]
+    pub(crate) retry_bounces: std::sync::atomic::AtomicUsize,
 }
 
 impl ClientInner {
@@ -796,6 +802,39 @@ pub(crate) struct AuthoritySnapshot {
     pub(crate) idle: usize,
     pub(crate) has_h2: bool,
     pub(crate) h2_generation: u64,
+}
+
+/// Create the authority entry a delivery test targets (entries are otherwise created lazily by
+/// the first checkout, and the return path deliberately drops conns for unknown authorities).
+#[cfg(test)]
+pub(crate) fn ensure_authority_for_tests(inner: &Arc<ClientInner>, key: &PoolKey) {
+    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let h2_pinned = inner.h2_pinned();
+    pm.map
+        .entry(key.clone())
+        .or_insert_with(|| AuthorityState::new(h2_pinned));
+}
+
+/// Deliver a conn to the authority's queue as a FRESH dial's conn (`reused: false`) — the
+/// terminal-on-fresh retry-boundary pin drives this: it lets a test hand a waiter a fresh-marked
+/// conn whose upstream has already FINned unnoticed, so the `take_message()` bounce on a fresh
+/// conn is exercised deterministically (production reaches this arm only through a timing race).
+/// Runs the SAME `deliver_h1_locked` walk the dial task's success arm runs.
+#[cfg(test)]
+pub(crate) fn deliver_fresh_h1_for_tests(
+    inner: &Arc<ClientInner>,
+    key: &PoolKey,
+    sender: http1::SendRequest<Full<Bytes>>,
+    extras: ConnSnapshot,
+) {
+    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let Some(st) = pm.map.get_mut(key) else {
+        return;
+    };
+    let parked = deliver_h1_locked(inner, st, sender, extras, false);
+    if parked {
+        maybe_spawn_reaper(inner, &mut pm);
+    }
 }
 
 #[cfg(test)]

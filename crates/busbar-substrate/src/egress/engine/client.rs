@@ -92,6 +92,8 @@ impl EngineClient {
                 h2_prior_knowledge: cfg.h2_prior_knowledge,
                 h2_keepalive: cfg.h2_keepalive,
                 dial_bound: cfg.dial_bound,
+                #[cfg(test)]
+                retry_bounces: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -120,6 +122,15 @@ impl EngineClient {
     #[cfg(test)]
     pub(crate) fn inner_for_tests(&self) -> &Arc<ClientInner> {
         &self.inner
+    }
+
+    /// How many take_message bounces the retry loop has taken — the direct pin for the
+    /// idle-reuse retry arm.
+    #[cfg(test)]
+    pub(crate) fn retry_bounces_for_tests(&self) -> usize {
+        self.inner
+            .retry_bounces
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// (authorities, reaper_running) — the config-off zero-cost probe reads this.
@@ -213,6 +224,10 @@ async fn send_request(
                     }
                     Err(mut e) => match e.take_message() {
                         Some(returned) if reused => {
+                            #[cfg(test)]
+                            inner
+                                .retry_bounces
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             req = returned;
                             continue;
                         }
@@ -253,6 +268,10 @@ async fn send_request(
                     }
                     Err(mut e) => match e.take_message() {
                         Some(returned) if reused => {
+                            #[cfg(test)]
+                            inner
+                                .retry_bounces
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             req = returned;
                             continue;
                         }

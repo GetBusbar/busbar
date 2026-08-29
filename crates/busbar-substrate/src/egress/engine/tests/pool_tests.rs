@@ -1173,3 +1173,251 @@ fn read_head(stream: &mut std::net::TcpStream) -> Option<String> {
     }
     Some(head_text)
 }
+
+// ── The take_message bounce itself, staged deterministically ────────────────────────────────────
+//
+// The server-closed-idle test above pins the OUTCOME of the reuse race but usually recovers via
+// the pop-time liveness check, so the bounce → URI-restore → retry branch itself needs its own
+// pin. The bounce's precondition is precise: hyper's h1 dispatcher must terminate WITHOUT ever
+// dequeuing the queued request (a dispatcher that dequeues cannot give the message back). A
+// socket-level FIN cannot stage that deterministically — tokio's cached readiness lets the
+// dispatcher dequeue-and-write before it observes a buffered EOF — so these tests stage it at
+// the dispatch level with a REAL hyper conn whose driver is a PAUSABLE pump: pause the driver
+// (a descheduled driver, exactly what the production race is), deliver the conn, let the send
+// queue its message against the frozen dispatcher, then drop the conn — the unconsumed message
+// comes back through `take_message()`, which is the branch under test.
+
+/// A real h1 conn to `addr` whose driver can be paused (polls return Pending without touching
+/// the conn) and then killed (conn dropped un-polled, closing the dispatch channel with any
+/// queued message unconsumed).
+struct PausableConn {
+    sender: Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>>,
+    /// While false, the pump refuses to poll the conn.
+    run: Arc<AtomicBool>,
+    /// Set by the pump each time it is woken while paused — the "a message was queued against
+    /// the frozen dispatcher" observable.
+    poked: Arc<AtomicBool>,
+    /// Flipping this makes the pump exit, DROPPING the conn.
+    drop_now: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+impl PausableConn {
+    async fn connect(addr: SocketAddr) -> Self {
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut tx, conn) = hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+            hyper_util::rt::TokioIo::new(stream),
+        )
+        .await
+        .expect("handshake");
+        let run = Arc::new(AtomicBool::new(true));
+        let poked = Arc::new(AtomicBool::new(false));
+        let drop_now = Arc::new(AtomicBool::new(false));
+        let waker: Arc<Mutex<Option<std::task::Waker>>> = Arc::new(Mutex::new(None));
+        let (run2, poked2, drop2, waker2) = (
+            Arc::clone(&run),
+            Arc::clone(&poked),
+            Arc::clone(&drop_now),
+            Arc::clone(&waker),
+        );
+        tokio::spawn(async move {
+            let mut conn = Box::pin(conn);
+            std::future::poll_fn(move |cx| {
+                if drop2.load(Ordering::SeqCst) {
+                    return std::task::Poll::Ready(()); // exit: `conn` drops un-polled
+                }
+                if !run2.load(Ordering::SeqCst) {
+                    poked2.store(true, Ordering::SeqCst);
+                    *waker2.lock().expect("waker") = Some(cx.waker().clone());
+                    return std::task::Poll::Pending;
+                }
+                *waker2.lock().expect("waker") = Some(cx.waker().clone());
+                std::future::Future::poll(conn.as_mut(), cx).map(|_| ())
+            })
+            .await;
+        });
+        // Drive the dispatcher to readiness (want registered) while the pump still runs — the
+        // conn is now indistinguishable from a healthy parked one: ready, not closed.
+        tx.ready().await.expect("conn readies up");
+        PausableConn {
+            sender: Some(tx),
+            run,
+            poked,
+            drop_now,
+            waker,
+        }
+    }
+
+    fn take_sender(&mut self) -> hyper::client::conn::http1::SendRequest<Full<Bytes>> {
+        self.sender.take().expect("sender taken once")
+    }
+
+    fn pause(&self) {
+        self.run.store(false, Ordering::SeqCst);
+    }
+
+    /// Kill the conn: the pump exits on its next poll, dropping the conn and closing the
+    /// dispatch channel — any queued, un-dequeued message is handed back to its sender.
+    fn drop_conn(&self) {
+        self.drop_now.store(true, Ordering::SeqCst);
+        if let Some(w) = self.waker.lock().expect("waker").take() {
+            w.wake();
+        }
+    }
+
+    async fn wait_poked(&self) {
+        eventually(
+            "the frozen dispatcher was poked by a queued message",
+            || self.poked.load(Ordering::SeqCst),
+        )
+        .await;
+    }
+}
+
+/// THE BOUNCE PIN: a REUSED conn whose dispatcher dies without dequeuing hands the request back;
+/// the retry loop takes EXACTLY ONE bounce (counted directly), restores the ORIGINAL
+/// absolute-form URI, re-checks out fresh, and the request succeeds — the surviving connection's
+/// wire head carries the origin-form of the original URI with the re-injected Host, which a lost
+/// restore cannot produce (attempt 2 would re-prepare an already-origin-form URI and die on the
+/// missing host).
+#[tokio::test]
+async fn a_take_message_bounce_retries_once_with_the_original_uri_restored() {
+    let fixture = spawn_http(CannedResponse::ok("retried"), 100);
+    let answer = ip_only(fixture.addr);
+    let script = ScriptedDial::new(move |_| DialScript::Answer(answer));
+    let client = client_over(EgressResolver::Custom(script.clone()), cfg(2));
+    let port = fixture.addr.port();
+    let uri = format!("http://bounce.test:{port}/v1/retry?attempt=one");
+    let key = key_of(&uri);
+
+    // A healthy real conn whose driver FREEZES: ready, not closed — the descheduled-driver
+    // shape — PARKED IDLE, so the request checks it out as a REUSED conn.
+    let mut doctored = PausableConn::connect(fixture.addr).await;
+    doctored.pause();
+    pool::ensure_authority_for_tests(client.inner_for_tests(), &key);
+    pool::return_h1_conn(
+        client.inner_for_tests(),
+        &key,
+        doctored.take_sender(),
+        pool::ConnSnapshot {
+            spki: None,
+            negotiated_h2: false,
+        },
+    );
+    eventually("the doctored conn parks idle", || {
+        pool::snapshot_authority(client.inner_for_tests(), &key).is_some_and(|s| s.idle == 1)
+    })
+    .await;
+
+    // The request pops it (liveness passes: ready, not closed) and queues its message against
+    // the frozen dispatcher (the poke). THEN the conn dies — the message comes back un-dequeued
+    // and the retry loop restores the URI and dials fresh.
+    let c1 = client.clone();
+    let uri2 = uri.clone();
+    let task = tokio::spawn(async move { c1.request(get(&uri2)).await });
+    doctored.wait_poked().await;
+    doctored.drop_conn();
+
+    let resp = task
+        .await
+        .expect("join")
+        .expect("the bounced request is retried and succeeds");
+    assert_eq!(resp.status(), 200);
+    let _ = resp.into_body().collect().await;
+
+    assert_eq!(
+        client.retry_bounces_for_tests(),
+        1,
+        "the retry loop must take exactly ONE take_message bounce — zero means this pin went \
+         through some other recovery and is vacuous"
+    );
+    assert_eq!(
+        script.calls(),
+        1,
+        "exactly ONE pool dial exists: the post-bounce redial (the doctored conn was parked, \
+         never dialed)"
+    );
+    let heads = fixture.request_heads();
+    assert_eq!(
+        heads.len(),
+        1,
+        "the bounced request never reached the doctored conn's wire; only the retry lands"
+    );
+    assert!(
+        heads[0].starts_with("GET /v1/retry?attempt=one HTTP/1.1\r\n"),
+        "attempt 2 must carry the ORIGINAL URI's origin-form — the per-attempt restore: {}",
+        heads[0]
+    );
+    assert!(
+        heads[0].contains(&format!("host: bounce.test:{port}\r\n")),
+        "attempt 2 re-injects Host from the restored absolute-form URI: {}",
+        heads[0]
+    );
+    // The doctored conn contributed a connection that served zero requests.
+    let records = fixture.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records.iter().map(|r| r.requests).sum::<usize>(),
+        1,
+        "exactly one request total crossed the wire — no duplicate from the retry"
+    );
+}
+
+/// THE TERMINAL HALF of the retry boundary: the same un-dequeued bounce on a conn delivered as a
+/// FRESH dial's conn is NOT retried — the error surfaces (not connect-class: the conn existed),
+/// the bounce counter stays at zero, and no redial is started.
+#[tokio::test]
+async fn a_fresh_conn_take_message_bounce_is_terminal_not_retried() {
+    let fixture = spawn_http(CannedResponse::ok("never"), 100);
+    let script = ScriptedDial::new(|_| DialScript::Block);
+    let client = client_over(EgressResolver::Custom(script.clone()), cfg(1));
+    let uri = format!("http://freshfin.test:{}/v1/x", fixture.addr.port());
+    let key = key_of(&uri);
+
+    let c1 = client.clone();
+    let uri2 = uri.clone();
+    let task = tokio::spawn(async move { c1.request(get(&uri2)).await });
+    eventually("the request parks as a waiter", || {
+        pool::snapshot_authority(client.inner_for_tests(), &key).is_some_and(|s| s.waiters == 1)
+    })
+    .await;
+
+    let mut doctored = PausableConn::connect(fixture.addr).await;
+    doctored.pause();
+    // Delivered through the dial-success walk, marked FRESH.
+    pool::deliver_fresh_h1_for_tests(
+        client.inner_for_tests(),
+        &key,
+        doctored.take_sender(),
+        pool::ConnSnapshot {
+            spki: None,
+            negotiated_h2: false,
+        },
+    );
+    doctored.wait_poked().await;
+    doctored.drop_conn();
+
+    let err = task
+        .await
+        .expect("join")
+        .expect_err("a fresh conn's bounce is real and terminal");
+    assert!(
+        !err.is_connect(),
+        "the conn was established — the Canceled class, not Connect"
+    );
+    assert_eq!(
+        client.retry_bounces_for_tests(),
+        0,
+        "a fresh conn's take_message bounce must never enter the retry loop"
+    );
+    assert_eq!(
+        script.calls(),
+        1,
+        "no retry dial follows a fresh-conn bounce"
+    );
+    assert_eq!(
+        fixture.records().iter().map(|r| r.requests).sum::<usize>(),
+        0,
+        "nothing ever reached the wire"
+    );
+}

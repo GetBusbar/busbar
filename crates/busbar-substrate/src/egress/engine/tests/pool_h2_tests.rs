@@ -284,6 +284,10 @@ struct AlpnSwitchFixture {
     offer_h2: Arc<AtomicBool>,
     stall_tls: Arc<AtomicBool>,
     goaway: Arc<tokio::sync::Notify>,
+    /// Connections ACCEPTED (pre-TLS) — the dial-count observable.
+    accepted: Arc<AtomicUsize>,
+    /// Serve loops that ENDED (conn closed by either side) — the straggler-close observable.
+    ended: Arc<AtomicUsize>,
 }
 
 fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFixture {
@@ -306,12 +310,16 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
     let offer_h2 = Arc::new(AtomicBool::new(true));
     let stall_tls = Arc::new(AtomicBool::new(false));
     let goaway = Arc::new(tokio::sync::Notify::new());
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let ended = Arc::new(AtomicUsize::new(0));
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let (offer2, stall2, goaway2) = (
+    let (offer2, stall2, goaway2, accepted2, ended2) = (
         Arc::clone(&offer_h2),
         Arc::clone(&stall_tls),
         Arc::clone(&goaway),
+        Arc::clone(&accepted),
+        Arc::clone(&ended),
     );
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -325,6 +333,7 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
                 let Ok((stream, _)) = listener.accept().await else {
                     break;
                 };
+                accepted2.fetch_add(1, Ordering::SeqCst);
                 let config = if offer2.load(Ordering::SeqCst) {
                     Arc::clone(&cfg_h2)
                 } else {
@@ -332,6 +341,7 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
                 };
                 let stall = Arc::clone(&stall2);
                 let goaway = Arc::clone(&goaway2);
+                let ended = Arc::clone(&ended2);
                 tokio::spawn(async move {
                     while stall.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -365,6 +375,7 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
                             .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
                             .await;
                     }
+                    ended.fetch_add(1, Ordering::SeqCst);
                 });
             }
         });
@@ -374,6 +385,8 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
         offer_h2,
         stall_tls,
         goaway,
+        accepted,
+        ended,
     }
 }
 
@@ -456,4 +469,84 @@ async fn goaway_then_h1_redial_reverts_to_unknown_bound_and_unicast() {
         "h1 success re-learns the proto"
     );
     assert!(!snap.has_h2);
+}
+
+/// THE STRAGGLER-CLOSE PIN: two Unknown-era dials race against an h2 upstream; the first
+/// completion installs the shared entry and drains BOTH waiters, the second is a straggler and
+/// is CLOSED — never parked (the h1-typed idle deque cannot hold it, and a second shared conn is
+/// refused exactly as legacy's put() refused one). The upstream observes exactly one surviving
+/// connection, the generation counter shows exactly one install, and no further dial is started.
+#[tokio::test]
+async fn the_second_unknown_era_h2_dial_is_closed_never_parked() {
+    let material = ca_and_leaf(&["straggle.test"]);
+    let fixture = spawn_alpn_switch(&material); // offers h2 to every connection
+    let connector = tls_connector_all_versions(
+        &material.ca_pem,
+        EgressResolver::Pinned {
+            host: Arc::from("straggle.test"),
+            addr: fixture.addr.ip(),
+        },
+        2,
+        Duration::from_secs(10),
+    );
+    let client = EngineClient::assemble(connector, cfg(2));
+    let uri = format!("https://straggle.test:{}/v1/x", fixture.addr.port());
+    let key = key_of(&uri);
+
+    // Freeze the handshakes so BOTH Unknown-era dials exist at once (proto Unknown → h1 bound).
+    fixture.stall_tls.store(true, Ordering::SeqCst);
+    let tasks: Vec<_> = (0..2)
+        .map(|_| {
+            let client = client.clone();
+            let uri = uri.clone();
+            tokio::spawn(async move {
+                let resp = client.request(get(&uri)).await?;
+                let _ = resp.into_body().collect().await;
+                Ok::<_, EngineError>(())
+            })
+        })
+        .collect();
+    eventually("two Unknown-era dials in flight", || {
+        pool::snapshot_authority(client.inner_for_tests(), &key)
+            .is_some_and(|s| s.inflight_dials == 2)
+    })
+    .await;
+
+    // Thaw: both negotiate h2. One installs and serves everyone; the other must be closed.
+    fixture.stall_tls.store(false, Ordering::SeqCst);
+    for task in tasks {
+        task.await.expect("join").expect("both requests complete");
+    }
+    eventually("the straggler is closed and the winner survives", || {
+        fixture.accepted.load(Ordering::SeqCst) == 2 && fixture.ended.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    let snap = pool::snapshot_authority(client.inner_for_tests(), &key).expect("state");
+    assert!(snap.has_h2, "the winner is installed as the shared entry");
+    assert_eq!(
+        snap.h2_generation, 1,
+        "exactly ONE install — the straggler never replaced the winner"
+    );
+    assert_eq!(
+        snap.idle, 0,
+        "the straggler is never parked in the h1 idle deque"
+    );
+    assert_eq!(snap.inflight_dials, 0);
+    assert_eq!(snap.waiters, 0);
+    assert_eq!(snap.proto, pool::KnownProto::H2);
+
+    // And the survivor serves the next request — no new connection, no new dial.
+    let resp = client.request(get(&uri)).await.expect("rides the winner");
+    let _ = resp.into_body().collect().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fixture.accepted.load(Ordering::SeqCst),
+        2,
+        "the third request multiplexes onto the surviving conn"
+    );
+    assert_eq!(
+        fixture.ended.load(Ordering::SeqCst),
+        1,
+        "the winner stays alive"
+    );
 }
