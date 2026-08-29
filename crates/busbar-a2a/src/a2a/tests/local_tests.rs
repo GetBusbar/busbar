@@ -26,6 +26,23 @@ use busbar_core::plane::taskstore::TASKS;
 
 // ══ HELPERS ══════════════════════════════════════════════════════════════════════════════════════
 
+/// The battery's clock BASE: real wall time, captured once per process. The registry under test is
+/// the process-global `TASKS`, which runs the production retention sweep on every submit — and the
+/// OTHER batteries sharing it (the front door, the relay, push delivery) drive the ingress with the
+/// REAL host clock. A fixed synthetic epoch here would sit hundreds of millions of seconds in the
+/// sweep's past, so a completed task opened by one of these tests would be collected as an expired
+/// terminal row the moment any concurrent test submitted. Offsets off this base stay far inside the
+/// terminal-task TTL, so relative order is preserved and nothing ages out mid-test.
+fn epoch() -> u64 {
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BASE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("wall clock after 1970")
+            .as_secs()
+    })
+}
+
 /// Open a real task row for `principal` and move it to `state`.
 fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now: u64) {
     let task = Task::submitted(task_id, context_id, principal, Direction::Inbound, now)
@@ -155,13 +172,13 @@ async fn list_tasks_returns_only_this_callers_rows() {
     crate::testkit::install_test_seams();
     let mine = "key-list-mine";
     let theirs = "key-list-theirs";
-    open(mine, "lt-mine-1", "ctx-shared", TaskState::Working, 1_000);
+    open(mine, "lt-mine-1", "ctx-shared", TaskState::Working, epoch());
     open(
         theirs,
         "lt-theirs-1",
         "ctx-shared",
         TaskState::Working,
-        1_000,
+        epoch(),
     );
 
     let env = envelope(
@@ -187,8 +204,14 @@ async fn list_tasks_returns_only_this_callers_rows() {
 async fn list_tasks_is_newest_first_and_speaks_the_wire_state() {
     crate::testkit::install_test_seams();
     let me = "key-list-order";
-    open(me, "lt-old", "ctx-order", TaskState::Working, 1_000);
-    open(me, "lt-new", "ctx-order", TaskState::Completed, 2_000);
+    open(me, "lt-old", "ctx-order", TaskState::Working, epoch());
+    open(
+        me,
+        "lt-new",
+        "ctx-order",
+        TaskState::Completed,
+        epoch() + 100,
+    );
 
     let env = envelope(
         "ListTasks",
@@ -213,7 +236,7 @@ async fn list_tasks_pages_by_cursor_and_ends_with_an_empty_token() {
             id,
             "ctx-page",
             TaskState::Working,
-            1_000 + i as u64 * 10,
+            epoch() + i as u64 * 10,
         );
     }
 
@@ -261,7 +284,7 @@ async fn list_tasks_pages_by_cursor_and_ends_with_an_empty_token() {
 async fn list_tasks_publishes_only_what_busbar_holds() {
     crate::testkit::install_test_seams();
     let me = "key-list-shape";
-    open(me, "lt-shape", "ctx-shape", TaskState::Completed, 1_000);
+    open(me, "lt-shape", "ctx-shape", TaskState::Completed, epoch());
     let listed = result(local::list_tasks(
         &envelope(
             "ListTasks",
@@ -291,7 +314,7 @@ async fn list_tasks_publishes_only_what_busbar_holds() {
 fn subscribing_to_a_live_task_is_relayed() {
     crate::testkit::install_test_seams();
     let me = "key-sub-live";
-    open(me, "sub-live", "ctx-sub", TaskState::Working, 1_000);
+    open(me, "sub-live", "ctx-sub", TaskState::Working, epoch());
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-live" }));
     assert!(
         local::subscribe_refusal(host().as_ref(), &env, &rpc_id(), me).is_none(),
@@ -305,7 +328,7 @@ fn subscribing_to_a_live_task_is_relayed() {
 async fn subscribing_to_a_terminal_task_is_refused() {
     crate::testkit::install_test_seams();
     let me = "key-sub-done";
-    open(me, "sub-done", "ctx-sub", TaskState::Completed, 1_000);
+    open(me, "sub-done", "ctx-sub", TaskState::Completed, epoch());
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-done" }));
     let refusal = local::subscribe_refusal(host().as_ref(), &env, &rpc_id(), me)
         .expect("a terminal task is refused");
@@ -320,7 +343,7 @@ async fn subscribing_to_an_unknown_or_foreign_task_is_task_not_found() {
     crate::testkit::install_test_seams();
     let me = "key-sub-unknown";
     let other = "key-sub-owner";
-    open(other, "sub-foreign", "ctx-sub", TaskState::Working, 1_000);
+    open(other, "sub-foreign", "ctx-sub", TaskState::Working, epoch());
 
     let unknown = envelope(
         "SubscribeToTask",
@@ -400,7 +423,7 @@ const HOOK: &str = "https://hook.caller.test/notify";
 async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
     crate::testkit::install_test_seams();
     let me = "key-push-crud";
-    open(me, "push-crud", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-crud", "ctx-push", TaskState::Completed, epoch());
 
     let created = result(
         local::create_push_config(
@@ -413,7 +436,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
             &rpc_id(),
             me,
             seam(),
-            1_000,
+            epoch(),
         )
         .await,
     )
@@ -466,7 +489,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
         ),
         &rpc_id(),
         me,
-        1_001,
+        epoch() + 1,
     );
     assert!(
         body(deleted).await.get("error").is_none(),
@@ -502,7 +525,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
 async fn deleting_an_absent_config_is_idempotent() {
     crate::testkit::install_test_seams();
     let me = "key-push-idem";
-    open(me, "push-idem", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-idem", "ctx-push", TaskState::Completed, epoch());
     let response = local::delete_push_config(
         host().as_ref(),
         &envelope(
@@ -511,7 +534,7 @@ async fn deleting_an_absent_config_is_idempotent() {
         ),
         &rpc_id(),
         me,
-        1_000,
+        epoch(),
     );
     assert!(body(response).await.get("error").is_none());
 }
@@ -523,7 +546,7 @@ async fn deleting_an_absent_config_is_idempotent() {
 async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
     crate::testkit::install_test_seams();
     let me = "key-push-ssrf";
-    open(me, "push-ssrf", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-ssrf", "ctx-push", TaskState::Completed, epoch());
     let refused = local::create_push_config(
         host().as_ref(),
         Dialect::V10,
@@ -538,7 +561,7 @@ async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     assert_eq!(error_code(refused).await, -32602);
@@ -563,7 +586,7 @@ async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
 async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_back() {
     crate::testkit::install_test_seams();
     let me = "key-push-auth";
-    open(me, "push-auth", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-auth", "ctx-push", TaskState::Completed, epoch());
     let created = local::create_push_config(
         host().as_ref(),
         Dialect::V10,
@@ -579,7 +602,7 @@ async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_ba
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     let doc = result(created).await;
@@ -616,7 +639,13 @@ async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_ba
 async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_secret() {
     crate::testkit::install_test_seams();
     let me = "key-push-noscheme";
-    open(me, "push-noscheme", "ctx-push", TaskState::Completed, 1_000);
+    open(
+        me,
+        "push-noscheme",
+        "ctx-push",
+        TaskState::Completed,
+        epoch(),
+    );
     let refused = local::create_push_config(
         host().as_ref(),
         Dialect::V10,
@@ -632,7 +661,7 @@ async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_s
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     let doc = body(refused).await;
@@ -655,7 +684,7 @@ async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_s
 async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it() {
     crate::testkit::install_test_seams();
     let me = "key-push-token";
-    open(me, "push-token", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-token", "ctx-push", TaskState::Completed, epoch());
     let refused = local::create_push_config(
         host().as_ref(),
         Dialect::V03,
@@ -669,7 +698,7 @@ async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     assert_eq!(error_code(refused).await, -32004);
@@ -682,7 +711,7 @@ async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it
 async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
     crate::testkit::install_test_seams();
     let me = "key-push-second";
-    open(me, "push-second", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-second", "ctx-push", TaskState::Completed, epoch());
     let first = local::create_push_config(
         host().as_ref(),
         Dialect::V10,
@@ -693,7 +722,7 @@ async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     assert!(body(first).await.get("error").is_none());
@@ -708,7 +737,7 @@ async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
         &rpc_id(),
         me,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     assert_eq!(error_code(second).await, -32004);
@@ -722,7 +751,13 @@ async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
     crate::testkit::install_test_seams();
     let owner = "key-push-owner";
     let intruder = "key-push-intruder";
-    open(owner, "push-owned", "ctx-push", TaskState::Completed, 1_000);
+    open(
+        owner,
+        "push-owned",
+        "ctx-push",
+        TaskState::Completed,
+        epoch(),
+    );
     let refused = local::create_push_config(
         host().as_ref(),
         Dialect::V10,
@@ -733,7 +768,7 @@ async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
         &rpc_id(),
         intruder,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
     assert_eq!(error_code(refused).await, -32001);
@@ -780,7 +815,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
         "cfgget-owned",
         "ctx-cfgget",
         TaskState::Working,
-        1_000,
+        epoch(),
     );
     local::create_push_config(
         host().as_ref(),
@@ -792,7 +827,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
         &rpc_id(),
         owner,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
 
@@ -857,7 +892,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
         "cfglist-owned",
         "ctx-cfglist",
         TaskState::Working,
-        1_000,
+        epoch(),
     );
     local::create_push_config(
         host().as_ref(),
@@ -869,7 +904,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
         &rpc_id(),
         owner,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
 
@@ -928,7 +963,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         "cfgdel-owned",
         "ctx-cfgdel",
         TaskState::Working,
-        1_000,
+        epoch(),
     );
     local::create_push_config(
         host().as_ref(),
@@ -940,7 +975,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         &rpc_id(),
         owner,
         seam(),
-        1_000,
+        epoch(),
     )
     .await;
 
@@ -952,7 +987,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         ),
         &rpc_id(),
         intruder,
-        1_001,
+        epoch() + 1,
     ))
     .await;
     let absent = observable(local::delete_push_config(
@@ -963,7 +998,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         ),
         &rpc_id(),
         intruder,
-        1_001,
+        epoch() + 1,
     ))
     .await;
     assert_eq!(foreign, absent);
@@ -987,7 +1022,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         ),
         &rpc_id(),
         owner,
-        1_002,
+        epoch() + 2,
     );
     assert!(result(mine).await.is_null());
     assert_eq!(
@@ -1007,7 +1042,13 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
     crate::testkit::install_test_seams();
     let owner = "key-sub-both-owner";
     let intruder = "key-sub-both-intruder";
-    open(owner, "sub-both", "ctx-sub-both", TaskState::Working, 1_000);
+    open(
+        owner,
+        "sub-both",
+        "ctx-sub-both",
+        TaskState::Working,
+        epoch(),
+    );
 
     // THE OWNER CAN: no local refusal at all, so the subscribe relays and the backend's events are
     // the answer.
@@ -1051,7 +1092,7 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
 async fn the_v0_3_spelling_is_answered_in_the_v0_3_shape() {
     crate::testkit::install_test_seams();
     let me = "key-push-v03";
-    open(me, "push-v03", "ctx-push", TaskState::Completed, 1_000);
+    open(me, "push-v03", "ctx-push", TaskState::Completed, epoch());
     let created = result(
         local::create_push_config(
             host().as_ref(),
@@ -1066,7 +1107,7 @@ async fn the_v0_3_spelling_is_answered_in_the_v0_3_shape() {
             &rpc_id(),
             me,
             seam(),
-            1_000,
+            epoch(),
         )
         .await,
     )

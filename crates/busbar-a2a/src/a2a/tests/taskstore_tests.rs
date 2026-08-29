@@ -18,7 +18,7 @@
 use crate::a2a::task::{Direction, Task, TaskState};
 use busbar_api::{TaskEventRow, TaskRow};
 use busbar_core::plane::store::StoreNamedTestExt;
-use busbar_core::plane::taskstore::{Denied, Rehydrated, TaskTestHarness};
+use busbar_core::plane::taskstore::{Denied, Rehydrated, TaskRegistry, TaskTestHarness};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -679,6 +679,162 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
         .unwrap()
         .expect("the interrupt is NEVER collected by age");
     assert_eq!(survivor.state, "auth-required");
+}
+
+/// THE RETENTION SWEEP, WIRED: a TERMINAL task past the TTL is evicted from the working set by the
+/// NEXT submit — the sweep is driven inline at the only point the set grows, mirroring the MCP task
+/// registry's create-time sweep, no background job — and its host-side chain position goes with it,
+/// so BOTH RAM footprints return to baseline. The durable rows survive: eviction is a RAM-lifecycle
+/// event, and the store keeps the provenance window (`compact` owns that half).
+#[test]
+fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footprint() {
+    let (ttl_secs, _cap) = TaskRegistry::retention_bounds();
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    h.host(|host| {
+        reg.transition(
+            host,
+            "t-work",
+            "req-1",
+            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+        )
+        .expect("t-work completes");
+    });
+    assert_eq!(reg.len(), 2);
+    assert_eq!(
+        reg.chain_positions(),
+        2,
+        "baseline: two tasks, two chain positions"
+    );
+
+    // A submit at age == TTL sweeps nothing: expiry is STRICTLY past the window (as MCP's), so the
+    // settled task is still pollable for the whole of it.
+    let inside = NOW + 10 + ttl_secs;
+    h.host(|host| {
+        reg.submit(
+            host,
+            &Task::submitted("t-early", "ctx-c", "key-3", Direction::Inbound, inside)
+                .unwrap()
+                .to_row(),
+            "req-3",
+        )
+        .expect("submit t-early");
+    });
+    assert!(
+        reg.get_unscoped("t-work").is_some(),
+        "inside the TTL the terminal task is still readable"
+    );
+    assert_eq!(reg.len(), 3);
+
+    // One second later the window has passed: the next submit evicts it, and ONLY it.
+    h.host(|host| {
+        reg.submit(
+            host,
+            &Task::submitted("t-late", "ctx-d", "key-4", Direction::Inbound, inside + 1)
+                .unwrap()
+                .to_row(),
+            "req-4",
+        )
+        .expect("submit t-late");
+    });
+    assert!(
+        reg.get_unscoped("t-work").is_none(),
+        "the expired terminal task left the working set"
+    );
+    assert!(
+        reg.get_unscoped("t-paused").is_some(),
+        "the interrupt — older still — was NOT collected: a live task is never evicted"
+    );
+    assert_eq!(reg.len(), 3, "t-paused + t-early + t-late");
+    assert_eq!(
+        reg.chain_positions(),
+        3,
+        "the evicted task's chain position was forgotten in lockstep — no per-task position \
+         accrues for the life of the process"
+    );
+    assert!(
+        handle.get_task("t-work").unwrap().is_some(),
+        "eviction is a RAM event: the durable row stays for the store's retention window"
+    );
+}
+
+/// The CAP half of the sweep: filling the working set past the cap with LIVE tasks evicts NOTHING —
+/// an active task is never dropped, however old and however hard the pressure, so the set may
+/// exceed the cap — and the moment one task settles, the very next submit collects exactly that
+/// oldest terminal row and nothing else.
+#[test]
+fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
+    let (ttl_secs, cap) = TaskRegistry::retention_bounds();
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    // Far past every TTL, so the fill also proves age ALONE never evicts a live task.
+    let late = NOW + ttl_secs * 10;
+    h.host(|host| {
+        for i in 0..cap {
+            reg.submit(
+                host,
+                &Task::submitted(
+                    format!("t-fill-{i:05}"),
+                    "ctx-f",
+                    "key-f",
+                    Direction::Inbound,
+                    late,
+                )
+                .unwrap()
+                .to_row(),
+                "req-f",
+            )
+            .expect("submit fill");
+        }
+    });
+    assert_eq!(
+        reg.len(),
+        cap + 2,
+        "every task is live, so the cap evicted none of them — exceeding the cap on live tasks \
+         alone is the documented (and correct) posture"
+    );
+    assert!(
+        reg.get_unscoped("t-paused").is_some(),
+        "the ancient interrupt survived both cap pressure and TTL age"
+    );
+    assert!(reg.get_unscoped("t-work").is_some());
+
+    // Settle ONE task; the next submit's sweep is over the cap and collects exactly it.
+    h.host(|host| {
+        reg.transition(
+            host,
+            "t-work",
+            "req-1",
+            crate::a2a::task::plan_transition(TaskState::Completed, late + 1),
+        )
+        .expect("t-work completes");
+        reg.submit(
+            host,
+            &Task::submitted("t-one-more", "ctx-g", "key-g", Direction::Inbound, late + 2)
+                .unwrap()
+                .to_row(),
+            "req-g",
+        )
+        .expect("submit one more");
+    });
+    assert!(
+        reg.get_unscoped("t-work").is_none(),
+        "the one terminal task was collected to make room"
+    );
+    assert!(
+        reg.get_unscoped("t-paused").is_some(),
+        "and the live interrupt was NOT — never a live one"
+    );
+    assert_eq!(reg.len(), cap + 2, "one out, one in");
+    assert_eq!(
+        reg.chain_positions(),
+        reg.len(),
+        "chain positions and the working set stay in lockstep under the cap sweep too"
+    );
 }
 
 /// A TERMINAL task is counted, not loaded, on rehydrate: it is not in flight and nothing resumes it,

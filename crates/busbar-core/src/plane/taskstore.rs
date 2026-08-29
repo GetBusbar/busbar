@@ -34,11 +34,16 @@
 //! not-found is an enumeration oracle: a caller that can tell the two apart can probe the id space
 //! and learn which task ids exist in other tenants.
 
-// PARTLY UNMOUNTED. `set_sink`, `restore_from_store`, `submit`, `record_dispatch`, `transition`,
+// FULLY MOUNTED. `set_sink`, `restore_from_store`, `submit`, `record_dispatch`, `transition`,
 // `advance_cursor` and `set_push_callback` are all driven — boot rehydrates, the ingress opens a
 // task per call, the relay moves its state, and a state change is now also what DELIVERS the
-// caller's push notification. The scoped reads and `compact` await the task-read surface.
-#![cfg_attr(not(test), allow(dead_code))]
+// caller's push notification. The scoped reads are driven through [`CoreTaskReader`], and RETENTION
+// is driven by the submit-time sweep ([`TaskRegistry::sweep`]), which funnels through
+// [`TaskRegistry::evict_terminal`]'s removal discipline. `compact` (the DURABLE half of retention)
+// keeps the same posture as the MCP call log's `compact`: the mechanism lives here, the policy is a
+// setting on the store, and it is exercised by tests until that surface lands. The blanket
+// `allow(dead_code)` that used to sit here is GONE — it was hiding the unwired eviction — and
+// nothing replaced it: every item is either driven in production or `pub` on the task surface.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -250,6 +255,28 @@ struct Entry {
 fn is_terminal_state(state: &str) -> bool {
     matches!(state, "completed" | "failed" | "canceled" | "rejected")
 }
+
+/// RETENTION: how long a TERMINAL task stays in the WORKING SET — readable through the scoped reads,
+/// per the A2A contract that a task is pollable after it settles — after its terminal transition.
+/// In SECONDS: every `TaskRow` timestamp is epoch seconds (`clock_now_secs` at the A2A ingress).
+///
+/// The VALUE mirrors the MCP task registry's `TASK_TTL_MS` (300_000 ms — see
+/// `busbar-mcp/src/mcp/tasks.rs`), and for the same reason given there: comfortably longer than any
+/// polling client needs, short enough that an abandoned task is not a permanent allocation. Neither
+/// `evict_terminal` nor `compact` pinned a window of their own (their docs place the policy at the
+/// call site), so the sibling plane's constant is adopted rather than a new knob invented. The
+/// DURABLE rows are untouched by this window — they stay for the store's retention
+/// ([`TaskRegistry::compact`] owns that half).
+const TERMINAL_TASK_TTL_SECS: u64 = 300;
+
+/// RETENTION: the hard ceiling on working-set entries, enforced by the submit-time sweep. Mirrors
+/// the MCP task registry's `MAX_RETAINED_TASKS`, including its one non-negotiable: the oldest
+/// TERMINAL tasks are dropped first and an ACTIVE (working/interrupted) task is NEVER dropped to
+/// make room — losing a live task's chain position would let a later event open a second chain at
+/// seq 1 under the same id (see [`TaskRegistry::evict_terminal`]), and the interrupt waiting on a
+/// human is the row that legitimately sits still longest. The set may therefore exceed this cap if
+/// active tasks alone exceed it, which is correct: every one of them is owed a resume.
+const MAX_RETAINED_TASKS: usize = 4096;
 
 /// Why a scoped read was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,9 +671,71 @@ impl TaskRegistry {
                 ts: row.created_at,
             },
         )?;
-        self.tasks()
-            .insert(row.task_id.clone(), Entry { row: row.clone() });
+        let mut tasks = self.tasks();
+        // THE RETENTION SWEEP runs here, under the working-set lock, at the only point the set
+        // grows — the same mechanism (and moment) the MCP task registry drives its sweep with in
+        // `Registry::create`. No background maintenance task to schedule, no task to leak.
+        self.sweep(host, &mut tasks, row.created_at);
+        tasks.insert(row.task_id.clone(), Entry { row: row.clone() });
         Ok(row.clone())
+    }
+
+    /// THE RETENTION SWEEP — what keeps the process-lifetime working set (and, in lockstep, the
+    /// host-side chain-position cache) BOUNDED BY DESIGN rather than by deployment luck. Driven
+    /// inline by [`TaskRegistry::submit`] under the lock, mirroring the MCP task registry's
+    /// create-time sweep (`busbar-mcp/src/mcp/tasks.rs`, `Registry::sweep`).
+    ///
+    /// Two rules, and both evict TERMINAL tasks only:
+    /// 1. TTL — a terminal task older than [`TERMINAL_TASK_TTL_SECS`] since its terminal transition
+    ///    (`updated_at` — the moment `plan` stamped the settle) is dropped: the client's poll
+    ///    window has passed, and the durable rows remain in the store for anything later.
+    /// 2. CAP — if the set still holds [`MAX_RETAINED_TASKS`] or more, the OLDEST terminal tasks
+    ///    are dropped until the incoming insert fits. Never an active one: see the cap's doc.
+    ///
+    /// Every removal funnels through [`TaskRegistry::forget_entry`], so the working set and the
+    /// journal's position cache cannot drift.
+    fn sweep(&self, host: HostCtx, tasks: &mut HashMap<String, Entry>, now: u64) {
+        let expired: Vec<String> = tasks
+            .iter()
+            .filter(|(_, e)| {
+                is_terminal_state(&e.row.state)
+                    && now.saturating_sub(e.row.updated_at) > TERMINAL_TASK_TTL_SECS
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            Self::forget_entry(host, self.kind_id, tasks, id);
+        }
+        if tasks.len() < MAX_RETAINED_TASKS {
+            return;
+        }
+        let mut terminal: Vec<(u64, String)> = tasks
+            .iter()
+            .filter(|(_, e)| is_terminal_state(&e.row.state))
+            .map(|(id, e)| (e.row.updated_at, id.clone()))
+            .collect();
+        terminal.sort_unstable();
+        for (_, id) in terminal
+            .into_iter()
+            .take(tasks.len().saturating_sub(MAX_RETAINED_TASKS) + 1)
+        {
+            Self::forget_entry(host, self.kind_id, tasks, &id);
+        }
+    }
+
+    /// THE ONE REMOVAL: drop a task's working-set entry AND release its host-side chain position,
+    /// in lockstep. Every eviction path — the explicit [`TaskRegistry::evict_terminal`], the
+    /// retention [`TaskRegistry::compact`], and the submit-time [`TaskRegistry::sweep`] — funnels
+    /// here, so the two structures cannot drift apart. The durable rows are never touched by this:
+    /// they stay in the store for the retention window.
+    fn forget_entry(
+        host: HostCtx,
+        kind_id: u32,
+        tasks: &mut HashMap<String, Entry>,
+        task_id: &str,
+    ) {
+        tasks.remove(task_id);
+        crate::plane_host::journal::journal_forget(host, kind_id, task_id.as_ptr(), task_id.len());
     }
 
     /// TRANSITION a task, emitting the matching chained provenance event and writing both through.
@@ -976,16 +1065,10 @@ impl TaskRegistry {
         let mut tasks = self.tasks();
         match tasks.get(task_id) {
             Some(e) if is_terminal_state(&e.row.state) => {
-                tasks.remove(task_id);
-                // Release the host-side chain position too, in lockstep with the working set — the
-                // durable events stay in the store, but a terminal task takes no more appends, so its
-                // RAM position is dropped rather than kept for the life of the process.
-                crate::plane_host::journal::journal_forget(
-                    host,
-                    self.kind_id,
-                    task_id.as_ptr(),
-                    task_id.len(),
-                );
+                // The host-side chain position is released too, in lockstep with the working set —
+                // the durable events stay in the store, but a terminal task takes no more appends,
+                // so its RAM position is dropped rather than kept for the life of the process.
+                Self::forget_entry(host, self.kind_id, &mut tasks, task_id);
                 true
             }
             _ => false,
@@ -1009,11 +1092,27 @@ impl TaskRegistry {
             .map(|(id, _)| id.clone())
             .collect();
         for id in &dropped {
-            tasks.remove(id);
-            // Release each dropped task's host-side chain position in lockstep with the working set.
-            crate::plane_host::journal::journal_forget(host, self.kind_id, id.as_ptr(), id.len());
+            // Each dropped task's host-side chain position is released in lockstep (see
+            // [`TaskRegistry::forget_entry`]).
+            Self::forget_entry(host, self.kind_id, &mut tasks, id);
         }
         Ok(removed)
+    }
+
+    /// TEST ONLY: how many host-side chain positions this registry's `task_event` stream holds —
+    /// the bounded-map diagnostic the retention tests read to prove the position cache and the
+    /// working set move in lockstep (the same diagnostic the MCP call log's bounded-map test reads
+    /// through its own `len`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn chain_positions(&self) -> usize {
+        crate::plane_host::journal::journal_len_scoped(self.kind_id)
+    }
+
+    /// TEST ONLY: the retention constants ([`TERMINAL_TASK_TTL_SECS`], [`MAX_RETAINED_TASKS`]), so
+    /// the cross-crate retention tests assert against the shipped values rather than restating them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retention_bounds() -> (u64, usize) {
+        (TERMINAL_TASK_TTL_SECS, MAX_RETAINED_TASKS)
     }
 
     /// VERIFY one task's persisted provenance chain, end to end, against the store.
