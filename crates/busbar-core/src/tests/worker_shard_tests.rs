@@ -49,3 +49,20 @@ fn worker_ids_index_distinct_shards_and_unset_falls_back() {
         "fallback must be one of the shards"
     );
 }
+
+/// CROSS-CRATE TOPOLOGY EQUALITY PIN: when the shard
+/// count resolves through its machine-derived fallback (no composition root published a worker
+/// count — this test binary's situation), the fallback arm PUBLISHES the value it computed to
+/// the engine's establishment topology, so the connect gate's divisor and the pool's dial bound
+/// see the same shard count core's clients use. One derivation function, no cross-crate
+/// duplicate of the `min(16, next_pow2(cores))` formula — this test is the drift tripwire.
+#[test]
+fn shard_count_fallback_publishes_the_establishment_shard_count() {
+    let shards = super::UpstreamClients::shard_count();
+    assert_eq!(
+        busbar_substrate::egress::engine::establishment_shards_or_one(),
+        shards,
+        "the engine's establishment-shard count must equal the client shard count after a \
+         fallback resolution — a divergence re-opens the unpublished-topology 16x dial overrun"
+    );
+}

@@ -250,11 +250,25 @@ impl UpstreamClients {
     pub(crate) fn shard_count() -> usize {
         match DATA_WORKERS.get() {
             Some(&n) => n,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-                .next_power_of_two()
-                .min(16),
+            None => {
+                let n = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .next_power_of_two()
+                    .min(16);
+                // UNPUBLISHED-TOPOLOGY UNIFICATION: the engine's
+                // establishment machinery (connect gate permits + the pool's dial bound) divides
+                // one GLOBAL per-authority budget by the shard count. When the composition root
+                // never published a worker count (tests, embedded uses), this fallback is the
+                // shard count — so it must ALSO be the establishment divisor, or an unpublished
+                // build runs up to 16 pools × an undivided per-shard budget (16× the invariant).
+                // Publishing the value HERE — from the one function that derives it — keeps a
+                // single source instead of substrate re-deriving the formula cross-crate (the
+                // exact drift shape the single-source rule forbids). First call wins on both
+                // sides; the thread-per-core binary always publishes at boot and never gets here.
+                busbar_substrate::egress::engine::set_establishment_shards(n);
+                n
+            }
         }
     }
 
