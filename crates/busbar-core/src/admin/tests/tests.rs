@@ -4259,6 +4259,87 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     handle.abort();
 }
 
+/// `GET openapi.json` serves the PRE-GZIPPED embedded bytes to a client whose `Accept-Encoding`
+/// allows gzip — `Content-Encoding: gzip`, inflating byte-identical to the identity body — and
+/// the identity body to a client that does not ask. This is what lets the process retain NO
+/// inflated copy of the 366 KB+ document (the old `OnceLock<String>` held it forever after the
+/// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
+#[tokio::test]
+async fn test_admin_v1_openapi_gzip_negotiation() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/openapi.json");
+
+    // Identity: no Accept-Encoding -> plain JSON, no Content-Encoding (the shape every pre-gzip
+    // client always got). This reqwest client has no gzip feature, so it sends no Accept-Encoding
+    // and performs no transparent decode — the bytes observed here are the wire bytes.
+    let identity = client
+        .get(&url)
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(identity.status().as_u16(), 200);
+    assert!(
+        identity.headers().get("content-encoding").is_none(),
+        "a client that did not ask for gzip must get an identity body"
+    );
+    let identity_body = identity.text().await.unwrap();
+    assert!(
+        identity_body.starts_with('{'),
+        "identity body is the JSON document"
+    );
+
+    // Gzip: Accept-Encoding: gzip -> Content-Encoding: gzip, and the payload inflates to the
+    // EXACT identity bytes (same committed document, lighter wire + no retained inflation).
+    let gz = client
+        .get(&url)
+        .header("x-admin-token", "admintok")
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gz.status().as_u16(), 200);
+    assert_eq!(
+        gz.headers().get("content-encoding").map(|v| v.as_bytes()),
+        Some(b"gzip".as_ref()),
+        "a gzip-accepting client gets the pre-compressed bytes"
+    );
+    let gz_body = gz.bytes().await.unwrap();
+    let mut inflated = String::new();
+    std::io::Read::read_to_string(
+        &mut flate2::read::GzDecoder::new(gz_body.as_ref()),
+        &mut inflated,
+    )
+    .expect("the served gzip payload inflates");
+    assert_eq!(
+        inflated, identity_body,
+        "gzip and identity must be the SAME document, differing only in transfer encoding"
+    );
+
+    // An explicit refusal (`gzip;q=0`) is honored: identity again.
+    let refused = client
+        .get(&url)
+        .header("x-admin-token", "admintok")
+        .header("accept-encoding", "gzip;q=0")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        refused.headers().get("content-encoding").is_none(),
+        "gzip;q=0 is an explicit refusal — identity body"
+    );
+
+    handle.abort();
+}
+
 /// SECURITY CONTRACT: every documented `/api/v1/admin` GET endpoint rejects a MISSING token and a
 /// WRONG token with 401 — the whole surface is admin-guarded, no read leaks without the credential.
 /// Iterates the same V1_GET_PATHS the openapi doc + drift guard use, so a newly-added endpoint is
@@ -12565,7 +12646,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// this audit.
 fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
     use crate::admin::v1::contract::taxonomy::MethodTag;
-    let doc: serde_json::Value = serde_json::from_str(crate::admin::v1::json::openapi_json())
+    let doc: serde_json::Value = serde_json::from_str(&crate::admin::v1::json::openapi_json())
         .expect("the committed openapi.json parses");
     let paths = doc["paths"]
         .as_object()

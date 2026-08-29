@@ -5067,30 +5067,79 @@ fn capitalize(s: &str) -> String {
 /// flow as the JSON; the drift tests pin gz ↔ json ↔ generated code three ways.
 static OPENAPI_JSON_GZ: &[u8] = include_bytes!("openapi.json.gz");
 
-/// The served document, inflated ONCE on first request (cold admin/tooling path; ~5 ms once per
-/// process) and byte-identical to the committed `openapi.json` thereafter.
-pub(crate) fn openapi_json() -> &'static str {
-    static INFLATED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    INFLATED.get_or_init(|| {
-        use std::io::Read;
-        let mut out = String::new();
-        flate2::read::GzDecoder::new(OPENAPI_JSON_GZ)
-            .read_to_string(&mut out)
-            .expect("embedded openapi.json.gz inflates (pinned by the drift tests)");
-        out
-    })
+/// The served document, inflated PER CALL and byte-identical to the committed `openapi.json`.
+/// This used to memoize the inflation in a `OnceLock<String>` — which pinned the full 366 KB+
+/// document in RAM for the process lifetime after the FIRST `GET openapi.json`, to save ~5 ms on
+/// a cold admin/tooling path. Backwards: the handler now serves the embedded gz bytes directly to
+/// any client whose `Accept-Encoding` allows it (see [`openapi`]), so this inflate runs only for
+/// the rare identity-only client (and the drift tests), where a per-request decompress of a 43 KB
+/// gz is the honest cost and nothing is retained.
+pub(crate) fn openapi_json() -> String {
+    use std::io::Read;
+    let mut out = String::new();
+    flate2::read::GzDecoder::new(OPENAPI_JSON_GZ)
+        .read_to_string(&mut out)
+        .expect("embedded openapi.json.gz inflates (pinned by the drift tests)");
+    out
+}
+
+/// Does this request's `Accept-Encoding` permit a gzip response body? Conservative token scan
+/// over every `Accept-Encoding` value: an entry whose coding is `gzip` (case-insensitive) counts,
+/// unless its `q` parameter is an explicit zero. No header, an unparsable value, or `*` all
+/// answer NO — identity is always the safe fallback (a client that did not ask for gzip gets the
+/// same inflated JSON it always got).
+fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|entry| {
+            let mut parts = entry.split(';');
+            let coding = parts.next().unwrap_or("").trim();
+            if !coding.eq_ignore_ascii_case("gzip") {
+                return false;
+            }
+            // `gzip;q=0` (any zero spelling: 0, 0.0, 0.00, 0.000) is an explicit refusal.
+            let q_zero = parts.any(|p| {
+                let p = p.trim();
+                p.strip_prefix("q=")
+                    .or_else(|| p.strip_prefix("Q="))
+                    .is_some_and(|q| q.parse::<f32>().is_ok_and(|q| q == 0.0))
+            });
+            !q_zero
+        })
 }
 
 /// `GET /api/v1/admin/openapi.json` — the OpenAPI 3.1 schema of the v1 surface (the discovery contract).
 /// Serves the committed, typed document verbatim as `application/json` (no runtime generation —
-/// see [`openapi_json`]). Same status/content-type/body shape the generated path always produced.
-pub(crate) async fn openapi() -> Response {
-    (
-        StatusCode::OK,
-        [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
-        openapi_json(),
-    )
-        .into_response()
+/// see [`openapi_json`]). A client whose `Accept-Encoding` allows gzip (virtually every one) gets
+/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` — no inflation, no retained
+/// 366 KB+ string, byte-identical after the client's transparent decode; only an identity-only
+/// client pays a per-request inflate. `Vary: Accept-Encoding` because the body now differs by
+/// that header. No axum compression layer exists on this router (checked), so nothing
+/// double-compresses.
+pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
+    const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
+    if accept_encoding_allows_gzip(&headers) {
+        (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, crate::proxy::APPLICATION_JSON),
+                (axum::http::header::CONTENT_ENCODING, "gzip"),
+                VARY,
+            ],
+            OPENAPI_JSON_GZ,
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON), VARY],
+            openapi_json(),
+        )
+            .into_response()
+    }
 }
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`
