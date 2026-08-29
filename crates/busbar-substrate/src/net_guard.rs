@@ -62,7 +62,7 @@
 //! bit-mask expressions) in both
 //! `config_validate` (the provider-base-URL SSRF guard, which hand-parses a raw config string) and
 //! `observability` (the request-log-webhook / OTLP SSRF guard, which reads an already
-//! `reqwest::Url::parse`d host). Duplicated *security* logic is the one place where "documented
+//! `url::Url::parse`d host). Duplicated *security* logic is the one place where "documented
 //! divergence" does not fully neutralize drift: a contributor hardening one guard against a new
 //! obfuscation form could silently miss the other copy. Hoisting just these identical primitives
 //! into one tested leaf gives them a single source of truth.

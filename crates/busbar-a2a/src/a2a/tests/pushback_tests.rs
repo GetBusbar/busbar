@@ -74,7 +74,7 @@ async fn issued_last(h: &Harness, before: usize, envelope: &serde_json::Value) -
 
 /// The path (and query) of a recorded request's URL, with the origin removed.
 fn path_of(r: &Recorded) -> String {
-    let url = reqwest::Url::parse(&r.url).expect("the recorded URL parses");
+    let url = url::Url::parse(&r.url).expect("the recorded URL parses");
     match url.query() {
         Some(q) => format!("{}?{q}", url.path()),
         None => url.path().to_string(),

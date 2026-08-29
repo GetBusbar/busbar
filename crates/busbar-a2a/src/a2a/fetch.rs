@@ -291,7 +291,7 @@ pub(crate) use busbar_substrate::egress::Response as HttpResponse;
 ///
 /// An implementation MUST NOT follow redirects; a 3xx is returned for this module to re-guard.
 pub(crate) trait Transport {
-    fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String>;
+    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String>;
 }
 
 /// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_substrate::net_guard::resolve_and_pin`].
@@ -315,10 +315,9 @@ pub(crate) fn guard_hop(
     url: &str,
     resolver: &dyn Resolver,
     policy: &FetchPolicy,
-) -> Result<(reqwest::Url, PinnedTarget), FetchRefusal> {
+) -> Result<(url::Url, PinnedTarget), FetchRefusal> {
     let guard = policy.guard();
-    let parsed =
-        reqwest::Url::parse(url).map_err(|_| FetchRefusal::NotAUrl(url.trim().to_string()))?;
+    let parsed = url::Url::parse(url).map_err(|_| FetchRefusal::NotAUrl(url.trim().to_string()))?;
 
     // The scheme allowlist is by ABSENCE: `https` always, `http` only where the policy admits
     // plaintext, and everything else — `file:`, `data:`, `gopher:` — refused because it is not
@@ -398,7 +397,7 @@ pub(crate) struct FetchedCard {
 /// pinned to an older `protocolVersion` is still serving the old one. Canonical first so a host
 /// serving both is read at the current path.
 pub(crate) fn discovery_urls(endpoint: &str) -> Result<Vec<String>, FetchRefusal> {
-    let base = reqwest::Url::parse(endpoint)
+    let base = url::Url::parse(endpoint)
         .map_err(|_| FetchRefusal::NotAUrl(endpoint.trim().to_string()))?;
     let mut out = Vec::new();
     for path in [WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY] {

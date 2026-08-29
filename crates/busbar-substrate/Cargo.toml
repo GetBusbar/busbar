@@ -104,6 +104,7 @@ http-body-util = { workspace = true }
 # The tunnel connector implements `tower::Service<http::Uri>` — the same seam every connector in
 # the hyper_util stack speaks.
 tower = { workspace = true }
+url = { workspace = true }
 # The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.

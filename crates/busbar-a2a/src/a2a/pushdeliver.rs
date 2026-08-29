@@ -424,7 +424,7 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     };
 
     // ── 3. CONNECT, to an address that just passed, and to nothing else. ──
-    let parsed = reqwest::Url::parse(&pinned.url).map_err(|_| PushRefusal::NotAUrl(url.into()))?;
+    let parsed = url::Url::parse(&pinned.url).map_err(|_| PushRefusal::NotAUrl(url.into()))?;
     let Some(addr) = pinned.addrs.first().copied() else {
         return Err(PushRefusal::Unresolved(pinned.host));
     };

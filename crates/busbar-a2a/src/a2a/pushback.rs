@@ -173,7 +173,7 @@ fn task_of(presented: &str) -> Option<String> {
 ///   wire, which is the credential this whole endpoint rests on. There is no knob here and there is
 ///   not going to be one.
 pub(crate) fn callback_url(public_url: &str) -> Option<String> {
-    let url = reqwest::Url::parse(public_url).ok()?;
+    let url = url::Url::parse(public_url).ok()?;
     if url.scheme() != "https" {
         return None;
     }

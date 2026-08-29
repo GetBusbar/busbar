@@ -600,7 +600,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
         fn send(
             &self,
             _m: &str,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
@@ -609,7 +609,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
         }
         fn post_stream(
             &self,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
@@ -700,7 +700,7 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
 /// `build_request` takes a FRAMED request now — the composition is the binding's and the header set
 /// is the builder's — so these tests frame first and assert on the headers second, which is the
 /// same two steps the hop takes.
-fn framed(url: &reqwest::Url, body: &[u8], streaming: bool) -> crate::a2a::relay::FramedRequest {
+fn framed(url: &url::Url, body: &[u8], streaming: bool) -> crate::a2a::relay::FramedRequest {
     let envelope: serde_json::Value =
         serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
     let params = envelope
@@ -726,7 +726,7 @@ fn framed(url: &reqwest::Url, body: &[u8], streaming: bool) -> crate::a2a::relay
 #[test]
 fn every_field_of_the_outbound_request_is_scanned() {
     crate::testkit::install_test_seams();
-    let url = reqwest::Url::parse(BACKEND).expect("a URL");
+    let url = url::Url::parse(BACKEND).expect("a URL");
     let body_bytes = b"{\"params\":{\"text\":\"BODYMARK\"}}";
     let req = crate::a2a::relay::build_request(
         framed(&url, body_bytes, false),
@@ -774,7 +774,7 @@ fn every_field_of_the_outbound_request_is_scanned() {
 #[test]
 fn the_relayed_request_carries_only_constants_and_the_lease() {
     crate::testkit::install_test_seams();
-    let url = reqwest::Url::parse(BACKEND).expect("a URL");
+    let url = url::Url::parse(BACKEND).expect("a URL");
 
     let bare =
         crate::a2a::relay::build_request(framed(&url, b"{}", false), "planner", None, "0.3", 1_000)
@@ -808,7 +808,7 @@ fn the_relayed_request_carries_only_constants_and_the_lease() {
 #[test]
 fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
     crate::testkit::install_test_seams();
-    let url = reqwest::Url::parse(BACKEND).expect("a URL");
+    let url = url::Url::parse(BACKEND).expect("a URL");
     let lease = a_lease("researcher", 1_000);
     let wrong = crate::a2a::relay::build_request(
         framed(&url, b"{}", false),
@@ -865,7 +865,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
         fn send(
             &self,
             _m: &str,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
@@ -874,7 +874,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
         }
         fn post_stream(
             &self,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
@@ -1045,7 +1045,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
         fn send(
             &self,
             _m: &str,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
@@ -1060,7 +1060,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
         }
         fn post_stream(
             &self,
-            _u: &reqwest::Url,
+            _u: &url::Url,
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],

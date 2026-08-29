@@ -395,6 +395,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -498,6 +499,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "webpki-roots",
 ]
 
@@ -729,6 +731,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "url",
  "webpki-roots",
 ]
 

@@ -303,7 +303,7 @@ pub(crate) fn canonical_uri(public_url: &str) -> Result<String, ServeError> {
 /// to dial for — stay derived from the same `public_url` the JSON-RPC interface and the RFC 8707
 /// audience are derived from. One reading, three bindings.
 pub(crate) fn grpc_endpoint(public_url: &str) -> Result<String, ServeError> {
-    let u = reqwest::Url::parse(public_url)
+    let u = url::Url::parse(public_url)
         .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
     let host = u
         .host_str()
@@ -344,7 +344,7 @@ pub(crate) fn metadata_url(public_url: &str) -> Result<String, ServeError> {
 /// produce `/some/prefix/a2a/agents/x` here while the router serves `/a2a/agents/x` — two spellings
 /// of one endpoint, one of which 404s.
 fn absolute(public_url: &str, path: &str) -> Result<String, ServeError> {
-    let mut u = reqwest::Url::parse(public_url)
+    let mut u = url::Url::parse(public_url)
         .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
     u.set_path(path);
     u.set_query(None);
@@ -378,7 +378,7 @@ pub(crate) fn rewrite_card(
         .as_object()
         .ok_or(ServeError::Card(CardError::NotAnObject))?;
     let endpoint = agent_endpoint(public_url, agent_id)?;
-    let backend_host = reqwest::Url::parse(backend_url)
+    let backend_host = url::Url::parse(backend_url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_lowercase));
 
@@ -826,7 +826,7 @@ fn agent_skill(agent: &EntitledAgent<'_>) -> Option<Value> {
     // THE SAME LEAK CHECK THE SERVED CARD GETS, per agent, over the strings this entry contributes.
     // `rewrite_card`'s sweep cannot cover this: it runs over one backend's document against one
     // backend's host, and this document is many backends' text in one place.
-    let host = reqwest::Url::parse(agent.backend_url)
+    let host = url::Url::parse(agent.backend_url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_lowercase))?;
     let mut mentions = Vec::new();
@@ -851,7 +851,7 @@ fn agent_skill(agent: &EntitledAgent<'_>) -> Option<Value> {
 fn rewrite_backend_urls(v: &mut Value, backend_host: &str, endpoint: &str) {
     match v {
         Value::String(s) => {
-            if reqwest::Url::parse(s)
+            if url::Url::parse(s)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_lowercase))
                 .is_some_and(|h| h == backend_host)

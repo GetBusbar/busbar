@@ -148,7 +148,7 @@ fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
     let policy = FetchPolicy::default();
     let transport = ReqwestTransport::new(&policy);
     let direct = transport
-        .get(&reqwest::Url::parse(&url).unwrap(), addr)
+        .get(&url::Url::parse(&url).unwrap(), addr)
         .expect("direct get");
 
     // The neutral adapter over the host egress seam.
@@ -188,7 +188,7 @@ fn buffered_adapter_surfaces_a_redirect_location_like_the_transport() {
     let policy = FetchPolicy::default();
     let transport = ReqwestTransport::new(&policy);
     let direct = transport
-        .get(&reqwest::Url::parse(&url).unwrap(), addr)
+        .get(&url::Url::parse(&url).unwrap(), addr)
         .expect("direct get");
 
     let cap = policy.max_body_bytes.saturating_add(1);
@@ -290,13 +290,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
         ChunkFlow::Continue
     };
     let direct_head = transport
-        .post_stream(
-            &reqwest::Url::parse(&url).unwrap(),
-            addr,
-            &[],
-            b"{}",
-            &mut sink,
-        )
+        .post_stream(&url::Url::parse(&url).unwrap(), addr, &[], b"{}", &mut sink)
         .expect("direct post_stream");
 
     // The neutral stream adapter.

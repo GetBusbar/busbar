@@ -385,7 +385,7 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
         fn send(
             &self,
             _http_method: &str,
-            _url: &reqwest::Url,
+            _url: &url::Url,
             _addr: IpAddr,
             _headers: &[(String, String)],
             _body: &[u8],
@@ -394,7 +394,7 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
         }
         fn post_stream(
             &self,
-            _url: &reqwest::Url,
+            _url: &url::Url,
             _addr: IpAddr,
             _headers: &[(String, String)],
             _body: &[u8],

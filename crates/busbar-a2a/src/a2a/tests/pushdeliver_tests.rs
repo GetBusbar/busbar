@@ -68,7 +68,7 @@ impl RelayTransport for RecordingTransport {
     fn send(
         &self,
         _http_method: &str,
-        url: &reqwest::Url,
+        url: &url::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
@@ -93,7 +93,7 @@ impl RelayTransport for RecordingTransport {
 
     fn post_stream(
         &self,
-        _url: &reqwest::Url,
+        _url: &url::Url,
         _addr: IpAddr,
         _headers: &[(String, String)],
         _body: &[u8],

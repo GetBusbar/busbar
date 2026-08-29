@@ -423,7 +423,7 @@ fn test_validate_webhook_url_rejects_alternate_ipv4_encodings() {
 #[test]
 fn test_url_parse_canonicalizes_alternate_ipv4_encodings() {
     // Documentation lock: pins what the surrounding comments assert — for an http(s) URL
-    // `reqwest::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard,
+    // `url::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard,
     // canonicalizing every alternate IPv4 encoding to a dotted-quad BEFORE `host_str()` is
     // read, so `is_alternate_ipv4_encoding` is a defense-in-depth parity mirror rather than
     // the primary block. If a future url/reqwest bump stops normalizing these, this test fails
@@ -439,8 +439,7 @@ fn test_url_parse_canonicalizes_alternate_ipv4_encodings() {
         ("https://0x7f.0.0.1/log", "127.0.0.1"),        // per-octet hex
         ("https://0177.0.0.1/log", "127.0.0.1"),        // per-octet octal
     ] {
-        let parsed =
-            reqwest::Url::parse(raw).expect("special-scheme URL with numeric host must parse");
+        let parsed = url::Url::parse(raw).expect("special-scheme URL with numeric host must parse");
         assert_eq!(
             parsed.host_str(),
             Some(want),
@@ -605,7 +604,7 @@ fn test_validate_otlp_endpoint_allows_loopback_collectors() {
 /// loopback — which is ALLOWED for a collector, so this pins the carve-out rather than a block.
 #[test]
 fn otlp_resolve_check_allows_a_name_resolving_to_loopback() {
-    let url = reqwest::Url::parse("http://localhost:4318/v1/traces").unwrap();
+    let url = url::Url::parse("http://localhost:4318/v1/traces").unwrap();
     assert_eq!(
         otlp_resolves_to_internal(&url),
         None,
@@ -622,7 +621,7 @@ fn otlp_resolve_check_skips_ip_literals() {
         "https://[2606:2800:220:1:248:1893:25c8:1946]:4318/v1/traces",
         "https://169.254.169.254/v1/traces",
     ] {
-        let url = reqwest::Url::parse(raw).unwrap();
+        let url = url::Url::parse(raw).unwrap();
         assert_eq!(
             otlp_resolves_to_internal(&url),
             None,
@@ -653,7 +652,7 @@ fn otlp_resolved_and_literal_verdicts_agree() {
             want_internal,
             "resolved-address verdict for {raw}"
         );
-        let url = reqwest::Url::parse(&if ip.is_ipv6() {
+        let url = url::Url::parse(&if ip.is_ipv6() {
             format!("https://[{raw}]/v1/traces")
         } else {
             format!("https://{raw}/v1/traces")
@@ -671,8 +670,7 @@ fn otlp_resolved_and_literal_verdicts_agree() {
 /// anything, and disabling trace export over a transient blip would be the wrong trade.
 #[test]
 fn otlp_resolve_check_allows_a_name_that_does_not_resolve() {
-    let url =
-        reqwest::Url::parse("https://this-collector-must-not-resolve.invalid/v1/traces").unwrap();
+    let url = url::Url::parse("https://this-collector-must-not-resolve.invalid/v1/traces").unwrap();
     assert_eq!(otlp_resolves_to_internal(&url), None);
 }
 

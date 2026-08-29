@@ -248,8 +248,8 @@ pub(crate) fn ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
     (ca_cert.pem(), leaf_cert.pem(), leaf_kp.serialize_pem())
 }
 
-pub(crate) fn url(scheme: &str, port: u16, path: &str) -> reqwest::Url {
-    reqwest::Url::parse(&format!("{scheme}://{HOST}:{port}{path}")).expect("a URL")
+pub(crate) fn url(scheme: &str, port: u16, path: &str) -> url::Url {
+    url::Url::parse(&format!("{scheme}://{HOST}:{port}{path}")).expect("a URL")
 }
 
 /// The two steps the fetch driver performs for one hop, run against the REAL pieces: exactly one
@@ -257,7 +257,7 @@ pub(crate) fn url(scheme: &str, port: u16, path: &str) -> reqwest::Url {
 fn one_hop(
     resolver: &dyn Resolver,
     transport: &dyn Transport,
-    url: &reqwest::Url,
+    url: &url::Url,
 ) -> Result<crate::a2a::fetch::HttpResponse, String> {
     let addrs = resolver.resolve(HOST)?;
     let addr = *addrs.first().ok_or("no addresses")?;

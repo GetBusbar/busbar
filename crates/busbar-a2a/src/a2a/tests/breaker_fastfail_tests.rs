@@ -62,7 +62,7 @@ impl RelayTransport for CountingDenier {
     fn send(
         &self,
         _m: &str,
-        _u: &reqwest::Url,
+        _u: &url::Url,
         _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],
@@ -78,7 +78,7 @@ impl RelayTransport for CountingDenier {
     }
     fn post_stream(
         &self,
-        _u: &reqwest::Url,
+        _u: &url::Url,
         _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],

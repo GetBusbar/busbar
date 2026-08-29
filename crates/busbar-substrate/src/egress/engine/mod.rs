@@ -697,7 +697,7 @@ mod tunnel {
         } else {
             format!("http://{v}")
         };
-        let parsed = reqwest::Url::parse(&url)
+        let parsed = url::Url::parse(&url)
             .map_err(|e| format!("proxy env value {v:?} is not a valid URL: {e}"))?;
         if parsed.scheme() != "http" {
             return Err(format!(

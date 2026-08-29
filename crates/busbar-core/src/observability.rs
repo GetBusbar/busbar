@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 // SSRF obfuscation-defense primitives shared with the provider-base-URL guard in `config_validate`.
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
-// `reqwest::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
+// `url::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
 use crate::net_guard::{
     ipv4_is_internal as net_guard_ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding,
@@ -35,7 +35,7 @@ use crate::net_guard::{
 /// it is unit-testable. Applied at EVERY URL-logging site in this module (the `endpoint` info log and
 /// the validation-error messages, which interpolate the raw URL).
 pub(crate) fn mask_userinfo(url: &str) -> String {
-    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+    let Ok(mut parsed) = url::Url::parse(url) else {
         // Not a parseable URL (e.g. the empty string or `not-a-url`): no userinfo to leak, and we
         // must not mangle the operator's original spelling in the diagnostic. Return as-is.
         return url.to_string();
@@ -115,7 +115,7 @@ fn base64_encode(input: &[u8]) -> String {
 /// None)` — we must not mangle a credential-free endpoint, and validation already accepted it. Pure,
 /// so it is unit-testable without process-wide state.
 fn split_otlp_credentials(endpoint: &str) -> (String, Option<reqwest::header::HeaderValue>) {
-    let Ok(mut parsed) = reqwest::Url::parse(endpoint) else {
+    let Ok(mut parsed) = url::Url::parse(endpoint) else {
         return (endpoint.to_string(), None);
     };
     let username = parsed.username().to_string();
@@ -195,7 +195,7 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 /// This guard is a SIBLING of `config_validate::ssrf_blocked_host`, not an exact mirror of it — the
 /// two cover the same threat (operator-supplied URL pointed at an internal target) but DIVERGE in
 /// these respects, so do NOT assume bit-for-bit parity:
-///   - HOST PARSING: this validator runs the already-`reqwest::Url::parse`d URL and reads
+///   - HOST PARSING: this validator runs the already-`url::Url::parse`d URL and reads
 ///     `host_str()` (the URL crate has already percent-decoded and normalized the authority);
 ///     `ssrf_blocked_host` instead parses the raw config string by hand and percent-decodes the host
 ///     itself (`percent_decode_host`) to neutralize spellings like `169%2E254%2E169%2E254`.
@@ -227,7 +227,7 @@ pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>
             mask_userinfo(&u)
         ));
     }
-    let parsed = reqwest::Url::parse(&u)
+    let parsed = url::Url::parse(&u)
         .map_err(|e| format!("observability.request_log_webhook_url is not a valid URL: {e}"))?;
     if host_is_internal(&parsed) {
         return Err(format!(
@@ -273,14 +273,14 @@ fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
 ///
 /// This shares its threat model with `config_validate::ssrf_blocked_host` but is NOT a bit-for-bit
 /// mirror — the divergences are (1) host parsing: this guard reads the host from an already
-/// `reqwest::Url::parse`d URL, while `ssrf_blocked_host` hand-parses and percent-decodes the raw
+/// `url::Url::parse`d URL, while `ssrf_blocked_host` hand-parses and percent-decodes the raw
 /// config string; (2) broadcast: this guard ALSO blocks `255.255.255.255`, which `ssrf_blocked_host`
 /// does not; (3) LOCALHOST: this guard BLOCKS `localhost`/`*.localhost` (matched in the `Err(_)`
 /// DNS arm below), whereas `ssrf_blocked_host` deliberately ALLOWS it as a local-model upstream — so
 /// the blocked SETS differ on the localhost family (as well as on the broadcast literal). Full
 /// DNS-rebinding is out of scope for a startup-validated,
 /// operator-supplied URL. Returns `true` (reject) when the host is missing entirely.
-fn host_is_internal(url: &reqwest::Url) -> bool {
+fn host_is_internal(url: &url::Url) -> bool {
     use std::net::IpAddr;
     match url.host_str() {
         None => true,
@@ -303,7 +303,7 @@ fn host_is_internal(url: &reqwest::Url) -> bool {
             }
 
             // Defense-in-depth parity mirror via the shared `net_guard::is_alternate_ipv4_encoding`, NOT the
-            // primary guard. For an http(s) URL the PRIMARY protection is `reqwest::Url::parse`: http(s)
+            // primary guard. For an http(s) URL the PRIMARY protection is `url::Url::parse`: http(s)
             // is a WHATWG "special scheme", so its host parser already canonicalizes every alternate
             // IPv4 encoding to a dotted-quad BEFORE we ever read `host_str()` — `2130706433` /
             // `0x7f000001` / `017700000001` / `127.1` / `0177.0.0.1` all arrive here as `127.0.0.1`,
@@ -521,7 +521,7 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
             mask_userinfo(e)
         ));
     }
-    let parsed = reqwest::Url::parse(e)
+    let parsed = url::Url::parse(e)
         .map_err(|err| format!("observability.otlp_endpoint is not a valid URL: {err}"))?;
     // Block the internal/metadata set, but carve out loopback (the localhost-collector exception).
     // `otlp_host_is_blocked` is `host_is_internal` minus the loopback/localhost arms.
@@ -581,7 +581,7 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
 /// that later re-resolves to an internal address cannot present a valid certificate for the
 /// configured collector name and the connection fails. TLS closes the rebinding window on this path;
 /// on the hook's path the pin is defence in depth on top of the same requirement.
-fn otlp_resolves_to_internal(url: &reqwest::Url) -> Option<std::net::IpAddr> {
+fn otlp_resolves_to_internal(url: &url::Url) -> Option<std::net::IpAddr> {
     use std::net::{IpAddr, ToSocketAddrs};
     let host = url.host_str()?;
     let host = host.strip_prefix('[').unwrap_or(host);
@@ -633,7 +633,7 @@ fn ip_is_loopback(ip: &std::net::IpAddr) -> bool {
 /// the plaintext-`http://` allowance to loopback only. Mirrors the loopback arms of
 /// `otlp_host_is_blocked` so the two stay in lockstep: every host this returns `true` for is a host
 /// that guard intentionally permits.
-fn otlp_host_is_loopback(url: &reqwest::Url) -> bool {
+fn otlp_host_is_loopback(url: &url::Url) -> bool {
     use std::net::IpAddr;
     let Some(host) = url.host_str() else {
         return false;
@@ -666,7 +666,7 @@ fn otlp_host_is_loopback(url: &reqwest::Url) -> bool {
 /// other internal/metadata target `host_is_internal` rejects is rejected here too — same
 /// link-local/IMDS, private, CGNAT, unspecified, alternate-IPv4-encoding, and `METADATA_HOSTS`
 /// coverage — so the only relaxation versus the webhook guard is the intentional loopback carve-out.
-fn otlp_host_is_blocked(url: &reqwest::Url) -> bool {
+fn otlp_host_is_blocked(url: &url::Url) -> bool {
     use std::net::IpAddr;
     match url.host_str() {
         // A URL with no host is unusable as an export target; reject it.
@@ -686,7 +686,7 @@ fn otlp_host_is_blocked(url: &reqwest::Url) -> bool {
                 return true;
             }
             // Defense-in-depth parity mirror via the shared `net_guard::is_alternate_ipv4_encoding`, NOT the
-            // primary guard. As in `host_is_internal`, for an http(s) URL `reqwest::Url::parse` has
+            // primary guard. As in `host_is_internal`, for an http(s) URL `url::Url::parse` has
             // already canonicalized every alternate IPv4 encoding to a dotted-quad before `host_str()`
             // is read (http(s) is a WHATWG special scheme): `2130706433` / `0x7f000001` /
             // `017700000001` / `127.1` arrive here as `127.0.0.1`, so this branch does not meaningfully

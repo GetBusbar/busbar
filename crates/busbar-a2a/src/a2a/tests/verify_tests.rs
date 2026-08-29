@@ -104,7 +104,7 @@ impl CardEndpoint {
 }
 
 impl Transport for CardEndpoint {
-    fn get(&self, url: &reqwest::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
+    fn get(&self, url: &url::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
         self.served
             .borrow()
             .get(url.as_str())
@@ -650,7 +650,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
         body: Vec<u8>,
     }
     impl Transport for LegacyOnly {
-        fn get(&self, url: &reqwest::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
+        fn get(&self, url: &url::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
             if url.path() == crate::a2a::card::WELL_KNOWN_CARD_PATH {
                 *self.canonical_hits.borrow_mut() += 1;
                 return Ok(HttpResponse {
@@ -703,7 +703,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
         bad: Vec<u8>,
     }
     impl Transport for SplitBrain {
-        fn get(&self, url: &reqwest::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
+        fn get(&self, url: &url::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
             let body = if url.path() == crate::a2a::card::WELL_KNOWN_CARD_PATH {
                 self.bad.clone()
             } else {
@@ -948,7 +948,7 @@ struct BlockingCard {
 }
 
 impl Transport for BlockingCard {
-    fn get(&self, url: &reqwest::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
+    fn get(&self, url: &url::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
         // Announce that the fetch is in progress, then BLOCK until the test lets it proceed.
         let _ = self.entered.try_send(());
         {

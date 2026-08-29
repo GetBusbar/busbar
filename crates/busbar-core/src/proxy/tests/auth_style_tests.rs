@@ -190,7 +190,7 @@ fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
     // The path actually SENT: reqwest parses `{base}{wire_path}` into a `url::Url`. Its parser
     // must preserve the existing `%3A` (not double-encode the `%`), so the transmitted path is
     // byte-identical to the signed canonical path.
-    let url = reqwest::Url::parse(&format!(
+    let url = url::Url::parse(&format!(
         "https://bedrock-runtime.us-east-1.amazonaws.com{wire_path}"
     ))
     .expect("url parses");

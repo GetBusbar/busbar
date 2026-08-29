@@ -59,6 +59,7 @@ serde_json = { workspace = true }
 # encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
 # unchanged.
 serde_urlencoded = { workspace = true }
+url = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }

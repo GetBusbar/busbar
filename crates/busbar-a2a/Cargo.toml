@@ -52,6 +52,7 @@ reqwest = { workspace = true, features = ["http2"] }
 # the engine (`Trust::WebpkiPlus`); parsed from PEM at registration, same fail-at-parse posture as
 # the retired `reqwest::Certificate::from_pem`.
 rustls-pki-types = { workspace = true }
+url = { workspace = true }
 tonic = { workspace = true }
 tonic-types = { workspace = true }
 prost = { workspace = true }

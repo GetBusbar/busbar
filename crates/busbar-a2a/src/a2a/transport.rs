@@ -321,7 +321,7 @@ impl ReqwestTransport {
 /// `reqwest` call it silently had none of them, and every test that did not reach a socket stayed
 /// green.
 struct Hop<'a> {
-    url: &'a reqwest::Url,
+    url: &'a url::Url,
     /// The address the guard judged. The socket goes HERE; see the pin below.
     addr: IpAddr,
     headers: &'a [(String, String)],
@@ -416,7 +416,7 @@ impl ReqwestTransport {
 }
 
 impl Transport for ReqwestTransport {
-    fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
         self.execute(
             "agent card fetch",
             reqwest::Method::GET,
@@ -440,7 +440,7 @@ impl RelayTransport for ReqwestTransport {
     fn send(
         &self,
         http_method: &str,
-        url: &reqwest::Url,
+        url: &url::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
@@ -475,7 +475,7 @@ impl RelayTransport for ReqwestTransport {
     /// report the status with the backend's own words in the log.
     fn post_stream(
         &self,
-        url: &reqwest::Url,
+        url: &url::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],

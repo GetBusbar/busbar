@@ -88,7 +88,7 @@ fn path_is_sigv4_unreserved(path: &str) -> bool {
 /// modelId's `%3A` must survive verbatim; see `sign_and_wire_path_parts`).
 #[derive(Clone)]
 pub(crate) struct EgressTarget {
-    /// The absolute URL as the WHATWG-parsed `reqwest::Url` — TEST-ONLY since the stage-B hyper
+    /// The absolute URL as the WHATWG-parsed `url::Url` — TEST-ONLY since the stage-B hyper
     /// cutover: it anchors the byte-differential proof (`egress_target_tests` pins `uri` == `url`
     /// == the reference composition), keeping the old parser in the tree AS the reference the
     /// precomputed `uri` can never silently drift from.
@@ -98,7 +98,7 @@ pub(crate) struct EgressTarget {
     /// but the parsed value is dropped rather than stored per `(operation, stream)` entry per
     /// lane — a reference only tests read has no business occupying idle RSS.
     #[cfg(test)]
-    pub(crate) url: reqwest::Url,
+    pub(crate) url: url::Url,
     /// The SAME absolute URL as a pre-parsed `http::Uri` (wave-7 stage A): the hyper-owned egress
     /// client sends this directly, so the per-request WHATWG re-parse reqwest performed at send
     /// time is gone. Clone is refcounted `Bytes` parts — no parse, no copy of the string.
@@ -157,7 +157,7 @@ pub(crate) fn build_egress_targets(
             // The WHATWG parse runs in EVERY build — same boot-time fail-loud validation, same
             // refusal text — but the parsed `Url` is stored only under `cfg(test)`, where it is
             // the byte-differential reference (`egress_target_tests`); see `EgressTarget::url`.
-            let url = reqwest::Url::parse(&composed).map_err(|e| {
+            let url = url::Url::parse(&composed).map_err(|e| {
                 format!("egress URL '{composed}' (protocol '{protocol}') does not parse: {e}")
             })?;
             #[cfg(not(test))]

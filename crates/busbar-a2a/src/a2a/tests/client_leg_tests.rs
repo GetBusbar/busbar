@@ -74,7 +74,7 @@ fn body_json(r: &Recorded) -> serde_json::Value {
 
 /// The path (and query) of a recorded request's URL, with the origin removed.
 fn path_of(r: &Recorded) -> String {
-    let url = reqwest::Url::parse(&r.url).expect("the recorded URL parses");
+    let url = url::Url::parse(&r.url).expect("the recorded URL parses");
     match url.query() {
         Some(q) => format!("{}?{q}", url.path()),
         None => url.path().to_string(),
@@ -726,7 +726,7 @@ async fn the_cards_interface_url_never_moves_the_hop() {
         }
     });
     let sent = issued_last(&h, &envelope()).await;
-    let url = reqwest::Url::parse(&sent.url).expect("the recorded URL parses");
+    let url = url::Url::parse(&sent.url).expect("the recorded URL parses");
     assert_eq!(
         url.host_str(),
         Some("backend.agent.test"),
@@ -773,7 +773,7 @@ fn both_http_bindings_discover_the_card_at_the_well_known_path() {
     #[derive(Default)]
     struct Seen(RefCell<Vec<(String, IpAddr)>>);
     impl crate::a2a::fetch::Transport for Seen {
-        fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+        fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
             self.0.borrow_mut().push((url.to_string(), addr));
             Ok(HttpResponse {
                 status: 200,

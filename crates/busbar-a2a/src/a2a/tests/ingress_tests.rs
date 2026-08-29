@@ -308,7 +308,7 @@ fn the_served_endpoint_and_the_mounted_path_are_one_derivation() {
         .into_iter()
         .find(|p| p.starts_with("/a2a/agents"))
         .expect("the endpoint is mounted");
-    let served_path = reqwest::Url::parse(&endpoint).unwrap().path().to_string();
+    let served_path = url::Url::parse(&endpoint).unwrap().path().to_string();
     // The mounted pattern with its one parameter filled in is the path the card advertises.
     assert_eq!(
         mounted_pattern.replace("{agent_id}", "planner"),

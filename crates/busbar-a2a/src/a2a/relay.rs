@@ -111,7 +111,7 @@ pub(crate) trait RelayTransport: Send + Sync {
     fn send(
         &self,
         http_method: &str,
-        url: &reqwest::Url,
+        url: &url::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
@@ -126,7 +126,7 @@ pub(crate) trait RelayTransport: Send + Sync {
     /// `Err` for a transport failure and `Ok(status)` with no chunks for a non-2xx.
     fn post_stream(
         &self,
-        url: &reqwest::Url,
+        url: &url::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
@@ -581,7 +581,7 @@ pub(crate) const BINDING_GRPC: &str = "GRPC";
 pub(crate) struct FramedRequest {
     /// The request line's verb.
     pub(crate) http_method: &'static str,
-    pub(crate) url: reqwest::Url,
+    pub(crate) url: url::Url,
     /// The `content-type` this framing sends, or `None` for a request with no body at all (a REST
     /// `GET` or `DELETE`) — where a media type would be describing a document that is not there.
     pub(crate) content_type: Option<&'static str>,
@@ -632,7 +632,7 @@ pub(crate) trait OutboundFraming: Send + Sync {
     /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
     fn compose(
         &self,
-        base: &reqwest::Url,
+        base: &url::Url,
         call: &Outbound<'_>,
         streaming: bool,
     ) -> Result<FramedRequest, String>;
@@ -729,7 +729,7 @@ impl OutboundFraming for JsonRpcFraming {
 
     fn compose(
         &self,
-        base: &reqwest::Url,
+        base: &url::Url,
         call: &Outbound<'_>,
         streaming: bool,
     ) -> Result<FramedRequest, String> {
@@ -929,7 +929,7 @@ impl OutboundFraming for HttpJsonFraming {
 
     fn compose(
         &self,
-        base: &reqwest::Url,
+        base: &url::Url,
         call: &Outbound<'_>,
         streaming: bool,
     ) -> Result<FramedRequest, String> {
@@ -1161,7 +1161,7 @@ impl OutboundFraming for GrpcFraming {
     /// direction cannot drift apart about what the service is called.
     fn compose(
         &self,
-        base: &reqwest::Url,
+        base: &url::Url,
         call: &Outbound<'_>,
         _streaming: bool,
     ) -> Result<FramedRequest, String> {
@@ -1551,7 +1551,7 @@ fn prepare<'a>(
     streaming: bool,
     now_ms: u64,
     admit_id: &mut busbar_plugin::hot::AdmissionId,
-) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
+) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
     //    `busbar_core::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
     //    and a card fetch cannot be guarded to two different standards.
