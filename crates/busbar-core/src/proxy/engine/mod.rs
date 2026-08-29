@@ -2986,3 +2986,7 @@ mod crossproto_delivery_billing_tests;
 #[cfg(test)]
 #[path = "tests/send_envelope_tests.rs"]
 mod send_envelope_tests;
+
+#[cfg(test)]
+#[path = "tests/future_size_probe.rs"]
+mod future_size_probe;
