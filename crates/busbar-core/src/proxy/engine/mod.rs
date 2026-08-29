@@ -1995,17 +1995,23 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         );
         let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
         drop(_cb_reqwest);
-        // TIMEOUT RE-PROVISION (was reqwest's per-request `.timeout()`, which bounded the ENTIRE
-        // lifecycle including the body read). For a STREAMING response that body is a long-lived
-        // generation stream a real vendor holds open far beyond the failover deadline — bounding
-        // it here would truncate healthy completions and record spurious breaker failures. So:
-        // only the NON-streaming request carries the failover-budget deadline, applied to the
-        // send here and to the capped body read below via the same instant; a stream runs under
-        // the stream body's own ceiling instead.
-        let ns_deadline = (!wants_stream).then(|| {
-            tokio::time::Instant::now()
-                + std::time::Duration::from_secs(request_ctx.remaining(attempt_wall).max(1))
-        });
+        // TIMEOUT RE-PROVISION (was reqwest's per-request/client-level `.timeout()`, which bounded
+        // the ENTIRE lifecycle — connect, response headers, body). ONE deadline per attempt:
+        //   * NON-streaming: the failover-budget remainder, on the send AND every buffered read —
+        //     reqwest's per-request timeout, exactly.
+        //   * STREAMING: the client-level ceiling (`limits.upstream_request_timeout_secs`),
+        //     anchored HERE at send start and carried into the stream body's own ceiling below —
+        //     reqwest's client-level envelope, exactly. Bounding a stream with the (much shorter)
+        //     failover budget would truncate healthy long generations; bounding it with NOTHING
+        //     let a black-holed upstream hold the send open forever with no breaker signal (audit
+        //     finding F1: connect+TLS completed, headers never sent → indefinite hang). Expiry on
+        //     either arm classifies as a transport timeout — what reqwest's is_timeout() reported.
+        let send_deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(if wants_stream {
+                app.client_settings.upstream_request_timeout_secs.max(1)
+            } else {
+                request_ctx.remaining(attempt_wall).max(1)
+            });
         // CLIENT_BUILD ends here (the request is fully assembled). UPSTREAM_SEND spans the
         // client round-trip to response headers.
         drop(_cbuild);
@@ -2045,12 +2051,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 None => SendOutcome::Sent(send.await),
             }
         };
-        let outcome = match ns_deadline {
-            Some(deadline) => match tokio::time::timeout_at(deadline, send_fut).await {
-                Ok(o) => o,
-                Err(_elapsed) => SendOutcome::BudgetTimeout,
-            },
-            None => send_fut.await,
+        let outcome = match tokio::time::timeout_at(send_deadline, send_fut).await {
+            Ok(o) => o,
+            Err(_elapsed) => SendOutcome::BudgetTimeout,
         };
         let res = match outcome {
             SendOutcome::Sent(r) => r.map_err(EgressSendError::Client),
@@ -2099,19 +2102,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         record_upstream_rtt(upstream_started.elapsed());
 
         // Every BUFFERED read of this response below (error bodies, the cross-protocol translate
-        // buffer) is bounded by ONE deadline: the surviving non-stream budget deadline, or — for a
-        // stream-intent request whose response is read buffered anyway (a non-2xx error body) — the
-        // client-ceiling re-provision anchored at send start, exactly the bound reqwest's
-        // client-level timeout imposed on those reads. Streaming bodies are bounded by
-        // `FirstByteBody`'s own ceiling instead.
-        let read_deadline = ns_deadline.unwrap_or_else(|| {
-            tokio::time::Instant::from_std(
-                upstream_started
-                    + std::time::Duration::from_secs(
-                        app.client_settings.upstream_request_timeout_secs,
-                    ),
-            )
-        });
+        // buffer) rides the SAME deadline as the send — the budget remainder (non-stream) or the
+        // client-ceiling envelope anchored at send start (stream-intent responses read buffered
+        // anyway, e.g. a non-2xx error body). One instant, one envelope, exactly reqwest's.
+        let read_deadline = send_deadline;
 
         // POST_SEND: the last uncounted span inside `busbar;dur` — response status/StatusClass
         // classification + 2xx/failover branch selection, up to the RecordSuccess boundary on the
@@ -2668,6 +2662,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     ingress_protocol,
                     op,
                     permit,
+                    send_deadline,
                     app.clone(),
                     i,
                     breaker_cfg.clone(),
@@ -2987,3 +2982,7 @@ mod inject_include_usage_tests;
 #[cfg(test)]
 #[path = "tests/crossproto_delivery_billing_tests.rs"]
 mod crossproto_delivery_billing_tests;
+
+#[cfg(test)]
+#[path = "tests/send_envelope_tests.rs"]
+mod send_envelope_tests;

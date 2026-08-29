@@ -976,12 +976,17 @@ pub(crate) fn seed_request_id_counter() -> u64 {
 /// Behaviorally identical to a fixed `Arc<App>` until something calls `swap()`.
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
+    /// Debug-only overlap detector for [`swap`](Self::swap) — see the convention note there.
+    #[cfg(debug_assertions)]
+    swapping: std::sync::atomic::AtomicBool,
 }
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
         Self {
             current: arc_swap::ArcSwap::new(app),
+            #[cfg(debug_assertions)]
+            swapping: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1016,6 +1021,30 @@ impl AppHandle {
     /// each plane's concrete types makes it impossible for a future swap site to forget AND keeps this
     /// method free of any one plane's types — the reconciliation lives beside the plane it belongs to.
     pub fn swap(&self, next: Arc<App>) {
+        // WRITER SERIALIZATION IS A CONVENTION, NOT A TYPE GUARANTEE (audit F9): `ArcSwap` made
+        // reads lock-free, but unlike the old `RwLock` write lock, nothing here mutually excludes
+        // two concurrent swaps — the load-prior → on_swap-diff → store sequence below is only
+        // correct because every mutation site funnels through the admin plane's single
+        // apply/persist path (persist-then-swap under its own serialization). A future swap
+        // caller OUTSIDE that path could interleave two diffs and lose one plane reconciliation.
+        // This debug counter makes that regression loud in tests: overlapping swaps panic in
+        // debug builds instead of silently racing in release.
+        #[cfg(debug_assertions)]
+        let _swap_guard =
+            {
+                struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
+                impl Drop for Guard<'_> {
+                    fn drop(&mut self) {
+                        self.0.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                assert!(
+                !self.swapping.swap(true, std::sync::atomic::Ordering::AcqRel),
+                "AppHandle::swap ran concurrently with another swap on the same handle — every \
+                 mutation must funnel through the serialized persist-then-swap path"
+            );
+                Guard(&self.swapping)
+            };
         // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();

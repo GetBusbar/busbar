@@ -133,14 +133,13 @@ pub(crate) struct FirstByteBody<S, P> {
     /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
     /// ONCE per response rather than once per over-cap chunk.
     nonstream_buf_truncated: bool,
-    /// THE STREAM CEILING — the re-provision of reqwest's client-level total timeout
-    /// (`limits.upstream_request_timeout_secs`), which bounded the ENTIRE response body read, streams
-    /// included. The owned hyper client has no such knob (a pool client cannot know which requests
-    /// stream), so the bound lives here, in the body itself: a `Sleep` polled BEFORE the inner stream
-    /// on every wakeup — expiry cuts the body exactly as reqwest's `TotalTimeoutBody` did, even while
-    /// chunks are still flowing. Armed at construction (headers-arrival) rather than send-start, a
-    /// delta of one upstream header round-trip on a multi-minute ceiling; security posture unchanged
-    /// (a black-holed or drip-feeding upstream still cannot hold the body open past the ceiling).
+    /// THE STREAM CEILING — the re-provision of reqwest's total-timeout envelope over the BODY:
+    /// a `Sleep` polled BEFORE the inner stream on every wakeup, so expiry cuts the body exactly
+    /// as reqwest's `TotalTimeoutBody` did, even while chunks are still flowing. The DEADLINE is
+    /// the caller's — the engine passes the one per-attempt instant its send already ran under
+    /// (stream: send-start + `limits.upstream_request_timeout_secs`; non-stream passthrough: the
+    /// failover-budget remainder), so send + body share ONE envelope anchored at send start,
+    /// byte-for-byte reqwest's shape (audit finding F1 closed: no window is unbounded).
     ceiling: std::pin::Pin<Box<tokio::time::Sleep>>,
 }
 
@@ -155,6 +154,7 @@ where
         ingress_protocol: &str,
         op: crate::handlers::Op,
         permit: P,
+        ceiling_deadline: tokio::time::Instant,
         app: Arc<App>,
         lane_idx: usize,
         breaker_cfg: Arc<crate::store::BreakerCfg>,
@@ -172,11 +172,9 @@ where
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
         let ingress_decl = crate::proto::decl_for(ingress_protocol);
-        // Arm the stream ceiling from the SAME resolved limit the old reqwest client-level timeout
-        // read — see the `ceiling` field docs for the exactness argument.
-        let ceiling = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(
-            app.client_settings.upstream_request_timeout_secs,
-        )));
+        // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
+        // docs for the one-envelope exactness argument.
+        let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
         Self {
             inner,
             first_byte_sent: false,
