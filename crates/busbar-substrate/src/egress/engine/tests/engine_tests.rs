@@ -313,7 +313,8 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     );
     http.enforce_http(false);
     let connector = tunnel::TunnelConnector::new(http, Some(config));
-    let tls = super::rustls_client_config();
+    let tls = super::rustls_client_config(&EngineSpec::llm_lane(4, 300, true, false))
+        .expect("the LLM-lane tls posture builds");
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
         .https_or_http()

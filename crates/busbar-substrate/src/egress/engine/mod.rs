@@ -59,10 +59,12 @@ use http_body_util::Full;
 pub mod deadline;
 pub mod observe;
 pub mod resolve;
+pub mod tls;
 
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_spki, ObservedIo, PeerSpki, SpkiObserve};
 pub use resolve::{EgressResolver, ResolveNames};
+pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
 /// tunnel when a proxy env is set) + rustls, the whole connect under one wall-clock deadline,
@@ -96,6 +98,39 @@ pub struct EngineSpec {
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the LLM lanes (no
     /// walk, no hash per connect); on for every pinned posture.
     pub observe_spki: bool,
+    /// Trust source ([`tls::Trust`]): the compiled-in webpki roots, optionally joined by
+    /// operator-registered extras.
+    pub trust: Trust,
+    /// Busbar's own end of the handshake, when a peer asks for one.
+    pub identity: Option<ClientIdentity>,
+    /// CONNECT-tunnel posture. [`ProxyPosture::Direct`] on every pinned posture: a CONNECT proxy
+    /// performs the target connect ITSELF, so a proxied pinned hop cannot connect to the judged
+    /// address — the pin doctrine and proxy delegation are mutually exclusive, and the reqwest
+    /// stack's silent proxy-env bypass of the pin was a latent guard bypass, not behaviour to
+    /// preserve (the design's second sanctioned deviation; no known deployment sets a proxy env).
+    pub proxy: ProxyPosture,
+    /// h2 keep-alive interval/timeout + adaptive window: `Some` on the LLM lanes, `None` on the
+    /// pinned postures (reqwest set none — parity).
+    pub h2_keepalive: Option<H2KeepAlive>,
+    /// TCP keepalive: LLM `Some(60s)`; pinned `None` (reqwest default — parity). nodelay is
+    /// unconditional (both stacks set it).
+    pub tcp_keepalive: Option<Duration>,
+}
+
+/// CONNECT-tunnel posture (see [`EngineSpec::proxy`]).
+pub enum ProxyPosture {
+    /// Honor the proxy env resolved at boot (`install_proxy_tunnel_if_configured`) — the LLM
+    /// lanes' reqwest-parity posture.
+    BootEnv,
+    /// Never tunnel: the tunnel arm is structurally absent (`TunnelConnector::new(http, None)`).
+    Direct,
+}
+
+/// The h2 keep-alive posture the LLM lanes carry (reqwest's pinned clients set none).
+pub struct H2KeepAlive {
+    pub interval: Duration,
+    pub timeout: Duration,
+    pub adaptive_window: bool,
 }
 
 /// The pin: exactly one hostname answered with exactly one already-judged address. The judged
@@ -134,6 +169,44 @@ impl EngineSpec {
             pin: None,
             dns: Dns::System,
             observe_spki: false,
+            trust: Trust::Webpki,
+            identity: None,
+            proxy: ProxyPosture::BootEnv,
+            h2_keepalive: Some(H2KeepAlive {
+                interval: Duration::from_secs(30),
+                timeout: Duration::from_secs(10),
+                adaptive_window: true,
+            }),
+            tcp_keepalive: Some(Duration::from_secs(60)),
+        }
+    }
+
+    /// THE PINNED-PLANE POSTURE, reqwest-parity value for value with the retiring
+    /// `build_pinned_client`: extras join the webpki store, the pin is the resolver, the peer
+    /// identity is observed, the tunnel arm is structurally absent (see [`EngineSpec::proxy`]),
+    /// ALPN offers h2+h1 (reqwest with its `http2` feature — parity), no h2 keep-alive, no TCP
+    /// keepalive, the pool holds idle connections for [`super::EGRESS_POOL_IDLE_TIMEOUT`] under
+    /// hyper's default per-host cap. Redirects were never followed by either stack; hyper makes
+    /// that structural.
+    pub fn pinned(
+        host: Arc<str>,
+        addr: IpAddr,
+        identity: Option<ClientIdentity>,
+        extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    ) -> Self {
+        EngineSpec {
+            idle_per_host: usize::MAX,
+            pool_idle_timeout_secs: super::EGRESS_POOL_IDLE_TIMEOUT.as_secs(),
+            http1_only: false,
+            h2_prior_knowledge: false,
+            pin: Some(PinnedDest { host, addr }),
+            dns: Dns::System,
+            observe_spki: true,
+            trust: Trust::WebpkiPlus(extra_roots),
+            identity,
+            proxy: ProxyPosture::Direct,
+            h2_keepalive: None,
+            tcp_keepalive: None,
         }
     }
 }
@@ -181,7 +254,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // The mock/bench upstreams are plain http; TLS wraps only https targets (below).
     http.enforce_http(false);
     http.set_connect_timeout(Some(Duration::from_secs(10)));
-    http.set_keepalive(Some(Duration::from_secs(60)));
+    http.set_keepalive(spec.tcp_keepalive);
     http.set_nodelay(true);
 
     // rustls client config over the compiled-in webpki roots — the same trust anchors reqwest's
@@ -191,9 +264,15 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // delegates to the plain connector untouched; with one, it CONNECTs through the proxy the
     // target's SCHEME selects and TLS then handshakes over the tunnel with the real target's SNI
     // — reqwest's exact layering and scoping.
-    let http = tunnel::TunnelConnector::new(http, tunnel::installed_proxy());
+    let proxy = match spec.proxy {
+        ProxyPosture::BootEnv => tunnel::installed_proxy(),
+        // The pinned postures never tunnel: a CONNECT proxy would perform the target connect
+        // itself, bypassing the judged address — the tunnel arm is structurally absent.
+        ProxyPosture::Direct => None,
+    };
+    let http = tunnel::TunnelConnector::new(http, proxy);
 
-    let tls = rustls_client_config();
+    let tls = rustls_client_config(spec)?;
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
     let https = if spec.http1_only {
         builder.https_or_http().enable_http1().wrap_connector(http)
@@ -218,10 +297,14 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
         .pool_timer(hyper_util::rt::TokioTimer::new())
         .timer(hyper_util::rt::TokioTimer::new())
         .pool_max_idle_per_host(spec.idle_per_host)
-        .pool_idle_timeout(Duration::from_secs(spec.pool_idle_timeout_secs))
-        .http2_keep_alive_interval(Duration::from_secs(30))
-        .http2_keep_alive_timeout(Duration::from_secs(10))
-        .http2_adaptive_window(true);
+        .pool_idle_timeout(Duration::from_secs(spec.pool_idle_timeout_secs));
+    // h2 keep-alive: the LLM lanes' posture; the pinned postures set NONE (reqwest parity).
+    if let Some(h2) = &spec.h2_keepalive {
+        client
+            .http2_keep_alive_interval(h2.interval)
+            .http2_keep_alive_timeout(h2.timeout)
+            .http2_adaptive_window(h2.adaptive_window);
+    }
     // Cleartext h2c opt-in (bench / in-mesh): FORCE h2 without ALPN; h1-only wins over it,
     // preserving the old builder's apply-order.
     if spec.h2_prior_knowledge && !spec.http1_only {
@@ -230,38 +313,62 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     Ok(client.build(https))
 }
 
-/// The rustls client config: webpki roots, ALPN left to the connector builder. The crypto
-/// provider is named EXPLICITLY (`ring` — the provider reqwest's `rustls-tls` used, so the
-/// cipher-suite story is unchanged): the bare `builder()` auto-detects the process provider and
-/// PANICS AT FIRST USE when more than one provider crate is in the binary's graph — which is
-/// exactly the composed busbar binary, and a boot-time panic CI caught. Explicit therefore, never
-/// ambient.
-fn rustls_client_config() -> rustls::ClientConfig {
-    // ONE root store and ONE crypto provider, shared by refcount across every client shard
+/// The rustls client config, per spec: webpki roots (plus the spec's extras), ALPN left to the
+/// connector builder. The crypto provider is named EXPLICITLY (`ring` — the provider reqwest's
+/// `rustls-tls` used, so the cipher-suite story is unchanged): the bare `builder()` auto-detects
+/// the process provider and PANICS AT FIRST USE when more than one provider crate is in the
+/// binary's graph — which is exactly the composed busbar binary, and a boot-time panic CI caught.
+/// Explicit therefore, never ambient.
+fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, String> {
+    // ONE base root store and ONE crypto provider, shared by refcount across every client shard
     // (`ClientConfig` holds both behind `Arc`s, and both builder seams take `Into<Arc<_>>`).
-    // This builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s `make_one`),
-    // and `TLS_SERVER_ROOTS.to_vec()` materializes the ~150-anchor trust store on the heap —
-    // N private copies of identical, immutable data was pure idle RSS scaling with core count.
-    // Same anchors, same provider, same cipher-suite story; only the duplication is gone.
+    // The LLM builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s
+    // `make_one`), and `TLS_SERVER_ROOTS.to_vec()` materializes the ~150-anchor trust store on
+    // the heap — N private copies of identical, immutable data was pure idle RSS scaling with
+    // core count. Same anchors, same provider, same cipher-suite story; only the duplication is
+    // gone. A `WebpkiPlus` posture builds its OWN store (the extras join the defaults, exactly
+    // reqwest's `add_root_certificate` semantics) — a per-client-build cost on the cold pinned
+    // path, never per request.
     static ROOTS: std::sync::OnceLock<std::sync::Arc<rustls::RootCertStore>> =
         std::sync::OnceLock::new();
     static PROVIDER: std::sync::OnceLock<std::sync::Arc<rustls::crypto::CryptoProvider>> =
         std::sync::OnceLock::new();
-    let roots = ROOTS
-        .get_or_init(|| {
-            std::sync::Arc::new(rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    let roots = match &spec.trust {
+        Trust::Webpki => ROOTS
+            .get_or_init(|| {
+                std::sync::Arc::new(rustls::RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+                })
             })
-        })
-        .clone();
+            .clone(),
+        Trust::WebpkiPlus(extras) => {
+            let mut store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            for der in extras {
+                store.add(der.clone()).map_err(|e| {
+                    format!("an extra trust root was refused by the root store: {e}")
+                })?;
+            }
+            std::sync::Arc::new(store)
+        }
+    };
     let provider = PROVIDER
         .get_or_init(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()))
         .clone();
-    rustls::ClientConfig::builder_with_provider(provider)
+    let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("ring provider supports the default TLS protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth()
+        .with_root_certificates(roots);
+    Ok(match &spec.identity {
+        None => builder.with_no_client_auth(),
+        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and
+        // WEAKENS NOTHING: it is presented only when the peer's `CertificateRequest` asks, and
+        // the peer's certificate is still verified by the ordinary chain-and-name check.
+        Some(identity) => builder
+            .with_client_auth_cert(identity.chain(), identity.key())
+            .map_err(|e| format!("the client identity was refused by rustls: {e}"))?,
+    })
 }
 
 /// Assemble one egress request from the boot-precomputed parts: the lane's `http::Uri` and the
@@ -295,6 +402,13 @@ mod resolver_tests;
 #[cfg(test)]
 #[path = "tests/observe_tests.rs"]
 mod observe_tests;
+
+/// The TLS postures: the R4 `ClientIdentity::from_pem` / `reqwest::Identity::from_pem` verdict
+/// parity corpus, the mTLS handshake through the real pinned posture, the private-CA
+/// extra-root arm, and the loud garbage-root build refusal.
+#[cfg(test)]
+#[path = "tests/tls_tests.rs"]
+mod tls_tests;
 
 pub use tunnel::install_proxy_tunnel_if_configured;
 

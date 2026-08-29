@@ -77,12 +77,15 @@ ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 # The egress differential-harness FIXTURES (`egress::fixtures`): real rustls TLS/mTLS/redirect
 # servers with rcgen-minted certificates, shared by this crate's own engine tests AND (via the
-# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. These two edges
-# are OPTIONAL and enabled only by `test-support` — a normal build of this crate carries neither,
-# so the fixtures cost the shipped binary nothing. (This crate's own test binary reaches the same
-# crates through [dev-dependencies] below, so `cargo test -p busbar-substrate` needs no feature.)
-rustls-pki-types = { workspace = true, optional = true }
+# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. `rcgen` is
+# OPTIONAL and enabled only by `test-support` — a normal build of this crate does not carry it,
+# so the fixtures cost the shipped binary nothing. (This crate's own test binary reaches it
+# through [dev-dependencies] below, so `cargo test -p busbar-substrate` needs no feature.)
 rcgen = { workspace = true, optional = true }
+# The engine's TLS-posture vocabulary is production surface: `ClientIdentity` holds
+# `CertificateDer`/`PrivateKeyDer` and `from_pem` rides the same `rustls-pki-types` PEM walk
+# `reqwest::Identity::from_pem` uses — which is the R4 verdict-parity argument made structural.
+rustls-pki-types = { workspace = true }
 # THE EGRESS ENGINE (`egress::engine`, relocated verbatim from busbar-core's
 # `proxy::egress_client`): hyper_util's legacy pool client over a rustls/webpki connector plus the
 # owned scheme-scoped CONNECT tunnel. The engine is the ONE outbound stack every plane builds its
@@ -119,9 +122,8 @@ hex = { workspace = true }
 # it is used only by those moved tests, so it is a dev edge here.
 rcgen = { workspace = true }
 # The egress fixture servers (`egress::fixtures`, compiled under `cfg(test)` for this crate's own
-# suite) parse PEM and mint certificates; dev edges so no feature is needed for `cargo test -p`.
-# (`rustls` itself is a full dependency above — the engine owns it now.)
-rustls-pki-types = { workspace = true }
+# suite) mint certificates; a dev edge so no feature is needed for `cargo test -p`. (`rustls` and
+# `rustls-pki-types` are full dependencies above — the engine owns them now.)
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
@@ -142,4 +144,4 @@ openapi-schema = ["dep:schemars"]
 # The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
 # this feature too, so the crates whose test binaries link this one (core's differential harness)
 # can spawn the same fixture servers this crate's own engine tests drive.
-test-support = ["dep:rustls-pki-types", "dep:rcgen"]
+test-support = ["dep:rcgen"]
