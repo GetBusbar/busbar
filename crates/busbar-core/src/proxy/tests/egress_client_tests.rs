@@ -360,3 +360,36 @@ fn install_is_ok_without_proxy_env() {
         assert!(install_proxy_tunnel_if_configured().is_ok());
     }
 }
+
+/// The connect gate bounds ESTABLISHMENT concurrency per authority and shares nothing across
+/// authorities — the overload-cliff fix's core invariant. Driven directly (the semaphore IS the
+/// mechanism); the storm-scale proof lives on the bench rig's overload rungs.
+#[tokio::test]
+async fn connect_gate_bounds_per_authority_establishment() {
+    let gate = tunnel::ConnectGate::new_for_tests();
+    let a = gate.slot_for_tests("upstream.test:443");
+    // Same authority → the same semaphore (the bound is shared)…
+    assert!(std::sync::Arc::ptr_eq(
+        &a,
+        &gate.slot_for_tests("upstream.test:443")
+    ));
+    // …a different authority gets its own (no cross-destination interference).
+    assert!(!std::sync::Arc::ptr_eq(
+        &a,
+        &gate.slot_for_tests("other.test:443")
+    ));
+    // Exactly 16 permits: the 17th connect WAITS until one establishment finishes.
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        held.push(a.clone().try_acquire_owned().expect("within the bound"));
+    }
+    assert!(
+        a.clone().try_acquire_owned().is_err(),
+        "the 17th concurrent establishment must queue, not dial"
+    );
+    drop(held.pop());
+    assert!(
+        a.clone().try_acquire_owned().is_ok(),
+        "a finished establishment frees the slot FIFO-fair"
+    );
+}

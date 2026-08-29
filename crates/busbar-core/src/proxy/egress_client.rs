@@ -452,6 +452,10 @@ mod tunnel {
     pub(crate) struct TunnelConnector {
         inner: hyper_util::client::legacy::connect::HttpConnector,
         config: Option<Arc<ProxyConfig>>,
+        /// Per-shard connect pacing — see [`ConnectGate`]. Shared by clones of this connector
+        /// (hyper clones the service per connect), NOT across shards: each worker paces its own
+        /// establishment so no cross-worker lock ever appears on the connect path.
+        gate: Arc<ConnectGate>,
     }
 
     impl TunnelConnector {
@@ -459,7 +463,60 @@ mod tunnel {
             inner: hyper_util::client::legacy::connect::HttpConnector,
             config: Option<Arc<ProxyConfig>>,
         ) -> Self {
-            Self { inner, config }
+            Self {
+                inner,
+                config,
+                gate: Arc::new(ConnectGate::new()),
+            }
+        }
+    }
+
+    /// THE CONNECT GATE (overload-cliff fix, part 1) — bounds concurrent connection
+    /// ESTABLISHMENT per destination authority, per client shard. The bench rig proved the
+    /// mechanism it closes: under a concurrency step the pool's checkout race opens ~1.3–1.6
+    /// upstream connections per client connection with no coalescing, ~10k simultaneous SYNs
+    /// overrun the provider's accept queue (a typical listen backlog is 128), the 1s SYN
+    /// retransmit pushes first-wave latency past client deadlines, aborts destroy in-flight
+    /// connections, and the reconnect wave re-synchronizes — a self-sustaining storm that
+    /// collapsed throughput 4x at 10k+ concurrent clients while the CPUs sat half idle. The
+    /// gate makes establishment PACED AND FAIR (FIFO semaphore per authority): 16 in-flight
+    /// connects per shard × the worker count keeps the global burst under a backlog-128
+    /// provider's accept capacity, waves cannot synchronize, and steady state converges.
+    /// Established, pooled connections never touch this — it prices only the storm.
+    ///
+    /// 16 is a constant, not a knob: it is sized to the SMALLEST commodity accept backlog
+    /// (128) divided by the largest common worker count with headroom, and per the design
+    /// rule the topology carries no tuning surface. Permit wait time is not unbounded — every
+    /// send runs under the attempt's one deadline envelope, so a connect starved past the
+    /// budget classifies as the transport timeout it is and fails over.
+    const CONNECTS_PER_AUTHORITY_PER_SHARD: usize = 16;
+
+    /// Per-shard registry of per-authority connect semaphores. Keys are the DIALED authority
+    /// (the target for direct connects, the proxy for tunneled ones — the storm lands on
+    /// whichever socket is actually dialed). Growth is bounded by the number of distinct
+    /// configured authorities; entries are never evicted because that set is config-sized.
+    pub(crate) struct ConnectGate {
+        slots: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    }
+
+    impl ConnectGate {
+        fn new() -> Self {
+            Self {
+                slots: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+
+        /// The semaphore for one authority — one lock hop per CONNECT (never per request).
+        fn slot(&self, authority: &str) -> Arc<tokio::sync::Semaphore> {
+            let mut slots = self.slots.lock().expect("connect-gate lock");
+            slots
+                .entry(authority.to_string())
+                .or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(
+                        CONNECTS_PER_AUTHORITY_PER_SHARD,
+                    ))
+                })
+                .clone()
         }
     }
 
@@ -504,8 +561,23 @@ mod tunnel {
             {
                 Some(p) => p,
                 None => {
+                    // Direct arm: gate on the target authority, then dial. The permit spans
+                    // establishment only — it drops the moment the socket exists.
+                    let authority = format!(
+                        "{}:{}",
+                        target_host,
+                        dst.port_u16()
+                            .unwrap_or(if dst_is_https { 443 } else { 80 })
+                    );
+                    let gate = self.gate.slot(&authority);
                     let fut = tower::Service::call(&mut self.inner, dst);
-                    return Box::pin(async move { fut.await.map_err(Into::into) });
+                    return Box::pin(async move {
+                        let _permit = gate
+                            .acquire_owned()
+                            .await
+                            .expect("connect-gate semaphore is never closed");
+                        fut.await.map_err(Into::into)
+                    });
                 }
             };
             // Tunneled arm: dial the PROXY with the same connector (its connect timeout,
@@ -518,8 +590,15 @@ mod tunnel {
                 Ok(u) => u,
                 Err(e) => return Box::pin(async move { Err(Box::new(e) as BoxError) }),
             };
+            // Tunneled arm: the storm lands on the PROXY socket, so gate on the proxy
+            // authority; the permit spans dial + CONNECT handshake (both are establishment).
+            let gate = self.gate.slot(&format!("{}:{}", proxy.host, proxy.port));
             let dial = tower::Service::call(&mut self.inner, proxy_uri);
             Box::pin(async move {
+                let _permit = gate
+                    .acquire_owned()
+                    .await
+                    .expect("connect-gate semaphore is never closed");
                 let io = dial.await.map_err(Into::<BoxError>::into)?;
                 let mut stream = io.into_inner();
                 let handshake = connect_handshake(&mut stream, &target_host, target_port, &proxy);
@@ -617,6 +696,16 @@ mod tunnel {
 
     #[cfg(test)]
     pub(super) use parse_proxy as parse_proxy_for_tests;
+
+    #[cfg(test)]
+    impl ConnectGate {
+        pub(super) fn new_for_tests() -> Self {
+            Self::new()
+        }
+        pub(super) fn slot_for_tests(&self, authority: &str) -> Arc<tokio::sync::Semaphore> {
+            self.slot(authority)
+        }
+    }
     #[cfg(test)]
     pub(super) use resolve_config as resolve_config_for_tests;
     #[cfg(test)]
