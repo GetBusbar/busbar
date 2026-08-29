@@ -266,7 +266,7 @@ impl UpstreamClients {
     /// blocking-pool threads, non-unix workers without ids) keeps the prior behavior: assigned a
     /// shard round-robin on FIRST use for its lifetime — a once-per-thread counter bump, never a
     /// per-request write.
-    pub fn get(&self) -> &Client {
+    pub(crate) fn get(&self) -> &Client {
         let id = crate::state::worker_id();
         if id != usize::MAX {
             // min: defensive only — the composition root sizes shards to the worker count, so a
