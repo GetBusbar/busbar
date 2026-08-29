@@ -131,3 +131,42 @@ fn the_ring_is_bounded_and_the_surviving_suffix_still_verifies() {
     log.verify_principal_chain(principal)
         .expect("the retained suffix must still verify as a window");
 }
+
+// ── the per-principal chain map is BOUNDED, mirroring calllog's LRU discipline ─────────────────
+
+/// The chain-position map is a bounded LRU, not an unbounded ledger — the same cap and eviction
+/// shape as calllog's (`the_chain_position_map_stays_bounded_across_many_distinct_principals`):
+/// after many DISTINCT principals it holds at most [`MAX_TRACKED_PRINCIPALS`], where before it
+/// grew one never-evicted entry per key id ever seen. A LIVE (recently recorded) principal is
+/// never the one evicted: recording moves it to the back, so eviction only ever takes the
+/// least-recently-used chain.
+#[test]
+fn the_chain_position_map_stays_bounded_and_evicts_least_recently_used() {
+    let log = LlmRequestLog::new();
+    let overflow_by = 100;
+    // `hot` records FIRST — with no LRU touch it would sit at the front and be evicted first.
+    let hot = "key-hot";
+    log.record(hot, an_input(200));
+    for i in 0..(MAX_TRACKED_PRINCIPALS + overflow_by) {
+        log.record(&format!("key_{i:07}"), an_input(200));
+        // Keep `hot` LIVE by re-recording it mid-flood: each touch moves it to the back.
+        if i % 1024 == 0 {
+            log.record(hot, an_input(200));
+        }
+    }
+    let state = log.state();
+    assert_eq!(
+        state.chains.len(),
+        MAX_TRACKED_PRINCIPALS,
+        "the map is capped at MAX_TRACKED_PRINCIPALS however many distinct principals arrive, \
+         rather than growing one entry per key id forever"
+    );
+    let hot_chain = state
+        .chains
+        .get(hot)
+        .expect("a live principal's chain survives the flood — eviction is least-recently-used");
+    assert!(
+        hot_chain.next_seq() > 1,
+        "the surviving chain is the SAME chain (its sequence advanced), not a reopened one"
+    );
+}

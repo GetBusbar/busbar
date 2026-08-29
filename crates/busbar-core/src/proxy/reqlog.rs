@@ -71,8 +71,10 @@
 //! TAMPER-EVIDENCE, not tamper-prevention, and only over the retained window. Stated in full in
 //! [`crate::audit`], where the mechanism lives.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
+
+use indexmap::IndexMap;
 
 use crate::audit::{verify_window, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
 
@@ -107,6 +109,24 @@ pub(crate) const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 /// [`crate::audit::verify_chain`]: the head has legitimately been pruned, and a caller holding a
 /// whole chain that used the lenient entry point would be silently excusing a missing head.
 const MAX_RETAINED_REQUESTS: usize = 2048;
+
+/// The upper bound on how many principals' chain POSITIONS this process keeps in RAM at once —
+/// the SAME value and the same LRU eviction shape as `calllog`'s position cache
+/// (`calllog::MAX_TRACKED_PRINCIPALS`), mirrored here because the two streams share the growth
+/// mode: one entry per DISTINCT principal ever seen, never evicted, is a leak on any deployment
+/// minting many short-lived keys. Eviction only ever drops the least-recently-USED chain, and
+/// only while the map is over this cap, so every LIVE key's chain position is untouched.
+///
+/// THE EVICTED-THEN-RETURNING CONTRACT mirrors calllog's no-sink arm (`Journal::resume_missing`:
+/// "with no sink there is no durable log to fork, so a fresh chain is the honest answer"): this
+/// stream has NO durable store (see the module header — a restart already loses it), so a
+/// returning evicted principal opens a fresh chain at seq 1. The retained window stays verifiable
+/// through the seam STRUCTURALLY: reaching the front of the LRU takes at least the cap's worth
+/// (16 384) of other principals' records after the evictee's last one, and the ring retains only
+/// [`MAX_RETAINED_REQUESTS`] (2 048) records globally — so by the time a chain can be evicted,
+/// none of its records are still retained, and `records_for`/`verify_window` can never observe
+/// the old tail and the fresh head together.
+const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 
 /// The fields a caller supplies for one request record. `seq`, `prev_hash` and `hash` are NOT here:
 /// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
@@ -270,10 +290,15 @@ pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'st
 /// positions quiescent either way.
 #[derive(Default)]
 struct LogState {
-    /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. Unbounded in the same
-    /// way `calllog`'s is, and bounded in practice by the same thing: the principals are minted
-    /// key ids plus one fixed sentinel, not caller-chosen strings.
-    chains: HashMap<String, RequestChain>,
+    /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. BOUNDED at
+    /// [`MAX_TRACKED_PRINCIPALS`], the same cap and the same LRU discipline as `calllog`'s
+    /// position cache (`calllog::MAX_TRACKED_PRINCIPALS`, enforced host-side by
+    /// `audit::journal::Journal::commit_position`): an [`IndexMap`] so insertion order doubles as
+    /// recency order — a recorded principal moves to the back (most-recently-used), and once the
+    /// map exceeds the cap the FRONT (least-recently-used) chain is dropped. Without the bound
+    /// this grew one permanent entry per key id ever seen. See [`MAX_TRACKED_PRINCIPALS`] for the
+    /// evicted-then-returning contract.
+    chains: IndexMap<String, RequestChain>,
     /// The retained records, oldest first, across every principal. See [`MAX_RETAINED_REQUESTS`].
     ring: VecDeque<LlmRequestRecord>,
 }
@@ -314,18 +339,40 @@ impl LlmRequestLog {
     /// reads back through [`Self::records_for`] like every other reader.
     pub(crate) fn record(&self, principal: &str, input: RequestInput) {
         let mut state = self.state();
-        // `or_default()` IS SAFE HERE, and it is worth saying why because it is the same line
-        // that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
+        // `RequestChain::default()` IS SAFE HERE, and it is worth saying why because it is the
+        // same line that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
         // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
         // hand-writes its `Default` to be its `new`, and pins the two against each other
         // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
         // hazard is closed once, in core, for every stream — which is the whole argument for
         // one mechanism. `calllog` reads identically.
-        let record = state
-            .chains
-            .entry(principal.to_string())
-            .or_default()
-            .append(principal, input);
+        // LRU + cap discipline mirrors `audit::journal::Journal::commit_position` (calllog's
+        // bound): touch-to-back on every record, evict from the front only while over the cap.
+        let chains = &mut state.chains;
+        let idx = match chains.get_index_of(principal) {
+            Some(idx) => idx,
+            // A new principal appends at the back (most-recently-used) by IndexMap's contract.
+            // `RequestChain::default()` is `new()` (see the safety note above).
+            None => {
+                chains
+                    .insert_full(principal.to_string(), RequestChain::default())
+                    .0
+            }
+        };
+        let Some((_, chain)) = chains.get_index_mut(idx) else {
+            // Unrepresentable (`idx` came from this map, under this lock), spelled as a bail
+            // rather than an `expect`: the record terminal sits on the request path, and the
+            // no-panic-on-request-path invariant outranks recording one row.
+            return;
+        };
+        let record = chain.append(principal, input);
+        // Move to the back: most-recently-used, so it is the last to be evicted.
+        chains.move_index(idx, chains.len() - 1);
+        while chains.len() > MAX_TRACKED_PRINCIPALS {
+            // Evict the front — the least-recently-used. See MAX_TRACKED_PRINCIPALS for why the
+            // retained ring can never still hold an evicted chain's records.
+            chains.shift_remove_index(0);
+        }
         state.ring.push_back(record);
         while state.ring.len() > MAX_RETAINED_REQUESTS {
             state.ring.pop_front();
