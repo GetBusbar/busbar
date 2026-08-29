@@ -23,7 +23,7 @@ struct ClientCreds {
     client_secret: busbar_api::Redacted<String>,
     token_url: String,
     scope: String,
-    http: reqwest::Client,
+    http: crate::proxy::EgressClient,
 }
 
 /// Build an `oauth-client-credentials` credential. SYNCHRONOUS (runs on the shared
@@ -113,28 +113,42 @@ impl ClientCreds {
     /// Exchange the client credentials for an access token (RFC 6749 §4.4).
     async fn mint(&self) -> Result<CachedToken, String> {
         let now = now_epoch();
-        // reqwest is built without the `json` feature here, so parse the response body manually.
-        let resp = self
-            .http
-            .post(&self.token_url)
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.expose_secret().as_str()),
-                ("scope", self.scope.as_str()),
-            ])
-            .send()
+        // The engine hop: the form encodes through `serde_urlencoded` (the exact call reqwest's
+        // `.form()` was), the cause of a failure is URL-free by construction (hyper errors never
+        // carry the URL the retired `without_url()` stripped), and the ONE mint deadline spans
+        // send and body read.
+        let form = serde_urlencoded::to_string([
+            ("grant_type", "client_credentials"),
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.expose_secret().as_str()),
+            ("scope", self.scope.as_str()),
+        ])
+        .map_err(|e| format!("token request form could not be encoded: {e}"))?;
+        let uri: http::Uri = self
+            .token_url
+            .parse()
+            .map_err(|e| format!("token endpoint is not a valid URI: {e}"))?;
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        let request = busbar_substrate::egress::engine::request(
+            http::Method::POST,
+            uri,
+            headers,
+            bytes::Bytes::from(form),
+        );
+        let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
+        let resp = busbar_substrate::egress::engine::send_bounded(&self.http, request, deadline)
             .await
-            // `without_url()`: a reqwest error carries the token-endpoint URL (with any operator-
-            // embedded user:pass@ userinfo) in its Display; this string is surfaced in retry warns, so
-            // strip the URL from the error before formatting it.
-            .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
+            .map_err(|e| format!("token endpoint request failed: {}", e.into_cause()))?;
         let status = resp.status();
         // The token endpoint is not fully trusted (its `expires_in` below is already treated as
         // attacker-influenced), so read the body under the shared capped-read helper rather than
         // `resp.text()`'s unbounded read — see `super::read_capped_token_response` for the cap
         // rationale and the truncated/transport-error distinction.
-        let body = super::read_capped_token_response(resp).await?;
+        let body = super::read_capped_token_response(resp, deadline).await?;
         if !status.is_success() {
             // Never echo the request (carries the client_secret); status + a short snippet only.
             // Diagnostic-only snippet, not data-of-record: the request has already failed on `status`

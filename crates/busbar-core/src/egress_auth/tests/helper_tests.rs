@@ -3,6 +3,23 @@
 //! one place that proves the truncated-oversized vs transport-error distinction for both mechanisms at
 //! once.
 
+/// One GET through the REAL minter client (the engine), returning the response plus the mint
+/// deadline the read helper consumes.
+async fn fetch(url: &str) -> (http::Response<hyper::body::Incoming>, tokio::time::Instant) {
+    let client = super::minter_client().unwrap();
+    let request = busbar_substrate::egress::engine::request(
+        http::Method::GET,
+        url.parse().expect("mock url"),
+        http::HeaderMap::new(),
+        bytes::Bytes::new(),
+    );
+    let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
+    let resp = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
+        .await
+        .expect("the mock answers");
+    (resp, deadline)
+}
+
 /// A response body over the cap is reported as a clear, distinguishable "exceeded the cap" error, never
 /// silently buffered or partially parsed.
 #[tokio::test]
@@ -15,9 +32,8 @@ async fn over_cap_response_is_reported_as_truncated() {
     });
     let server = crate::test_support::MockServer::new(state).await;
 
-    let client = super::minter_client().unwrap();
-    let resp = client.get(server.base_url()).send().await.unwrap();
-    let err = super::read_capped_token_response(resp)
+    let (resp, deadline) = fetch(&server.base_url()).await;
+    let err = super::read_capped_token_response(resp, deadline)
         .await
         .expect_err("an over-cap response must be a clear error, not a buffered success");
     server.shutdown().await;
@@ -40,9 +56,8 @@ async fn transport_error_during_read_is_reported_distinctly_from_truncation() {
     state.push(crate::test_support::MockResponse::SseTransportError { ok_events: vec![] });
     let server = crate::test_support::MockServer::new(state).await;
 
-    let client = super::minter_client().unwrap();
-    let resp = client.get(server.base_url()).send().await.unwrap();
-    let err = super::read_capped_token_response(resp)
+    let (resp, deadline) = fetch(&server.base_url()).await;
+    let err = super::read_capped_token_response(resp, deadline)
         .await
         .expect_err("a connection that drops mid-read must be a clear error");
     server.shutdown().await;

@@ -453,6 +453,7 @@ pub fn egress_request(
 /// One hop's transport failure, classified — the neutral vocabulary a seam consumer maps onto its
 /// own taxonomy (the plane split is connect-class vs everything-that-reached-the-wire; a deadline
 /// is the latter, exactly as the reqwest per-request timeout classified: `is_connect()` false).
+#[derive(Debug)]
 pub enum HopError {
     /// The connection could not be established (TCP, tunnel, TLS, resolver refusal) — hyper's
     /// `is_connect` class, which `reqwest::Error::is_connect` wrapped.

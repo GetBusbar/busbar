@@ -32,27 +32,29 @@ pub(crate) mod jwt_bearer;
 pub(crate) mod oauth_client_credentials;
 
 /// HTTP client used by the self-minting OAuth credentials (`jwt-bearer`, `oauth-client-credentials`)
-/// to POST to a token endpoint. Hardened like the data-path upstream client (see `main.rs`):
-///   * `redirect: none` — the credential (a signed assertion, or `client_secret`) rides in the POST
-///     BODY, so reqwest's cross-host Authorization-stripping does not protect it; a 307/308 from a
-///     compromised or typo'd token endpoint would re-POST the plaintext secret to the redirect target
-///     (169.254.169.254 / localhost / RFC1918). The boot-time SSRF check only vets the configured URL
-///     string, never a runtime redirect target, so following redirects reopens that exfil vector.
-///   * bounded connect + overall timeouts — a stalled token endpoint must not hang the mint/refresh
-///     future forever (the refresh loop only retries on `Err`, so a hang would silently freeze the
-///     lane's token and serve an empty bearer → upstream 401).
-pub(crate) fn minter_client() -> Result<reqwest::Client, String> {
-    // `build` errors only when TLS init fails (native-tls unavailable/broken). Return the error so a
-    // degraded-TLS environment disables just the OAuth egress lane with a diagnostic at boot/apply,
-    // rather than `expect`-panicking the whole process (which the callers already handle: both
-    // `build()` sites return `Result<_, String>`).
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("build OAuth token-minter HTTP client: {e}"))
+/// to POST to a token endpoint — the ENGINE, on the cold open-web posture. Hardened like the
+/// data-path upstream client:
+///   * redirects are STRUCTURAL non-follows now (hyper follows nothing) — the credential (a signed
+///     assertion, or `client_secret`) rides in the POST BODY, so no cross-host header-stripping
+///     could protect it; a 307/308 from a compromised or typo'd token endpoint would re-POST the
+///     plaintext secret to the redirect target (169.254.169.254 / localhost / RFC1918), and the
+///     boot-time SSRF check only vets the configured URL string, never a runtime redirect target.
+///   * bounded connect (the engine's 10s connect deadline, spanning TLS) + the overall
+///     [`MINT_DEADLINE`] applied per request at both mint sites — a stalled token endpoint must not
+///     hang the mint/refresh future forever (the refresh loop only retries on `Err`, so a hang
+///     would silently freeze the lane's token and serve an empty bearer → upstream 401).
+///
+/// The `Result` signature stands (both callers thread it) even though the engine's webpki build
+/// has no failing arm on this posture — the seam stays where a future posture could fail loudly.
+pub(crate) fn minter_client() -> Result<crate::proxy::EgressClient, String> {
+    Ok(crate::proxy::build_egress_client(
+        &crate::proxy::EgressClientSpec::llm_lane(usize::MAX, 90, false, false),
+    ))
 }
+
+/// The whole-mint deadline — send plus capped body read under ONE absolute instant, the
+/// client-level 30s total the retired reqwest builder carried.
+pub(crate) const MINT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Default token TTL when a token endpoint omits `expires_in` (RFC 6749 §5.1 makes it RECOMMENDED, not
 /// required): a conservative 1 h so the token still refreshes on schedule.
@@ -119,9 +121,22 @@ where
 /// sites (`walk.rs`, `engine/mod.rs`) already report `Truncated` vs `TransportError` separately rather
 /// than folding them into one ambiguous message: an operator debugging a real connection drop needs a
 /// different signal than one debugging an oversized-response misconfiguration.
-pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Result<String, String> {
+pub(crate) async fn read_capped_token_response(
+    resp: http::Response<hyper::body::Incoming>,
+    deadline: tokio::time::Instant,
+) -> Result<String, String> {
+    use http_body_util::BodyExt;
     let cap = crate::proxy::max_upstream_buffered_bytes();
-    let (raw, read_end) = crate::proxy::read_capped(resp.bytes_stream(), cap).await;
+    let read = crate::proxy::read_capped(resp.into_body().into_data_stream(), cap);
+    // The mint's ONE deadline keeps ticking through the body — the span reqwest's client-level
+    // total covered.
+    let Ok((raw, read_end)) = tokio::time::timeout_at(deadline, read).await else {
+        return Err(
+            "token endpoint response was not read before the mint deadline; refusing to parse a \
+             partial token response"
+                .to_string(),
+        );
+    };
     match read_end {
         crate::proxy::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
         crate::proxy::ReadEnd::Truncated => Err(format!(

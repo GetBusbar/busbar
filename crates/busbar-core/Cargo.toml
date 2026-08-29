@@ -55,6 +55,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
+# encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
+# unchanged.
+serde_urlencoded = { workspace = true }
 indexmap = { workspace = true }
 schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }

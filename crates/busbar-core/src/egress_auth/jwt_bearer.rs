@@ -36,7 +36,7 @@ struct Signer {
     /// defaulted (e.g. to `iss`) or every plain SA (the shipped Vertex AI setup) starts failing
     /// `unauthorized_client`/`invalid_grant`. Mirrors `google-auth-python`'s own opt-in `subject=`.
     subject: Option<String>,
-    http: reqwest::Client,
+    http: crate::proxy::EgressClient,
 }
 
 /// Build a `jwt-bearer` credential. SYNCHRONOUS by design — it runs on the shared
@@ -171,26 +171,41 @@ impl Signer {
             .map_err(|_| "RS256 signing failed".to_string())?;
         let assertion = format!("{signing_input}.{}", b64url(&sig));
 
-        // reqwest is built without the `json` feature here, so parse the response body manually.
-        let resp = self
-            .http
-            .post(&self.token_uri)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-                ("assertion", &assertion),
-            ])
-            .send()
+        // The engine hop: the form encodes through `serde_urlencoded` (the exact call reqwest's
+        // `.form()` was), the cause of a failure is URL-free by construction (hyper errors never
+        // carry the URL the retired `without_url()` stripped — the URL can carry query/secret
+        // material, and the status/body branch below already redacts), and the ONE mint deadline
+        // spans send and body read.
+        let form = serde_urlencoded::to_string([
+            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+            ("assertion", assertion.as_str()),
+        ])
+        .map_err(|e| format!("token request form could not be encoded: {e}"))?;
+        let uri: http::Uri = self
+            .token_uri
+            .parse()
+            .map_err(|e| format!("token endpoint is not a valid URI: {e}"))?;
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        let request = busbar_substrate::egress::engine::request(
+            http::Method::POST,
+            uri,
+            headers,
+            bytes::Bytes::from(form),
+        );
+        let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
+        let resp = busbar_substrate::egress::engine::send_bounded(&self.http, request, deadline)
             .await
-            // `.without_url()` strips the token-endpoint URL from the reqwest error Display — the URL
-            // can carry query/secret material and leaking it into a surfaced/logged error is an SSRF /
-            // secret-hygiene hazard. The status/body branch below already redacts.
-            .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
+            .map_err(|e| format!("token endpoint request failed: {}", e.into_cause()))?;
         let status = resp.status();
         // The token endpoint is not fully trusted (its `expires_in` below is already treated as
         // attacker-influenced), so read the body under the shared capped-read helper rather than
         // `resp.text()`'s unbounded read — see `super::read_capped_token_response` for the cap
         // rationale and the truncated/transport-error distinction.
-        let body = super::read_capped_token_response(resp).await?;
+        let body = super::read_capped_token_response(resp, deadline).await?;
         if !status.is_success() {
             // Never log the assertion/body wholesale (may echo claims); status + a short snippet only.
             // Diagnostic-only snippet, not data-of-record: the request has already failed on `status`

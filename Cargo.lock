@@ -485,6 +485,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "serde_yaml_ng",
  "sha2 0.11.0",
  "smallvec",
