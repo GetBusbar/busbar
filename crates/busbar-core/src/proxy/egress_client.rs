@@ -106,14 +106,23 @@ pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
     client.build(https)
 }
 
-/// The rustls client config: webpki roots, ALPN left to the connector builder.
+/// The rustls client config: webpki roots, ALPN left to the connector builder. The crypto
+/// provider is named EXPLICITLY (`ring` — the provider reqwest's `rustls-tls` used, so the
+/// cipher-suite story is unchanged): the bare `builder()` auto-detects the process provider and
+/// PANICS AT FIRST USE when more than one provider crate is in the binary's graph — which is
+/// exactly the composed busbar binary, and a boot-time panic CI caught. Explicit therefore, never
+/// ambient.
 fn rustls_client_config() -> rustls::ClientConfig {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
-    rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth()
+    rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring provider supports the default TLS protocol versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth()
 }
 
 /// Assemble one egress request from the boot-precomputed parts: the lane's `http::Uri` and the
