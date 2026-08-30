@@ -1,0 +1,1 @@
+{"max_tokens":4096,"messages":[{"content":[{"text":"Weather in Paris?","type":"text"}],"role":"user"}],"model":"gpt-4o-mini","stream":false,"tools":[{"input_schema":{"properties":{"city":{"type":"string"}},"type":"object"},"name":"get_weather"}]}

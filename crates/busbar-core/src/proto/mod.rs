@@ -995,6 +995,13 @@ mod image_source_matrix_tests;
 #[path = "tests/translate_parity_golden_tests.rs"]
 mod translate_parity_golden_tests;
 
+/// Cross-protocol translate-path byte-parity goldens for the OTHER high-traffic dialect pairs
+/// (anthropic/openai/gemini/responses), extending the single anthropic⇄openai pair above with the
+/// same bless-mode generation and id-normalization discipline.
+#[cfg(test)]
+#[path = "tests/translate_parity_cross_pairs_tests.rs"]
+mod translate_parity_cross_pairs_tests;
+
 /// READ → WRITE round-trip fidelity per protocol, with an EXACT allow-list of accepted divergences.
 /// The complement to `same_proto_fidelity_tests` (which covers the byte-verbatim short-circuit that
 /// never enters the IR at all); this one drives the readers and writers that CAN lose.

@@ -126,7 +126,7 @@ fn translate_response_o2a(body: &str) -> Vec<u8> {
 /// Corpus of representative anthropic REQUEST bodies (the ingress dialect): plain chat, multi-turn
 /// with sampling controls, system array + cache breakpoints + images, tool use round-trip, thinking
 /// ask + metadata carry, unmodeled extras (cleared cross-protocol), and degenerate content shapes.
-const REQUEST_CORPUS: &[(&str, &str)] = &[
+pub(crate) const REQUEST_CORPUS: &[(&str, &str)] = &[
     (
         "req_a2o_plain.json",
         r#"{"model":"claude-sonnet-4-20250514","max_tokens":256,"messages":[{"role":"user","content":"Hello, world"}]}"#,
