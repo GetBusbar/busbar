@@ -275,6 +275,18 @@ impl StreamTranslate {
                     if usage.cache_read_input_tokens.is_none() {
                         usage.cache_read_input_tokens = start.cache_read_input_tokens;
                     }
+                    // The separately-priced cache-tier SUB-BUCKETS ride the same fill-if-absent
+                    // rule as their parent `cache_creation_input_tokens` above: Anthropic reports
+                    // them only at stream start, and a backfill that restored the parent while
+                    // dropping the tiers would make the split irreconcilable on the terminal frame.
+                    if usage.detail.cache_creation_5m_input_tokens.is_none() {
+                        usage.detail.cache_creation_5m_input_tokens =
+                            start.detail.cache_creation_5m_input_tokens;
+                    }
+                    if usage.detail.cache_creation_1h_input_tokens.is_none() {
+                        usage.detail.cache_creation_1h_input_tokens =
+                            start.detail.cache_creation_1h_input_tokens;
+                    }
                 }
                 // A-tap capture (Change A): accumulate the terminal IR usage AFTER the start-usage
                 // backfill, so `last_usage` reports the real prompt+completion counts for every
@@ -291,18 +303,11 @@ impl StreamTranslate {
                     cache_read_input_tokens: None,
                     detail: crate::ir::IrUsageDetail::default(),
                 });
-                if usage.input_tokens != 0 {
-                    acc.input_tokens = usage.input_tokens;
-                }
-                if usage.output_tokens != 0 {
-                    acc.output_tokens = usage.output_tokens;
-                }
-                if usage.cache_creation_input_tokens.is_some() {
-                    acc.cache_creation_input_tokens = usage.cache_creation_input_tokens;
-                }
-                if usage.cache_read_input_tokens.is_some() {
-                    acc.cache_read_input_tokens = usage.cache_read_input_tokens;
-                }
+                // The ONE per-field non-zero/`Some`-wins merge (shared with the terminal-usage
+                // fold), so this A-tap and the fold cannot drift — and the DETAIL sub-buckets ride
+                // along here too instead of being silently dropped by a hand-copied totals-only
+                // merge.
+                merge_trailing_usage(acc, usage);
             }
             // A-tap terminal-error capture (Change A): a reader-emitted `Error` event is the IR-sourced
             // breaker-failure signal that replaces the byte-scanner's `UsageTap::terminal_error`. Record
@@ -1189,6 +1194,23 @@ fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUs
     }
     if trailing.cache_read_input_tokens.is_some() {
         acc.cache_read_input_tokens = trailing.cache_read_input_tokens;
+    }
+    // The DETAIL sub-buckets ride the same Some-wins rule as the cache fields. Left out, a
+    // streamed `/v1/responses` call over an OpenAI-chat reasoning egress answered
+    // `output_tokens_details.reasoning_tokens: 0` while the identical buffered call answered the
+    // real value — the trailing usage-only chunk is the ONLY place those egresses report the
+    // sub-buckets, and the fold merged only the four totals.
+    if trailing.detail.reasoning_tokens.is_some() {
+        acc.detail.reasoning_tokens = trailing.detail.reasoning_tokens;
+    }
+    if trailing.detail.cache_creation_5m_input_tokens.is_some() {
+        acc.detail.cache_creation_5m_input_tokens = trailing.detail.cache_creation_5m_input_tokens;
+    }
+    if trailing.detail.cache_creation_1h_input_tokens.is_some() {
+        acc.detail.cache_creation_1h_input_tokens = trailing.detail.cache_creation_1h_input_tokens;
+    }
+    if trailing.detail.search_units.is_some() {
+        acc.detail.search_units = trailing.detail.search_units;
     }
 }
 

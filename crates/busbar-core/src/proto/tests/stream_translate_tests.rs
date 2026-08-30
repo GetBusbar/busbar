@@ -4647,3 +4647,44 @@ fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
     assert_eq!(usage.input_tokens, 10);
     assert_eq!(usage.output_tokens, 5);
 }
+
+/// THE TERMINAL-USAGE FOLD CARRIES THE SUB-BUCKETS, end to end through the translator. The
+/// reader/writer-in-isolation test (`streamed_usage_sub_buckets_are_not_zeroed`) proved both ends
+/// speak `IrUsageDetail`, but the FOLD SEAM between them (`pending_terminal` +
+/// `merge_trailing_usage`) merged only the four token totals — so a streamed `/v1/responses` call
+/// over an OpenAI-chat reasoning egress (whose real usage arrives in a SEPARATE trailing
+/// usage-only chunk after the finish chunk) answered `output_tokens_details.reasoning_tokens: 0`
+/// while the identical `stream:false` call answered the real value. This drives the whole
+/// translator over exactly that wire shape.
+#[test]
+fn fold_path_merges_trailing_usage_detail_sub_buckets_end_to_end() {
+    let mut st = StreamTranslate::new("responses", "openai")
+        .expect("responses<-openai is a real cross-protocol pair");
+    // OpenAI-chat egress under include_usage: content, then the finish chunk (usage null — the
+    // shape that seeds pending_terminal with zeros), then the trailing usage-only chunk carrying
+    // the real totals AND the reasoning sub-bucket.
+    let wire = concat!(
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"o3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"o3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"o3\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30,\"completion_tokens_details\":{\"reasoning_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let mut out = st.feed(wire.as_bytes());
+    out.extend_from_slice(&st.finish());
+    let frames = decode_wire_frames(false, &out);
+    let completed = frames
+        .iter()
+        .find(|(ev, _)| ev == "response.completed")
+        .map(|(_, json)| json)
+        .expect("the responses stream ends with response.completed");
+    let usage = completed
+        .pointer("/response/usage")
+        .expect("response.completed carries usage");
+    assert_eq!(usage["input_tokens"], 10, "{usage}");
+    assert_eq!(usage["output_tokens"], 20, "{usage}");
+    assert_eq!(
+        usage["output_tokens_details"]["reasoning_tokens"], 9,
+        "the trailing chunk's reasoning sub-bucket survives the terminal-usage fold — the \
+         streamed answer must match the buffered one: {usage}"
+    );
+}
