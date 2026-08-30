@@ -1599,3 +1599,7 @@ pub(crate) fn bedrock_response_to_eventstream(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

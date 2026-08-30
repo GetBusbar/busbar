@@ -1158,6 +1158,32 @@ impl ProtocolReader for BedrockReader {
             retry_after: None,
         })?;
 
+        // DOCUMENTED CROSS-PROTOCOL DROP (field-coverage carry, drop+warn+test). A native Converse
+        // response can carry Bedrock-only diagnostic/echo members the neutral IR has no home for and
+        // NO other protocol expresses: `trace` (`guardrail` intervention detail + `promptRouter`
+        // routing metadata), `additionalModelResponseFields` (model-specific echoed fields), and the
+        // response-side `performanceConfig`. On a same-protocol Bedrock->Bedrock hop these survive
+        // byte-verbatim via the proxy short-circuit (this reader is never called). This reader runs
+        // only on a CROSS-protocol egress (Bedrock backend -> foreign ingress), where these members
+        // legitimately drop — so warn once per present field rather than losing them in silence.
+        // (`IrResponse` has no `extra` carrier by design; a foreign client cannot receive these, so
+        // there is nothing to carry them TO.)
+        for dropped in [
+            "trace",
+            "additionalModelResponseFields",
+            "performanceConfig",
+        ] {
+            if obj.contains_key(dropped) {
+                tracing::warn!(
+                    field = dropped,
+                    "dropping Bedrock-only Converse response member `{dropped}` on a cross-protocol \
+                     egress: it has no neutral-IR carrier and no equivalent in any other protocol, \
+                     so it cannot be projected to a non-Bedrock client (a same-protocol \
+                     Bedrock->Bedrock hop preserves it byte-verbatim via the proxy short-circuit)"
+                );
+            }
+        }
+
         let output_val = obj.get("output").ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),

@@ -133,6 +133,55 @@ bedrock/request/content[].document.source.bytes = carried bedrock_document_is_mo
 bedrock/request/content[].video.format = carried roundtrip_bedrock_request
 bedrock/request/content[].video.source.bytes = carried roundtrip_bedrock_request
 bedrock/request/guardrailConfig = waived 2026-08-13 names an AWS account resource that exists at exactly one vendor; no cross-protocol projection
+# --- 1.6.x field carry (crates/busbar-llm/src/bedrock/tests/field_carry_tests.rs) ---
+# Cross-protocol-meaningful: the field reaches the neutral IR and re-emits natively.
+bedrock/request/inferenceConfig.stopSequences = carried bedrock_carry_request_stop_sequences
+bedrock/request/toolConfig.tools = carried bedrock_carry_request_tool_config
+bedrock/request/toolConfig.toolChoice = carried bedrock_carry_request_tool_config
+bedrock/request/content[].toolUse.toolUseId = carried bedrock_carry_request_tool_use
+bedrock/request/content[].toolUse.name = carried bedrock_carry_request_tool_use
+bedrock/request/content[].toolUse.input = carried bedrock_carry_request_tool_use
+bedrock/request/content[].toolResult.toolUseId = carried bedrock_carry_request_tool_result
+bedrock/request/content[].toolResult.content = carried bedrock_carry_request_tool_result
+bedrock/request/content[].toolResult.status = carried bedrock_carry_request_tool_result
+bedrock/request/content[].reasoningContent.reasoningText.text = carried bedrock_carry_request_reasoning_content
+bedrock/request/content[].reasoningContent.reasoningText.signature = carried bedrock_carry_request_reasoning_content
+bedrock/request/content[].reasoningContent.redactedContent = carried bedrock_carry_request_reasoning_content
+# Provider-specific: lossless SAME-protocol via verbatim capture (extra / positional stash / vendor source).
+bedrock/request/additionalModelRequestFields = carried bedrock_carry_request_additional_model_request_fields
+bedrock/request/additionalModelResponseFieldPaths = carried bedrock_carry_request_additional_model_response_field_paths
+bedrock/request/promptVariables = carried bedrock_carry_request_prompt_variables
+bedrock/request/requestMetadata = carried bedrock_carry_request_request_metadata
+bedrock/request/performanceConfig = carried bedrock_carry_request_performance_config
+bedrock/request/content[].image.source.s3Location = carried bedrock_carry_request_image_s3_location
+bedrock/request/content[].document.source.s3Location = carried bedrock_carry_request_document_provider_fields
+bedrock/request/content[].document.citations = carried bedrock_carry_request_document_provider_fields
+bedrock/request/content[].document.context = carried bedrock_carry_request_document_provider_fields
+bedrock/request/content[].video.source.s3Location = carried bedrock_carry_request_video_s3_location
+bedrock/request/content[].cachePoint.type = carried bedrock_carry_request_cache_point
+bedrock/request/content[].guardContent = carried bedrock_carry_request_guard_content
+# Response envelope + usage (cross-protocol-meaningful).
+bedrock/response/output.message.role = carried bedrock_carry_response_output_and_stop_reason
+bedrock/response/output.message.content = carried bedrock_carry_response_output_and_stop_reason
+bedrock/response/stopReason = carried bedrock_carry_response_output_and_stop_reason
+bedrock/response/usage.inputTokens = carried bedrock_carry_response_usage
+bedrock/response/usage.outputTokens = carried bedrock_carry_response_usage
+bedrock/response/usage.totalTokens = carried bedrock_carry_response_usage
+bedrock/response/usage.cacheReadInputTokens = carried bedrock_carry_response_usage
+bedrock/response/usage.cacheWriteInputTokens = carried bedrock_carry_response_usage
+# Response provider-specific: latencyMs is proxy-measured; the rest are documented cross-protocol drops.
+bedrock/response/metrics.latencyMs = carried bedrock_carry_response_metrics_latency_ms
+bedrock/response/trace.guardrail = carried bedrock_carry_response_trace_documented_drop
+bedrock/response/trace.promptRouter = carried bedrock_carry_response_trace_documented_drop
+bedrock/response/additionalModelResponseFields = carried bedrock_carry_response_additional_model_response_fields_documented_drop
+bedrock/response/performanceConfig = carried bedrock_carry_response_performance_config_documented_drop
+# ConverseStream binary eventstream frame types (read + write).
+bedrock/response/stream:messageStart = carried bedrock_carry_stream_frame_types
+bedrock/response/stream:contentBlockStart = carried bedrock_carry_stream_frame_types
+bedrock/response/stream:contentBlockDelta = carried bedrock_carry_stream_frame_types
+bedrock/response/stream:contentBlockStop = carried bedrock_carry_stream_frame_types
+bedrock/response/stream:messageStop = carried bedrock_carry_stream_frame_types
+bedrock/response/stream:metadata = carried bedrock_carry_stream_frame_types
 
 # ---------------------------------------------------------------------------
 # COHERE
