@@ -647,6 +647,35 @@ fn transcription_verbose_json_round_trips_segments_language_duration() {
     assert_eq!(back["words"][0]["word"], "Hello");
 }
 
+// carryable-flatten #6: the OpenAI transcription leg dropped `temperature` both directions. The
+// multipart form accepts it natively. Carry it. Fails pre-fix: no `temperature` part on write, unread.
+#[test]
+fn transcription_temperature_round_trips_openai_multipart() {
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "whisper-1".into(),
+        temperature: Some(0.5),
+        audio: Some(busbar_core::media::MediaBlob {
+            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            mime_type: "audio/mpeg".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("name=\"temperature\"\r\n\r\n0.5\r\n"),
+        "temperature must be emitted as a multipart field: {text}"
+    );
+    let back = super::super::super::leaf_codec::transcription_read_request(
+        "openai",
+        &out,
+        "multipart/form-data; boundary=----busbaraudioMIME",
+    )
+    .expect("re-read");
+    assert_eq!(back.temperature, Some(0.5));
+}
+
 // carryable-flatten #1: OpenAI transcription returns `text/plain` (NOT application/json) for the
 // plain response formats (`text`/`srt`/`vtt`). The reader records the plain shape (JSON parse fails),
 // and the writer must re-emit the raw body under `text/plain`, not JSON-wrap it. Fails pre-fix: the

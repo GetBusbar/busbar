@@ -306,6 +306,11 @@ pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
     if let Some(fmt) = &r.response_format {
         push_field("response_format", fmt);
     }
+    // Carry the sampling `temperature` too — OpenAI's transcription form accepts it natively;
+    // dropping it silently reset sampling to the default on a cross-protocol hop.
+    if let Some(t) = r.temperature {
+        push_field("temperature", &t.to_string());
+    }
     if let Some(blob) = &r.audio {
         let bytes = match &blob.payload {
             MediaPayload::Bytes(b) => b.clone(),
@@ -856,6 +861,7 @@ pub(crate) fn read_transcription_request(
             "response_format" => {
                 req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
             }
+            "temperature" => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
             "file" => {
                 req.audio = Some(MediaBlob {
                     payload: MediaPayload::Bytes(Bytes::copy_from_slice(f.value)),

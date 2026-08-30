@@ -578,3 +578,49 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
         "gemini transcription writer must carry the whisper duration through: {v}"
     );
 }
+
+// carryable-flatten #6: the gemini transcription writer REPLACED the caller's prompt with a fixed
+// directive (while the IR screens `prompt` as forwarded — the screening gate said "sent" and the wire
+// silently dropped it) and dropped `temperature`. Carry both. Fails pre-fix: no prompt part, no
+// generationConfig.temperature. Round-trips through the reader (which skips the synthetic directive).
+#[test]
+fn gemini_transcription_forwards_caller_prompt_and_temperature() {
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "gemini-2.0-flash".into(),
+        prompt: Some("Spell Busbar correctly.".into()),
+        temperature: Some(0.5),
+        audio: Some(busbar_core::media::MediaBlob {
+            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            mime_type: "audio/mpeg".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("gemini", &ir);
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    let parts = v
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .expect("parts array");
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.get("text").and_then(Value::as_str) == Some("Spell Busbar correctly.")),
+        "the caller's prompt must be forwarded as a text part, not replaced by the directive: {v}"
+    );
+    assert_eq!(
+        v.pointer("/generationConfig/temperature")
+            .and_then(Value::as_f64),
+        Some(0.5),
+        "temperature must be forwarded via generationConfig: {v}"
+    );
+    // And it round-trips: the reader recovers the caller prompt (skipping the synthetic directive).
+    let back = super::super::super::leaf_codec::transcription_read_request(
+        "gemini",
+        &out,
+        "application/json",
+    )
+    .expect("re-read");
+    assert_eq!(back.prompt.as_deref(), Some("Spell Busbar correctly."));
+    assert_eq!(back.temperature, Some(0.5));
+}
