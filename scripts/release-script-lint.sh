@@ -40,6 +40,13 @@
 #      an assertion failure left a live python upstream holding its port. The fix shape, used by all
 #      three now: the helper SETS a global (`NEW_TMPDIR` / `NEW_BG_PID`) and the caller reads it on
 #      the next statement, so the append lands in the caller's own shell.
+#   4. EXEC-BIT rule: any `scripts/….sh` a workflow EXECUTES DIRECTLY (a `run:` command that is the
+#      path itself, not `bash …`/`sh …`/`source …`/`. …`) must be tracked mode 100755. A 100644 mode
+#      makes the shell refuse the script with exit 126 the instant CI runs it — the release-stage
+#      regression that failed every busbar-store-sqlite artifact build (release-build.sh) and lurked
+#      one stage downstream in release-fleet (fleet-checks.sh), both invoked directly and both left
+#      non-executable. Sourced libraries (scripts/plane-roots.sh, dot-sourced by three lints and
+#      intentionally 100644) are correctly exempt: the interpreter, not the file's own bit, runs them.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
@@ -138,6 +145,31 @@ scan_lost_registrations() {
       }
     ' "$f" "$f"
   done
+}
+
+# ── THE EXEC-BIT SCANNER (rule 4; one copy, driven by the self-test below) ────────────────────────
+# Emits each unique `scripts/…​.sh` path that a workflow file EXECUTES DIRECTLY (a `run:` command that
+# is the path itself). A path preceded by an interpreter/source token (`bash `, `sh `, `source `, or
+# `. `) is NOT a direct exec — the interpreter supplies the exec bit — and is skipped, so a sourced
+# library (e.g. scripts/plane-roots.sh, dot-sourced by three lints and intentionally 100644) is never
+# reported. The caller maps each emitted path through `git ls-files -s`: a direct-exec script whose
+# TRACKED mode is not 100755 fails the shell with exit 126 the moment CI runs it — exactly the
+# release-stage regression this rule exists to catch before staging rather than during it.
+list_direct_invoked_scripts() {
+  awk '
+    /^[[:space:]]*#/ { next }                                  # whole-line comment: skip
+    {
+      s = $0
+      while (match(s, /(\.\/)?scripts\/[A-Za-z0-9_.\/-]+\.sh/)) {
+        path = substr(s, RSTART, RLENGTH); sub(/^\.\//, "", path)
+        pre  = substr(s, 1, RSTART - 1)
+        # interpreted/sourced iff the token immediately before the path is bash/sh/source/. at a
+        # word boundary (so the `sh` in `bash ` cannot match — it lacks a preceding boundary).
+        if (pre !~ /(^|[[:space:][|&;(])(bash|sh|source|\.)[[:space:]]+([^[:space:]]*\/)?$/) print path
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+  ' "$@" | sort -u
 }
 
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
@@ -257,7 +289,30 @@ GREEN3
     fail=1; note "GREEN3 FAILED: expected 0 flags, got:"; printf '%s\n' "$green3_hits"
   fi
 
-  note "self-test: ${pass}/4 fixture groups passed"
+  # ── rule 4: EXEC-BIT direct-invocation detector ──────────────────────────────────────────────
+  # The detector must pick out ONLY the paths a workflow executes directly, and must never pick a
+  # path that is interpreted (`bash …`), sourced (`source …` / `. …`), or mentioned in a comment.
+  cat >"${tmp}/wf.yml" <<'WF'
+jobs:
+  build:
+    steps:
+      - run: scripts/release-build.sh "$TARGET"        # direct exec -> MUST be listed
+      - run: bash scripts/helper.sh                     # interpreted -> never
+      - run: |
+          ./scripts/gate/run.sh --all                   # direct exec in a block -> MUST be listed
+          source scripts/lib.sh                          # sourced -> never
+          . scripts/env.sh                               # dot-sourced -> never
+      # run: scripts/commented-out.sh                    # a comment -> never
+WF
+  local eb_hits; eb_hits="$(list_direct_invoked_scripts "${tmp}/wf.yml")"
+  local eb_want; eb_want="$(printf 'scripts/gate/run.sh\nscripts/release-build.sh\n')"
+  if [ "$eb_hits" = "$eb_want" ]; then
+    pass=$((pass+1)); note "EXEC-BIT: listed exactly the 2 directly-run scripts (not interpreted / sourced / commented)"
+  else
+    fail=1; note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
+  fi
+
+  note "self-test: ${pass}/5 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
     return 1
@@ -318,6 +373,34 @@ else
   else
     note "ok (${#scripts_to_scan[@]} script(s) scanned, every cleanup registrar called in its caller's shell)"
   fi
+fi
+
+# ── Rule 4: EXEC-BIT — a script a workflow runs directly must be tracked 100755 ───────────────────
+hdr "EXEC-BIT (a script executed directly by a workflow \`run:\` must be tracked executable)"
+eb_fail=0
+eb_scanned=0
+while IFS= read -r p; do
+  [ -z "$p" ] && continue
+  # A workflow's `run:` path is relative to the step's working-directory, which may be a testing
+  # subtree (e.g. testing/mcp-conformance), not the repo root. Resolve by tracked-path SUFFIX — the
+  # exact path OR any `**/`-prefixed match — so both repo-root release scripts and working-directory
+  # scripts are adjudicated. A path that matches NO tracked file is silently skipped (generated, or a
+  # working-dir we cannot resolve) rather than mis-reported as a non-exec failure.
+  while IFS="$(printf '\t')" read -r mode file; do
+    [ -z "$file" ] && continue
+    eb_scanned=$((eb_scanned+1))
+    if [ "$mode" != "100755" ]; then
+      note "EXEC-BIT: $file is executed directly by a workflow but tracked mode is $mode — the shell"
+      note "  will refuse it with exit 126 at run time. Restore: git update-index --chmod=+x $file"
+      eb_fail=1
+    fi
+  done < <(git ls-files -s -- "$p" "**/$p" 2>/dev/null \
+             | awk '{m=$1; sub(/^[0-9]+ [0-9a-f]+ [0-9]+\t/,""); print m"\t"$0}' | sort -u)
+done < <(list_direct_invoked_scripts .github/workflows/*.yml)
+if [ "$eb_fail" -ne 0 ]; then
+  fail=1
+else
+  note "ok (${eb_scanned} directly-run workflow script(s) scanned, all tracked 100755)"
 fi
 
 # ── Rule 2: WATCHDOG — the 1.5.2 gate must keep its `timeout` re-exec (defense in depth) ──────────
