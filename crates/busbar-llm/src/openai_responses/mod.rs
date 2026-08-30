@@ -589,10 +589,21 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
         CONTENT_TYPE_INPUT_TEXT | CONTENT_TYPE_OUTPUT_TEXT => {
             let text_val = obj.get("text");
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
+            // A prior-turn assistant `output_text` part carries an `annotations` array (URL
+            // citations) exactly as the RESPONSE-side `output_text` part does. The prior reader
+            // dropped it here — so an assistant turn replayed as input lost its grounding sources on
+            // any hop. Read it into the Text block's `citations` (the same slot `read_response` uses,
+            // via the shared `read_url_annotations`), so a same-protocol round-trip re-emits the
+            // annotation and a cross-protocol hop carries the citation url/title. `input_text` never
+            // carries annotations, so this only fires for `output_text`.
+            let citations = obj
+                .get("annotations")
+                .map(super::openai_annotations::read_url_annotations)
+                .unwrap_or_default();
             Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control: None,
-                citations: Vec::new(),
+                citations,
             })
         }
         "input_image" => {
@@ -677,6 +688,25 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
 /// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
 fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::IrBlock> {
+    // `detail` ("low"/"high"/"auto") is a per-image rendering-fidelity knob on the native Responses
+    // `input_image` part. The IR `Image` block has no slot for it (adding one is a cross-dialect
+    // blast-radius change on the shared `IrBlock::Image` variant, constructed by every reader), and
+    // no other protocol models an equivalent, so it is DROPPED — but drop-with-warn per this file's
+    // convention (the foreign-vendor-image / json-tool-result / top_k arms), never silently, so the
+    // loss is observable rather than an invisible floor-drop. Gated on presence so a request that
+    // omitted `detail` (the common case) emits no warn.
+    if item
+        .get("detail")
+        .and_then(|d| d.as_str())
+        .is_some_and(|d| !d.is_empty())
+    {
+        tracing::warn!(
+            detail = item.get("detail").and_then(|d| d.as_str()).unwrap_or(""),
+            "dropping input_image.detail on Responses ir parse: the IR Image block models no \
+             per-image detail knob and no target protocol has an equivalent; the image survives, \
+             its detail hint does not"
+        );
+    }
     let image_url = item.get("image_url").and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
         return Some(crate::ir::IrBlock::Image {
@@ -1524,3 +1554,9 @@ impl ResponsesWriter {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+// The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
+// test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

@@ -171,12 +171,20 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
+                            // Carry the `annotations` (URL citations) on a top-level assistant
+                            // `output_text` input item into the Text block's citations, mirroring
+                            // the content-array path (`responses_block`) and the response-side reader.
+                            // Dropping them lost an assistant turn's grounding sources on replay.
+                            let citations = item
+                                .get("annotations")
+                                .map(super::super::openai_annotations::read_url_annotations)
+                                .unwrap_or_default();
                             messages.push(crate::ir::IrMessage {
                                 role: crate::ir::IrRole::Assistant,
                                 content: vec![crate::ir::IrBlock::Text {
                                     text,
                                     cache_control: None,
-                                    citations: Vec::new(),
+                                    citations,
                                 }],
                             });
                         }
@@ -316,6 +324,27 @@ impl ProtocolReader for ResponsesReader {
                             let text = read_reasoning_text(item);
                             let signature =
                                 read_reasoning_encrypted_content(item).map(String::from);
+                            // A prior-turn `reasoning` input item carries an opaque item `id`
+                            // (`rs_…`). The IR `Thinking` block has no id slot (adding one is a
+                            // cross-dialect blast-radius change on the shared `IrBlock::Thinking`
+                            // variant, constructed by every reader) and no other protocol models a
+                            // reasoning-item id, so it is DROPPED — but drop-with-warn per this file's
+                            // convention, never silently. The writer mints a fresh `rs_…` id on
+                            // re-emission, so the reasoning TEXT/encrypted_content round-trip while the
+                            // specific id does not. Gated on presence so an id-less item emits no warn.
+                            if item
+                                .get("id")
+                                .and_then(|i| i.as_str())
+                                .is_some_and(|i| !i.is_empty())
+                            {
+                                tracing::warn!(
+                                    reasoning_id =
+                                        item.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                                    "dropping reasoning input item `id` on Responses ir parse: the \
+                                     IR Thinking block models no reasoning-item id; the reasoning \
+                                     text/encrypted_content survive, the specific id is re-minted"
+                                );
+                            }
                             if !text.is_empty() || signature.is_some() {
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
@@ -1340,7 +1369,25 @@ impl ProtocolReader for ResponsesReader {
                         }
                     }
 
-                    _ => {}
+                    // A HOSTED-tool output item (`web_search_call`, `file_search_call`,
+                    // `code_interpreter_call`, `computer_call`, `mcp_call`, …). These carry the
+                    // provider-side execution of a built-in tool (an `id` and a `status`, plus
+                    // tool-specific fields) and have NO neutral IR representation — the IR models
+                    // assistant `message`/`function_call`/`reasoning` output, not a hosted-tool
+                    // invocation record — and no other protocol has a cross-protocol analog. So the
+                    // item is DROPPED, but drop-with-warn per this file's convention (naming the type),
+                    // never silently: a hosted-tool run that vanished with no log is exactly the
+                    // invisible floor-drop this work exists to eliminate. The assistant's actual
+                    // message/tool-call/reasoning output is still carried by the arms above.
+                    other => {
+                        tracing::warn!(
+                            item_type = other,
+                            "dropping unmodeled Responses output item on ir parse: a hosted-tool \
+                             invocation record (e.g. web_search_call) has no neutral IR form and no \
+                             cross-protocol analog; the assistant message/function_call/reasoning \
+                             output is unaffected"
+                        );
+                    }
                 }
             }
         } else {
@@ -1424,6 +1471,34 @@ impl ProtocolReader for ResponsesReader {
         // the Responses shape, so they stay `None`.
         let id = obj.get("id").and_then(|i| i.as_str()).map(String::from);
         let created = obj.get("created_at").and_then(|c| c.as_u64());
+
+        // A native Responses response ECHOES the request's `instructions` (system prompt) and
+        // `metadata` (user key/value tags) back on the response object. The IR `IrResponse` models
+        // neither (it carries generated output, not a request echo; adding an echo slot is a
+        // cross-dialect blast-radius change on the shared struct constructed by every reader), and no
+        // other protocol echoes them on its response, so they are DROPPED on read — but drop-with-warn
+        // per this file's convention, never silently. The request-side `instructions`/`metadata` are
+        // separately carried on the REQUEST hop (system blocks / `extra`); only the redundant response
+        // echo is not reconstructed. Gated on presence so a response without them emits no warn.
+        if obj
+            .get("instructions")
+            .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
+        {
+            tracing::warn!(
+                "dropping response `instructions` echo on Responses ir parse: IrResponse models no \
+                 request-echo slot; the request-side instructions are carried on the request hop"
+            );
+        }
+        if obj
+            .get("metadata")
+            .and_then(|m| m.as_object())
+            .is_some_and(|m| !m.is_empty())
+        {
+            tracing::warn!(
+                "dropping response `metadata` echo on Responses ir parse: IrResponse models no \
+                 request-echo slot; the request-side metadata is carried on the request hop"
+            );
+        }
 
         Ok(crate::ir::IrResponse {
             logprobs: Vec::new(),

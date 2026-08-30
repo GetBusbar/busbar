@@ -74,16 +74,36 @@ impl ProtocolWriter for ResponsesWriter {
                     let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
                     for block in &msg.content {
                         match block {
-                            crate::ir::IrBlock::Text { text, .. } => {
+                            crate::ir::IrBlock::Text {
+                                text, citations, ..
+                            } => {
                                 let type_str = if msg.role == crate::ir::IrRole::User {
                                     CONTENT_TYPE_INPUT_TEXT
                                 } else {
                                     CONTENT_TYPE_OUTPUT_TEXT
                                 };
-                                content_arr.push(serde_json::json!({
-                                    "type": type_str,
-                                    "text": text
-                                }));
+                                let mut part = serde_json::Map::new();
+                                part.insert("type".to_string(), serde_json::json!(type_str));
+                                part.insert("text".to_string(), serde_json::json!(text));
+                                // Re-emit the assistant `output_text` part's URL-citation
+                                // `annotations` when the IR carried any (an assistant turn replayed as
+                                // input keeps its grounding sources). `input_text` (user) carries no
+                                // annotations, so only emit for the assistant/output_text case, and
+                                // only when non-empty so a citation-less turn gains no spurious key.
+                                if msg.role == crate::ir::IrRole::Assistant && !citations.is_empty()
+                                {
+                                    let annotations =
+                                        super::super::openai_annotations::url_annotations(
+                                            text, 0, citations,
+                                        );
+                                    if !annotations.is_empty() {
+                                        part.insert(
+                                            "annotations".to_string(),
+                                            serde_json::Value::Array(annotations),
+                                        );
+                                    }
+                                }
+                                content_arr.push(serde_json::Value::Object(part));
                             }
                             crate::ir::IrBlock::Image { source, .. } => match source {
                                 // A Responses-produced vendor reference is a `file_id` — re-emit
@@ -1353,6 +1373,12 @@ impl ProtocolWriter for ResponsesWriter {
             serde_json::json!(resp.model.as_deref().unwrap_or(DEFAULT_MODEL)),
         );
         obj.insert("output".to_string(), serde_json::Value::Array(output_arr));
+        // NOTE `output_text` is NOT emitted: it is an SDK-COMPUTED convenience property
+        // (`Response.output_text` aggregates the `output[]` message text parts), not a field a native
+        // `/v1/responses` HTTP body serializes. Emitting it would be an extra key real OpenAI never
+        // sends — a distinguishability tell, the same class of leak the `cache_write_tokens` removal
+        // fixed. Its DATA is carried losslessly by the assistant text in `output[]` above, from which
+        // any SDK reconstructs `output_text`; see `responses_response_output_and_output_text_emitted`.
         obj.insert("usage".to_string(), usage_value);
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY
         // Response object: `null` on success/incomplete, a populated object on failure. The
