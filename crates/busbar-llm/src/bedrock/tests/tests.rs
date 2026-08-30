@@ -6134,3 +6134,45 @@ fn test_roundtrip_preserves_document_and_video_blocks() {
         "the video block must be present on Bedrock egress"
     );
 }
+
+// carryable-flatten #10 (robustness): the ContentBlockDelta text and toolUse arms pushed a BlockDelta
+// OUTSIDE the started/open guard every sibling arm has, so a malformed/reordered stream (a delta
+// before its block was opened) emitted an ORPHAN delta with no preceding BlockStart. Guard both arms.
+// Not reachable from a conformant AWS ConverseStream; a defensive drop. Fails pre-fix.
+#[test]
+fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
+    use crate::ir::IrStreamEvent;
+    let reader = BedrockReader;
+
+    // A text delta arriving before any messageStart (state.started == false) must NOT emit a delta.
+    let mut st = crate::ir::StreamDecodeState::default();
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": "contentBlockDelta", "contentBlockIndex": 0, "delta": {"text": "orphan"}
+        }),
+        &mut st,
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockDelta { .. })),
+        "a text delta before message start must not emit an orphan BlockDelta: {evs:?}"
+    );
+
+    // A toolUse input delta at an index with no open tool block must NOT emit a delta either.
+    let mut st2 = crate::ir::StreamDecodeState::default();
+    let evs2 = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": "contentBlockDelta", "contentBlockIndex": 0,
+            "delta": {"toolUse": {"input": "{\"a\":1}"}}
+        }),
+        &mut st2,
+    );
+    assert!(
+        !evs2
+            .iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockDelta { .. })),
+        "a toolUse delta before its block opened must not emit an orphan BlockDelta: {evs2:?}"
+    );
+}
