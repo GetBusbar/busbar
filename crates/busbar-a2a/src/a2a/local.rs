@@ -384,6 +384,24 @@ fn config_params(params: &serde_json::Value) -> &serde_json::Value {
     params.get("pushNotificationConfig").unwrap_or(params)
 }
 
+/// THE CONFIG ID a get/delete NAMES, out of the spelling its dialect uses — NOT the task id.
+///
+/// v1.0 (REST/gRPC) carries the config id as `id` beside `taskId` (the REST composer substitutes
+/// `{id}` = config id, `{taskId}` = task). v0.3's JSON-RPC params name the task with `id` and the
+/// CONFIG with a SEPARATE `pushNotificationConfigId` member — so reading `id` on a v0.3 request
+/// yields the TASK id, which matches no stored config, and a delete then clears nothing while
+/// answering success (the defect this exists to close). Read the dialect's own member; empty when
+/// absent (an empty wanted matches the empty-id config the set path stores when none was named).
+fn config_id_wanted(dialect: Dialect, params: &serde_json::Value) -> &str {
+    let member = match dialect {
+        Dialect::V10 => config_params(params).get("id"),
+        Dialect::V03 => params.get("pushNotificationConfigId"),
+    };
+    member
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+}
+
 /// THE CREDENTIAL A CONFIG ASKS BUSBAR TO PRESENT AT ITS WEBHOOK, out of whichever spelling it
 /// arrived in.
 ///
@@ -619,13 +637,10 @@ pub(crate) fn get_push_config(
     let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
-    // THE CONFIG ID IS `id`, AND THE TASK ID IS `taskId`. On this verb the two are distinct
-    // members, so `id` is read as the config's — which is why `addressed` prefers `taskId` and only
-    // falls back to `id`.
-    let wanted = config_params(&params)
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
+    // THE CONFIG ID, out of the dialect's own spelling — `id` on v1.0, `pushNotificationConfigId`
+    // on v0.3 (where `id` is the TASK). Reading `id` unconditionally yielded the task id on v0.3, so
+    // a v0.3 get for a real config found nothing.
+    let wanted = config_id_wanted(dialect, &params);
     let found = configs()
         .lock()
         .ok()
@@ -679,6 +694,7 @@ pub(crate) fn list_push_configs(
 /// retrying a delete after a timeout must not be told its retry failed.
 pub(crate) fn delete_push_config(
     engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
     principal: &str,
@@ -691,11 +707,11 @@ pub(crate) fn delete_push_config(
     let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
-    let wanted = config_params(&params)
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    // THE CONFIG ID, out of the dialect's own spelling — see `config_id_wanted`. Reading `id`
+    // unconditionally yielded the TASK id on v0.3, so a v0.3 delete matched nothing and cleared
+    // nothing while answering success: a revocation that revoked nothing, leaving the callback and
+    // credential live on the durable row for every later transition to POST to.
+    let wanted = config_id_wanted(dialect, &params).to_string();
     let hit = configs()
         .lock()
         .ok()
@@ -736,7 +752,14 @@ pub(crate) fn delete_push_config(
         }
         super::pushdeliver::forget(&task.task_id);
     }
-    ok(rpc_id, serde_json::Value::Null)
+    // THE EMPTY ANSWER, in the shape each dialect's schema defines. v0.3's JSON-RPC method answers
+    // `result: null`; v1.0's REST/gRPC binding answers `google.protobuf.Empty`, whose ProtoJSON is
+    // `{}` — a strict Empty decoder rejects `null` as not-an-object, so a REST caller shipped a
+    // literal `null` could not decode its own success.
+    match dialect {
+        Dialect::V03 => ok(rpc_id, serde_json::Value::Null),
+        Dialect::V10 => ok(rpc_id, serde_json::json!({})),
+    }
 }
 
 // ══ SubscribeToTask ══════════════════════════════════════════════════════════════════════════════

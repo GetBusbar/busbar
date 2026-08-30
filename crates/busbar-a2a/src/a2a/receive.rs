@@ -1166,13 +1166,16 @@ async fn admitted(
                     &principal,
                 ))
             }
-            super::local::LocalVerb::DeletePushConfig(_) => Some(super::local::delete_push_config(
-                engine_host.as_ref(),
-                &envelope,
-                &rpc_id,
-                &principal,
-                now,
-            )),
+            super::local::LocalVerb::DeletePushConfig(dialect) => {
+                Some(super::local::delete_push_config(
+                    engine_host.as_ref(),
+                    dialect,
+                    &envelope,
+                    &rpc_id,
+                    &principal,
+                    now,
+                ))
+            }
             // THE ONLY PARTIAL ONE. `None` means the task is live and this caller's, so the events
             // are the backend's and the call relays unchanged.
             super::local::LocalVerb::Subscribe => super::local::subscribe_refusal(

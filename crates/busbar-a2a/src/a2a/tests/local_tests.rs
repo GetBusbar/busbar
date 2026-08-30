@@ -483,6 +483,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
 
     let deleted = local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-crud", "id": "cfg-1" }),
@@ -528,6 +529,7 @@ async fn deleting_an_absent_config_is_idempotent() {
     open(me, "push-idem", "ctx-push", TaskState::Completed, epoch());
     let response = local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-idem", "id": "never-registered" }),
@@ -981,6 +983,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
 
     let foreign = observable(local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
@@ -992,6 +995,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
     .await;
     let absent = observable(local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-never-existed", "id": "cfg-d" }),
@@ -1016,6 +1020,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
     // test above while breaking the verb.
     let mine = local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
@@ -1024,7 +1029,8 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         owner,
         epoch() + 2,
     );
-    assert!(result(mine).await.is_null());
+    // v1.0 delete answers ProtoJSON Empty (`{}`), not null (see `delete_push_config`).
+    assert_eq!(result(mine).await, serde_json::json!({}));
     assert_eq!(
         TASKS
             .get_scoped(owner, "cfgdel-owned")
@@ -1290,6 +1296,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
 
     let refused = local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
@@ -1332,6 +1339,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     TASKS.clear_sink_for_test();
     let retried = local::delete_push_config(
         host().as_ref(),
+        local::Dialect::V10,
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
@@ -1395,5 +1403,116 @@ fn shape_of_reads_push_config_under_all_three_spellings() {
     assert!(
         !shape(serde_json::json!({ "acceptedOutputModes": ["text"] })),
         "a configuration naming no callback constrains nothing"
+    );
+}
+
+/// v0.3 push-config delete reads the config id from `pushNotificationConfigId` (its own spelling),
+/// not from `id` (which on v0.3 is the TASK). The old code read `id` unconditionally, so a v0.3
+/// delete matched no stored config, cleared NOTHING, and answered success — a revocation that
+/// revoked nothing, leaving the callback and credential live on the durable row. This drives the
+/// v0.3 spellings end to end and asserts the durable callback is actually gone.
+#[tokio::test]
+async fn v03_delete_reads_pushnotificationconfigid_and_actually_clears() {
+    crate::testkit::install_test_seams();
+    let me = "key-v03-del";
+    open(me, "v03-del", "ctx-push", TaskState::Completed, epoch());
+
+    // v0.3 set: the task is `id`, the config is nested under `pushNotificationConfig` with its own id.
+    let created = result(
+        local::create_push_config(
+            host().as_ref(),
+            Dialect::V03,
+            &envelope(
+                "tasks/pushNotificationConfig/set",
+                serde_json::json!({
+                    "id": "v03-del",
+                    "pushNotificationConfig": { "id": "cfg-v03", "url": HOOK }
+                }),
+            ),
+            &rpc_id(),
+            me,
+            seam(),
+            epoch(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        created["pushNotificationConfig"]["id"], "cfg-v03",
+        "{created}"
+    );
+    assert_eq!(
+        TASKS.get_scoped(me, "v03-del").expect("row").push_callback,
+        HOOK,
+        "the durable row carries the callback after the v0.3 set"
+    );
+
+    // v0.3 delete: task named by `id`, config named by `pushNotificationConfigId`.
+    let deleted = local::delete_push_config(
+        host().as_ref(),
+        Dialect::V03,
+        &envelope(
+            "tasks/pushNotificationConfig/delete",
+            serde_json::json!({ "id": "v03-del", "pushNotificationConfigId": "cfg-v03" }),
+        ),
+        &rpc_id(),
+        me,
+        epoch() + 1,
+    );
+    assert!(
+        body(deleted).await.get("error").is_none(),
+        "the v0.3 delete succeeds"
+    );
+    assert_eq!(
+        TASKS.get_scoped(me, "v03-del").expect("row").push_callback,
+        "",
+        "the durable callback is ACTUALLY cleared — the whole point the v0.3 config-id spelling fix \
+         closes: the old code matched the task id, cleared nothing, and still answered success"
+    );
+}
+
+/// The v1.0 REST/gRPC delete answers `google.protobuf.Empty` — ProtoJSON `{}` — not a literal
+/// `null` (which a strict Empty decoder rejects as not-an-object). v0.3's JSON-RPC method keeps
+/// `result: null`.
+#[tokio::test]
+async fn delete_empty_answer_shape_matches_the_dialect() {
+    crate::testkit::install_test_seams();
+    let me = "key-del-shape";
+    open(me, "del-shape", "ctx-push", TaskState::Completed, epoch());
+
+    let v10 = result(local::delete_push_config(
+        host().as_ref(),
+        Dialect::V10,
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "del-shape", "id": "nope" }),
+        ),
+        &rpc_id(),
+        me,
+        epoch(),
+    ))
+    .await;
+    assert_eq!(
+        v10,
+        serde_json::json!({}),
+        "v1.0 delete answers ProtoJSON Empty ({{}}), never null"
+    );
+
+    let v03 = result(local::delete_push_config(
+        host().as_ref(),
+        Dialect::V03,
+        &envelope(
+            "tasks/pushNotificationConfig/delete",
+            serde_json::json!({ "id": "del-shape", "pushNotificationConfigId": "nope" }),
+        ),
+        &rpc_id(),
+        me,
+        epoch(),
+    ))
+    .await;
+    assert_eq!(
+        v03,
+        serde_json::Value::Null,
+        "v0.3 delete keeps result: null"
     );
 }
