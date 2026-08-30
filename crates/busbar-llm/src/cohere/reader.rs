@@ -956,13 +956,16 @@ impl ProtocolReader for CohereReader {
             }
             // Genuinely unknown event types are intentionally ignored: the Cohere v2 stream may add
             // frames (e.g. citation/debug) that carry no IR-representable content. This is a named,
-            // documented no-op arm — not a blanket `_ =>` that would also swallow tool-call frames.
-            other => {
-                debug_assert!(
-                    !other.is_empty(),
-                    "unexpected empty Cohere stream event type"
-                );
-            }
+            // documented no-op arm — the explicit `ET_*` arms above still catch every tool-call
+            // frame, so this only ever sees content-free frames.
+            //
+            // An EMPTY type is folded in here on purpose: the discriminant comes from
+            // upstream-controlled `data["type"]`, so a missing/blank field is HOSTILE INPUT the
+            // reader must survive, not a broken internal invariant. A prior `debug_assert!(!other
+            // .is_empty(), ...)` here aborted the worker in debug/test builds on exactly such a
+            // frame — violating the reader's never-panic-on-the-request-path contract — while
+            // release builds already no-op'd it. It is now uniformly ignored in every build.
+            _ => {}
         }
         out
     }

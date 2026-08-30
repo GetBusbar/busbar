@@ -5100,3 +5100,30 @@ fn test_anthropic_user_tool_result_plus_text_splits_to_tool_and_user() {
         }
     }
 }
+
+// Regression: a Cohere stream frame whose `type` is empty or absent is UPSTREAM-CONTROLLED input,
+// not a broken internal invariant. The reader must ignore it like any other content-free unknown
+// frame and never panic. A prior `debug_assert!(!other.is_empty(), ...)` on the catch-all arm
+// aborted the worker in debug/test builds on exactly such a frame (release already no-op'd it),
+// violating the reader's never-panic-on-the-request-path contract. This pins the fix in every build.
+#[test]
+fn cohere_empty_or_missing_stream_event_type_is_ignored_not_panic() {
+    let reader = CohereReader;
+
+    // Empty `type` — the exact frame that used to trip the debug_assert!.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let evs = reader.read_response_events("", &serde_json::json!({ "type": "" }), &mut state);
+    assert!(
+        evs.is_empty(),
+        "an empty-type Cohere frame must be ignored (no IR events), got {evs:?}"
+    );
+
+    // `type` absent entirely — same contract, another shape of misframed upstream data
+    // (event_type_val resolves to "" via unwrap_or, reaching the same catch-all arm).
+    let mut state = crate::ir::StreamDecodeState::default();
+    let evs = reader.read_response_events("", &serde_json::json!({ "index": 0 }), &mut state);
+    assert!(
+        evs.is_empty(),
+        "a type-less Cohere frame must be ignored (no IR events), got {evs:?}"
+    );
+}
