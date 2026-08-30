@@ -274,9 +274,25 @@ impl OperationHandler for GeminiSpeech {
 /// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
 /// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub(crate) fn write_speech_request(r: &crate::ir::audio::SpeechReq) -> Bytes {
-    let speech_config = json!({
-        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
-    });
+    // Gemini multi-speaker TTS: when the request names per-speaker voices, emit
+    // `multiSpeakerVoiceConfig.speakerVoiceConfigs[]` (the native shape) instead of the single
+    // `voiceConfig`. The old writer never read `SpeechReq::speakers`, so a two-speaker request was
+    // silently collapsed to one voice on a same-/cross-protocol hop.
+    let speech_config = if r.speakers.is_empty() {
+        json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } } })
+    } else {
+        let configs: Vec<Value> = r
+            .speakers
+            .iter()
+            .map(|(speaker, voice)| {
+                json!({
+                    "speaker": speaker,
+                    "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": voice } },
+                })
+            })
+            .collect();
+        json!({ "multiSpeakerVoiceConfig": { "speakerVoiceConfigs": configs } })
+    };
     // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
     // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
     // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
@@ -620,9 +636,28 @@ pub(crate) fn read_speech_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    // Multi-speaker: recover each (speaker, voiceName) pair so a two-speaker request survives the
+    // hop (the writer re-emits `multiSpeakerVoiceConfig` when this is non-empty).
+    let speakers = wire
+        .pointer("/generationConfig/speechConfig/multiSpeakerVoiceConfig/speakerVoiceConfigs")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let speaker = c.get("speaker").and_then(Value::as_str)?;
+                    let voice_name = c
+                        .pointer("/voiceConfig/prebuiltVoiceConfig/voiceName")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((speaker.to_string(), voice_name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(crate::ir::audio::SpeechReq {
         input,
         voice,
+        speakers,
         ..Default::default()
     })
 }

@@ -624,3 +624,41 @@ fn gemini_transcription_forwards_caller_prompt_and_temperature() {
     assert_eq!(back.prompt.as_deref(), Some("Spell Busbar correctly."));
     assert_eq!(back.temperature, Some(0.5));
 }
+
+// carryable-flatten #5: Gemini multi-speaker TTS (`multiSpeakerVoiceConfig.speakerVoiceConfigs[]`) is
+// modelled by `SpeechReq::speakers` but the writer never read the field and the reader never parsed
+// the wire — a two-speaker request collapsed to a single voice. Read + emit. Fails pre-fix.
+#[test]
+fn gemini_speech_two_speaker_request_round_trips() {
+    let ir = crate::ir::audio::SpeechReq {
+        model: "gemini-2.5-flash-preview-tts".into(),
+        input: "Joe: Hi. Jane: Hello.".into(),
+        speakers: vec![
+            ("Joe".into(), "Kore".into()),
+            ("Jane".into(), "Puck".into()),
+        ],
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::speech_write_request("gemini", &ir);
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    let configs = v
+        .pointer("/generationConfig/speechConfig/multiSpeakerVoiceConfig/speakerVoiceConfigs")
+        .and_then(Value::as_array)
+        .expect("speakerVoiceConfigs must be emitted");
+    assert_eq!(configs.len(), 2, "both speakers must be emitted: {v}");
+    assert_eq!(configs[0]["speaker"], "Joe");
+    assert_eq!(
+        configs[1].pointer("/voiceConfig/prebuiltVoiceConfig/voiceName"),
+        Some(&json!("Puck"))
+    );
+    let back =
+        super::super::super::leaf_codec::speech_read_request("gemini", &out, "application/json")
+            .expect("re-read");
+    assert_eq!(
+        back.speakers,
+        vec![
+            ("Joe".to_string(), "Kore".to_string()),
+            ("Jane".to_string(), "Puck".to_string())
+        ]
+    );
+}
