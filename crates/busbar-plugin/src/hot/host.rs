@@ -536,12 +536,16 @@ pub struct PlaneHostVtable {
     // and bump the airlock MINOR — an append-only add, never a reshape.
 }
 
-// SAFETY: the vtable holds only `AbiPreamble` scalars and `Option<extern "C-unwind" fn>` pointers —
-// all `Copy`, address-stable, and safe to share across threads (a plane holds `&PlaneHostVtable`
-// across `.await` and worker threads). No slot owns or aliases mutable state.
-unsafe impl Send for PlaneHostVtable {}
-// SAFETY: see the `Send` impl above.
-unsafe impl Sync for PlaneHostVtable {}
+// `PlaneHostVtable` holds only `AbiPreamble` scalars and `Option<extern "C-unwind" fn>` slots — all
+// `Copy`, and function pointers are unconditionally `Send + Sync`. So the compiler ALREADY derives
+// both auto-traits; a hand-written `unsafe impl Send/Sync` here would only suppress the compiler's
+// re-check as this append-only struct grows a slot — the one moment we WANT the check to fire (a
+// future non-auto slot must be caught, not silently blessed). We assert the auto-traits at compile
+// time instead: if a later slot loses `Send`/`Sync`, this fails to build rather than lying.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<PlaneHostVtable>();
+};
 
 impl PlaneHostVtable {
     /// An EMPTY vtable: the FROZEN preamble/size/version filled, EVERY capability `None` (absent /

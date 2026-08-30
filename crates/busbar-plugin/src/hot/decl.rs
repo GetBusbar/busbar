@@ -175,9 +175,14 @@ pub struct PlaneDecl {
     pub dispatch: Option<DispatchFn>,
 }
 
-// SAFETY: `PlaneDecl` holds only `AbiPreamble` scalars, borrowed `*const u8` vocabulary pointers
-// (read-only, outlive the decl), and `Option<extern "C-unwind" fn>` slots — all `Copy` and safe to
-// share across threads. Core holds `&PlaneDecl` across `.await` and worker threads.
+// SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
+// UNLIKE `PlaneHostVtable`, genuine `*const u8` fields (`name_ptr`, `section_key_ptr`, `scope_ptr`,
+// `label_ptr`). Raw pointers are NOT auto-`Send`/`Sync`, so these hand-written impls are load-bearing
+// (they cannot be replaced by a compile-time auto-trait assertion the way the host vtable's were).
+// The lifetime contract that makes them sound: every `*const u8` here points INTO the plugin image's
+// own read-only vocabulary strings — bytes that are mapped for the whole life of the loaded plugin
+// and never mutated or freed while any `PlaneDecl` referencing them exists. Core holds `&PlaneDecl`
+// across `.await` and worker threads; the pointees outlive every such borrow because the image does.
 unsafe impl Send for PlaneDecl {}
 // SAFETY: see the `Send` impl above.
 unsafe impl Sync for PlaneDecl {}
