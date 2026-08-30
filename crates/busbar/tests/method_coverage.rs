@@ -53,7 +53,10 @@
 //! directions — a regression into MISSING is red, and so is an implemented cell whose line was
 //! not deleted from the queue. The full-strength 1.6.0 acceptance assertion,
 //! [`every_cell_is_implemented_or_waived`], is kept at full strength and marked `#[ignore]` with
-//! its reason; CI runs it with `-- --ignored` and it is acceptance test 5 of the release.
+//! its reason; the QA PROMOTION GATE runs it with `-- --ignored` (the `method-coverage-acceptance`
+//! fast segment in `qa/segments.toml`, driven by `scripts/qa-gate-run.sh` on every push to `qa`)
+//! and it is acceptance test 5 of the release — red there blocks the qa→main promotion until
+//! every owed cell is implemented or waived.
 //!
 //! **Never weaken this gate to make it green.** The MISSING list is the work queue.
 

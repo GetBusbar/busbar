@@ -117,6 +117,24 @@ tier   = "fast"
 run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
 
 [[segment]]
+id     = "method-coverage-acceptance"
+status = "active"
+tier   = "fast"
+# ACCEPTANCE TEST 5 OF THE 1.6.0 RELEASE (GOAL-1.6.0-UNATTENDED.md §1.1): every cell of
+# method x direction x transport is implemented or waived — the full-strength, #[ignore]d
+# assertion in crates/busbar/tests/method_coverage.rs. The per-push HALF of that gate
+# (pinned_missing_set_is_exact) already rides `cargo test --workspace` in ci.yml and catches
+# CHANGE in either direction; THIS segment is the release-acceptance invocation the test's doc
+# promised ("CI runs it with -- --ignored") and which no workflow actually ran. Homed HERE, on
+# the qa promotion gate, because that is the tier the test's own doc says it gates: a release
+# acceptance, not a per-commit check. It is RED while any pinned-missing cell is still owed —
+# and that red is the gate working, not the gate broken: per the owner's ruling ("nothing should
+# ever be released red"), a qa->main promotion with owed cells must not earn a release. Fix by
+# implementing the cell or waiving it with a dated reason in qa/method-coverage.status; never by
+# weakening the test or this segment.
+run    = "cargo test --release -p busbar --test method_coverage -- --ignored"
+
+[[segment]]
 id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
