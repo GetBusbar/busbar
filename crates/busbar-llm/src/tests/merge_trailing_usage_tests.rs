@@ -68,6 +68,9 @@ fn trailing_detail_sub_buckets_merge_some_wins() {
             cache_creation_5m_input_tokens: c5,
             cache_creation_1h_input_tokens: c1,
             search_units: s,
+            // ADDITIVE anthropic usage-attribution fields (web_search_requests, service_tier) default
+            // here — this fold test exercises the four token/count sub-buckets only.
+            ..Default::default()
         }
     };
     // Trailing Some fills a zeroed terminal.

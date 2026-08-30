@@ -929,6 +929,19 @@ pub struct IrUsageDetail {
     /// at all, so no token field can carry it and its loss is invisible in a token total that
     /// reconciles perfectly.
     pub search_units: Option<u64>,
+    /// Anthropic `usage.server_tool_use.web_search_requests` — the number of server-side web-search
+    /// tool invocations Anthropic performed for the turn. A SEPARATELY-METERED usage bucket (each
+    /// request is billed on top of tokens), so like `search_units` it is invisible in a token total
+    /// that reconciles perfectly; carried as its own attribution field. (ADDITIVE — anthropic field
+    /// carry; only the Anthropic reader/writer touch it today, other dialects leave it `None`.)
+    pub web_search_requests: Option<u64>,
+    /// Anthropic `usage.service_tier` — which service tier actually SERVED/BILLED the request
+    /// (`standard` / `priority` / `batch`). Attribution of which tier the usage was charged at (a
+    /// same-priced-total can still be split across tiers), so it belongs with the usage attribution
+    /// rather than as a free-floating response field the IR has no slot for. Provider-specific: only
+    /// the Anthropic reader/writer touch it, other dialects leave it `None`. (ADDITIVE — anthropic
+    /// field carry.)
+    pub service_tier: Option<String>,
 }
 
 impl IrUsage {

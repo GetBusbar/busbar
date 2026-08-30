@@ -256,7 +256,18 @@ fn stash_unmodeled_blocks(
     };
     for (i, block_val) in content_arr.iter().enumerate() {
         let block_type = block_val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if !is_modeled_anthropic_block_type(block_type) {
+        // A `document` is MODELLED (`IrBlock::Media`) so it survives a cross-protocol hop, but Media
+        // carries only source/name/cache_control — NOT Anthropic's `document.context` string or its
+        // `document.citations` toggle. Those two have no neutral/cross-protocol slot, so to keep them
+        // 100% lossless SAME-protocol we ALSO park the original document verbatim here WHEN it carries
+        // one of them; `write_message` then splices the raw block back on an Anthropic→Anthropic hop
+        // (extra survives), preserving context/citations byte-exact, while a cross-protocol egress
+        // (extra cleared at the seam) falls back to the Media projection and drops them. A document
+        // WITHOUT context/citations is NOT parked (Media round-trips it losslessly), so the common
+        // case keeps the modelled-not-stashed contract its round-trip test pins.
+        let document_needs_stash = block_type == BLOCK_TYPE_DOCUMENT
+            && (block_val.get("context").is_some() || block_val.get("citations").is_some());
+        if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
             sink.push(serde_json::json!({ "m": m, "i": i, "block": block_val }));
         }
     }
@@ -534,6 +545,18 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::I
             .and_then(|u| u.get("cache_creation"))
             .and_then(|c| c.get("ephemeral_1h_input_tokens"))
             .and_then(|v| v.as_u64()),
+        // `usage.server_tool_use.web_search_requests` — count of server-side web-search invocations,
+        // a separately-metered bucket (see the IR field). Read alongside the cache tiers so the
+        // buffered AND streaming usage sites all surface it.
+        web_search_requests: usage_val
+            .and_then(|u| u.get("server_tool_use"))
+            .and_then(|s| s.get("web_search_requests"))
+            .and_then(|v| v.as_u64()),
+        // `usage.service_tier` — which tier served/billed the turn (`standard`/`priority`/`batch`).
+        service_tier: usage_val
+            .and_then(|u| u.get("service_tier"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
         ..Default::default()
     }
 }
@@ -568,6 +591,20 @@ fn write_cache_creation_tiers(
             "cache_creation".to_string(),
             serde_json::Value::Object(tiers),
         );
+    }
+    // The two Anthropic-specific usage-attribution fields, re-emitted only when the source reported
+    // them (a response that never had them does not acquire an invented one). `server_tool_use` is
+    // Anthropic's nested `{web_search_requests: N}` object; `service_tier` a sibling string. Shared by
+    // the buffered `write_response` and streaming `message_delta` so a stream does not lose an
+    // attribution the buffered path reports.
+    if let Some(wsr) = detail.web_search_requests {
+        usage_map.insert(
+            "server_tool_use".to_string(),
+            serde_json::json!({ "web_search_requests": wsr }),
+        );
+    }
+    if let Some(tier) = &detail.service_tier {
+        usage_map.insert("service_tier".to_string(), serde_json::json!(tier));
     }
 }
 
@@ -750,6 +787,18 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 });
             };
             let cache_control = read_cache_control(obj.get("cache_control"))?;
+            // `document.context` (a free-text hint) and `document.citations` (an `{enabled}` toggle)
+            // have no neutral/cross-protocol slot — `IrBlock::Media` carries neither. They ARE kept
+            // 100% lossless same-protocol: `stash_unmodeled_blocks` parks the raw document verbatim
+            // when either is present, and `write_message` splices it back on an Anthropic→Anthropic
+            // hop. On a CROSS-protocol egress (extra cleared at the seam) only the Media projection
+            // remains, so warn that these two are dropped there rather than losing them silently.
+            if obj.get("context").is_some() || obj.get("citations").is_some() {
+                tracing::warn!(
+                    "anthropic `document.context`/`document.citations` have no cross-protocol slot: \
+                     carried byte-exact on a same-protocol hop, dropped on a foreign egress"
+                );
+            }
             let name = obj
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -1785,3 +1834,7 @@ mod user_and_parallelism_carry_tests;
 #[cfg(test)]
 #[path = "tests/reasoning_carry_tests.rs"]
 mod reasoning_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

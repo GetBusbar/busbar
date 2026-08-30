@@ -21,44 +21,6 @@
 # "the reader looks like it handles that" is not admissible evidence here, and every field whose
 # survival no test asserts is listed below rather than assumed.
 
-anthropic/request/metadata
-anthropic/request/service_tier
-anthropic/request/top_k
-anthropic/request/tools
-anthropic/request/tool_choice
-anthropic/request/thinking
-anthropic/request/container
-anthropic/request/mcp_servers
-anthropic/request/betas
-anthropic/request/content[].type=text.cache_control
-anthropic/request/content[].type=text.citations
-anthropic/request/content[].type=image.source.url
-anthropic/request/content[].type=image.cache_control
-anthropic/request/content[].type=document.source.url
-anthropic/request/content[].type=document.context
-anthropic/request/content[].type=document.citations
-anthropic/request/content[].type=document.cache_control
-anthropic/request/content[].type=tool_use.cache_control
-anthropic/request/content[].type=tool_result.is_error
-anthropic/request/content[].type=tool_result.cache_control
-anthropic/request/content[].type=thinking.thinking
-anthropic/request/content[].type=thinking.signature
-anthropic/request/content[].type=search_result.source
-anthropic/request/content[].type=search_result.title
-anthropic/request/content[].type=search_result.content
-anthropic/response/usage.server_tool_use.web_search_requests
-anthropic/response/usage.service_tier
-anthropic/response/stream:message_start
-anthropic/response/stream:content_block_start
-anthropic/response/stream:content_block_delta.text_delta
-anthropic/response/stream:content_block_delta.input_json_delta
-anthropic/response/stream:content_block_delta.thinking_delta
-anthropic/response/stream:content_block_delta.signature_delta
-anthropic/response/stream:content_block_delta.citations_delta
-anthropic/response/stream:content_block_stop
-anthropic/response/stream:message_delta
-anthropic/response/stream:message_stop
-anthropic/response/stream:ping
 openai/request/messages[].name
 openai/request/messages[].tool_calls
 openai/request/messages[].tool_call_id

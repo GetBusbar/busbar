@@ -82,6 +82,44 @@ anthropic/response/usage.cache_creation_input_tokens = carried roundtrip_anthrop
 anthropic/response/usage.cache_read_input_tokens = carried roundtrip_anthropic_response
 anthropic/response/usage.cache_creation.ephemeral_5m_input_tokens = carried anthropic_cache_tier_split_survives_the_ir
 anthropic/response/usage.cache_creation.ephemeral_1h_input_tokens = carried anthropic_cache_tier_split_survives_the_ir
+anthropic/request/metadata = carried anthropic_request_provider_specific_fields_carry
+anthropic/request/service_tier = carried anthropic_request_provider_specific_fields_carry
+anthropic/request/container = carried anthropic_request_provider_specific_fields_carry
+anthropic/request/mcp_servers = carried anthropic_request_provider_specific_fields_carry
+anthropic/request/betas = carried anthropic_request_provider_specific_fields_carry
+anthropic/request/top_k = carried anthropic_request_top_k_carry
+anthropic/request/tools = carried anthropic_request_tools_carry
+anthropic/request/tool_choice = carried anthropic_request_tool_choice_carry
+anthropic/request/thinking = carried anthropic_request_thinking_carry
+anthropic/request/content[].type=text.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=text.citations = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=image.source.url = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=image.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=tool_use.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=tool_result.is_error = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=tool_result.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/content[].type=thinking.thinking = carried anthropic_thinking_content_block_carry
+anthropic/request/content[].type=thinking.signature = carried anthropic_thinking_content_block_carry
+anthropic/request/content[].type=document.source.url = carried anthropic_document_block_carry
+anthropic/request/content[].type=document.context = carried anthropic_document_block_carry
+anthropic/request/content[].type=document.citations = carried anthropic_document_block_carry
+anthropic/request/content[].type=document.cache_control = carried anthropic_document_block_carry
+anthropic/request/content[].type=search_result.source = carried anthropic_search_result_block_carry
+anthropic/request/content[].type=search_result.title = carried anthropic_search_result_block_carry
+anthropic/request/content[].type=search_result.content = carried anthropic_search_result_block_carry
+anthropic/response/usage.server_tool_use.web_search_requests = carried anthropic_response_usage_extras_carry
+anthropic/response/usage.service_tier = carried anthropic_response_usage_extras_carry
+anthropic/response/stream:message_start = carried anthropic_stream_event_roundtrip_carry
+anthropic/response/stream:content_block_start = carried anthropic_stream_event_roundtrip_carry
+anthropic/response/stream:content_block_delta.text_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/response/stream:content_block_delta.input_json_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/response/stream:content_block_delta.thinking_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/response/stream:content_block_delta.signature_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/response/stream:content_block_delta.citations_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/response/stream:content_block_stop = carried anthropic_stream_event_roundtrip_carry
+anthropic/response/stream:message_delta = carried anthropic_stream_event_roundtrip_carry
+anthropic/response/stream:message_stop = carried anthropic_stream_event_roundtrip_carry
+anthropic/response/stream:ping = carried anthropic_stream_ping_same_proto_carry
 
 # ---------------------------------------------------------------------------
 # OPENAI CHAT
