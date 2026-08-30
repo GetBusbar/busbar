@@ -1,0 +1,1 @@
+{"finish_reason":"COMPLETE","id":"00000000-0000-4000-8000-000000000000","message":{"content":[{"text":"Hello there!","type":"text"}],"role":"assistant"},"model":"gpt-4o-mini","usage":{"tokens":{"input_tokens":12,"output_tokens":4}}}

@@ -1,0 +1,1 @@
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"reasoningContent":{"reasoningText":{"text":"I will search for it"}}},{"text":"hi"}],"role":"assistant"}},"stopReason":"end_turn","usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0}}

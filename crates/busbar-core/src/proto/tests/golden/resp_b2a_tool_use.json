@@ -1,0 +1,1 @@
+{"content":[{"text":"Let me check.","type":"text"},{"id":"toolu_bb174755f31","input":{"city":"SF"},"name":"get_weather","type":"tool_use"}],"id":"msg_01NORMALIZED","role":"assistant","stop_reason":"tool_use","stop_sequence":null,"type":"message","usage":{"input_tokens":42,"output_tokens":15}}

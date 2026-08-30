@@ -4,15 +4,15 @@
 //! Cross-protocol TRANSLATE-PATH byte-parity goldens for the OTHER high-traffic dialect pairs.
 //!
 //! `translate_parity_golden_tests.rs` pins the single anthropic⇄openai pair. This file extends that
-//! corpus to the remaining pairs among the four high-traffic dialects (anthropic `a`, openai chat
-//! `o`, gemini `g`, responses `r`), so every important ingress→egress translation among them has a
-//! frozen, reviewable "correct bytes" reference. It replays the SAME production step list the sibling
-//! file documents and generates its goldens the SAME way (`BUSBAR_BLESS_GOLDEN=1`), so this is a pure
-//! extension of that fidelity wall, not a new mechanism.
+//! corpus to the remaining pairs across all six dialects (anthropic `a`, openai chat `o`, gemini `g`,
+//! responses `r`, bedrock `b`, cohere `c`), so every important ingress→egress translation among them
+//! has a frozen, reviewable "correct bytes" reference. It replays the SAME production step list the
+//! sibling file documents and generates its goldens the SAME way (`BUSBAR_BLESS_GOLDEN=1`), so this
+//! is a pure extension of that fidelity wall, not a new mechanism.
 //!
 //! Pairs covered here (client `x`, backend `y` → `req_xy` request goldens, `resp_yx` response
-//! goldens), chosen so each of the four dialects appears as BOTH a request reader/writer AND a
-//! response reader/writer at least once across this file and its sibling:
+//! goldens), chosen so each dialect appears as BOTH a request reader/writer AND a response
+//! reader/writer at least once across this file and its sibling. The four high-traffic dialects:
 //!
 //!   * {anthropic, gemini}   client anthropic  → `req_a2g`, `resp_g2a`
 //!   * {openai, gemini}      client openai     → `req_o2g`, `resp_g2o`
@@ -20,13 +20,24 @@
 //!   * {responses, anthropic} client responses → `req_r2a`, `resp_a2r`
 //!   * {gemini, responses}   client gemini     → `req_g2r`, `resp_r2g`
 //!
+//! The bedrock/cohere tier, each paired with anthropic AND openai in both directions (bedrock and
+//! cohere are the only remaining ingresses/egresses; the matrix in `docs/protocols.md` marks every
+//! chat cell "translated", so no pair here is intentionally lossy — field-level drops like Cohere
+//! `documents` or a Bedrock guardrail `trace` are captured as-emitted), plus the meaningful `b`⇄`c`
+//! cross:
+//!
+//!   * bedrock ingress  → `req_b2a`, `req_b2o`, `req_b2c`   bedrock egress  → `req_a2b`, `req_o2b`, `req_c2b`
+//!   * cohere  ingress  → `req_c2a`, `req_c2o`, `req_c2b`   cohere  egress  → `req_a2c`, `req_o2c`, `req_b2c`
+//!   * bedrock backend  → `resp_b2a`, `resp_b2o`, `resp_b2c`   bedrock client → `resp_a2b`, `resp_o2b`, `resp_c2b`
+//!   * cohere  backend  → `resp_c2a`, `resp_c2o`, `resp_c2b`   cohere  client → `resp_a2c`, `resp_o2c`, `resp_b2c`
+//!
 //! REQUEST goldens are FULLY DETERMINISTIC — the request writers mint no random ids — so they are
 //! compared byte-exact with no normalization. RESPONSE goldens carry the ingress writer's synthesized
 //! id(s) (the ONLY nondeterministic bytes), which are shape-asserted and then NORMALIZED to a fixed
 //! token before comparison, exactly as the sibling file normalizes the anthropic `msg_...` id. Each
 //! ingress writer mints its own native id shape (anthropic `msg_01…`, openai `chatcmpl-…`, responses
-//! `resp_…` plus per-item `msg_/fc_/rs_`, gemini an unprefixed `responseId`); the bedrock response
-//! writer mints none.
+//! `resp_…` plus per-item `msg_/fc_/rs_`, gemini an unprefixed `responseId`, cohere a bare
+//! RFC-4122 UUIDv4); the bedrock response writer mints none in the JSON body, so it is a no-op.
 //!
 //! Regenerating goldens (ONLY for an intentional wire-shape change):
 //!   `BUSBAR_BLESS_GOLDEN=1 cargo test -p busbar-core translate_parity_cross_pairs` then commit the
@@ -113,6 +124,37 @@ fn normalize_id(obj: &mut serde_json::Map<String, Value>, key: &str, prefix: &st
     }
 }
 
+/// Normalize the Cohere response writer's synthesized `id`. Unlike the other ingress writers'
+/// `<prefix><base62>` tokens, the Cohere writer mints a bare RFC-4122 UUIDv4 (`synthesize_cohere_id`
+/// in `busbar-llm/src/cohere/mod.rs`): an 8-4-4-4-12 lowercase-hex string with the version nibble
+/// forced to `4` and the variant nibble in `{8,9,a,b}`. The generic `normalize_id` cannot express
+/// that shape (its tail must be pure alphanumeric, but a UUID carries hyphens), so this dialect gets
+/// its own shape assertion, then the id is replaced with a fixed all-zero v4 so everything else
+/// stays byte-comparable.
+fn normalize_cohere_id(obj: &mut serde_json::Map<String, Value>) {
+    if let Some(id) = obj.get("id").and_then(Value::as_str).map(str::to_owned) {
+        let b = id.as_bytes();
+        let is_hex = |c: u8| c.is_ascii_digit() || (b'a'..=b'f').contains(&c);
+        assert!(
+            id.len() == 36
+                && b[8] == b'-'
+                && b[13] == b'-'
+                && b[18] == b'-'
+                && b[23] == b'-'
+                && b[14] == b'4'
+                && matches!(b[19], b'8' | b'9' | b'a' | b'b')
+                && b.iter()
+                    .enumerate()
+                    .all(|(i, &c)| matches!(i, 8 | 13 | 18 | 23) || is_hex(c)),
+            "ingress-synthesized cohere id must be a bare UUIDv4 (8-4-4-4-12 lowercase hex), got {id:?}"
+        );
+        obj.insert(
+            "id".to_string(),
+            json!("00000000-0000-4000-8000-000000000000"),
+        );
+    }
+}
+
 /// Normalize whatever id(s) the given `ingress` response writer synthesizes. The sibling file's
 /// anthropic case is `msg_01<24 base62>`; the others are their own native shapes. Bedrock mints none,
 /// so it is a deliberate no-op; gemini mints only an unprefixed `responseId` token.
@@ -123,7 +165,9 @@ fn normalize_ingress_ids(ingress: &str, out: &mut Value) {
     match ingress {
         "anthropic" => normalize_id(obj, "id", "msg_01"),
         "openai" => normalize_id(obj, "id", "chatcmpl-"),
-        "cohere" => normalize_id(obj, "id", "c"),
+        // Cohere mints a bare UUIDv4 (no prefix, embedded hyphens) — its own normalizer, not the
+        // generic `<prefix><base62>` one.
+        "cohere" => normalize_cohere_id(obj),
         // Gemini synthesizes a top-level `responseId` (an unprefixed base62 token) on a
         // cross-protocol egress; no other field is nondeterministic.
         "gemini" => normalize_id(obj, "responseId", ""),
@@ -161,7 +205,7 @@ fn normalize_ingress_ids(ingress: &str, out: &mut Value) {
                 }
             }
         }
-        // gemini / bedrock synthesize no id — nothing to normalize.
+        // bedrock synthesizes no id in the JSON body — nothing to normalize.
         _ => {}
     }
 }
@@ -282,6 +326,102 @@ const RESPONSES_RESPONSE_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Bedrock Converse REQUEST bodies (client=bedrock): plain, system+inferenceConfig+toolConfig,
+/// image/document/video attachments. Adapted from `roundtrip_bedrock_request` /
+/// `bedrock_document_is_modelled_without_double_emitting`. Bedrock is a path-model protocol, so the
+/// body carries no `model`/`stream` (those ride the URL) — the reader takes `messages`/`system`/
+/// `inferenceConfig`/`toolConfig` only.
+const BEDROCK_REQUEST_CORPUS: &[(&str, &str)] = &[
+    (
+        "plain",
+        r#"{"messages":[{"role":"user","content":[{"text":"Hello, world"}]}]}"#,
+    ),
+    (
+        "tools",
+        r#"{"system":[{"text":"be brief"}],"messages":[{"role":"user","content":[{"text":"Weather in Paris?"}]}],"inferenceConfig":{"maxTokens":128,"temperature":0.5,"topP":0.9,"stopSequences":["END"]},"toolConfig":{"tools":[{"toolSpec":{"name":"get_weather","description":"Get weather","inputSchema":{"json":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}}],"toolChoice":{"auto":{}}}}"#,
+    ),
+    (
+        "attachments",
+        r#"{"messages":[{"role":"user","content":[{"text":"read this"},{"image":{"format":"png","source":{"bytes":"aGVsbG8="}}},{"document":{"format":"pdf","name":"spec","source":{"bytes":"JVBERi0="}}},{"video":{"format":"mp4","source":{"bytes":"VVV"}}}]}]}"#,
+    ),
+];
+
+/// Cohere v2 chat REQUEST bodies (client=cohere): plain, sampling+system+tools+tool_choice,
+/// tool-result document. Cohere is a body-model protocol; its sampling controls are `p`/`k`/
+/// `stop_sequences` and `tool_choice` is a top-level enum string. Adapted from
+/// `cohere_tool_result_document_is_not_stringified`.
+const COHERE_REQUEST_CORPUS: &[(&str, &str)] = &[
+    (
+        "plain",
+        r#"{"model":"command-r","messages":[{"role":"user","content":"Hello, world"}]}"#,
+    ),
+    (
+        "tools",
+        r#"{"model":"command-r-plus","messages":[{"role":"system","content":"be brief"},{"role":"user","content":"Weather in Paris?"}],"temperature":0.5,"p":0.9,"k":40,"max_tokens":128,"stop_sequences":["END"],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"REQUIRED"}"#,
+    ),
+    (
+        "tool_result_document",
+        r#"{"model":"command-r","messages":[{"role":"user","content":"q"},{"role":"assistant","tool_calls":[{"id":"t1","type":"function","function":{"name":"s","arguments":"{}"}}]},{"role":"tool","tool_call_id":"t1","content":[{"type":"document","document":{"id":"d1","data":{"t":"x"}}}]}]}"#,
+    ),
+];
+
+/// Bedrock Converse RESPONSE bodies (backend=bedrock): plain+usage, tool_use, reasoningContent. The
+/// buffered reader decodes `text`/`toolUse`/`reasoningContent`/`image` blocks and a `stopReason`;
+/// adapted from `test_read_response_decode` / `test_read_write_response_roundtrip`.
+const BEDROCK_RESPONSE_CORPUS: &[(&str, &str)] = &[
+    (
+        "plain",
+        r#"{"output":{"message":{"role":"assistant","content":[{"text":"Hello there!"}]}},"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}"#,
+    ),
+    (
+        "tool_use",
+        r#"{"output":{"message":{"role":"assistant","content":[{"text":"Let me check."},{"toolUse":{"toolUseId":"tu_1","name":"get_weather","input":{"city":"SF"}}}]}},"stopReason":"tool_use","usage":{"inputTokens":42,"outputTokens":15,"totalTokens":57}}"#,
+    ),
+    (
+        "reasoning",
+        r#"{"output":{"message":{"role":"assistant","content":[{"reasoningContent":{"reasoningText":{"text":"Let me think about this","signature":"sig-abc"}}},{"text":"42"}]}},"stopReason":"max_tokens","usage":{"inputTokens":9,"outputTokens":33,"totalTokens":42}}"#,
+    ),
+];
+
+/// Cohere v2 chat RESPONSE bodies (backend=cohere): plain+search_units usage, tool_use, tool_plan
+/// (reasoning), citations. Adapted from `cohere_search_units_reach_the_ir`, `test_read_response`,
+/// `cohere_tool_plan_is_reasoning_not_visible_text`, `cohere_response_citations_reach_a_foreign_client`.
+const COHERE_RESPONSE_CORPUS: &[(&str, &str)] = &[
+    (
+        "plain",
+        r#"{"id":"c1","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"Hello there!"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5},"billed_units":{"input_tokens":10,"output_tokens":5,"search_units":2}}}"#,
+    ),
+    (
+        "tool_use",
+        r#"{"id":"c2","finish_reason":"TOOL_CALL","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"t1","name":"get_weather","input":{"location":"SF"}}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#,
+    ),
+    (
+        "tool_plan",
+        r#"{"id":"c3","finish_reason":"COMPLETE","message":{"role":"assistant","tool_plan":"I will search for it","content":[{"type":"text","text":"hi"}]}}"#,
+    ),
+    (
+        "citations",
+        r#"{"id":"c4","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"Paris is the capital."}],"citations":[{"start":0,"end":5,"text":"Paris","sources":[{"type":"document","id":"d1","document":{"title":"Atlas","url":"https://atlas"}}]}]}}"#,
+    ),
+];
+
+/// OpenAI Chat RESPONSE bodies (backend=openai) for the `resp_o2b`/`resp_o2c` writer lanes: plain,
+/// tool_calls, reasoning_content. A compact slice of the sibling file's private `RESPONSE_CORPUS`.
+const OPENAI_RESPONSE_CORPUS: &[(&str, &str)] = &[
+    (
+        "plain",
+        r#"{"id":"chatcmpl-abc123","object":"chat.completion","created":1752000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"Hello there!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}"#,
+    ),
+    (
+        "tool_calls",
+        r#"{"id":"chatcmpl-def456","object":"chat.completion","created":1752000001,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_XYZ","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":20,"total_tokens":70}}"#,
+    ),
+    (
+        "reasoning",
+        r#"{"id":"chatcmpl-jkl012","object":"chat.completion","created":1752000003,"model":"deepseek-r1","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"Let me think...","content":"42"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":33,"total_tokens":42}}"#,
+    ),
+];
+
 /// The anthropic REQUEST corpus is already vetted in the sibling file; reuse it verbatim for the
 /// `a2g` lane rather than duplicate it.
 use super::translate_parity_golden_tests::REQUEST_CORPUS as ANTHROPIC_REQUEST_CORPUS;
@@ -373,5 +513,179 @@ fn resp_responses_to_gemini() {
     for (name, body) in RESPONSES_RESPONSE_CORPUS {
         let out = translate_response("responses", "gemini", body);
         check_golden(&format!("resp_r2g_{name}.json"), &out);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BEDROCK / COHERE TIER — request goldens (deterministic; no normalization).
+// Each of `b`/`c` appears as request reader (b2*/c2*) AND request writer (*2b/*2c), paired with
+// anthropic AND openai, plus the meaningful `b`⇄`c` cross.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn req_bedrock_to_anthropic() {
+    for (name, body) in BEDROCK_REQUEST_CORPUS {
+        let out = translate_request("bedrock", "anthropic", body);
+        check_golden(&format!("req_b2a_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_bedrock_to_openai() {
+    for (name, body) in BEDROCK_REQUEST_CORPUS {
+        let out = translate_request("bedrock", "openai", body);
+        check_golden(&format!("req_b2o_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_bedrock_to_cohere() {
+    for (name, body) in BEDROCK_REQUEST_CORPUS {
+        let out = translate_request("bedrock", "cohere", body);
+        check_golden(&format!("req_b2c_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_cohere_to_anthropic() {
+    for (name, body) in COHERE_REQUEST_CORPUS {
+        let out = translate_request("cohere", "anthropic", body);
+        check_golden(&format!("req_c2a_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_cohere_to_openai() {
+    for (name, body) in COHERE_REQUEST_CORPUS {
+        let out = translate_request("cohere", "openai", body);
+        check_golden(&format!("req_c2o_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_cohere_to_bedrock() {
+    for (name, body) in COHERE_REQUEST_CORPUS {
+        let out = translate_request("cohere", "bedrock", body);
+        check_golden(&format!("req_c2b_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_anthropic_to_bedrock() {
+    for (name, body) in ANTHROPIC_REQUEST_CORPUS {
+        let stem = name.strip_prefix("req_a2o_").expect("sibling naming");
+        let out = translate_request("anthropic", "bedrock", body);
+        check_golden(&format!("req_a2b_{stem}"), &out);
+    }
+}
+
+#[test]
+fn req_anthropic_to_cohere() {
+    for (name, body) in ANTHROPIC_REQUEST_CORPUS {
+        let stem = name.strip_prefix("req_a2o_").expect("sibling naming");
+        let out = translate_request("anthropic", "cohere", body);
+        check_golden(&format!("req_a2c_{stem}"), &out);
+    }
+}
+
+#[test]
+fn req_openai_to_bedrock() {
+    for (name, body) in OPENAI_REQUEST_CORPUS {
+        let out = translate_request("openai", "bedrock", body);
+        check_golden(&format!("req_o2b_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn req_openai_to_cohere() {
+    for (name, body) in OPENAI_REQUEST_CORPUS {
+        let out = translate_request("openai", "cohere", body);
+        check_golden(&format!("req_o2c_{name}.json"), &out);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BEDROCK / COHERE TIER — response goldens.
+// bedrock ingress synthesizes no id (no-op normalization); cohere ingress synthesizes a UUIDv4
+// (normalized by `normalize_cohere_id`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn resp_bedrock_to_anthropic() {
+    for (name, body) in BEDROCK_RESPONSE_CORPUS {
+        let out = translate_response("bedrock", "anthropic", body);
+        check_golden(&format!("resp_b2a_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_bedrock_to_openai() {
+    for (name, body) in BEDROCK_RESPONSE_CORPUS {
+        let out = translate_response("bedrock", "openai", body);
+        check_golden(&format!("resp_b2o_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_bedrock_to_cohere() {
+    for (name, body) in BEDROCK_RESPONSE_CORPUS {
+        let out = translate_response("bedrock", "cohere", body);
+        check_golden(&format!("resp_b2c_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_cohere_to_anthropic() {
+    for (name, body) in COHERE_RESPONSE_CORPUS {
+        let out = translate_response("cohere", "anthropic", body);
+        check_golden(&format!("resp_c2a_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_cohere_to_openai() {
+    for (name, body) in COHERE_RESPONSE_CORPUS {
+        let out = translate_response("cohere", "openai", body);
+        check_golden(&format!("resp_c2o_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_cohere_to_bedrock() {
+    for (name, body) in COHERE_RESPONSE_CORPUS {
+        let out = translate_response("cohere", "bedrock", body);
+        check_golden(&format!("resp_c2b_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_anthropic_to_bedrock() {
+    for (name, body) in ANTHROPIC_RESPONSE_CORPUS {
+        let out = translate_response("anthropic", "bedrock", body);
+        check_golden(&format!("resp_a2b_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_anthropic_to_cohere() {
+    for (name, body) in ANTHROPIC_RESPONSE_CORPUS {
+        let out = translate_response("anthropic", "cohere", body);
+        check_golden(&format!("resp_a2c_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_openai_to_bedrock() {
+    for (name, body) in OPENAI_RESPONSE_CORPUS {
+        let out = translate_response("openai", "bedrock", body);
+        check_golden(&format!("resp_o2b_{name}.json"), &out);
+    }
+}
+
+#[test]
+fn resp_openai_to_cohere() {
+    for (name, body) in OPENAI_RESPONSE_CORPUS {
+        let out = translate_response("openai", "cohere", body);
+        check_golden(&format!("resp_o2c_{name}.json"), &out);
     }
 }
