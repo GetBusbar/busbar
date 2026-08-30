@@ -327,6 +327,13 @@ pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
 /// IR → openai transcription response wire (the body of [`OpenAiTranscription::write_response`], moved
 /// behind the `(transcription, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
 pub(crate) fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
+    // OpenAI serves the plain response formats (`text`/`srt`/`vtt`) as a raw `text/plain` body, not
+    // a JSON envelope. When the response IR records one of those (the reader saw a non-JSON body),
+    // re-emit the transcript verbatim under `text/plain` rather than JSON-wrapping it — otherwise a
+    // WEBVTT/SRT response is mangled into `{"text":"WEBVTT..."}` with the wrong content-type.
+    if matches!(r.response_format.as_deref(), Some("text" | "srt" | "vtt")) {
+        return WireBody::typed(Bytes::from(r.text.clone().into_bytes()), "text/plain");
+    }
     let mut body = json!({ "text": r.text });
     // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
     match &r.usage {
@@ -810,20 +817,33 @@ pub(crate) fn read_transcription_response(
     // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
     // real API also carries `usage` — whisper-1 DURATION (`{type:"duration",seconds}`), the
     // gpt-4o-transcribe models TOKENS — captured from the live API (2026-07-10). Both → Billing.
-    let (text, usage) = match serde_json::from_slice::<Value>(wire) {
+    let (text, usage, response_format) = match serde_json::from_slice::<Value>(wire) {
         Ok(v) => {
             let text = v
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            (text, v.get("usage").and_then(parse_transcription_usage))
+            (
+                text,
+                v.get("usage").and_then(parse_transcription_usage),
+                None,
+            )
         }
-        Err(_) => (String::from_utf8_lossy(wire).into_owned(), None),
+        // A non-JSON body is one of OpenAI's plain formats (`text`/`srt`/`vtt`), all served as
+        // `text/plain`. Record the plain shape so the writer re-emits `text/plain` rather than
+        // JSON-wrapping (the reader cannot tell text from srt/vtt on the wire; `text` is the
+        // normalized plain marker and the transcript bytes are carried verbatim regardless).
+        Err(_) => (
+            String::from_utf8_lossy(wire).into_owned(),
+            None,
+            Some("text".to_string()),
+        ),
     };
     Ok(TranscriptionResp {
         text,
         usage,
+        response_format,
         ..Default::default()
     })
 }

@@ -561,3 +561,23 @@ fn speech_response_is_billed() {
         "TTS synthesis must be billed (non-None), got None"
     );
 }
+
+// carryable-flatten #1: OpenAI transcription returns `text/plain` (NOT application/json) for the
+// plain response formats (`text`/`srt`/`vtt`). The reader records the plain shape (JSON parse fails),
+// and the writer must re-emit the raw body under `text/plain`, not JSON-wrap it. Fails pre-fix: the
+// writer always emitted `{"text":...}` under `application/json`, mangling a WEBVTT/SRT round-trip.
+#[test]
+fn transcription_vtt_round_trips_text_plain_not_json_wrapped() {
+    let wire = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello there\n";
+    let ir = super::super::super::leaf_codec::transcription_read_response("openai", wire).unwrap();
+    let out = super::super::super::leaf_codec::transcription_write_response("openai", &ir);
+    assert_eq!(
+        out.content_type, "text/plain",
+        "a plain-format transcription must carry text/plain, not application/json"
+    );
+    assert_eq!(
+        out.bytes.as_ref(),
+        wire.as_slice(),
+        "the raw WEBVTT body must round-trip verbatim, not be JSON-wrapped"
+    );
+}
