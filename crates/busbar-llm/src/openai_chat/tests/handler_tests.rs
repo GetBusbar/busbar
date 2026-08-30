@@ -562,6 +562,31 @@ fn speech_response_is_billed() {
     );
 }
 
+// carryable-flatten #4: OpenAI image response carries a token `usage` object (gpt-image-1) that the
+// reader parses for billing but the writer DROPPED, and the writer fabricated `created:0` when the
+// upstream omitted it. Emit usage; omit created when absent. Fails pre-fix on both counts.
+#[test]
+fn image_response_round_trips_usage_and_omits_created_when_absent() {
+    // gpt-image-1 shape WITHOUT a `created` field but WITH a token usage object.
+    let wire = br#"{"data":[{"b64_json":"AAAA"}],
+        "usage":{"total_tokens":30,"input_tokens":20,"output_tokens":10}}"#;
+    let ir = super::super::super::leaf_codec::image_read_response("openai", wire).unwrap();
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::image_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        back["usage"]["input_tokens"], 20,
+        "usage must survive the writer: {back}"
+    );
+    assert_eq!(back["usage"]["output_tokens"], 10);
+    assert_eq!(back["usage"]["total_tokens"], 30);
+    assert!(
+        back.get("created").is_none(),
+        "created must be omitted when the upstream omitted it, not fabricated as 0: {back}"
+    );
+}
+
 // carryable-flatten #3: OpenAI gpt-image-1 request carries background/output_format/
 // output_compression/moderation — all typed on `ImageReq` but dropped by the reader AND the writer.
 // Carry both directions. Fails pre-fix: the reader never read them, the writer never emitted them.

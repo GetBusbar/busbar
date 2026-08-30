@@ -667,10 +667,23 @@ pub(crate) fn write_image_response(r: &ImageResp) -> WireBody {
             Value::Object(o)
         })
         .collect();
-    WireBody::json(Bytes::from(
-        serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
-            .unwrap_or_default(),
-    ))
+    let mut body = json!({ "data": data });
+    // Emit `created` only when the upstream actually sent it — fabricating `created:0` invents a
+    // 1970 timestamp on a response that carried none (gpt-image-1 omits it), a wrong wire value.
+    if let Some(created) = r.created {
+        body["created"] = json!(created);
+    }
+    // gpt-image-1 returns a token `usage` object; the reader parses it (for billing) but the writer
+    // dropped it, so a same-/cross-protocol image hop lost the usage the client should see. Re-emit
+    // it in OpenAI's own image-usage shape when present.
+    if let Some(u) = &r.usage {
+        body["usage"] = json!({
+            "input_tokens": u.input,
+            "output_tokens": u.output,
+            "total_tokens": u.input.saturating_add(u.output),
+        });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---------------------------------------------------------------- moderation cell
