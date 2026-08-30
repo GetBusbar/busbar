@@ -557,7 +557,7 @@ jobs:
           VALKEY_URL: redis://localhost:6379
         run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
