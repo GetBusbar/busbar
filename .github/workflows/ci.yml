@@ -380,11 +380,20 @@ jobs:
           # gates), so the recorded EXPECTED is the old linux 4786 + the measured +1483 delta = 6269.
           UNIX_MIN_TESTS: "5800"
           UNIX_EXPECTED_TESTS: "6269"
-          # THE PER-TEST-BINARY HANG CEILING for the watchdog below. The slowest suite in this
-          # workspace finishes in well under a minute on this runner; 300s is 5x slack. NOT a
-          # per-test timeout knob to tune a flake away with — when it fires, the step fails and
-          # names the tests that never finished.
-          WATCHDOG_TEST_TIMEOUT_SECS: "300"
+          # THE PER-TEST-BINARY HANG CEILING for the watchdog below. This is a HANG guard (a hung
+          # test runs unbounded), NOT a per-test timeout knob to tune a flake away with — when it
+          # fires, the step fails and names the tests that never finished.
+          #
+          # Sizing reality: the `busbar_core` lib-test binary is a MONOLITH that runs the whole
+          # workspace's dual-compiled dialect suites (field-coverage carry, input-hardening,
+          # adversarial, fidelity goldens) as ONE process — ~3900 tests aggregating to ~330s on this
+          # runner (it was already 295s before the 1.6.0 field-coverage + hardening work, i.e. at the
+          # old 300s edge). So this ceiling gates AGGREGATE binary lifetime, not a single slow test;
+          # 600s keeps a genuine hang (unbounded) caught within ~10 min while giving the legitimately
+          # grown suite real headroom. If it fires with named finished counts near the total, the
+          # binary grew — raise deliberately (as here) or split it; do not treat a full-but-slow run
+          # as a hang.
+          WATCHDOG_TEST_TIMEOUT_SECS: "600"
         run: |
           set -uo pipefail
           # THE HANG WATCHDOG. A test that never finishes used to leave this job SILENT until the
