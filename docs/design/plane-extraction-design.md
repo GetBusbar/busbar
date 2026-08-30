@@ -96,6 +96,34 @@ busbar-core / -substrate / -api  NEUTRAL. Registries, the opaque PlaneRecord/Pla
 **The invariant (what the gate enforces):** *no neutral crate names a concrete plane.* Everything a
 plane needs from core is reached through an opaque key supplied by the registry.
 
+### 2.1 Governing principle: EVERYTHING CROSSES THE ABI, NOTHING AROUND IT
+
+The plane ABI — the registries (`PlaneDecl` / `ProtocolDecl` / `install_planes` / `install_protocols`
+/ `install_diagnostics` / `install_path_ingress`), the opaque `PlaneRecord`, the `plane_slots`
+type-erased runtime map, and the plane vtable (`plane_host`) — is the **one and only** surface across
+which core and a plane communicate. There are **no side channels.** Every one of the following is a
+violation to be removed, not merely "gated":
+
+1. **`#[path = "../../../busbar-<plane>/src/…"]` dual-compiles** (the test/`test-support` "witness
+   build" in `core/proto/mod.rs`, `core/handlers/mod.rs`) — this reaches *around* the ABI to compile
+   plane source into a neutral crate. It must go: a plane's tests live in the plane crate (linking
+   `busbar-core` as a dev-dep), and any core test that needs a plane exercises it **through the
+   registry/vtable**, exactly as production does — never by including plane source.
+2. **Backwards dependencies** — `busbar-llm` naming `busbar_core::ingress::{gemini_arrival,
+   bedrock_arrival}` or `busbar_core::proto::PROTO_*`. A plane may depend on the neutral ABI; it may
+   **never** reach back into neutral *implementation*. Core→plane and plane→core-internals are both
+   forbidden; only plane→ABI and ABI→plane(via registry) are allowed.
+3. **Direct plane types in neutral crates** — `McpCallRecord`, `TaskRow`, etc. Cross the ABI as
+   opaque `PlaneRecord` bytes.
+4. **Named per-plane methods on neutral traits** — `PlaneHost::a2a_agent_defs`, `attach_mcp_durable_
+   sinks`. Cross the ABI as generic capability lookups keyed by opaque `(plane_key, capability)`.
+5. **Hard-coded plane vocabulary** — `"mcp"`, `Plane::Llm`, dialect names, `CANONICAL_PLANE_ORDER`.
+   The registry is the source of truth; core reads opaque `&str` keys.
+
+The test of done is not "core does not *say* mcp" — it is "the **only** thing that connects core to a
+plane is the ABI; sever the ABI and nothing else references the plane." The gate in §6 checks exactly
+this: no plane-crate path include, no plane-crate symbol reference, anywhere in a neutral crate.
+
 ---
 
 ## 3. Coupling inventory (the residual ledger)
@@ -256,14 +284,23 @@ For each plane P ∈ {llm, mcp, a2a}: build the neutral crates with P removed an
   `--no-default-features` today (21.7 s) — the gate makes that a *permanent, asserted* property and
   extends it to the strong form.
 
-### 6.2 Neutral-purity lint (`scripts/plane-purity-lint.sh`)
-Fails RED if any **neutral-crate source** (`busbar-core`, `busbar-substrate`, `busbar-api`; excluding
-comments, doc-strings, and `*/tests/*`) names a concrete plane token: the plane keys (`mcp`, `a2a`,
-`llm`), the six dialect names, or the plane record type names (`McpCallRecord`, `TaskRow`, …). Allowed:
-the neutral ABI identifiers (`PlaneRecord`, `PlaneDecl`, `plane_slots`, `PLANE_*` diagnostics). The
-lint ships with a curated allow-list of the *intentional* neutral tokens and a `--selftest` that
-plants a fake `McpFoo` in a fixture and proves the scanner catches it. This is the instrument whose
-absence let the boundary drift; it is the single most important artifact in this document.
+### 6.2 Neutral-purity lint (`scripts/plane-purity-lint.sh`) — enforces "everything crosses the ABI"
+Fails RED on any **side channel** in a **neutral-crate source** (`busbar-core`, `busbar-substrate`,
+`busbar-api`; excluding comments, doc-strings, and — once the witness build is gone — `*/tests/*`):
+1. **No plane-crate path include** — any `#[path = "…/busbar-{llm,mcp,a2a}/…"]` is an instant fail
+   (this is the witness-build side channel; it must not exist in a neutral crate).
+2. **No plane-crate symbol reference** — any `busbar_{llm,mcp,a2a}::` path in neutral source
+   (there is no legitimate one; the composition-root bin is *not* neutral and is exempt).
+3. **No concrete plane token** — the plane keys (`mcp`, `a2a`, `llm`), the six dialect names, or the
+   plane record type names (`McpCallRecord`, `TaskRow`, …).
+Allowed: the neutral ABI identifiers only (`PlaneRecord`, `PlaneDecl`, `ProtocolDecl`, `plane_slots`,
+`install_*`, `PLANE_*` diagnostics). The lint ships with a curated allow-list of the *intentional*
+neutral tokens and a `--selftest` that plants (a) a fake `#[path=...busbar-mcp...]`, (b) a
+`busbar_a2a::Foo` reference, and (c) a `McpFoo` type in fixtures and proves the scanner catches all
+three. This is the instrument whose absence let the boundary drift; it is the single most important
+artifact in this document. The reverse edge is checked too: a plane crate may depend on the neutral
+ABI but must not name `busbar_core::` *implementation* items (only the substrate ABI) — a companion
+scan of the plane crates enforces "no backwards reach."
 
 ### 6.3 A `plane_purity` qa segment
 Register both checks as a first-class `qa/segments.toml` segment (like `field-coverage`), so the
