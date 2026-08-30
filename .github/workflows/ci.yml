@@ -282,6 +282,12 @@ jobs:
   check:
     name: fmt · clippy · build · test
     runs-on: ubuntu-latest
+    # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
+    # test leaves the job printing nothing until someone notices and cancels by hand. A green run
+    # takes ~13 minutes warm, ~40 cold; 75 bounds the damage while leaving cold-cache headroom.
+    # The per-test-binary watchdog on the Test step below is the layer that NAMES the hang — this
+    # ceiling is only the backstop for everything else.
+    timeout-minutes: 75
     # Live-DB service containers for the store-postgres / store-valkey roundtrip tests. Without these
     # the roundtrip tests skip (their URLs are unset) and the two 1.5.0 store backends ship with ZERO
     # CI coverage of the delete_key cascade + credential cleanup. The tests read BUSBAR_TEST_POSTGRES_URL
@@ -374,11 +380,61 @@ jobs:
           # gates), so the recorded EXPECTED is the old linux 4786 + the measured +1483 delta = 6269.
           UNIX_MIN_TESTS: "5800"
           UNIX_EXPECTED_TESTS: "6269"
+          # THE PER-TEST-BINARY HANG CEILING for the watchdog below. The slowest suite in this
+          # workspace finishes in well under a minute on this runner; 300s is 5x slack. NOT a
+          # per-test timeout knob to tune a flake away with — when it fires, the step fails and
+          # names the tests that never finished.
+          WATCHDOG_TEST_TIMEOUT_SECS: "300"
         run: |
           set -uo pipefail
-          # PIPESTATUS[0] is cargo's own exit; `tee` must not launder a red test run into green.
-          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/unix-test.log"
-          rc=${PIPESTATUS[0]}
+          # THE HANG WATCHDOG. A test that never finishes used to leave this job SILENT until the
+          # runner's 6-hour ceiling or a manual cancel: one hung test, 576/577 complete, process
+          # alive but idle, and the log's only clue was libtest's own over-60-seconds warning
+          # scrolling past 50 minutes earlier. cargo now runs in the background writing the same
+          # log `tee` used to write (rc discipline unchanged: the exit code is cargo's own, taken
+          # from `wait`, never laundered; a `tail --pid` keeps the live stream). A sideband loop
+          # watches for any TEST BINARY alive past WATCHDOG_TEST_TIMEOUT_SECS, and on breach it
+          # captures a gdb all-thread backtrace of the still-live stuck process, NAMES the tests
+          # that started-or-queued and never finished (the binary's --list minus the log's
+          # completed lines), and fails the step — a red with a name and a stack instead of an
+          # hours-long silence. A clean run pays one `ps` scan per 15s and never installs gdb;
+          # the totals accounting below is unchanged.
+          cargo test --workspace --locked --verbose > "$RUNNER_TEMP/unix-test.log" 2>&1 &
+          cargo_pid=$!
+          tail --pid="$cargo_pid" -n +1 -F "$RUNNER_TEMP/unix-test.log" &
+          tail_pid=$!
+          watchdog_fired=0
+          while kill -0 "$cargo_pid" 2>/dev/null; do
+            sleep 15
+            # argv[0]-anchored so a long rustc/cc invocation (whose ARGUMENTS also name
+            # target/debug/deps) can never be mistaken for a stuck test binary. No awk `exit`:
+            # an early exit SIGPIPEs `ps` and, under pipefail, fails the substitution.
+            stuck=$(ps -eo pid,etimes,args | awk -v lim="$WATCHDOG_TEST_TIMEOUT_SECS" \
+              '$2 > lim && $3 ~ /target\/debug\/deps\// && !found {print $1; found=1}' || true)
+            [ -z "${stuck:-}" ] && continue
+            bin=$(readlink -f "/proc/$stuck/exe" 2>/dev/null || true)
+            echo "::error::test watchdog: ${bin:-pid $stuck} still running after ${WATCHDOG_TEST_TIMEOUT_SECS}s — capturing state, then failing"
+            # gdb is installed lazily, ONLY on the hang path — a clean run never pays for it.
+            sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+            sudo gdb -p "$stuck" -batch -ex 'set pagination off' -ex 'thread apply all bt' || true
+            if [ -n "${bin:-}" ] && [ -x "$bin" ]; then
+              "$bin" --list 2>/dev/null | sed -n 's/: test$//p' | sort > /tmp/wd-collected.txt || true
+              grep -oE '^test [A-Za-z0-9_:]+ \.\.\. (ok|FAILED|ignored)' "$RUNNER_TEMP/unix-test.log" \
+                | awk '{print $2}' | sort -u > /tmp/wd-completed.txt || true
+              echo "::error::tests in this binary that started (or were queued) and never finished:"
+              comm -23 /tmp/wd-collected.txt /tmp/wd-completed.txt | sed 's/^/::error::    /' || true
+            fi
+            kill -9 "$stuck" 2>/dev/null || true
+            watchdog_fired=1
+            break
+          done
+          rc=0; wait "$cargo_pid" || rc=$?
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          if [ "$watchdog_fired" -ne 0 ]; then
+            echo "::error::the test run was ended by the hang watchdog — see the named tests and the backtrace above."
+            exit 90
+          fi
 
           # SUM across every test binary — `test result: ok. N passed` prints once per binary, so a
           # single-line grep would floor one binary and miss a whole suite (a cfg gate, a dropped
