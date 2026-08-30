@@ -230,9 +230,11 @@ impl EngineSpec {
 // topology fact and substrate cannot name core (the dependency points the other way), so the
 // fact is PUBLISHED down: core's `set_data_workers` forwards the same number here in the same
 // boot act, one composition-root call with two subscribers. Unpublished honestly means ONE
-// runtime (tools, tests, embedded uses) — the exact rule core's own `data_workers_or_one`
-// applied — because a consumer sizing a PACING budget must never guess N cores where one
-// runtime exists.
+// runtime (tools, tests, embedded uses): `establishment_shards_or_one` answers 1 until a count
+// is published, and the one fallback deriver is core's `UpstreamClients::shard_count`
+// (`busbar-core/src/state.rs`), whose unpublished arm computes the machine-derived shard count
+// and publishes it here itself — because a consumer sizing a PACING budget must never guess N
+// cores where one runtime exists.
 
 /// The published establishment-shard count. Set once, before anything builds; immutable.
 static ESTABLISHMENT_SHARDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();

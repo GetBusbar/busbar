@@ -47,12 +47,6 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
     UPSTREAM_ERROR_BODY_MAX_BYTES.store(bytes, Ordering::Relaxed);
 }
 
-/// Read an upstream response body, buffering at most `cap` bytes. Streams chunks with a running byte
-/// counter rather than `r.bytes()` (which would buffer the entire — possibly multi-gigabyte — body
-/// before any cap could apply). Returns the buffered prefix and whether the body was TRUNCATED (more
-/// bytes remained at the cap), so a caller that must parse the whole body (cross-protocol 2xx
-/// translation) can distinguish "too large to translate" from "genuinely unparseable" instead of
-/// silently mis-reporting a truncated success as an untranslatable error.
 /// Why a [`read_capped`] read stopped — distinguishes a body that arrived in full from one that
 /// was cut short, so the buffered cross-protocol translate path can avoid mis-accounting a
 /// half-received completion as a clean success (recording breaker success + charging tokens on a
@@ -68,6 +62,13 @@ pub enum ReadEnd {
     TransportError,
 }
 
+/// Read an upstream response body, buffering at most `cap` bytes. Streams chunks with a running byte
+/// counter rather than `r.bytes()` (which would buffer the entire — possibly multi-gigabyte — body
+/// before any cap could apply). Returns the buffered prefix and whether the body was TRUNCATED (more
+/// bytes remained at the cap), so a caller that must parse the whole body (cross-protocol 2xx
+/// translation) can distinguish "too large to translate" from "genuinely unparseable" instead of
+/// silently mis-reporting a truncated success as an untranslatable error.
+///
 /// GENERIC over the chunk source: the LLM hot path reads a hyper `Incoming`, the
 /// substrate/preflight callers read a reqwest response — one capped loop serves both, so the cap
 /// semantics (bounded reserve, truncate-on-overrun, transport-error flag) cannot drift between

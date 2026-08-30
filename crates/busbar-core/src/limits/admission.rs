@@ -48,12 +48,6 @@ impl AdmissionGate {
         self.sem.available_permits()
     }
 
-    /// Try to take one slot, without waiting. `Some` carries an owned, `'static` permit — drop it (or
-    /// let it fall out of scope, including inside a spawned task or an async block it was moved into)
-    /// to return the slot. `None` means the gate is saturated: the caller decides what that means
-    /// (shed, drop, skip — this function has no opinion), but every denial is counted here first, so
-    /// `busbar_admission_denied_total{gate}` observes EVERY gate uniformly even if a call site also
-    /// keeps its own bespoke drop counter.
     /// Take one slot, WAITING FIFO when the gate is saturated — the inbound layer's arm. The wait
     /// is naturally cancelled when the caller's future drops (a disconnecting client leaves the
     /// queue with no residue: tokio semaphore waiters are cancel-safe), so parked arrivals cost a
@@ -77,6 +71,12 @@ impl AdmissionGate {
         self.sem.clone().try_acquire_owned().ok()
     }
 
+    /// Try to take one slot, without waiting. `Some` carries an owned, `'static` permit — drop it (or
+    /// let it fall out of scope, including inside a spawned task or an async block it was moved into)
+    /// to return the slot. `None` means the gate is saturated: the caller decides what that means
+    /// (shed, drop, skip — this function has no opinion), but every denial is counted here first, so
+    /// `busbar_admission_denied_total{gate}` observes EVERY gate uniformly even if a call site also
+    /// keeps its own bespoke drop counter.
     pub(crate) fn try_enter(&self) -> Option<OwnedSemaphorePermit> {
         match self.sem.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
