@@ -2298,8 +2298,10 @@ store:
   module: memory
 plugins:
   enabled: true
-  dir: "{}"
+  dir: '{}'
 "#,
+        // Single-quoted YAML scalar: a Windows path's backslashes are literal here, whereas a
+        // double-quoted scalar would read `\U`/`\v`/... as invalid escapes and fail to parse.
         evil_dir.display()
     );
     let deploy: crate::config::DeployCfg =
