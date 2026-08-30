@@ -197,14 +197,21 @@ impl ResourceUpdates {
         if uri.is_empty() || uri.len() > MAX_ANNOUNCED_URI_BYTES {
             return;
         }
-        let seq = self
-            .next_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
         let mut events = match self.events.lock() {
             Ok(e) => e,
             Err(p) => p.into_inner(),
         };
+        // Allocate the sequence UNDER the events lock, together with the push — never before it.
+        // `since` returns `latest()` as the cursor a reader holds next, and `since` also takes this
+        // lock, so allocating here makes the two indivisible: a reader either sees `latest()` NOT
+        // yet advanced (and the event is still to come), or sees it advanced AND finds the event in
+        // the ring. Allocating before the lock left a window in which a reader read the advanced
+        // `latest()`, found the event not yet pushed, and moved its cursor past an event it would
+        // then never be returned — a silently skipped notification.
+        let seq = self
+            .next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         if events.len() >= MAX_RESOURCE_UPDATES {
             events.pop_front();
         }
