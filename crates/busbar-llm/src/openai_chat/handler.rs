@@ -627,6 +627,20 @@ pub(crate) fn write_image_request(r: &ImageReq) -> Bytes {
     if let Some(f) = &r.response_format {
         body["response_format"] = json!(f);
     }
+    // gpt-image-1 output controls the reader captures — dropping them downgraded the request
+    // (a transparent-background/webp ask fell back to opaque PNG, a moderation policy was lost).
+    if let Some(b) = &r.background {
+        body["background"] = json!(b);
+    }
+    if let Some(f) = &r.output_format {
+        body["output_format"] = json!(f);
+    }
+    if let Some(c) = r.output_compression {
+        body["output_compression"] = json!(c);
+    }
+    if let Some(m) = &r.moderation {
+        body["moderation"] = json!(m);
+    }
     if let Some(u) = &r.user {
         body["user"] = json!(u);
     }
@@ -1202,6 +1216,23 @@ pub(crate) fn read_image_request(
             .map(str::to_string),
         response_format: wire
             .get("response_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // gpt-image-1 output controls — carried through so egress re-emits them (see write_image_request).
+        background: wire
+            .get("background")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        output_format: wire
+            .get("output_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        output_compression: wire
+            .get("output_compression")
+            .and_then(Value::as_u64)
+            .and_then(|c| u8::try_from(c).ok()),
+        moderation: wire
+            .get("moderation")
             .and_then(Value::as_str)
             .map(str::to_string),
         user: wire.get("user").and_then(Value::as_str).map(str::to_string),

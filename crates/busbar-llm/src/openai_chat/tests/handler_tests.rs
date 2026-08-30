@@ -562,6 +562,30 @@ fn speech_response_is_billed() {
     );
 }
 
+// carryable-flatten #3: OpenAI gpt-image-1 request carries background/output_format/
+// output_compression/moderation — all typed on `ImageReq` but dropped by the reader AND the writer.
+// Carry both directions. Fails pre-fix: the reader never read them, the writer never emitted them.
+#[test]
+fn image_request_round_trips_background_and_output_format() {
+    let body = br#"{"model":"gpt-image-1","prompt":"a cat","background":"transparent",
+        "output_format":"webp","output_compression":80,"moderation":"low"}"#;
+    let ir =
+        super::super::super::leaf_codec::image_read_request("openai", body, "application/json")
+            .expect("valid image body");
+    assert_eq!(ir.background.as_deref(), Some("transparent"));
+    assert_eq!(ir.output_format.as_deref(), Some("webp"));
+    assert_eq!(ir.output_compression, Some(80));
+    assert_eq!(ir.moderation.as_deref(), Some("low"));
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::image_write_request("openai", &ir),
+    )
+    .unwrap();
+    assert_eq!(back["background"], "transparent");
+    assert_eq!(back["output_format"], "webp");
+    assert_eq!(back["output_compression"], 80);
+    assert_eq!(back["moderation"], "low");
+}
+
 // carryable-flatten #2: OpenAI `verbose_json` transcription carries language/duration/segments/words,
 // all modelled by `TranscriptionResp` but flattened to text+usage by the reader/writer. Read + carry +
 // emit them. Fails pre-fix: the reader dropped everything but text, so the writer had nothing to emit.
