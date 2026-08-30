@@ -860,3 +860,39 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     );
     drop(b1);
 }
+
+/// The receiver-side skew invariant behind the `from_std`-failure fix in the accept/drain loops:
+/// the sender increments the TARGET's count BEFORE handing off (so the count is never transiently
+/// low), and the receiver owns the matching decrement via a guard it adopts. If the receiver's
+/// `from_std` re-adopt fails and it `continue`s, the ONLY thing that releases the sender's
+/// increment is a guard adopted BEFORE that fallible conversion — which is exactly the ordering the
+/// fix installs. This test pins that invariant: a hand-off increment paired with an adopted guard
+/// that is dropped WITHOUT ever serving (the `continue` path) nets the count back to baseline.
+/// Against the pre-fix ordering the guard was built only AFTER `from_std` succeeded, so the
+/// `continue` skipped it and the increment was stranded high forever (permanent balancer skew).
+#[test]
+fn recv_side_from_std_failure_releases_the_sender_increment() {
+    let mut handles = super::ConnBalancer::build(2);
+    let recv = handles.pop().unwrap();
+    let _sender = handles.pop().unwrap();
+    use std::sync::atomic::Ordering;
+
+    let baseline = recv.counts[recv.me].0.load(Ordering::Relaxed);
+
+    // Sender's increment-before-send lands on the receiver's slot.
+    recv.counts[recv.me].0.fetch_add(1, Ordering::Relaxed);
+    assert_eq!(recv.counts[recv.me].0.load(Ordering::Relaxed), baseline + 1);
+
+    // Receiver adopts the decrement BEFORE the (here, simulated-failed) `from_std`, then `continue`s
+    // — modeled as dropping the guard without serving.
+    {
+        let _guard = recv.adopt();
+        // `from_std` fails here in the real loop; the guard drops on `continue`.
+    }
+
+    assert_eq!(
+        recv.counts[recv.me].0.load(Ordering::Relaxed),
+        baseline,
+        "a from_std-failure continue must release the sender's increment, not strand it"
+    );
+}
