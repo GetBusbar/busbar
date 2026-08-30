@@ -19,6 +19,8 @@ pub struct RerankReq {
     pub documents: Vec<String>,
     pub top_n: Option<u32>,
     pub max_tokens_per_doc: Option<u32>, // Cohere
+    /// Cohere/Bedrock `return_documents`: echo each ranked document's text back in the response.
+    pub return_documents: Option<bool>,
     pub extra: SourceScopedExtra,
 }
 
@@ -77,6 +79,9 @@ impl busbar_core::ir::facts::IrFacts for RerankReq {
 pub struct RerankResult {
     pub index: usize,
     pub relevance_score: f64,
+    /// The echoed document text, present only when the request asked for `return_documents`
+    /// (Cohere/Bedrock). Kept so the echo survives a rerank hop instead of being dropped.
+    pub document: Option<String>,
 }
 
 /// Rerank response IR.

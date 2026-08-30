@@ -364,3 +364,46 @@ fn no_rerank_handler_on_the_other_four() {
         );
     }
 }
+
+// carryable-flatten #12: cohere rerank dropped `return_documents` (request) and `results[].document`
+// (response echo). Both are Cohere-native and the shared reader means Bedrock too. Carry them via new
+// IR fields. Fails pre-fix: the writer never emitted return_documents, and the document echo was lost.
+#[test]
+fn cohere_rerank_return_documents_round_trips_the_document() {
+    // Request: return_documents:true must survive read -> IR -> write.
+    let req = serde_json::to_vec(&json!({
+        "model": "rerank-v3.5",
+        "query": "q",
+        "documents": ["alpha", "beta"],
+        "return_documents": true
+    }))
+    .unwrap();
+    let ir_req =
+        super::super::super::leaf_codec::rerank_read_request("cohere", &req, "application/json")
+            .expect("parses");
+    assert_eq!(ir_req.return_documents, Some(true));
+    let out = super::super::super::leaf_codec::rerank_write_request("cohere", &ir_req);
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v["return_documents"], true,
+        "return_documents must be emitted: {v}"
+    );
+
+    // Response: results[].document.{text} must survive read -> IR -> write.
+    let resp = serde_json::to_vec(&json!({
+        "id": "r1",
+        "results": [
+            {"index": 0, "relevance_score": 0.9, "document": {"text": "alpha"}}
+        ]
+    }))
+    .unwrap();
+    let ir_resp =
+        super::super::super::leaf_codec::rerank_read_response("cohere", &resp).expect("parses");
+    assert_eq!(ir_resp.results[0].document.as_deref(), Some("alpha"));
+    let wire = super::super::super::leaf_codec::rerank_write_response("cohere", &ir_resp);
+    let v: Value = serde_json::from_slice(&wire.bytes).unwrap();
+    assert_eq!(
+        v["results"][0]["document"]["text"], "alpha",
+        "the ranked document echo must round-trip: {v}"
+    );
+}

@@ -300,6 +300,11 @@ pub(crate) fn write_rerank_request(r: &crate::ir::rerank::RerankReq) -> Bytes {
     if let Some(n) = r.top_n {
         body["top_n"] = json!(n);
     }
+    // Carry `return_documents` so a rerank hop into Bedrock echoes the ranked text (shared with the
+    // Cohere rerank surface, whose response shape Bedrock mirrors).
+    if let Some(rd) = r.return_documents {
+        body["return_documents"] = json!(rd);
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -309,7 +314,14 @@ pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBo
     let results: Vec<Value> = r
         .results
         .iter()
-        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .map(|x| {
+            let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
+            // Echo the ranked document (Cohere/Bedrock `{text}` shape) when present.
+            if let Some(doc) = &x.document {
+                o["document"] = json!({ "text": doc });
+            }
+            o
+        })
         .collect();
     let mut body = json!({ "results": results });
     if let Some(id) = &r.id {
