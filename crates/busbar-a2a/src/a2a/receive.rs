@@ -1354,19 +1354,15 @@ async fn admitted(
         None
     } else if let Some((_, members)) = &pool {
         // ANY member's interrupted task on this context resumes — and resumes AT that member (the
-        // pinning reads the task's own `agent_id`). Most recent across members, like the
-        // single-agent lookup.
-        let mut c: Vec<super::task::Task> = members
-            .iter()
-            .filter_map(|m| resumable_task(&admitted.dispatch.billed_key_id, context_id, m))
-            .collect();
-        c.sort_by_key(|t| t.updated_at);
-        c.pop()
+        // pinning reads the task's own `agent_id`). Most recent across members, in ONE scan of the
+        // working set rather than one per member.
+        let member_ids: Vec<&str> = members.iter().map(String::as_str).collect();
+        resumable_task(&admitted.dispatch.billed_key_id, context_id, &member_ids)
     } else {
         resumable_task(
             &admitted.dispatch.billed_key_id,
             context_id,
-            &admitted.dispatch.agent_id,
+            &[&admitted.dispatch.agent_id],
         )
     };
 
@@ -2923,12 +2919,25 @@ fn addressed_task(
     None
 }
 
-/// AN INTERRUPTED TASK OF THIS CALLER'S, ON THIS AGENT, UNDER THIS `contextId` — the resume target.
+/// AN INTERRUPTED TASK OF THIS CALLER'S, ON ANY OF THESE AGENTS, UNDER THIS `contextId` — the resume
+/// target.
 ///
 /// Scoped to the PRINCIPAL through `list_scoped`, so a caller cannot resume somebody else's task by
 /// guessing a `contextId`. The most recently updated one wins where a context somehow has two, which
 /// is the only ordering that cannot resume a task that has since been superseded.
-fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
+///
+/// `agent_ids` is a SET so a pool's whole membership is answered in ONE scan. The pool path used to
+/// call this once per member — M scans, each cloning the caller's ENTIRE working set (`list_scoped`
+/// clones every row under the registry lock) — to pick the most recent interrupted task across the
+/// members. Filtering `agent_id ∈ agent_ids` in a single scan is the same task chosen (most recent
+/// interrupted across the set) at one clone of the working set rather than M. A `find_resumable`
+/// returning a single cloned row under the lock would be tighter still, but that needs a method on
+/// the neutral `TaskReader` seam this crate only consumes.
+fn resumable_task(
+    principal: &str,
+    context_id: &str,
+    agent_ids: &[&str],
+) -> Option<super::task::Task> {
     let mut candidates: Vec<super::task::Task> = busbar_substrate::plane_host::task_reader()
         .map(|reader| reader.list_scoped(principal))
         .unwrap_or_default()
@@ -2937,7 +2946,9 @@ fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<s
         // so the `is_interrupted` / field reads stay codec-side. Working-set rows are always readable.
         .filter_map(|r| super::task::Task::from_row(r).ok())
         .filter(|t| {
-            t.context_id == context_id && t.agent_id == agent_id && t.state.is_interrupted()
+            t.context_id == context_id
+                && agent_ids.contains(&t.agent_id.as_str())
+                && t.state.is_interrupted()
         })
         .collect();
     candidates.sort_by_key(|t| t.updated_at);
