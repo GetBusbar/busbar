@@ -54,14 +54,17 @@
 // audit vocabulary ([`busbar_substrate::audit::vocab`]) so the A2A plane that appends these events and
 // this engine that hash-chains them name ONE spelling of each across the core/substrate seam — the
 // digest covers the kind's VALUE, so a single spelling is what keeps existing chains verifying.
-// Re-exported here for core's own call sites. `EV_WORKING`/`EV_INTERRUPTED`/`EV_RESUMED`/`EV_TERMINAL`
-// are named by the a2a-side event-kind mapping directly off the vocabulary and are not re-exported
-// here; `EV_REHYDRATED` is declared in the vocabulary to reserve its digest value and has no live
-// appender yet. Gated with its users (the TASKS engine + host journal, all `plane-a2a`): with the
-// plane off they are compiled out and this re-export would otherwise read unused.
+// Re-exported here for core's own call sites. `EV_WORKING`/`EV_INTERRUPTED`/`EV_RESUMED` are named
+// by the a2a-side event-kind mapping directly off the vocabulary and are not re-exported here;
+// `EV_TERMINAL` IS re-exported because the taskstore's abandonment sweep appends it (the same kind
+// the a2a mapping chooses for every transition into a terminal state); `EV_REHYDRATED` is declared
+// in the vocabulary to reserve its digest value and has no live appender yet. Gated with its users
+// (the TASKS engine + host journal, all `plane-a2a`): with the plane off they are compiled out and
+// this re-export would otherwise read unused.
 #[cfg(feature = "plane-a2a")]
 pub use busbar_substrate::audit::vocab::{
     EV_ARTIFACT, EV_DELEGATED, EV_PUSH_DELIVERED, EV_PUSH_FAILED, EV_PUSH_REFUSED, EV_SUBMITTED,
+    EV_TERMINAL,
 };
 
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are

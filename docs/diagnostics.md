@@ -2086,6 +2086,17 @@ On the request path, verify-on-call needed to re-verify an upstream whose record
 
 **What to do:** Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.
 
+<a id="plane-task-abandon-unrecorded"></a>
+### BUSBAR-7099 — Abandoned A2A task could not be transitioned to canceled (durable store write failed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-task-abandon-unrecorded`
+
+The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.
+
+**What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>

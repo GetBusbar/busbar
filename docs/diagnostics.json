@@ -2256,6 +2256,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-7099",
+    "number": 7099,
+    "class": "plane",
+    "slug": "plane-task-abandon-unrecorded",
+    "title": "Abandoned A2A task could not be transitioned to canceled (durable store write failed)",
+    "severity": "actionable",
+    "summary": "The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.",
+    "action": "Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-8001",
     "number": 8001,
     "class": "governance",

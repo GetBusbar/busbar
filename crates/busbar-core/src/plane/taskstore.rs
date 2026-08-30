@@ -278,6 +278,24 @@ const TERMINAL_TASK_TTL_SECS: u64 = 300;
 /// active tasks alone exceed it, which is correct: every one of them is owed a resume.
 const MAX_RETAINED_TASKS: usize = 4096;
 
+/// RETENTION: the ABANDONMENT ceiling on an ACTIVE task. One whose last update (`updated_at`) is
+/// older than this transitions to `canceled` THROUGH THE NORMAL WRITE PATH — row upserted, a
+/// chained `task.terminal` event appended to its journal recording the retention expiry — after
+/// which the ordinary [`TERMINAL_TASK_TTL_SECS`] eviction applies to it like any other settled
+/// task. In SECONDS, like every `TaskRow` timestamp; mirrors the MCP registry's
+/// `ACTIVE_TASK_ABANDON_MS` (same value, its clock is milliseconds).
+///
+/// WHY a full day: an interactive interrupt (`input-required`/`auth-required` waiting on a human)
+/// legitimately sits for HOURS — that interrupt is exactly the row the cap above refuses to drop —
+/// but not for days, while a dispatch that merely hangs is already bounded by its send deadlines
+/// to minutes. Without this ceiling an active task nothing ever advanced was a PERMANENT
+/// allocation (the sweep's TTL and cap rules touch terminal tasks only). This is a TRANSITION,
+/// never a working-set drop, so the chain-position invariant holds (the chain gains a final event
+/// rather than being truncated), and an abandoned task is no longer owed a resume — server-side
+/// cancellation is a legal A2A move on any non-terminal task. Enforced by the submit-time sweep;
+/// no background timer.
+const ACTIVE_TASK_ABANDON_SECS: u64 = 86_400;
+
 /// Why a scoped read was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Denied {
@@ -685,7 +703,10 @@ impl TaskRegistry {
     /// inline by [`TaskRegistry::submit`] under the lock, mirroring the MCP task registry's
     /// create-time sweep (`busbar-mcp/src/mcp/tasks.rs`, `Registry::sweep`).
     ///
-    /// Two rules, and both evict TERMINAL tasks only:
+    /// Three rules. The first is a TRANSITION; the two eviction rules touch TERMINAL tasks only:
+    /// 0. ABANDONMENT — an ACTIVE task idle past [`ACTIVE_TASK_ABANDON_SECS`] is transitioned to
+    ///    `canceled` through the normal write path (row + chained `task.terminal` event), never
+    ///    dropped; rule 1 then collects it on a later sweep like any other settled task.
     /// 1. TTL — a terminal task older than [`TERMINAL_TASK_TTL_SECS`] since its terminal transition
     ///    (`updated_at` — the moment `plan` stamped the settle) is dropped: the client's poll
     ///    window has passed, and the durable rows remain in the store for anything later.
@@ -695,6 +716,65 @@ impl TaskRegistry {
     /// Every removal funnels through [`TaskRegistry::forget_entry`], so the working set and the
     /// journal's position cache cannot drift.
     fn sweep(&self, host: HostCtx, tasks: &mut HashMap<String, Entry>, now: u64) {
+        let abandoned: Vec<String> = tasks
+            .iter()
+            .filter(|(_, e)| {
+                !is_terminal_state(&e.row.state)
+                    && now.saturating_sub(e.row.updated_at) > ACTIVE_TASK_ABANDON_SECS
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &abandoned {
+            let Some(entry) = tasks.get_mut(id) else {
+                continue;
+            };
+            // `canceled` is one of [`TaskRow::state`]'s canonical closed-domain terminal tokens
+            // (see [`is_terminal_state`]) — the same token a server-initiated cancel writes — and
+            // the event kind is the one the a2a mapping chooses for EVERY move into a terminal
+            // state, so the chain reads exactly as if the task had been cancelled by a verb. The
+            // sweep runs with no caller, so `request_id` is empty — the digest deliberately
+            // excludes it (see [`task_event_suffix`]) precisely so sweep-path events cannot break
+            // a chain.
+            let mut candidate = entry.row.clone();
+            candidate.state = "canceled".to_string();
+            candidate.updated_at = now;
+            let event = EventInput {
+                kind: provenance::EV_TERMINAL,
+                context_id: candidate.context_id.clone(),
+                principal: candidate.principal.clone(),
+                agent_id: candidate.agent_id.clone(),
+                state: candidate.state.clone(),
+                request_id: String::new(),
+                ts: now,
+            };
+            match self.write_through(host, &candidate, event) {
+                Ok(()) => entry.row = candidate,
+                Err(e) => {
+                    // The task stays ACTIVE (the working set is never ahead of the store) and the
+                    // next submit's sweep retries. Error-once latch: a store outage persists
+                    // across every sweep, and submits run per request.
+                    static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        crate::diagnostics::diag_error!(
+                            crate::diagnostics::PLANE_TASK_ABANDON_UNRECORDED,
+                            task_id = %id,
+                            error = %e,
+                            "an abandoned A2A task could not be transitioned to canceled; it \
+                             stays active and the next sweep retries"
+                        );
+                    } else {
+                        crate::diagnostics::diag_debug!(
+                            crate::diagnostics::PLANE_TASK_ABANDON_UNRECORDED,
+                            task_id = %id,
+                            error = %e,
+                            "an abandoned A2A task could not be transitioned to canceled; it \
+                             stays active and the next sweep retries"
+                        );
+                    }
+                }
+            }
+        }
         let expired: Vec<String> = tasks
             .iter()
             .filter(|(_, e)| {
@@ -1113,6 +1193,14 @@ impl TaskRegistry {
     #[cfg(any(test, feature = "test-support"))]
     pub fn retention_bounds() -> (u64, usize) {
         (TERMINAL_TASK_TTL_SECS, MAX_RETAINED_TASKS)
+    }
+
+    /// TEST ONLY: the abandonment ceiling ([`ACTIVE_TASK_ABANDON_SECS`]), for the same reason as
+    /// [`TaskRegistry::retention_bounds`]: the cross-crate retention tests assert against the
+    /// shipped value rather than restating it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn abandon_ceiling_secs() -> u64 {
+        ACTIVE_TASK_ABANDON_SECS
     }
 
     /// VERIFY one task's persisted provenance chain, end to end, against the store.

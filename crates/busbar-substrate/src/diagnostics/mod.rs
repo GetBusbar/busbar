@@ -3433,6 +3433,25 @@ pub const TRUST_VERIFY_UNREACHABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The abandonment sweep could not settle an idle active task as canceled — a store outage.
+pub const PLANE_TASK_ABANDON_UNRECORDED: Diagnostic = Diagnostic {
+    code: 7099,
+    class: Class::Plane,
+    slug: "plane-task-abandon-unrecorded",
+    title: "Abandoned A2A task could not be transitioned to canceled (durable store write failed)",
+    severity: Severity::Actionable,
+    summary: "The submit-time retention sweep found an ACTIVE task idle past the abandonment \
+              ceiling (24h since its last update) and tried to settle it as `canceled` through the \
+              normal durable write path, but the row upsert or chained event append failed. The \
+              task stays active in the working set (never ahead of the store) and the next sweep \
+              retries. Typically a durable-store outage. Warned once on the transition into the \
+              failing state; subsequent failures hold at debug to avoid spam.",
+    action: "Investigate the durable task-store outage. Abandoned tasks settle (and then age out \
+             of the working set) once the store accepts writes again.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     code: 1006,
     class: Class::Durability,
@@ -4232,6 +4251,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_DEMOTIONS_UNREAD,
     &TRUST_VERIFY_REFUSED_ON_DRIFT,
     &TRUST_VERIFY_UNREACHABLE,
+    &PLANE_TASK_ABANDON_UNRECORDED,
     &ADMIN_STORE_OPERATION_FAILED,
     &ADMIN_STORE_TASK_JOIN_FAILED,
     &GROUP_DELETE_KEY_READ_FAILED,

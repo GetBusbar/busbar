@@ -85,6 +85,19 @@ const TASK_POLL_INTERVAL_MS: u64 = 250;
 /// eventual answer unreachable, which is worse than refusing to remember an old completed one.
 const MAX_RETAINED_TASKS: usize = 4096;
 
+/// The ABANDONMENT ceiling on an ACTIVE task: one whose last update is older than this is treated
+/// as abandoned by its caller and cancelled through the normal [`McpTask::cancel`] path (the
+/// runner aborted, `updated_ms` stamped), after which the ordinary [`TASK_TTL_MS`] retention
+/// applies to it like any other cancelled task. WHY a full day: an `input_required` park waiting
+/// on a human legitimately sits for hours (that interrupt is the one row the cap above refuses to
+/// drop), but not for days — and a dispatch that merely hangs is already bounded by its own send
+/// deadlines to minutes. Without this ceiling an active task nothing ever advanced was a PERMANENT
+/// allocation: the sweep's TTL and cap arms both touch terminal tasks only. Cancellation is a
+/// legal server-side transition here — the shutdown path already settles working tasks as
+/// `cancelled` — and an abandoned task is no longer owed a resume. Enforced by the create-time
+/// sweep (no background timer to schedule or leak).
+const ACTIVE_TASK_ABANDON_MS: u64 = 86_400_000;
+
 /// Has this caller declared the tasks extension?
 ///
 /// Reads `capabilities.extensions[TASKS_EXTENSION_ID]`, and PRESENCE is the declaration: the value
@@ -408,6 +421,13 @@ impl McpTask {
         let state = self.lock();
         state.status.is_terminal() && now.saturating_sub(state.updated_ms) > TASK_TTL_MS
     }
+
+    /// Is this an ACTIVE task nothing has touched for longer than [`ACTIVE_TASK_ABANDON_MS`]?
+    /// The sweep cancels such a task through the normal transition path rather than dropping it.
+    fn is_abandoned(&self, now: u64) -> bool {
+        let state = self.lock();
+        !state.status.is_terminal() && now.saturating_sub(state.updated_ms) > ACTIVE_TASK_ABANDON_MS
+    }
 }
 
 /// THE TASK REGISTRY — the seam the whole method surface addresses tasks through.
@@ -472,8 +492,15 @@ impl Registry {
     }
 
     /// Drop expired terminal rows, and — only if that was not enough — the oldest terminal rows.
-    /// Never a working one: see [`MAX_RETAINED_TASKS`].
+    /// Never a working one: see [`MAX_RETAINED_TASKS`]. An ACTIVE task past the abandonment
+    /// ceiling is first CANCELLED (a transition, never a drop — see [`ACTIVE_TASK_ABANDON_MS`]),
+    /// which stamps `updated_ms`, so it then rides the ordinary terminal TTL below on a later sweep.
     fn sweep(tasks: &mut HashMap<String, Arc<McpTask>>, now: u64) {
+        for task in tasks.values() {
+            if task.is_abandoned(now) {
+                task.cancel(now);
+            }
+        }
         tasks.retain(|_, t| !t.is_expired(now));
         if tasks.len() < MAX_RETAINED_TASKS {
             return;

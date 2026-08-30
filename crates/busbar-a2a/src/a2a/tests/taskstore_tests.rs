@@ -1118,3 +1118,100 @@ fn the_ssrf_floor_runs_a2a_side_and_the_engine_stores_what_it_is_handed() {
         "",
     );
 }
+
+/// THE ABANDONMENT CEILING (rule 0 of the sweep): an ACTIVE task idle past
+/// `abandon_ceiling_secs()` is TRANSITIONED to `canceled` through the normal write path — the row
+/// upserted, a chained `task.terminal` event appended so the journal records the retention expiry
+/// and the chain still verifies — and then the ordinary terminal TTL collects it on a later
+/// sweep. One at exactly the ceiling is untouched (the bound is strict, like the TTL's), and an
+/// active task younger than the ceiling survives every sweep.
+#[test]
+fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out() {
+    let (ttl_secs, _cap) = TaskRegistry::retention_bounds();
+    let abandon = TaskRegistry::abandon_ceiling_secs();
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    let view = busbar_core::plane::store::PlaneStoreView::narrow(handle.clone());
+
+    // t-work last moved at NOW+1, t-paused at NOW+4. A submit at NOW+4+abandon puts t-work
+    // strictly PAST the ceiling and t-paused exactly AT it — one sweep, both bounds pinned.
+    let at1 = NOW + 4 + abandon;
+    h.host(|host| {
+        reg.submit(
+            host,
+            &Task::submitted("t-mid", "ctx-m", "key-m", Direction::Inbound, at1)
+                .unwrap()
+                .to_row(),
+            "req-m",
+        )
+        .expect("submit t-mid");
+    });
+    let work = reg
+        .get_unscoped("t-work")
+        .expect("abandonment TRANSITIONS; it never drops");
+    assert_eq!(
+        work.state, "canceled",
+        "an active task idle past the ceiling was settled as canceled by the sweep"
+    );
+    assert_eq!(
+        work.updated_at, at1,
+        "the settle is stamped with the sweep's clock"
+    );
+    let paused = reg.get_unscoped("t-paused").expect("still held");
+    assert_eq!(
+        paused.state, "auth-required",
+        "idle for EXACTLY the ceiling is not abandoned — the bound is strict"
+    );
+    assert_eq!(
+        handle
+            .get_task("t-work")
+            .unwrap()
+            .expect("durable row")
+            .state,
+        "canceled",
+        "the transition went through the durable write path, not just RAM"
+    );
+    // The chain gained a final terminal event and STILL VERIFIES: submitted + working + terminal.
+    assert_eq!(
+        reg.verify_task_chain(view.as_ref(), "t-work")
+            .expect("store read")
+            .expect("the chain with the retention-expiry event appended verifies end to end"),
+        3,
+        "exactly one chained event records the abandonment"
+    );
+
+    // The settle stamped `updated_at = at1`, so the NORMAL terminal TTL now applies: one second
+    // past the window, the next submit evicts it — while t-mid (active, far younger than the
+    // abandonment ceiling) is untouched.
+    let at2 = at1 + ttl_secs + 1;
+    h.host(|host| {
+        reg.submit(
+            host,
+            &Task::submitted("t-late", "ctx-l", "key-l", Direction::Inbound, at2)
+                .unwrap()
+                .to_row(),
+            "req-l",
+        )
+        .expect("submit t-late");
+    });
+    assert!(
+        reg.get_unscoped("t-work").is_none(),
+        "after the terminal TTL the abandoned-then-canceled task left the working set"
+    );
+    assert_eq!(
+        reg.get_unscoped("t-mid")
+            .expect("young active task survives")
+            .state,
+        "submitted",
+        "an active task younger than the ceiling is never touched by the abandonment rule"
+    );
+    assert_eq!(
+        reg.verify_task_chain(view.as_ref(), "t-work")
+            .expect("store read")
+            .expect("eviction is a RAM event; the persisted chain still verifies"),
+        3,
+        "the durable chain survives the eviction intact"
+    );
+}

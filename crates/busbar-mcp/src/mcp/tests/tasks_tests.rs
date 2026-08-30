@@ -368,3 +368,48 @@ fn cancel_reports_the_transition_it_made_and_only_that_one() {
         "a second cancel finds the task terminal and reports no transition"
     );
 }
+
+/// THE ABANDONMENT CEILING (the missing age bound on ACTIVE tasks): an active task whose last
+/// update is older than `ACTIVE_TASK_ABANDON_MS` is CANCELLED by the create-time sweep — through
+/// the normal `cancel` transition, never a drop — and then rides the ordinary terminal TTL out of
+/// the working set; a younger active task is untouched. Over a LOCAL `Registry` (not the process
+/// global) because the clock here is driven a day into the future, which would abandon every
+/// concurrently running test's live task.
+#[test]
+fn an_abandoned_active_task_is_cancelled_by_the_sweep_and_then_ages_out() {
+    let reg = Registry {
+        tasks: std::sync::Mutex::new(std::collections::HashMap::new()),
+    };
+    let t0 = 1_000_000_u64;
+    let old = reg.create("key-abandon", t0);
+    // Exactly AT the ceiling is not abandoned (the bound is strict, matching `is_expired`).
+    let young = reg.create("key-abandon", t0 + ACTIVE_TASK_ABANDON_MS);
+    let sweep_now = t0 + ACTIVE_TASK_ABANDON_MS + 1;
+    let _trigger = reg.create("key-abandon", sweep_now);
+    assert_eq!(
+        old.detailed()["status"],
+        "cancelled",
+        "an active task a day beyond its last update is cancelled by the sweep, not dropped"
+    );
+    assert!(
+        reg.get(&old.id, "key-abandon").is_some(),
+        "the cancelled task is still pollable — abandonment is a transition into the normal \
+         terminal retention window, not an eviction"
+    );
+    assert_eq!(
+        young.detailed()["status"],
+        "working",
+        "an active task at (not past) the ceiling is untouched"
+    );
+    // The cancel stamped `updated_ms = sweep_now`, so the ordinary terminal TTL now applies.
+    let _later = reg.create("key-abandon", sweep_now + TASK_TTL_MS + 1);
+    assert!(
+        reg.get(&old.id, "key-abandon").is_none(),
+        "after the terminal TTL the abandoned-then-cancelled task is evicted like any other \
+         terminal task"
+    );
+    assert!(
+        reg.get(&young.id, "key-abandon").is_some(),
+        "the younger active task survives every sweep"
+    );
+}
