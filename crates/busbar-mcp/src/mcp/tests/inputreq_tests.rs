@@ -43,7 +43,7 @@ async fn an_ungranted_ask_is_refused_and_nothing_is_satisfied() {
             |_a| -> Satisfied {
                 panic!("deny-by-default was breached: `{kind}` reached the satisfier")
             },
-            |_r| Ok(()),
+            |_r, _s| Ok(()),
         )
         .await;
         assert_eq!(
@@ -72,7 +72,7 @@ async fn an_unrecognised_ask_kind_is_refused_even_when_everything_else_is_grante
         |_r, _s| async move { Ok(ask("filesystem/write")) },
         move || everything,
         |_a| -> Satisfied { panic!("an unknown ask kind reached the satisfier") },
-        |_r| Ok(()),
+        |_r, _s| Ok(()),
     )
     .await;
     assert!(matches!(
@@ -108,7 +108,7 @@ async fn the_grant_is_re_read_on_every_retry_so_a_revocation_bites_on_the_next_o
             *satisfied.borrow_mut() += 1;
             self::satisfied(serde_json::json!({ "ok": true }))
         },
-        |_r| Ok(()),
+        |_r, _s| Ok(()),
     )
     .await;
     assert_eq!(
@@ -160,7 +160,7 @@ async fn an_infinitely_asking_upstream_is_stopped_by_the_hard_round_cap() {
                 ..Default::default()
             },
             |_a| satisfied(serde_json::json!({})),
-            |_r| Ok(()),
+            |_r, _s| Ok(()),
         )
         .await;
         assert_eq!(
@@ -206,7 +206,7 @@ async fn a_runaway_loop_is_stopped_by_the_callers_budget_and_the_refused_round_n
             ..Default::default()
         },
         |_a| satisfied(serde_json::json!({})),
-        |_r| {
+        |_r, _s| {
             let mut n = charges.borrow_mut();
             *n += 1;
             // Three rounds' worth of budget, then the per-key cap says no — exactly what
@@ -256,7 +256,7 @@ async fn every_round_including_the_first_is_charged_exactly_once() {
             ..Default::default()
         },
         |_a| satisfied(serde_json::json!({ "answer": "yes" })),
-        |r| {
+        |r, _s| {
             seen.borrow_mut().push(r.clone());
             Ok(())
         },
@@ -288,6 +288,87 @@ async fn every_round_including_the_first_is_charged_exactly_once() {
     );
 }
 
+/// A MULTI-ROUND DISPATCH HOLDS ONE CONCURRENCY SLOT AT A TIME, so a 3-round call SUCCEEDS against a
+/// `concurrent:2` limit instead of blocking on its own earlier rounds.
+///
+/// `charge` here is the concurrency gauge `charge_round` is in production: it refuses when the live
+/// count is at the limit, and otherwise registers a hold in the ROUND'S OWN dispatch scope — the
+/// scope `drive` now hands it. Because that scope drops when the round ends, each hold releases
+/// before the next round charges, so the live count is 1 at every charge and a 3-round call clears a
+/// limit of 2. When `charge_round` registered into the request-wide arena instead (one hold per round
+/// for the request's whole life), the third round found two of its own earlier holds still live and
+/// was refused — the self-contention this test pins out.
+#[tokio::test]
+async fn a_multi_round_dispatch_holds_one_concurrency_slot_at_a_time() {
+    use busbar_substrate::plane_host::DispatchScope;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Arc;
+
+    const LIMIT: i64 = 2;
+    let live = Arc::new(AtomicI64::new(0));
+    let peak = Arc::new(AtomicI64::new(0));
+
+    // An RAII hold on the `concurrent:2` gauge: registered in a round's scope, released by that
+    // scope's `Drop`.
+    struct Hold(Arc<AtomicI64>);
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    let charge_live = Arc::clone(&live);
+    let charge_peak = Arc::clone(&peak);
+    let outcome = drive(
+        "pool-x",
+        5,
+        // Two granted asks, then done: rounds 0, 1, 2 — three charges.
+        |round, _s| {
+            let r = if round < 2 {
+                ask("roots")
+            } else {
+                Round::Done(serde_json::json!({ "content": "done" }))
+            };
+            async move { Ok(r) }
+        },
+        || ServerRequestGrants {
+            roots: true,
+            ..Default::default()
+        },
+        |_a| satisfied(serde_json::json!({ "roots": [] })),
+        move |_rec: &RoundRecord, scope: &DispatchScope| {
+            let now = charge_live.load(Ordering::SeqCst);
+            if now >= LIMIT {
+                return Err(format!(
+                    "budget: group `pool-x` concurrent cap {LIMIT} reached (in flight: {now})"
+                ));
+            }
+            let n = charge_live.fetch_add(1, Ordering::SeqCst) + 1;
+            charge_peak.fetch_max(n, Ordering::SeqCst);
+            // The hold lives in THIS round's scope; the scope's Drop runs `Hold::drop`.
+            scope.register_admission(Box::new(Hold(Arc::clone(&charge_live))));
+            Ok(())
+        },
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Completed(serde_json::json!({ "content": "done" })),
+        "a 3-round dispatch must not self-contend against a concurrent:2 limit: {outcome:?}"
+    );
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "a multi-round dispatch must hold at most ONE concurrency slot at a time"
+    );
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "every per-round hold is released when its round's scope drops"
+    );
+}
+
 /// THE TERMINATION RULE: an upstream's `InputRequiredResult` TERMINATES AT BUSBAR and is never
 /// proxied outward. Forwarding it would launder an upstream's bid for authority through the party
 /// the caller actually trusts, asking the caller to satisfy — on the upstream's behalf — an ask
@@ -308,7 +389,7 @@ async fn an_upstream_ask_terminates_at_busbar_and_is_never_proxied_outward() {
         |_r, _s| async move { Ok(ask("sampling")) },
         ServerRequestGrants::default,
         |_a| -> Satisfied { unreachable!() },
-        |_r| Ok(()),
+        |_r, _s| Ok(()),
     )
     .await;
     let rendered = match &outcome {
@@ -348,7 +429,7 @@ async fn a_granted_but_unsatisfiable_ask_is_its_own_refusal() {
             ..Default::default()
         },
         |_a| std::future::ready(Err("no client direction".to_string())),
-        |_r| Ok(()),
+        |_r, _s| Ok(()),
     )
     .await;
     assert_eq!(

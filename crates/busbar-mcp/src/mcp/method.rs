@@ -1602,11 +1602,12 @@ async fn tools_call(
 
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
-    // Every concurrency hold `try_admit` takes rides the request-wide dispatch `scope` (the SAME arena
-    // this `tools/call`'s breaker admission registered into) via the host `govern_admit_reason` seam, so
-    // it lives exactly as long as the dispatch does and releases when the request future ends — the
-    // lifetime the caller-held `Vec<AdmitGrant>` had, and never inside the loop while the round it
-    // guards is still running.
+    // The breaker admission above rides the request-wide `scope` and lives for the whole dispatch.
+    // The PER-ROUND concurrency hold `charge_round` takes does NOT: `drive` gives each round its own
+    // dispatch scope, so the hold releases when the round ends. Charging it into the request-wide
+    // arena instead accumulated one hold per round for the request's whole life, so a call needing N
+    // rounds self-contended against a `concurrent:N` group limit and blocked on its own earlier
+    // rounds — a multi-round `tools/call` cannot exceed one logical concurrency slot at a time.
     let server_id = selected.server.clone();
     // BOUND runtime, held for the whole dispatch loop so `pool` (a borrow into it) outlives the
     // `inputreq::drive` future below. This is the request's OWN snapshot pool; the live re-read
@@ -1683,7 +1684,14 @@ async fn tools_call(
         });
         fut
     };
-    let mut charge_seam = |rec: &RoundRecord| charge_round(ctx, &selected.namespaced, rec, scope);
+    // Charged into the ROUND's own scope (`drive` hands it in), not the request-wide `scope`: the
+    // concurrency hold releases when the round ends, so a multi-round `tools/call` holds one slot at a
+    // time rather than one per round for the request's whole life. The budget fee, rate check and
+    // metering `charge_round` performs still run once per round — only the hold's lifetime changes.
+    let mut charge_seam =
+        |rec: &RoundRecord, round_scope: &busbar_substrate::plane_host::DispatchScope| {
+            charge_round(ctx, &selected.namespaced, rec, round_scope)
+        };
     let outcome = inputreq::drive(
         &server_id,
         server.max_input_required_rounds,
