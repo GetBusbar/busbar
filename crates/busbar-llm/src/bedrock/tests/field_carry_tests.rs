@@ -104,7 +104,7 @@ fn bedrock_carry_request_tool_config() {
 
     // Cross-protocol proof: the force-tool-use directive projects into OpenAI's `required`, not
     // degrading to `auto` — the exact loss `IrToolChoice` exists to prevent.
-    if let Some(openai) = crate::proto_codec::protocol_for("openai") {
+    if let Some(openai) = super::super::proto_codec::protocol_for("openai") {
         let oai = openai.writer().write_request(&ir);
         assert_eq!(
             oai.pointer("/tool_choice").and_then(|v| v.as_str()),
@@ -759,7 +759,7 @@ fn bedrock_carry_response_trace_documented_drop() {
         "trace (guardrail + promptRouter) has no cross-protocol carrier and must drop; got {out}"
     );
     // Cross-protocol egress likewise carries neither.
-    if let Some(anthropic) = crate::proto_codec::protocol_for("anthropic") {
+    if let Some(anthropic) = super::super::proto_codec::protocol_for("anthropic") {
         let a = anthropic.writer().write_response(&resp);
         assert!(
             a.to_string().find("promptRouter").is_none()
