@@ -387,3 +387,37 @@ async fn upstream_progress_is_captured_and_emitted_before_the_result() {
 // subject's config has (approved digests) and this harness does not, and a test that silently made
 // no upstream call at all would assert nothing while looking green. It is written down here rather
 // than left as a gap somebody has to rediscover.
+
+/// A BODY-DRAIN FAILURE IS A JSON-RPC ERROR, not an empty `200`.
+///
+/// `as_event_stream` re-frames a `200` by draining the body and re-emitting it as SSE. When the
+/// drain itself fails it used to return `(200, "")` — a failure wearing success's clothes, which a
+/// client reads as "the call returned nothing" and stops. It must be a JSON-RPC internal error at
+/// `500` instead. The fixture is a body that ERRORS mid-drain, which is exactly what `to_bytes`
+/// reports as the failure.
+#[tokio::test]
+async fn a_body_drain_failure_is_a_json_rpc_error_not_an_empty_200() {
+    let body = axum::body::Body::from_stream(futures::stream::once(async {
+        Err::<axum::body::Bytes, std::io::Error>(std::io::Error::other("stream broke"))
+    }));
+    let response = axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .body(body)
+        .expect("a response with an erroring body");
+
+    let framed = crate::mcp::sse::as_event_stream(response, &[], &[]).await;
+
+    assert_eq!(
+        framed.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "a drain failure must be a 500, not a 200 that looks like a successful empty answer"
+    );
+    let bytes = axum::body::to_bytes(framed.into_body(), usize::MAX)
+        .await
+        .expect("the error body drains");
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON-RPC error body");
+    assert_eq!(
+        v["error"]["code"], -32603,
+        "the drain failure is reported as a JSON-RPC internal error: {v}"
+    );
+}
