@@ -562,6 +562,42 @@ fn speech_response_is_billed() {
     );
 }
 
+// carryable-flatten #2: OpenAI `verbose_json` transcription carries language/duration/segments/words,
+// all modelled by `TranscriptionResp` but flattened to text+usage by the reader/writer. Read + carry +
+// emit them. Fails pre-fix: the reader dropped everything but text, so the writer had nothing to emit.
+#[test]
+fn transcription_verbose_json_round_trips_segments_language_duration() {
+    let wire = json!({
+        "text": "Hello world",
+        "language": "english",
+        "duration": 8.47,
+        "segments": [{
+            "id": 0, "start": 0.0, "end": 3.3, "text": "Hello world",
+            "avg_logprob": -0.2, "compression_ratio": 1.2, "no_speech_prob": 0.01
+        }],
+        "words": [{ "word": "Hello", "start": 0.0, "end": 0.5 }],
+    });
+    let ir = super::super::super::leaf_codec::transcription_read_response(
+        "openai",
+        &serde_json::to_vec(&wire).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ir.detected_language.as_deref(), Some("english"));
+    assert_eq!(ir.duration_seconds, Some(8.47));
+    assert_eq!(ir.segments.len(), 1);
+    assert_eq!(ir.segments[0].text, "Hello world");
+    assert_eq!(ir.words.len(), 1);
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::transcription_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
+    assert_eq!(back["language"], "english");
+    assert_eq!(back["duration"], 8.47);
+    assert_eq!(back["segments"][0]["text"], "Hello world");
+    assert_eq!(back["segments"][0]["id"], 0);
+    assert_eq!(back["words"][0]["word"], "Hello");
+}
+
 // carryable-flatten #1: OpenAI transcription returns `text/plain` (NOT application/json) for the
 // plain response formats (`text`/`srt`/`vtt`). The reader records the plain shape (JSON parse fails),
 // and the writer must re-emit the raw body under `text/plain`, not JSON-wrap it. Fails pre-fix: the

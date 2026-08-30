@@ -335,6 +335,49 @@ pub(crate) fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
         return WireBody::typed(Bytes::from(r.text.clone().into_bytes()), "text/plain");
     }
     let mut body = json!({ "text": r.text });
+    // `verbose_json` carries language/duration/segments/words alongside the text. These are all
+    // modelled by the IR; emit each when present (a plain-`json` response leaves them unset, so an
+    // absent field emits nothing rather than a fabricated empty array). Cross-protocol readers that
+    // captured timestamps/diarization survive the openai egress hop instead of being flattened away.
+    if let Some(lang) = &r.detected_language {
+        body["language"] = json!(lang);
+    }
+    if let Some(d) = r.duration_seconds {
+        body["duration"] = json!(d);
+    }
+    if !r.segments.is_empty() {
+        body["segments"] = Value::Array(
+            r.segments
+                .iter()
+                .map(|s| {
+                    let mut o = json!({
+                        "id": s.id, "start": s.start, "end": s.end, "text": s.text,
+                    });
+                    if let Some(v) = s.avg_logprob {
+                        o["avg_logprob"] = json!(v);
+                    }
+                    if let Some(v) = s.no_speech_prob {
+                        o["no_speech_prob"] = json!(v);
+                    }
+                    if let Some(v) = s.compression_ratio {
+                        o["compression_ratio"] = json!(v);
+                    }
+                    if let Some(sp) = &s.speaker {
+                        o["speaker"] = json!(sp);
+                    }
+                    o
+                })
+                .collect(),
+        );
+    }
+    if !r.words.is_empty() {
+        body["words"] = Value::Array(
+            r.words
+                .iter()
+                .map(|w| json!({ "word": w.word, "start": w.start, "end": w.end }))
+                .collect(),
+        );
+    }
     // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
     match &r.usage {
         Some(Billing::Duration { seconds }) => {
@@ -817,33 +860,76 @@ pub(crate) fn read_transcription_response(
     // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
     // real API also carries `usage` — whisper-1 DURATION (`{type:"duration",seconds}`), the
     // gpt-4o-transcribe models TOKENS — captured from the live API (2026-07-10). Both → Billing.
-    let (text, usage, response_format) = match serde_json::from_slice::<Value>(wire) {
-        Ok(v) => {
-            let text = v
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            (
-                text,
-                v.get("usage").and_then(parse_transcription_usage),
-                None,
-            )
-        }
+    // A `verbose_json` body additionally carries language/duration/segments/words — all modelled by
+    // the IR. Parse them so timestamps/diarization survive the hop instead of being flattened to text.
+    let v = match serde_json::from_slice::<Value>(wire) {
+        Ok(v) => v,
         // A non-JSON body is one of OpenAI's plain formats (`text`/`srt`/`vtt`), all served as
         // `text/plain`. Record the plain shape so the writer re-emits `text/plain` rather than
         // JSON-wrapping (the reader cannot tell text from srt/vtt on the wire; `text` is the
         // normalized plain marker and the transcript bytes are carried verbatim regardless).
-        Err(_) => (
-            String::from_utf8_lossy(wire).into_owned(),
-            None,
-            Some("text".to_string()),
-        ),
+        Err(_) => {
+            return Ok(TranscriptionResp {
+                text: String::from_utf8_lossy(wire).into_owned(),
+                response_format: Some("text".to_string()),
+                ..Default::default()
+            });
+        }
     };
+    let text = v
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let segments = v
+        .get("segments")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|s| crate::ir::audio::Segment {
+                    id: s.get("id").and_then(Value::as_i64).unwrap_or(0),
+                    start: s.get("start").and_then(Value::as_f64).unwrap_or(0.0),
+                    end: s.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                    text: s
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    avg_logprob: s.get("avg_logprob").and_then(Value::as_f64),
+                    no_speech_prob: s.get("no_speech_prob").and_then(Value::as_f64),
+                    compression_ratio: s.get("compression_ratio").and_then(Value::as_f64),
+                    speaker: s.get("speaker").and_then(Value::as_str).map(str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let words = v
+        .get("words")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|w| crate::ir::audio::Word {
+                    word: w
+                        .get("word")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    start: w.get("start").and_then(Value::as_f64).unwrap_or(0.0),
+                    end: w.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(TranscriptionResp {
         text,
-        usage,
-        response_format,
+        detected_language: v
+            .get("language")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        duration_seconds: v.get("duration").and_then(Value::as_f64),
+        segments,
+        words,
+        usage: v.get("usage").and_then(parse_transcription_usage),
         ..Default::default()
     })
 }
