@@ -401,6 +401,24 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     Some((event_type, data_lines.join("\n")))
 }
 
+/// The `event:` name of one SSE frame, BORROWED from the frame bytes — the cheap probe for a
+/// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
+/// [`parse_sse_frame`] pays three heap allocations per call (the event-type `String`, the
+/// `data:`-line `Vec`, the joined-payload `String`), which is exactly what a skip decision must
+/// not. Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not
+/// UTF-8 — the same value `parse_sse_frame` reports for those shapes — and, like it, the LAST
+/// `event:` line wins when a frame illegally carries several.
+pub fn sse_event_type(frame: &[u8]) -> &str {
+    let mut name = "";
+    for line in frame.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(b"event:") {
+            name = std::str::from_utf8(rest).map(str::trim).unwrap_or("");
+        }
+    }
+    name
+}
+
 /// Byte-level removal of a TOP-LEVEL `"usage"` member from a JSON object string, preserving every
 /// other byte exactly. Returns `Some(stripped)` when a single top-level `"usage"` member was found
 /// and removed (with the correct adjacent comma and no other reshaping), or `None` when a safe

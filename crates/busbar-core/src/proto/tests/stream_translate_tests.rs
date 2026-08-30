@@ -4642,6 +4642,13 @@ fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
         "only message_start and message_delta should reach the DOM parse; \
          content_block_start/delta/stop must be skipped entirely"
     );
+    assert_eq!(
+        t.parse_calls.get(),
+        2,
+        "the skip must fire BEFORE parse_sse_frame pays its per-frame allocations (event-type \
+         String, data-line Vec, joined-payload String) — a cheap event-type probe decides, so a \
+         content_block frame never reaches the allocating parse at all"
+    );
     // Usage from both usage-bearing frames must still have been captured despite the skip.
     let usage = t.usage().expect("terminal usage must still be captured");
     assert_eq!(usage.input_tokens, 10);

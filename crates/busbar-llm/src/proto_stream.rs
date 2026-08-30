@@ -132,6 +132,11 @@ pub(crate) struct StreamTranslate {
     /// entirely in non-test builds — zero production cost.
     #[cfg(test)]
     pub(super) decode_calls: std::cell::Cell<usize>,
+    /// TEST ONLY: how many frames reached [`parse_sse_frame`] — the ALLOCATING frame parse
+    /// (event-type `String`, `data:`-line `Vec`, joined payload `String`). The same-proto skip's
+    /// whole point is that a skipped frame never pays it, so the gate counts entries.
+    #[cfg(test)]
+    pub(super) parse_calls: std::cell::Cell<usize>,
 }
 
 impl StreamTranslate {
@@ -204,6 +209,8 @@ impl StreamTranslate {
             open_blocks: std::collections::BTreeSet::new(),
             #[cfg(test)]
             decode_calls: std::cell::Cell::new(0),
+            #[cfg(test)]
+            parse_calls: std::cell::Cell::new(0),
         })
     }
 
@@ -782,6 +789,32 @@ impl StreamTranslate {
                     consumed = end;
                     self.scanned = end;
 
+                    if self.same_proto
+                        && self.egress.name_static() == busbar_core::proto::PROTO_ANTHROPIC
+                        && !matches!(
+                            busbar_core::proto::sse_event_type(frame),
+                            "message_start" | "message_delta" | "error"
+                        )
+                    {
+                        // The Anthropic same-proto reader is stateless
+                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
+                        // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
+                        // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
+                        // downstream of this egress needs a decoded `data` for any event except the
+                        // two that carry usage plus the terminal error. Decided on the BORROWING
+                        // `sse_event_type` probe BEFORE `parse_sse_frame` runs, so the ~99% of
+                        // frames that are `content_block_*` skip the frame parse's own three
+                        // allocations (event-type String, data-line Vec, joined-payload String) as
+                        // well as the DOM parse and the IR event Vec — the first cut of this skip
+                        // sat AFTER the frame parse and silently kept paying the join per token.
+                        // The bytes still reach the client verbatim via the `[emit_from..]` bulk
+                        // copy below, which never touches `data`. (A no-`data:` or keepalive frame
+                        // reads as event "" here and is skipped too — the same `continue` the
+                        // parse-based arms below take for it.)
+                        continue;
+                    }
+                    #[cfg(test)]
+                    self.parse_calls.set(self.parse_calls.get() + 1);
                     let parsed = parse_sse_frame(frame);
                     let Some((event_type, data_str)) = parsed else {
                         continue; // no data: line, or non-utf8 — skip
@@ -791,24 +824,6 @@ impl StreamTranslate {
                         // usage on any current protocol; a future protocol that embeds usage in a
                         // terminator/keepalive frame MUST extract it here (the A-tap is skipped for
                         // this frame, but its bytes are still re-emitted verbatim in same_proto mode).
-                        continue;
-                    }
-                    if self.same_proto
-                        && self.egress.name_static() == busbar_core::proto::PROTO_ANTHROPIC
-                        && !matches!(
-                            event_type.as_str(),
-                            "message_start" | "message_delta" | "error"
-                        )
-                    {
-                        // The Anthropic same-proto reader is stateless
-                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
-                        // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
-                        // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
-                        // downstream of this egress needs a decoded `data` for any event except the
-                        // two that carry usage plus the terminal error. Skip the DOM parse, the IR
-                        // event `Vec`, and the per-token `String` allocation for the ~99% of frames
-                        // that are `content_block_*` — the bytes still reach the client verbatim via
-                        // the `[emit_from..]` bulk copy below, which never touched `data`.
                         continue;
                     }
                     #[cfg(test)]
