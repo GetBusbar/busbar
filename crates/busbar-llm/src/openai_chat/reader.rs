@@ -658,6 +658,16 @@ impl ProtocolReader for OpenAiReader {
                 state.thinking_block_open = false;
                 out.push(IrStreamEvent::BlockStop { index: 0 });
             }
+            // Also close a still-open TEXT block (a preamble-then-tool stream): otherwise the tool
+            // block opens while the text block is still open, leaving two content blocks open at once
+            // — overlapping blocks that violate the strict bracketing asserted downstream. Mirrors
+            // the finish-path text close below and cohere's ET_TOOL_CALL_START handling.
+            if state.text_block_open {
+                state.text_block_open = false;
+                if let Some(ti) = state.text_index {
+                    out.push(IrStreamEvent::BlockStop { index: ti });
+                }
+            }
             for tc in tcs {
                 // Bound the upstream-supplied tool-call index before it touches `open_tools` /
                 // `tool_ir_index` as a key. A crafted/proxied chunk can carry `"index": u64::MAX`;

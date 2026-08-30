@@ -57,6 +57,45 @@ fn test_stream_tool_block_is_closed() {
     assert_eq!(starts, stops, "unbalanced block events: {events:?}");
 }
 
+// carryable-flatten #7 (gemini twin): a preamble-text-then-functionCall stream must close the open
+// TEXT block before opening the tool block. The functionCall arm closed a still-open thinking block
+// but never the text block, leaving two content blocks open at once. Fails pre-fix: no BlockStop
+// closing the text block appears before the tool BlockStart.
+#[test]
+fn gemini_text_then_tool_closes_text_block_before_opening_tool() {
+    let events = collect_stream(&[
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "Let me check. "}]}
+            }]
+        }),
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model",
+                    "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "SF"}}}]}
+            }]
+        }),
+    ]);
+    let tool_start = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                IrStreamEvent::BlockStart {
+                    block: IrBlockMeta::ToolUse { .. },
+                    ..
+                }
+            )
+        })
+        .expect("a tool BlockStart must be emitted");
+    assert!(
+        events[..tool_start]
+            .iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockStop { .. })),
+        "the open text block must be closed (BlockStop) BEFORE the tool block opens: {events:?}"
+    );
+}
+
 /// The `functionCall` arm is the one block-opening arm in this reader that does not close an
 /// open thinking block first (its three siblings — text, citations, logprobs — all do). A
 /// `{thought:true}` part followed by a `functionCall` part in the same turn must therefore close
