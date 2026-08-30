@@ -3512,6 +3512,24 @@ pub const A2A_PUSH_CONFIG_UNDELETED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The reconciliation found busbar's own push registration gone at the agent and the re-arm failed.
+pub const A2A_PUSH_REARM_FAILED: Diagnostic = Diagnostic {
+    code: 7103,
+    class: Class::Plane,
+    slug: "a2a-push-rearm-failed",
+    title: "A2A push registration re-arm at the backend agent failed",
+    severity: Severity::Actionable,
+    summary: "A read of busbar's own push registration at the backend agent discovered it gone \
+              (the backend refused it, dropped it, or restarted without it) and the re-arm request \
+              the reconciliation issued FAILED — so the caller's callback stays armed at busbar \
+              and dead at the agent until a later reconciliation succeeds. Per-hop condition \
+              against a live backend; the next read of the registration retries.",
+    action: "Investigate why the backend agent refuses busbar's push-config create (auth, \
+             capability, outage). Deliveries the agent originates resume once a re-arm succeeds.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     code: 1006,
     class: Class::Durability,
@@ -4315,6 +4333,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &A2A_DISPATCH_UNRECORDED,
     &A2A_PUSH_CALLBACK_UNPERSISTED,
     &A2A_PUSH_CONFIG_UNDELETED,
+    &A2A_PUSH_REARM_FAILED,
     &ADMIN_STORE_OPERATION_FAILED,
     &ADMIN_STORE_TASK_JOIN_FAILED,
     &GROUP_DELETE_KEY_READ_FAILED,

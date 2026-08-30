@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use super::receive::{notify_push, Admitted};
 use busbar_substrate::diag_warn;
-use busbar_substrate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED;
+use busbar_substrate::diagnostics::{A2A_OUTBOUND_CRED_UNLEASED, A2A_PUSH_REARM_FAILED};
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.
 ///
@@ -275,11 +275,23 @@ pub(super) async fn mirror_push_config(
             }
         };
         if drifted {
-            tracing::info!(
-                agent = %at.agent_id, task = %busbar_task,
-                "a2a: busbar's own push registration was gone at the agent, and was re-made"
-            );
-            let _ = issue_originated(super::rest::method::CREATE_PUSH_CONFIG, create, &at);
+            // ISSUE FIRST, then report what actually happened: the first cut logged "was re-made"
+            // BEFORE issuing and discarded the result, so a re-arm the agent refused read in the
+            // log as a success — the exact armed-at-busbar-dead-at-the-agent state the
+            // reconciliation exists to close, reported as closed.
+            match issue_originated(super::rest::method::CREATE_PUSH_CONFIG, create, &at) {
+                Ok(_) => tracing::info!(
+                    agent = %at.agent_id, task = %busbar_task,
+                    "a2a: busbar's own push registration was gone at the agent, and was re-made"
+                ),
+                Err(e) => diag_warn!(
+                    A2A_PUSH_REARM_FAILED,
+                    agent = %at.agent_id, task = %busbar_task, error = %e,
+                    "a2a: busbar's own push registration was gone at the agent, and the re-arm \
+                     FAILED — the caller's callback stays dead at the agent until a later \
+                     reconciliation succeeds"
+                ),
+            }
         }
     })
     .await;

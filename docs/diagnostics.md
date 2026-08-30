@@ -2130,6 +2130,17 @@ A caller deleted a push-notification config but the durable task row's callback 
 
 **What to do:** Investigate the durable task-store outage. The caller's retry succeeds once the store accepts writes again.
 
+<a id="a2a-push-rearm-failed"></a>
+### BUSBAR-7103 — A2A push registration re-arm at the backend agent failed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `a2a-push-rearm-failed`
+
+A read of busbar's own push registration at the backend agent discovered it gone (the backend refused it, dropped it, or restarted without it) and the re-arm request the reconciliation issued FAILED — so the caller's callback stays armed at busbar and dead at the agent until a later reconciliation succeeds. Per-hop condition against a live backend; the next read of the registration retries.
+
+**What to do:** Investigate why the backend agent refuses busbar's push-config create (auth, capability, outage). Deliveries the agent originates resume once a re-arm succeeds.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>
