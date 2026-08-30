@@ -414,6 +414,38 @@ async fn http_json_client_issues_subscribe_to_task() {
     assert_eq!(path_of(&last), "/a2a/tasks/BACKEND-OWN-TASK-ID:subscribe");
 }
 
+/// THE v1.0 SPELLING REACHES THE SAME ROUTE. `SubscribeToTask` with `params.task_id` is admitted,
+/// id-mapped and canonicalised by every layer above the REST composer — which then read ONLY the
+/// v0.3 template member (`{id}`), so a v1.0-spelled task verb to an HTTP+JSON backend died
+/// `Unframable` AFTER admission. The composer now resolves a template member under the same
+/// spelling set the rest of the layer accepts (`idmap::TASK_ID_MEMBERS`).
+#[tokio::test]
+async fn http_json_client_issues_subscribe_to_task_under_the_v10_spelling() {
+    crate::testkit::install_test_seams();
+    let h = harness_on(
+        Outcome::AnswersThenStreams(
+            200,
+            backend_rest_working(),
+            vec!["data: {\"id\":\"B\",\"status\":{\"state\":\"working\"}}\n\n".to_string()],
+        ),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let body = envelope_for("SubscribeToTask", serde_json::json!({ "task_id": task }));
+    let (status, _, _) = call_raw(&h, "planner", &body).await;
+    assert_eq!(
+        status, 200,
+        "a v1.0-spelled subscribe to a live task must be served, not die Unframable"
+    );
+    let last = h
+        .sent()
+        .pop()
+        .expect("busbar made no hop for the v1.0-spelled subscribe");
+    assert_eq!(last.http_method, "POST");
+    assert_eq!(path_of(&last), "/a2a/tasks/BACKEND-OWN-TASK-ID:subscribe");
+}
+
 /// A REST-shaped answer: section 11.3 makes the success body the `result` VERBATIM, so there is no
 /// envelope around it. The ids are the backend's own, exactly as [`backend_ok`]'s are.
 fn backend_rest_task() -> String {

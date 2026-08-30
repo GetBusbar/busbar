@@ -957,8 +957,23 @@ impl OutboundFraming for HttpJsonFraming {
                 .ok_or_else(|| format!("the route template `{}` is malformed", op.path))?
                 + open;
             let name = &rest[open + 1..close];
-            let value = left
-                .remove(name)
+            // The member is resolved under EVERY spelling the layers above this composer accept
+            // for it, not the template's one. `canonical_method`, `idmap::translate_request` and
+            // the addressed-task reads all take `id`/`taskId`/`task_id` interchangeably
+            // ([`super::idmap::TASK_ID_MEMBERS`]), so a v1.0-spelled task verb (`task_id`) was
+            // admitted, id-mapped — and then died `Unframable` HERE, the one reader of a single
+            // spelling. `{id}` on the push-config routes is the CONFIG id (the task rides
+            // `{taskId}` beside it), so it stays exact: `id` must never be consumed as a task
+            // spelling there.
+            let spellings: &[&str] = match name {
+                "id" if !op.path.contains("{taskId}") => &super::idmap::TASK_ID_MEMBERS,
+                "taskId" => &["taskId", "task_id"],
+                _ => &[],
+            };
+            let value = spellings
+                .iter()
+                .find_map(|s| left.remove(*s))
+                .or_else(|| left.remove(name))
                 .ok_or_else(|| format!("`{}` names no `{name}` to address", call.method))?;
             let value = value.as_str().map(str::to_string).unwrap_or_else(|| {
                 // A JSON number is a legal id on the wire and `to_string` renders it without the

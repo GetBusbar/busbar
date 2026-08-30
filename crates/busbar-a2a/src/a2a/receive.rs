@@ -2875,6 +2875,11 @@ pub(crate) fn reads_as_streaming_for_test(method: &str) -> bool {
     reads_as_streaming(method)
 }
 
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn shape_of_for_test(envelope: &serde_json::Value) -> super::registry::TaskShape {
+    shape_of(envelope)
+}
+
 /// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it.
 ///
 /// Read from the request rather than assumed, because the catalogue's whole job is to refuse an
@@ -2894,7 +2899,14 @@ fn shape_of(envelope: &serde_json::Value) -> super::registry::TaskShape {
             .get("method")
             .and_then(serde_json::Value::as_str)
             .is_some_and(reads_as_streaming),
-        requires_push_notifications: cfg.and_then(|c| c.get("pushNotificationConfig")).is_some(),
+        // ALL THREE SPELLINGS of "this task registers a callback" — the same pointer list the
+        // callback guard reads ([`CALLBACK_CONFIG_POINTERS`]), because one spelling here was the
+        // exact lesson the guard's doc comment records: a v1.0 `taskPushNotificationConfig`
+        // envelope declares push work just as loudly as v0.3's `pushNotificationConfig`, and a
+        // filter reading only one spelling silently stops constraining the other era's callers.
+        requires_push_notifications: CALLBACK_CONFIG_POINTERS
+            .into_iter()
+            .any(|p| envelope.pointer(p).is_some()),
         input_modes: Vec::new(),
         output_modes: cfg
             .and_then(|c| c.get("acceptedOutputModes"))

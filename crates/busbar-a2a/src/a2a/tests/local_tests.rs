@@ -1364,3 +1364,36 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     );
     assert_eq!(error_code(gone).await, -32001, "removed everywhere");
 }
+
+/// The catalogue filter's "this task registers a callback" read covers EVERY spelling the callback
+/// guard covers — the same three-pointer list, because a filter reading only v0.3's
+/// `pushNotificationConfig` silently stopped constraining v1.0 callers (the exact one-spelling
+/// lesson the guard's own doc comment records from the SSRF fix).
+#[test]
+fn shape_of_reads_push_config_under_all_three_spellings() {
+    let shape = |cfg: serde_json::Value| {
+        crate::a2a::receive::shape_of_for_test(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+            "params": { "configuration": cfg }
+        }))
+        .requires_push_notifications
+    };
+    assert!(
+        shape(serde_json::json!({ "pushNotificationConfig": { "url": HOOK } })),
+        "v0.3 spelling"
+    );
+    assert!(
+        shape(serde_json::json!({ "taskPushNotificationConfig": { "url": HOOK } })),
+        "v1.0 flat spelling declares push work too"
+    );
+    assert!(
+        shape(serde_json::json!({
+            "taskPushNotificationConfig": { "pushNotificationConfig": { "url": HOOK } }
+        })),
+        "v1.0 nested spelling declares push work too"
+    );
+    assert!(
+        !shape(serde_json::json!({ "acceptedOutputModes": ["text"] })),
+        "a configuration naming no callback constrains nothing"
+    );
+}
