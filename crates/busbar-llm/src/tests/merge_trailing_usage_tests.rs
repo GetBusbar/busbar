@@ -69,8 +69,8 @@ fn trailing_detail_sub_buckets_merge_some_wins() {
             cache_creation_1h_input_tokens: c1,
             search_units: s,
             // ADDITIVE per-dialect usage-attribution fields (anthropic web_search_requests/
-            // service_tier, openai audio/prediction sub-buckets, and the other dialect carriers)
-            // default here — this fold test exercises the four token/count sub-buckets only.
+            // service_tier, openai audio/prediction sub-buckets, gemini tool_use_prompt_tokens, and
+            // the other dialect carriers) default here — this fold exercises the four sub-buckets only.
             ..Default::default()
         }
     };

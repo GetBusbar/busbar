@@ -181,6 +181,8 @@ const FIELD_TOTAL_TOKEN_COUNT: &str = "totalTokenCount";
 const FIELD_THOUGHTS_TOKEN_COUNT: &str = "thoughtsTokenCount";
 /// JSON key for the context-cache token count inside `usageMetadata`.
 const FIELD_CACHED_CONTENT_TOKEN_COUNT: &str = "cachedContentTokenCount";
+/// JSON key for the tool/function-calling slice of the prompt tokens inside `usageMetadata`.
+const FIELD_TOOL_USE_PROMPT_TOKEN_COUNT: &str = "toolUsePromptTokenCount";
 
 // ── response identity field names ─────────────────────────────────────────────
 /// JSON key for the opaque response identifier emitted at the top level.
@@ -1399,6 +1401,13 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
             reasoning_tokens: u
                 .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
                 .and_then(|v| v.as_u64()),
+            // busbar 1.6.x field-coverage carry: Gemini's `toolUsePromptTokenCount` is the
+            // tool/function-calling slice of the prompt tokens — pure ATTRIBUTION (a sub-bucket of
+            // the prompt total), recorded so a Gemini-backed request can answer "how many prompt
+            // tokens were tool-use?" and so a same-protocol read→write re-emits it.
+            tool_use_prompt_tokens: u
+                .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
+                .and_then(|v| v.as_u64()),
             ..Default::default()
         },
     }
@@ -1785,3 +1794,7 @@ mod logprobs_carry_tests;
 #[cfg(test)]
 #[path = "tests/image_url_mime_regression_tests.rs"]
 mod image_url_mime_regression_tests;
+
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

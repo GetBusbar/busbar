@@ -1227,6 +1227,12 @@ fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUs
     if trailing.detail.search_units.is_some() {
         acc.detail.search_units = trailing.detail.search_units;
     }
+    // busbar 1.6.x field-coverage carry: the Gemini tool-use prompt sub-bucket rides the same
+    // Some-wins rule — a streamed Gemini egress reports `toolUsePromptTokenCount` only on the
+    // trailing usage-bearing chunk, so folding only the four totals would zero its attribution.
+    if trailing.detail.tool_use_prompt_tokens.is_some() {
+        acc.detail.tool_use_prompt_tokens = trailing.detail.tool_use_prompt_tokens;
+    }
 }
 
 #[cfg(test)]

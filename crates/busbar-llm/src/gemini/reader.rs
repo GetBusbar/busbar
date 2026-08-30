@@ -507,6 +507,27 @@ impl ProtocolReader for GeminiReader {
                             };
                             msg_content.push(block);
                         }
+                        // Code-execution parts (`executableCode` / `codeExecutionResult`) are the
+                        // Gemini code-interpreter tool's model-authored artifacts, replayed in the
+                        // conversation history. No other dialect in the matrix has a native slot for
+                        // them, so on a CROSS-protocol egress they have nowhere to go: drop WITH a
+                        // warn naming the construct (drop-with-warn convention) rather than vanishing
+                        // silently or corrupting them into a text part. Same-protocol Gemini→Gemini
+                        // relay is byte-verbatim and never reaches this reader, so nothing is lost
+                        // there. Kept AFTER the content arms above so a normal part is unaffected.
+                        else if part.get("executableCode").is_some() {
+                            tracing::warn!(
+                                "dropping gemini executableCode part on cross-protocol ingress: the \
+                                 code-interpreter tool's model-authored code has no cross-protocol \
+                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
+                            );
+                        } else if part.get("codeExecutionResult").is_some() {
+                            tracing::warn!(
+                                "dropping gemini codeExecutionResult part on cross-protocol ingress: \
+                                 the code-interpreter tool's execution output has no cross-protocol \
+                                 analog and is NOT carried (same-protocol relay preserves it verbatim)"
+                            );
+                        }
                     }
                 }
 
@@ -1391,6 +1412,25 @@ impl ProtocolReader for GeminiReader {
                         cache_control: None,
                         thought_signature,
                     });
+                }
+
+                // Code-execution parts the model authored (`executableCode` / `codeExecutionResult`,
+                // emitted by Gemini's code-interpreter tool). No cross-protocol dialect has a native
+                // slot, so drop WITH a warn on cross-protocol egress rather than corrupting them into
+                // text. Same-protocol Gemini→Gemini relay is byte-verbatim and never reaches here.
+                if part.get("executableCode").is_some() {
+                    tracing::warn!(
+                        "dropping gemini executableCode part on cross-protocol egress: the \
+                         code-interpreter tool's model-authored code has no cross-protocol analog \
+                         and is NOT carried (same-protocol relay preserves it verbatim)"
+                    );
+                }
+                if part.get("codeExecutionResult").is_some() {
+                    tracing::warn!(
+                        "dropping gemini codeExecutionResult part on cross-protocol egress: the \
+                         code-interpreter tool's execution output has no cross-protocol analog and \
+                         is NOT carried (same-protocol relay preserves it verbatim)"
+                    );
                 }
             }
         }

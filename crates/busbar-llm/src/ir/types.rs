@@ -961,6 +961,12 @@ pub struct IrUsageDetail {
     /// OpenAI `usage.completion_tokens_details.rejected_prediction_tokens` — predicted-outputs tokens
     /// that did not match and were rejected (still billed as output). `None` == not reported.
     pub rejected_prediction_tokens: Option<u64>,
+    /// ADDITIVE (busbar 1.6.x field-coverage carry): Gemini `usageMetadata.toolUsePromptTokenCount`
+    /// — the slice of the PROMPT tokens attributable to the tool/function-calling portion of the
+    /// request. A SUB-BUCKET of the prompt total (like `reasoning_tokens` is of output), never an
+    /// addition, so `billable_tokens` ignores it. Only the Gemini reader populates it and only the
+    /// Gemini writer re-emits it; other protocols have no native analog and leave it `None`.
+    pub tool_use_prompt_tokens: Option<u64>,
 }
 
 impl IrUsage {
