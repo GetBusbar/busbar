@@ -1104,3 +1104,41 @@ async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
     client.expect_quiet(300).await;
     client.eof().await;
 }
+
+/// A BUFFERED BODY THAT CANNOT BE READ ANSWERS THE CALLER AN ERROR FRAME, not silence.
+///
+/// `deliver`'s buffered path drains the response body and re-emits it. On a drain failure it used to
+/// `return` silently — writing nothing for a request id the client is waiting on, so the client
+/// hangs forever on that id. It must write an error frame that names the caller's id instead, so the
+/// request is answered and the client's own in-flight entry clears. The fixture is a body that
+/// ERRORS mid-drain, which is exactly the `to_bytes` failure.
+#[tokio::test]
+async fn a_buffered_body_that_cannot_be_read_answers_an_error_frame_not_silence() {
+    let (_peer, app) = plain_deployment().await;
+    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let body = axum::body::Body::from_stream(futures::stream::once(async {
+        Err::<axum::body::Bytes, std::io::Error>(std::io::Error::other("stream broke"))
+    }));
+    let response = axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .body(body)
+        .unwrap();
+    let session = client.session.clone();
+    tokio::spawn(async move {
+        session
+            .deliver(Some(serde_json::json!("req-J")), Vec::new(), response, 0)
+            .await;
+    });
+    let frame = client.recv().await;
+    assert_eq!(
+        frame.get("id").and_then(|v| v.as_str()),
+        Some("req-J"),
+        "the error names the caller's id so the client can correlate and stop waiting: {frame}"
+    );
+    assert_eq!(
+        frame.pointer("/error/code").and_then(|c| c.as_i64()),
+        Some(-32603),
+        "a body that cannot be read is answered as an internal error, not silence: {frame}"
+    );
+    client.eof().await;
+}

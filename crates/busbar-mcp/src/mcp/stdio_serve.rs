@@ -785,8 +785,25 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         }
         // A buffered body: one JSON-RPC envelope (every non-stream answer this plane produces).
         let (_parts, body) = response.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
-            return;
+        let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                // Do NOT return silently: the caller sent a request id and is waiting for a frame
+                // that names it. Returning here writes nothing, so the CLIENT hangs forever on that
+                // id. Log and write an error frame that names the caller's id, so the request is
+                // answered and the client's own in-flight entry clears.
+                tracing::debug!(error = %e, "mcp stdio serve: a buffered response body could not be read; answering the caller an error frame");
+                let err = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": caller_id.unwrap_or(Value::Null),
+                    "error": {
+                        "code": -32603,
+                        "message": "the response body could not be read",
+                    },
+                });
+                self.emit(&err).await;
+                return;
+            }
         };
         let Ok(mut envelope_value) = serde_json::from_slice::<Value>(&bytes) else {
             // Not a JSON-RPC message (unreachable from this plane's own builders). Stderr, exactly
