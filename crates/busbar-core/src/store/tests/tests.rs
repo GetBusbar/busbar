@@ -4050,3 +4050,46 @@ fn test_recovery_hint_ms() {
     assert!(Unavailable::ProbeInFlight.recovery_hint_ms(now).is_some());
     assert!(Unavailable::Shedding.recovery_hint_ms(now).is_some());
 }
+
+/// THE MID-SELECTION RESET INTERLEAVING, pinned deterministically at the stripe level. A
+/// selection's add / find-max / subtract must observe the reset generation at EXACTLY ONE point —
+/// its single `slot()` resolution — because `slot()` lazily zeroes a stale-generation slot: the
+/// first cut of `select_weighted_for` re-resolved `slot()` for each of the three steps, so a
+/// recovery `reset()` landing between the add and the compensating subtract zeroed the
+/// accumulator mid-sequence and the subtract drove the stripe to `-total`, starving the
+/// just-recovered cell. Both halves are simulated here instruction-for-instruction: the
+/// single-resolution discipline keeps `Σ == 0` across a mid-sequence reset, and the old
+/// per-step re-resolution is kept as the counterexample it corrupts to `-total`.
+#[test]
+fn test_swrr_slot_resolved_once_spans_a_mid_selection_reset() {
+    let stripes = SwrrStripes::new();
+    let stripe = crate::state::worker_stripe(crate::state::worker_stripes());
+    let total = 3i64;
+
+    // The SHIPPED discipline: one resolution spans the whole sequence.
+    let slot = stripes.slot(stripe);
+    slot.fetch_add(total, Ordering::Relaxed);
+    stripes.reset(); // recovery lands mid-selection
+    let _ = slot.load(Ordering::Relaxed);
+    slot.fetch_sub(total, Ordering::Relaxed);
+    // The reset is observed by the NEXT selection's resolution, which zeroes the stripe whole.
+    let _ = stripes.slot(stripe);
+    assert_eq!(
+        stripes.sum(),
+        0,
+        "a single-resolution selection sequence spans a mid-sequence reset with Σ == 0"
+    );
+
+    // The COUNTEREXAMPLE the rule closes: per-step re-resolution lets the second `slot()` call
+    // observe the fresh generation and zero the accumulator between the add and the subtract.
+    stripes.slot(stripe).fetch_add(total, Ordering::Relaxed);
+    stripes.reset();
+    let _ = stripes.slot(stripe).load(Ordering::Relaxed); // zeroes: stale generation observed
+    stripes.slot(stripe).fetch_sub(total, Ordering::Relaxed);
+    assert_eq!(
+        stripes.sum(),
+        -total,
+        "per-step re-resolution corrupts the accumulator to -total across the same interleaving \
+         — the exact skew the single-resolution rule in select_weighted_for exists to prevent"
+    );
+}

@@ -440,8 +440,9 @@ impl LaneRuntime for HealthState {
         // (a generational stripe bump) MUST run so the recovered cell's stripes rejoin from 0 —
         // gate it on the recovered-bool exactly like `record_success_for` and `recover_lane` do.
         if Self::cell_record_success(ls.as_ref(), now) {
-            // Default cell belongs to the no-pool ("") set; reset runs after the transition lock is
-            // released (it is a leaf within `cell_record_success`), so the shard lock is un-nested.
+            // Default cell belongs to the no-pool ("") set; the reset is the lock-free generational
+            // bump (`reset_swrr_for` takes no shard lock), run after the transition lock is
+            // released (it is a leaf within `cell_record_success`).
             self.reset_swrr_for("", ls.as_ref());
         }
         // Every existing per-pool cell for this lane — the cells organic traffic is selected against,
@@ -451,8 +452,10 @@ impl LaneRuntime for HealthState {
         let cells = read_recover(&self.pool_cells);
         for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
             // Same SWRR gate per cell: a real HalfOpen→Closed close here re-admits the cell to
-            // selection with a zeroed accumulator, so reset it under THIS pool's shard lock (keyed by
-            // the pool name), serializing against that pool's selections — mirrors `recover_lane`.
+            // selection with a zeroed accumulator via the lock-free generational bump — each
+            // stripe rejoins from 0 the next time a selection resolves its slot (a selection
+            // observes the generation at exactly ONE point, its single `slot()` resolution, so
+            // the bump can never zero an accumulator mid-sequence) — mirrors `recover_lane`.
             if Self::cell_record_success(cell.as_ref(), now) {
                 self.reset_swrr_for(pool_name, cell.as_ref());
             }
@@ -609,17 +612,17 @@ impl LaneRuntime for HealthState {
             }
         };
         let ls = self.get_lane(lane);
-        // The default cell belongs to the no-pool ("") set. The SWRR reset runs after the close
-        // returns (transition lock released), so the shard lock is taken un-nested — see
-        // `reset_swrr_for`.
+        // The default cell belongs to the no-pool ("") set. The SWRR reset (the lock-free
+        // generational bump — see `reset_swrr_for`; no shard lock) runs after the close returns,
+        // transition lock released.
         if close(ls.as_ref()) {
             self.reset_swrr_for("", ls.as_ref());
         }
         let cells = read_recover(&self.pool_cells);
         for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
             if close(cell.as_ref()) {
-                // Each per-pool cell's SWRR reset runs under ITS pool's shard lock (the map key is
-                // the pool name), serializing against that pool's selections.
+                // Each per-pool cell's SWRR reset is the same lock-free generational bump; the
+                // pool name rides only for signature stability (see `reset_swrr_for`).
                 self.reset_swrr_for(pool_name, cell.as_ref());
             }
         }

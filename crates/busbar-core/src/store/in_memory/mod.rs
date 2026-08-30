@@ -409,7 +409,8 @@ impl HealthState {
     // `LaneState` (the default/direct-route cell) or a per-pool `BreakerCell`. The `&self, lane`
     // and `_in(pool, lane)` methods are thin wrappers that resolve the right cell and delegate.
 
-    /// Reset a recovered cell's SWRR accumulator to 0, UNDER the pool's SWRR shard lock.
+    /// Reset a recovered cell's SWRR accumulator to 0 — a LOCK-FREE generational bump (see below;
+    /// no shard lock is taken here or needed).
     ///
     /// While the member was tripped it was dropped from the healthy set in `select_weighted_for` and
     /// stopped receiving fetch_add/fetch_sub, freezing its `current_weight` at a stale value. On
@@ -479,7 +480,7 @@ impl HealthState {
     }
 
     /// Transition to Closed state (probe success). Mirrors the production recovery path: close the
-    /// cell, then reset its SWRR accumulator under the (default-pool) shard lock.
+    /// cell, then reset its SWRR accumulator (the lock-free generational bump).
     #[cfg(test)]
     pub(crate) fn closed_state(&self, lane: usize, _now_time: u64) {
         let cell = self.get_lane(lane);
@@ -936,24 +937,35 @@ impl HealthState {
         let stripe = crate::state::worker_stripe(stripes);
         let _swrr = (stripe == stripes - 1).then(|| lock_recover(self.swrr_shard(pool)));
         let total: i64 = healthy.iter().map(|(_, _, w)| *w).sum();
-        for (_, cell, eff_wt) in &healthy {
-            cell.swrr()
-                .slot(stripe)
-                .fetch_add(*eff_wt, Ordering::Relaxed);
+        // Each cell's stripe slot is resolved through `slot()` EXACTLY ONCE per selection, so the
+        // reset GENERATION is observed at exactly one point per cell. `slot()` lazily zeroes a
+        // stale-generation slot, and the first cut re-resolved it for each of the add, the
+        // find-max load, and the compensating subtract — so a recovery `reset()` landing between
+        // the add and the subtract zeroed the accumulator MID-SEQUENCE and the subtract then
+        // drove the stripe to `-total`, breaking the per-stripe `Σ == 0` invariant and starving
+        // the just-recovered cell until the skew washed out. With one resolution, a reset that
+        // lands mid-selection is simply not observed until the NEXT selection's `slot()` call —
+        // which zeroes the stripe whole, exactly the rejoin-from-0 the reset means.
+        let slots: Vec<&AtomicI64> = healthy
+            .iter()
+            .map(|(_, cell, _)| cell.swrr().slot(stripe))
+            .collect();
+        for ((_, _, eff_wt), slot) in healthy.iter().zip(&slots) {
+            slot.fetch_add(*eff_wt, Ordering::Relaxed);
         }
-        let mut best: Option<(usize, &Arc<dyn BreakerCellAccess>)> = None;
+        let mut best: Option<usize> = None;
         let mut best_weight = i64::MIN;
-        for (lane_idx, cell, _) in &healthy {
-            let cw = cell.swrr().slot(stripe).load(Ordering::Relaxed);
+        for (i, slot) in slots.iter().enumerate() {
+            let cw = slot.load(Ordering::Relaxed);
             if cw > best_weight {
                 best_weight = cw;
-                best = Some((*lane_idx, cell));
+                best = Some(i);
             }
         }
-        if let Some((_, cell)) = best {
-            cell.swrr().slot(stripe).fetch_sub(total, Ordering::Relaxed);
+        if let Some(i) = best {
+            slots[i].fetch_sub(total, Ordering::Relaxed);
         }
-        best.map(|(idx, _)| idx)
+        best.map(|i| healthy[i].0)
     }
 }
 
