@@ -836,7 +836,7 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
         let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
         let sampling = entry.and_then(|s| s.sampling.clone());
         let gov = busbar_api::PlaneRequestCtx {
-            key: Some(Arc::new(runner.authorised.caller.clone())),
+            key: Some(runner.authorised.caller.clone()),
         };
         let server = server_id.clone();
         // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg

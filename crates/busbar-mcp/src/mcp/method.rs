@@ -1559,16 +1559,16 @@ async fn tools_call(
     // Refusing here rather than inside the loop is what makes "an unauthorised caller cannot even
     // cause a token-exchange round trip" true rather than merely likely: `authorise` is synchronous
     // and reaches nothing.
-    let authorised = match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key())
-    {
-        Ok(a) => a,
-        Err(denied) => {
-            return log.refused(
-                denied.audit_reason(),
-                refuse_setup(ctx, &selected.namespaced, &denied, id),
-            )
-        }
-    };
+    let authorised =
+        match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key.as_ref()) {
+            Ok(a) => a,
+            Err(denied) => {
+                return log.refused(
+                    denied.audit_reason(),
+                    refuse_setup(ctx, &selected.namespaced, &denied, id),
+                )
+            }
+        };
 
     // (3b) THE BREAKER, THROUGH THE ONE SELECTION LOOP — `failover::walk` over this server's
     // candidate set, consulted BEFORE the loop and before any socket, exactly where the LLM walk
@@ -1582,7 +1582,7 @@ async fn tools_call(
     // cell; the probe hold lives in the route and is released owner-checked when it drops.
     let route = super::reroute::PoolRoute::build(
         &ctx.host,
-        ctx.gov.key(),
+        ctx.gov.key.as_ref(),
         &selected,
         authorised,
         &arguments,
@@ -1924,15 +1924,16 @@ async fn create_task(
     // The SAME egress gate the synchronous path runs, in the same position relative to the network:
     // synchronous, reaching nothing, before anything is spent. A task must not be a way to get past
     // a check by being answered later.
-    let authorised = match super::upstream::authorise(server, selected, &arguments, ctx.gov.key()) {
-        Ok(a) => a,
-        Err(denied) => {
-            return log.refused(
-                denied.audit_reason(),
-                refuse_setup(ctx, &selected.namespaced, &denied, id),
-            )
-        }
-    };
+    let authorised =
+        match super::upstream::authorise(server, selected, &arguments, ctx.gov.key.as_ref()) {
+            Ok(a) => a,
+            Err(denied) => {
+                return log.refused(
+                    denied.audit_reason(),
+                    refuse_setup(ctx, &selected.namespaced, &denied, id),
+                )
+            }
+        };
 
     // THE BREAKER, at the same pre-network position the synchronous path consults it — through the
     // SAME walk, so a pooled tool's task is admitted to whichever verified twin is serving — and
@@ -1943,7 +1944,7 @@ async fn create_task(
     // releases it after the detached loop settles (a recorded outcome makes that a no-op).
     let route = super::reroute::PoolRoute::build(
         &ctx.host,
-        ctx.gov.key(),
+        ctx.gov.key.as_ref(),
         selected,
         authorised,
         &arguments,

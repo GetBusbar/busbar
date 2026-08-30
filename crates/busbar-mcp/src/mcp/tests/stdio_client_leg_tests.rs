@@ -410,7 +410,10 @@ async fn an_ungranted_caller_is_refused_before_the_child_is_reached() {
     // Authorised for the TOOL CALL, then stripped of the server grant for the verb. Built by hand
     // from the granted one so that the ONLY difference is the caller's own scope list.
     let mut auth = authorised(&app, &[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    auth.caller.allowed_scopes = Some(Vec::new());
+    // The caller is shared by `Arc` now, so strip its scope on a fresh copy and re-wrap.
+    let mut caller = (*auth.caller).clone();
+    caller.allowed_scopes = Some(Vec::new());
+    auth.caller = std::sync::Arc::new(caller);
 
     for verb in [
         UpstreamVerb::PromptsList,

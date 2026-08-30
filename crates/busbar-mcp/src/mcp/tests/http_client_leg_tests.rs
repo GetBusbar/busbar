@@ -169,10 +169,13 @@ fn authorise(
         .clone();
     let sightings = crate::mcp::runtime(app).sightings.load();
     let sighting = LiveSightings::of(&sightings).sighting_for(SERVER);
+    // `authorise_verb` shares the caller by `Arc`; the fixture holds a plain `&VirtualKey`, so wrap
+    // it here (a test-only clone) rather than thread an `Arc` through every caller of this helper.
+    let caller = caller.map(|k| std::sync::Arc::new(k.clone()));
     authorise_verb(
         &entry,
         &sighting,
-        caller,
+        caller.as_ref(),
         Generations::at_admission(crate::mcp::runtime(app).catalogue.generation()),
         busbar_substrate::store::now(),
     )
