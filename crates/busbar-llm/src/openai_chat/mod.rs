@@ -1029,6 +1029,18 @@ impl OpenAiStreamFraming {
                     continue;
                 };
                 // Assign the next ordinal on first sight of this raw index; replay it thereafter.
+                // CAPPED at the same bound the reader clamps its own `open_tools` map to
+                // (`MAX_OPEN_TOOLS`): the raw index comes off an UNTRUSTED upstream chunk, and an
+                // uncapped first-sight insert would let a backend emitting unbounded distinct
+                // indices grow this map without limit for one stream's lifetime. Past the cap a
+                // NEW raw index passes through unmapped (its own value) — the stream is already
+                // malformed beyond OpenAI's documented 128-parallel-call limit, and known indices
+                // keep replaying their assigned ordinals.
+                if self.tool_call_index.len() >= MAX_OPEN_TOOLS
+                    && !self.tool_call_index.contains_key(&raw)
+                {
+                    continue;
+                }
                 let next = self.tool_call_index.len() as u64;
                 let ordinal = *self.tool_call_index.entry(raw).or_insert(next);
                 if let Some(tc_obj) = tc.as_object_mut() {

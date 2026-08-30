@@ -1,6 +1,6 @@
 # ADR-0005: Superset IR & translation fidelity
 
-> Status: accepted. `ADR-0005` is referenced in `crates/busbar/src/ir/mod.rs`
+> Status: accepted. `ADR-0005` is referenced in `crates/busbar-llm/src/ir/types.rs`
 > (including the explicit f64-not-f32 note).
 
 ## Context
@@ -24,7 +24,7 @@ caller's intent, the gateway has failed at its one job. Two specific hazards:
 
 ## Decision
 
-Define a **superset IR** (`crates/busbar/src/ir/mod.rs`) that is the union of what the six
+Define a **superset IR** (`crates/busbar-llm/src/ir/mod.rs`) that is the union of what the six
 protocols can represent, not the intersection:
 
 - `IrRequest` holds `system`, `messages`, `tools`, `max_tokens`,
@@ -45,7 +45,7 @@ protocols can represent, not the intersection:
   so passthrough cannot lose anything: no reader and no writer runs on it at all.
 
 Translation rides the `ProtocolReader` / `ProtocolWriter` seam (referenced as
-ADR-0006 in `crates/busbar/src/proto/mod.rs`; that seam is the *mechanism*, while this ADR is
+ADR-0006 in `crates/busbar-core/src/proto/mod.rs`; that seam is the *mechanism*, while this ADR is
 about *what the IR preserves*).
 
 ## Consequences

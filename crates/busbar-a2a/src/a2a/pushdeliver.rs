@@ -210,9 +210,14 @@ fn auths() -> &'static Mutex<HashMap<String, DeliveryAuth>> {
 
 /// Remember the addresses a callback was pinned to, so the NEXT delivery can require an overlap.
 pub(crate) fn remember(task_id: &str, pinned: &PinnedCallback) {
-    if let Ok(mut map) = pins().lock() {
-        map.insert(task_id.to_string(), pinned.clone());
-    }
+    // Poison-recovering (the house idiom — see e.g. plane_host/creds.rs `registry()`): the maps
+    // behind these locks stay consistent after a panic, and a silent `if let Ok` no-op here would
+    // let a single poisoned lock quietly stop `forget` clearing secrets for the rest of the
+    // process lifetime.
+    pins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(task_id.to_string(), pinned.clone());
 }
 
 /// Hold the credential this task's receiver wants presented, or drop the one held when the caller
@@ -222,23 +227,27 @@ pub(crate) fn remember(task_id: &str, pinned: &PinnedCallback) {
 /// had authentication with one that does not has withdrawn the credential, and continuing to send
 /// it would be busbar spending a secret its owner has retired.
 pub(crate) fn remember_auth(task_id: &str, auth: Option<&DeliveryAuth>) {
-    if let Ok(mut map) = auths().lock() {
-        match auth {
-            Some(a) => map.insert(task_id.to_string(), a.clone()),
-            None => map.remove(task_id),
-        };
-    }
+    let mut map = auths().lock().unwrap_or_else(|e| e.into_inner());
+    match auth {
+        Some(a) => map.insert(task_id.to_string(), a.clone()),
+        None => map.remove(task_id),
+    };
 }
 
 /// Drop a task's pin AND its credential. Called on the terminal delivery, because a terminal task
 /// gets no more — and a secret with no remaining use is a secret that should not still be in memory.
 pub(crate) fn forget(task_id: &str) {
-    if let Ok(mut map) = pins().lock() {
-        map.remove(task_id);
-    }
-    if let Ok(mut map) = auths().lock() {
-        map.remove(task_id);
-    }
+    // Poison-recovering for the reason that matters MOST here: this is the path that drops a
+    // caller's credential from memory, and the old `if let Ok` no-op meant one panic under either
+    // lock silently stopped every future clear — secrets retained for the process lifetime.
+    pins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(task_id);
+    auths()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(task_id);
 }
 
 /// The pin currently held for a task, for the test that asserts the map is BOUNDED. Reading it is
@@ -246,7 +255,11 @@ pub(crate) fn forget(task_id: &str) {
 /// leak worth a test.
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
-    pins().lock().ok().and_then(|m| m.get(task_id).cloned())
+    pins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(task_id)
+        .cloned()
 }
 
 /// The credential currently held for a task, for the test that asserts [`forget`] clears it. A
@@ -254,7 +267,11 @@ pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
 /// [`pin_for_test`] exists.
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
-    auths().lock().ok().and_then(|m| m.get(task_id).cloned())
+    auths()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(task_id)
+        .cloned()
 }
 
 /// THE A2A PUSH NOTIFICATION BODY: the Task, as the protocol defines it, under BUSBAR's identity.
@@ -411,8 +428,9 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     // ── 2. RE-VALIDATE, against that fresh answer and not against the stored one. ──
     let previous = pins()
         .lock()
-        .ok()
-        .and_then(|m| m.get(&task.task_id).cloned());
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&task.task_id)
+        .cloned();
     let pinned = match previous {
         // The stronger check: pass the guard AND still overlap what was pinned before.
         Some(prev) if prev.url == url => {
@@ -438,8 +456,9 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     // destination could ever see.
     if let Some(auth) = auths()
         .lock()
-        .ok()
-        .and_then(|m| m.get(&task.task_id).cloned())
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&task.task_id)
+        .cloned()
     {
         headers.push((AUTHORIZATION_HEADER.to_string(), auth.header_value()));
     }

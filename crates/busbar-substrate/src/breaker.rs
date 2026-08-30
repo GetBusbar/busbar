@@ -197,10 +197,10 @@ pub fn normalize_raw_error(
         // error_map above overrides — it is checked first and returns early; this is the default
         // when unmapped). The lane is healthy — ContextLength → fail over without penalty.
         //
-        // Gate on a non-5xx status: a 5xx is an upstream server failure, never a context-length
-        // error, so a 5xx body that happens to carry a `context_length_exceeded`-ish code must NOT
-        // be reclassified as ContextLength (that would mask a transient outage and skip the breaker
-        // penalty). Let such cases fall through to the HTTP-status classification below, where the
+        // Gated on the PRECISE request-size statuses (400 Bad Request / 413 Payload Too Large): a
+        // 5xx is an upstream server failure, never a context-length error — and so is a
+        // 200/3xx/auth status that happens to carry a `context_length_exceeded`-ish code — so
+        // every other status falls through to the HTTP-status classification below, where the
         // operator error_map can still countermand via the structured-type signal (Step 1b).
         // TIGHTEN (breaker-layer half): the built-in context_length code only ever
         // applies to oversized-request statuses (400 Bad Request / 413 Payload Too Large).

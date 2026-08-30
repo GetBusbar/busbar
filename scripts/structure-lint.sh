@@ -1696,13 +1696,16 @@ if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
 # agnostic core. Every core-side decision a transport influences is a VTABLE fact, exactly as
 # `ingress_is_eventstream()` and `has_model_in_url()` replaced `if ingress_protocol == "bedrock"`.
 #
-# WHY THIS EXISTS THE DAY THE AXIS DOES, and not later. `Transport` has ONE variant today, so a
-# branch on it is trivially constant and a reviewer would wave it through — which is precisely when
-# the first one gets written, and it is then load-bearing by the time a second variant makes it
-# wrong. The lint costs nothing now and is the only thing that will be watching when `Stdio` and
-# `Grpc` arm. `mcp/config.rs` is the exhibit: it already carries a `Some(Transport::Stdio)` branch
-# guarding a supervisor that no dispatch arm can reach, which is what a transport question looks
-# like when there is no axis to ask it on.
+# WHY THIS EXISTED THE DAY THE AXIS DID, and not later. `Transport` had ONE variant when this
+# armed, so a branch on it was trivially constant and a reviewer would wave it through — which is
+# precisely when the first one gets written, and it is then load-bearing by the time a second
+# variant makes it wrong. That day has since come and the lint held: `Transport::Stdio` is now a
+# REAL, implemented arm of the axis (`mcp/config.rs` — `command:` spawns, `mcp/client/stdio.rs`
+# supervises, `Transport::upstream_wire` dispatches), and the historical exhibit — config.rs's
+# pre-axis `Some(Transport::Stdio)` branch guarding a then-unreachable supervisor — was retired
+# through the exception ledger below exactly as the rules say (config.rs now asks the type ONE
+# named question, `Transport::spawns_child`, instead of comparing it). The lint remains what
+# watches when `Grpc` arms.
 #
 # WHY VALUE USE IS FINE AND ONLY COMPARISON IS BANNED: naming `Transport::Http` at an arrival is a
 # STATEMENT OF FACT — an axum handler does know it is HTTP — and threading or labelling the value
