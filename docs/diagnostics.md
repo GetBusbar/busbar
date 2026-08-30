@@ -2097,6 +2097,39 @@ The submit-time retention sweep found an ACTIVE task idle past the abandonment c
 
 **What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
 
+<a id="a2a-dispatch-unrecorded"></a>
+### BUSBAR-7100 — A2A dispatch (task.delegated) event could not be recorded (durable store write failed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `a2a-dispatch-unrecorded`
+
+An inbound task was durably submitted, but the chained `task.delegated` event — who delegated, to which registered agent — could not be written before the hop. The hop proceeds (the submit already succeeded and failing the request mid-flight would discard work the caller is owed), so the task's provenance chain is missing its dispatch record for this hop. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug.
+
+**What to do:** Investigate the durable task-store outage. Later hops chain their dispatch records again once the store accepts writes; the gap in affected chains is permanent and this diagnostic is its record.
+
+<a id="a2a-push-callback-unpersisted"></a>
+### BUSBAR-7101 — A2A inline push callback could not be persisted (durable store write failed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `a2a-push-callback-unpersisted`
+
+A push-notification callback supplied INLINE on a task submission was validated and accepted, but writing it onto the durable task row failed. The in-process delivery caches are still populated, so notifications deliver for this process lifetime — but after a restart the rehydrated row carries no callback and delivery for this task silently stops. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug.
+
+**What to do:** Investigate the durable task-store outage. Callbacks registered while it persists survive only until the next restart; callers can re-register via `tasks/pushNotificationConfig/set` once the store accepts writes.
+
+<a id="a2a-push-config-undeleted"></a>
+### BUSBAR-7102 — A2A push-notification config delete could not clear the durable row (write failed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `a2a-push-config-undeleted`
+
+A caller deleted a push-notification config but the durable task row's callback could not be cleared. The delete is REFUSED (the config stays registered everywhere and the caller receives an internal error so it can retry) rather than answered OK — acknowledging a delete while the durable callback survives would mean a callback the caller deleted still receiving the task's completion after a restart, the one outcome a delete exists to prevent. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug.
+
+**What to do:** Investigate the durable task-store outage. The caller's retry succeeds once the store accepts writes again.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>

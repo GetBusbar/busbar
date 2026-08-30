@@ -88,7 +88,7 @@ use axum::response::Response;
 
 use super::rpcerror::A2aError;
 use super::task::{Task, TaskState};
-use busbar_substrate::diagnostics::A2A_PUSH_CONFIG_UNRECORDED;
+use busbar_substrate::diagnostics::{A2A_PUSH_CONFIG_UNDELETED, A2A_PUSH_CONFIG_UNRECORDED};
 use busbar_substrate::{diag_debug, diag_error};
 
 /// WHICH SPELLING OF THE PUSH-CONFIG VERBS A CALLER USED, because the two dialects disagree about
@@ -696,21 +696,44 @@ pub(crate) fn delete_push_config(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let removed = match configs().lock() {
-        Ok(mut map) => {
-            let hit = map.get(&task.task_id).is_some_and(|c| c.id == wanted);
-            if hit {
+    let hit = configs()
+        .lock()
+        .ok()
+        .is_some_and(|map| map.get(&task.task_id).is_some_and(|c| c.id == wanted));
+    if hit {
+        // THE DURABLE ROW GOES FIRST, and the delete is only acknowledged once it is actually
+        // clear. Leaving the callback on the row would mean a config the caller deleted still
+        // receiving the task's completion — the one outcome a delete exists to prevent — so a
+        // failed durable clear must NOT proceed as if deleted: the local config entry is kept,
+        // the delivery pins are kept, and the caller gets the internal error so its retry is
+        // meaningful (the verb is idempotent, so retrying is free).
+        if let Err(e) = engine_host.task_set_push_callback(&task.task_id, None, now) {
+            // Error-once latch: a store that cannot clear a push config is a STABLE condition (a
+            // store outage persists across every delete) and this path runs per request. Error on
+            // the transition into the failing state; hold subsequent failures at debug.
+            static PUSH_CONFIG_UNDELETED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !PUSH_CONFIG_UNDELETED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_PUSH_CONFIG_UNDELETED, task = %task.task_id, error = %e, "a2a: a push config delete could not clear the durable row; the config is kept and the caller must retry");
+            } else {
+                diag_debug!(A2A_PUSH_CONFIG_UNDELETED, task = %task.task_id, error = %e, "a2a: a push config delete could not clear the durable row; the config is kept and the caller must retry");
+            }
+            return err(
+                rpc_id,
+                A2aError::Internal,
+                "the push notification config could not be deleted; retry the delete",
+            );
+        }
+        // Durably clear — NOW the local halves go too, and only now: the in-RAM config map and
+        // the delivery pins must never claim less than the durable row holds.
+        if let Ok(mut map) = configs().lock() {
+            // Re-checked under the fresh lock hold (the id was read under an earlier one), so the
+            // removal stays addressed to the config the caller named rather than whatever sits
+            // there now.
+            if map.get(&task.task_id).is_some_and(|c| c.id == wanted) {
                 map.remove(&task.task_id);
             }
-            hit
         }
-        Err(_) => false,
-    };
-    if removed {
-        // THE DURABLE ROW GOES WITH IT. Leaving the callback on the row would mean a config the
-        // caller deleted still receiving the task's completion, which is the one outcome a delete
-        // exists to prevent.
-        let _ = engine_host.task_set_push_callback(&task.task_id, None, now);
         super::pushdeliver::forget(&task.task_id);
     }
     ok(rpc_id, serde_json::Value::Null)

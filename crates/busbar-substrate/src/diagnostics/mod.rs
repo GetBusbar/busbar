@@ -3452,6 +3452,66 @@ pub const PLANE_TASK_ABANDON_UNRECORDED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The `task.delegated` chain event could not be written after a successful Submit — store outage.
+pub const A2A_DISPATCH_UNRECORDED: Diagnostic = Diagnostic {
+    code: 7100,
+    class: Class::Plane,
+    slug: "a2a-dispatch-unrecorded",
+    title: "A2A dispatch (task.delegated) event could not be recorded (durable store write failed)",
+    severity: Severity::Actionable,
+    summary: "An inbound task was durably submitted, but the chained `task.delegated` event — who \
+              delegated, to which registered agent — could not be written before the hop. The hop \
+              proceeds (the submit already succeeded and failing the request mid-flight would \
+              discard work the caller is owed), so the task's provenance chain is missing its \
+              dispatch record for this hop. Typically a durable-store outage. Warned once on the \
+              transition into the failing state; subsequent failures hold at debug.",
+    action: "Investigate the durable task-store outage. Later hops chain their dispatch records \
+             again once the store accepts writes; the gap in affected chains is permanent and this \
+             diagnostic is its record.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A submission-inline push callback could not be persisted to the durable task row.
+pub const A2A_PUSH_CALLBACK_UNPERSISTED: Diagnostic = Diagnostic {
+    code: 7101,
+    class: Class::Plane,
+    slug: "a2a-push-callback-unpersisted",
+    title: "A2A inline push callback could not be persisted (durable store write failed)",
+    severity: Severity::Actionable,
+    summary: "A push-notification callback supplied INLINE on a task submission was validated and \
+              accepted, but writing it onto the durable task row failed. The in-process delivery \
+              caches are still populated, so notifications deliver for this process lifetime — but \
+              after a restart the rehydrated row carries no callback and delivery for this task \
+              silently stops. Typically a durable-store outage. Warned once on the transition into \
+              the failing state; subsequent failures hold at debug.",
+    action: "Investigate the durable task-store outage. Callbacks registered while it persists \
+             survive only until the next restart; callers can re-register via \
+             `tasks/pushNotificationConfig/set` once the store accepts writes.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A push-config delete could not clear the durable row — the delete is refused, caller retries.
+pub const A2A_PUSH_CONFIG_UNDELETED: Diagnostic = Diagnostic {
+    code: 7102,
+    class: Class::Plane,
+    slug: "a2a-push-config-undeleted",
+    title: "A2A push-notification config delete could not clear the durable row (write failed)",
+    severity: Severity::Actionable,
+    summary: "A caller deleted a push-notification config but the durable task row's callback \
+              could not be cleared. The delete is REFUSED (the config stays registered everywhere \
+              and the caller receives an internal error so it can retry) rather than answered OK — \
+              acknowledging a delete while the durable callback survives would mean a callback the \
+              caller deleted still receiving the task's completion after a restart, the one outcome \
+              a delete exists to prevent. Typically a durable-store outage. Warned once on the \
+              transition into the failing state; subsequent failures hold at debug.",
+    action: "Investigate the durable task-store outage. The caller's retry succeeds once the store \
+             accepts writes again.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     code: 1006,
     class: Class::Durability,
@@ -4252,6 +4312,9 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &TRUST_VERIFY_REFUSED_ON_DRIFT,
     &TRUST_VERIFY_UNREACHABLE,
     &PLANE_TASK_ABANDON_UNRECORDED,
+    &A2A_DISPATCH_UNRECORDED,
+    &A2A_PUSH_CALLBACK_UNPERSISTED,
+    &A2A_PUSH_CONFIG_UNDELETED,
     &ADMIN_STORE_OPERATION_FAILED,
     &ADMIN_STORE_TASK_JOIN_FAILED,
     &GROUP_DELETE_KEY_READ_FAILED,

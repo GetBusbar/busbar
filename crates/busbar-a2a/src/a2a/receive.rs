@@ -40,12 +40,12 @@ use std::sync::Arc;
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
 use busbar_substrate::diagnostics::{
-    A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED,
-    A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED,
-    A2A_OUTBOUND_CRED_UNLEASED, A2A_OWN_CARD_BUILD_FAILED, A2A_PUSH_NOTIFY_UNDELIVERED,
-    A2A_REFUSE_SERVE_CARD, A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED,
-    A2A_RELAYED_SUBMISSION_FAILED, A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY,
-    A2A_STREAM_RELAY_INCOMPLETE,
+    A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_DISPATCH_UNRECORDED,
+    A2A_FAILURE_UNRECORDED, A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED,
+    A2A_INTERRUPTED_TASK_UNRESUMED, A2A_OUTBOUND_CRED_UNLEASED, A2A_OWN_CARD_BUILD_FAILED,
+    A2A_PUSH_CALLBACK_UNPERSISTED, A2A_PUSH_NOTIFY_UNDELIVERED, A2A_REFUSE_SERVE_CARD,
+    A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
+    A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
 use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
@@ -1557,18 +1557,46 @@ async fn admitted(
         // THE PER-TASK HASH-CHAIN EVENT FOR THE HOP: who delegated, to which registered agent,
         // recorded BEFORE the socket rather than after it, so a hop that never returns still left a
         // chained record saying it was made.
-        let _ = engine_host.task_journal_write(
+        if let Err(e) = engine_host.task_journal_write(
             &task_id,
             busbar_substrate::plane_host::TaskWrite::Dispatch {
                 agent_id: hop.target_agent_id.as_deref().unwrap_or(&agent_id),
             },
             now,
             &request_id,
-        );
+        ) {
+            // NOT a 503, unlike the Submit failure above: the submit already SUCCEEDED durably, so
+            // failing the request here would discard a recorded task mid-flight over its dispatch
+            // annotation — the hop proceeds, and the chain's missing `task.delegated` record is
+            // made loudly visible instead of silently dropped. Error-once latch: a store outage
+            // persists across every inbound submission and this path runs per request. Error on
+            // the transition into the failing state; hold subsequent failures at debug.
+            static DISPATCH_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !DISPATCH_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_DISPATCH_UNRECORDED, task = %task_id, agent = %agent_id, error = %e, "a2a: the task's dispatch (task.delegated) event could not be recorded");
+            } else {
+                diag_debug!(A2A_DISPATCH_UNRECORDED, task = %task_id, agent = %agent_id, error = %e, "a2a: the task's dispatch (task.delegated) event could not be recorded");
+            }
+        }
     }
 
     if let Some(pinned) = callback.as_ref() {
-        let _ = engine_host.task_set_push_callback(&task_id, Some(pinned.url.clone()), now);
+        if let Err(e) = engine_host.task_set_push_callback(&task_id, Some(pinned.url.clone()), now)
+        {
+            // The local caches below are STILL populated — delivery for this process lifetime
+            // beats none — but the failure is now visible, and the post-restart implication is
+            // stated honestly: the rehydrated row will carry NO callback, so delivery for this
+            // task silently stops at the next restart until the caller re-registers. Error-once
+            // latch: a store outage persists across every submission carrying an inline callback.
+            static PUSH_CALLBACK_UNPERSISTED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !PUSH_CALLBACK_UNPERSISTED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_PUSH_CALLBACK_UNPERSISTED, task = %task_id, error = %e, "a2a: an inline push callback could not be persisted; it delivers only until the next restart");
+            } else {
+                diag_debug!(A2A_PUSH_CALLBACK_UNPERSISTED, task = %task_id, error = %e, "a2a: an inline push callback could not be persisted; it delivers only until the next restart");
+            }
+        }
         // THE ADDRESSES THE GUARD JUST JUDGED, kept so the FIRST delivery is a `revalidate` — the
         // fresh answer must pass the guard AND still overlap this set — rather than a bare
         // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
@@ -2128,7 +2156,7 @@ async fn stream_hop(
                 // ALREADY ON A BLOCKING THREAD, so the delivery is made inline rather than spawned:
                 // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
                 // order also means the receiver sees the states in the order they happened.
-                if let Ok(task) = engine_host
+                match engine_host
                     .task_journal_write(
                         &task_id,
                         busbar_substrate::plane_host::TaskWrite::Transition {
@@ -2139,13 +2167,33 @@ async fn stream_hop(
                     )
                     .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
                 {
-                    if task.push_callback.is_some() {
-                        if let Err(e) = super::pushdeliver::deliver(
-                            engine_host.as_ref(),
-                            notify_seam.as_ref(),
-                            &task,
-                        ) {
-                            diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
+                    Ok(task) => {
+                        if task.push_callback.is_some() {
+                            if let Err(e) = super::pushdeliver::deliver(
+                                engine_host.as_ref(),
+                                notify_seam.as_ref(),
+                                &task,
+                            ) {
+                                diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Reported, never fatal — the STREAM keeps flowing to the caller (the same
+                        // posture as the unary twin's A2A_RELAYED_OUTCOME_UNRECORDED arm, and the
+                        // same code: one condition, one number). Push delivery still requires the
+                        // written row — nothing can be delivered without it — but the failure is
+                        // now visible instead of silently collapsing the whole arm. Error-once
+                        // latch: a store outage persists across every streamed state change and
+                        // this closure runs per event.
+                        static STREAM_OUTCOME_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !STREAM_OUTCOME_UNRECORDED_WARNED
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            diag_error!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %task_id, state = %state.as_str(), error = %e, "a2a: a streamed task transition could not be recorded");
+                        } else {
+                            diag_debug!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %task_id, state = %state.as_str(), error = %e, "a2a: a streamed task transition could not be recorded");
                         }
                     }
                 }

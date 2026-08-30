@@ -1199,3 +1199,168 @@ fn every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names() 
         "only {checked} A2A methods carried both wire names; the inventory is not being read"
     );
 }
+
+/// THE DELETE IS HONEST: when the DURABLE clear fails, the verb must not proceed as if deleted —
+/// the config stays registered everywhere (local map, delivery pins, durable row) and the caller
+/// gets the internal error so its retry means something. Once the store accepts the clear, the
+/// retry removes it everywhere. The old shape removed the local entry FIRST and swallowed the
+/// durable failure, which acknowledged a delete while the durable callback survived — after a
+/// restart the "deleted" config would still receive the task's completion, the one outcome a
+/// delete exists to prevent.
+#[tokio::test]
+async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_error() {
+    crate::testkit::install_test_seams();
+    // A sink is attached to the process-wide TASKS below, so the one lock every sink-attaching
+    // test takes is held for the duration (see `taskstore::TASKS_SINK_LOCK`).
+    let _guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let me = "key-push-delfail";
+    open(
+        me,
+        "push-delfail",
+        "ctx-push",
+        TaskState::Completed,
+        epoch(),
+    );
+
+    let created = result(
+        local::create_push_config(
+            host().as_ref(),
+            Dialect::V10,
+            &envelope(
+                "CreateTaskPushNotificationConfig",
+                serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df", "url": HOOK }),
+            ),
+            &rpc_id(),
+            me,
+            seam(),
+            epoch(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(created["id"], "cfg-df");
+
+    /// A store whose task-row upserts fail for EXACTLY ONE task id (this test's) and delegate for
+    /// every other, so the failure is deterministic without disturbing any concurrent test that
+    /// writes through the same process-global registry while the sink is attached.
+    struct RefuseOneTaskRow(busbar_store_memory::MemoryStore);
+    impl busbar_api::Store for RefuseOneTaskRow {
+        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.0.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.0.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.0.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.0.delete_key(id)
+        }
+        fn get_usage(&self, b: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.0.get_usage(b, w)
+        }
+        fn put_usage(
+            &self,
+            b: &str,
+            w: u64,
+            l: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.0.put_usage(b, w, l)
+        }
+        fn add_metering(&self, d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.0.add_metering(d)
+        }
+        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.0.list_metering(b)
+        }
+        fn upsert_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
+            if record.id == "push-delfail" {
+                return Err(busbar_api::StoreError("disk is full".to_string()));
+            }
+            self.0.upsert_plane_record(record)
+        }
+    }
+    let refusing: std::sync::Arc<dyn busbar_api::Store> =
+        std::sync::Arc::new(RefuseOneTaskRow(busbar_store_memory::MemoryStore::new()));
+    TASKS.set_sink(busbar_core::plane::store::PlaneStoreView::narrow(refusing));
+
+    let refused = local::delete_push_config(
+        host().as_ref(),
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
+        ),
+        &rpc_id(),
+        me,
+        epoch() + 1,
+    );
+    assert_eq!(
+        error_code(refused).await,
+        -32603,
+        "a delete whose durable clear failed answers the internal error, never OK"
+    );
+    assert_eq!(
+        TASKS
+            .get_scoped(me, "push-delfail")
+            .expect("row")
+            .push_callback,
+        HOOK,
+        "the durable row still carries the callback — nothing pretended it was cleared"
+    );
+    let still_there = result(local::get_push_config(
+        host().as_ref(),
+        Dialect::V10,
+        &envelope(
+            "GetTaskPushNotificationConfig",
+            serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
+        ),
+        &rpc_id(),
+        me,
+    ))
+    .await;
+    assert_eq!(
+        still_there["url"], HOOK,
+        "the local config entry was kept too: the registry never claims less than the row holds"
+    );
+
+    // The store recovers (sink detached = the documented store:memory posture, whose clear
+    // succeeds) — the caller's RETRY now removes the config everywhere.
+    TASKS.clear_sink_for_test();
+    let retried = local::delete_push_config(
+        host().as_ref(),
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
+        ),
+        &rpc_id(),
+        me,
+        epoch() + 2,
+    );
+    assert!(
+        body(retried).await.get("error").is_none(),
+        "once the durable clear succeeds the delete is acknowledged"
+    );
+    assert_eq!(
+        TASKS
+            .get_scoped(me, "push-delfail")
+            .expect("row")
+            .push_callback,
+        "",
+        "and the callback is off the row"
+    );
+    let gone = local::get_push_config(
+        host().as_ref(),
+        Dialect::V10,
+        &envelope(
+            "GetTaskPushNotificationConfig",
+            serde_json::json!({ "task_id": "push-delfail", "id": "cfg-df" }),
+        ),
+        &rpc_id(),
+        me,
+    );
+    assert_eq!(error_code(gone).await, -32001, "removed everywhere");
+}
