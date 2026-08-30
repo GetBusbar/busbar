@@ -1008,3 +1008,12 @@ mod translate_parity_cross_pairs_tests;
 #[cfg(test)]
 #[path = "tests/roundtrip_fidelity_tests.rs"]
 mod roundtrip_fidelity_tests;
+
+/// ADVERSARIAL / HOSTILE-BODY matrix for the LLM cross-protocol path: drives all six readers (and
+/// the `StreamTranslate` seam) through non-object bodies, wrong-typed structural arrays, unknown
+/// terminal enums, hostile stream events (u64::MAX index / wrong-typed delta+usage / empty-type
+/// frames), over-deep nesting, truncated + garbage SSE, and oversized-but-valid bodies — asserting
+/// the CURRENT post-hardening contract of clean refusal or clean degrade, never a panic/hang/leak.
+#[cfg(test)]
+#[path = "tests/adversarial_tests.rs"]
+mod adversarial_tests;
