@@ -754,7 +754,8 @@ impl ProtocolReader for ResponsesReader {
                     // this is latent, not a live defect. A full fix would key the open set on the
                     // (output_index, content_index) pair (and thread content_index through the tool
                     // arm and the finish-path close symmetrically); do that here if OpenAI ever ships
-                    // multi-part text items. See carryable-flatten audit item #11.
+                    // multi-part text items. Until then the keying assumes one `output_text` part per
+                    // message item.
                     let idx = data
                         .get("output_index")
                         .and_then(|i| i.as_u64())

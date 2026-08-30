@@ -98,7 +98,7 @@ async fn deployment() -> (
 async fn an_ask_supplied_x_mcp_header_argument_with_no_header_is_refused_before_the_upstream() {
     let (peer, app, gov) = deployment().await;
 
-    // Round 1: the plane asks `region` and issues continuation state. `region` is NOT in the body.
+    // First call: the plane asks `region` and issues continuation state. `region` is NOT in the body.
     let (status, body) = call(
         &app,
         &gov,

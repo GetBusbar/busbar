@@ -3998,12 +3998,11 @@ fn test_try_admit_probe_winnable_free_permit_succeeds() {
     drop(admit);
 }
 
-/// FINDING #2: a Closed-and-ready `try_admit` wins NO single-flight probe, so its `Admit.probe_epoch`
-/// must be `None` — NOT the cell's current epoch. A `Some` here would let the dispatch build a
+/// A Closed-and-ready `try_admit` wins NO single-flight probe, so its `Admit.probe_epoch` must be
+/// `None` — NOT the cell's current epoch. A `Some` here would let the dispatch build a
 /// `ProbeGuard`/release token for a probe it never won, whose drop could revert a probe a peer
 /// legitimately won on the same cell. An expired-Open admit that DOES win a probe carries `Some(epoch)`.
-/// Red-before-green: before the fix the Closed arm returned `Some(<cell's current epoch>)` (the
-/// unconditional `cell.probe_epoch().load()`), so this test's `None` assertion failed.
+/// The Closed arm must therefore yield `None`, not an unconditional `cell.probe_epoch().load()`.
 #[test]
 fn test_try_admit_closed_ready_yields_no_probe_token() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));

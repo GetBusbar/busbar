@@ -2266,10 +2266,10 @@ fn hook_derived_fields_follow_the_registry() {
 /// /root/.ssh` reports whether that path is readable and what tarballs it holds). The fix PINS the
 /// scanned directory to the RUNNING install's plugins dir.
 ///
-/// Proof (and red-before-green): the request's `plugins.dir` points at a directory holding a GARBAGE
-/// `.tar.gz`. With the pin the running (empty) dir is scanned instead, so the config validates
-/// `ok: true` and the caller's dir is never read. Before the fix the scan honored the request's dir,
-/// choked on the garbage tarball, and returned `ok: false` (the arbitrary directory was probed).
+/// The request's `plugins.dir` points at a directory holding a GARBAGE `.tar.gz`. Because the scan is
+/// pinned to the running (empty) dir, that caller-supplied directory is never read: the config
+/// validates `ok: true`. Were the request's dir honored instead, the scan would choke on the garbage
+/// tarball and return `ok: false` — the signal that the arbitrary directory had been probed.
 #[tokio::test]
 async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     // The RUNNING install's plugins dir — empty, so a reference-free config lints clean.

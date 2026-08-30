@@ -125,20 +125,17 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     server.shutdown().await;
 }
 
-/// FINDING #1 (the MAIN forward path). A request that WON a single-flight recovery probe in
-/// `pick_among`, then has its future DROPPED mid-dispatch (client disconnect while parked in
-/// `read_capped_body(r).await`), MUST release the won probe via `forward_with_pool`'s `ProbeGuard` —
-/// the cell must revert HalfOpen→Open so a later request can win the probe again, NOT stay wedged
-/// HalfOpen forever (single-flight would then bench the recovering lane until the slow out-of-band
-/// prober rescued it).
+/// The MAIN forward path releases a won probe when its future is dropped. A request that WON a
+/// single-flight recovery probe in `pick_among`, then has its future DROPPED mid-dispatch (client
+/// disconnect while parked in `read_capped_body(r).await`), MUST release the won probe via
+/// `forward_with_pool`'s `ProbeGuard` — the cell must revert HalfOpen→Open so a later request can win
+/// the probe again, NOT stay wedged HalfOpen forever (single-flight would then bench the recovering
+/// lane until the slow out-of-band prober rescued it).
 ///
-/// Red-before-green: before the fix the main path had NO guard — it released a won probe ONLY through
-/// the explicit `release_probe_*` calls on its return/continue arms, and NONE of those run on a
-/// DROPPED future. So a client disconnect against a recovering (expired-Open → HalfOpen) lane stranded
-/// the cell HalfOpen + `probe_in_flight` forever. (Verified red by building the guard with
-/// `armed: false` — i.e. the pre-fix no-release-on-drop behavior — under which this test's final
-/// assertion fails with the cell still HalfOpen.) With the guard the drop reverts the probe
-/// owner-checked.
+/// The explicit `release_probe_*` calls on the return/continue arms do NOT run on a DROPPED future,
+/// so without the guard a client disconnect against a recovering (expired-Open → HalfOpen) lane would
+/// strand the cell HalfOpen + `probe_in_flight` forever. The `ProbeGuard`'s drop is what reverts the
+/// probe, owner-checked.
 #[tokio::test]
 async fn a_dropped_main_path_future_releases_its_won_probe() {
     crate::metrics::init();
