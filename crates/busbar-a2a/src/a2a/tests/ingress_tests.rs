@@ -630,3 +630,75 @@ async fn a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed()
         "and the subject is reported unreachable, so the fail-closed outage diagnostic latches"
     );
 }
+
+/// A STALLED CONSUMER UNWEDGES THE RELAY THREAD WITHIN THE DEADLINE instead of pinning it forever.
+///
+/// The streaming sink runs on a `spawn_blocking` thread and pushes each chunk onto a bounded channel.
+/// A caller that stops reading its SSE body WITHOUT closing the socket leaves the receiver alive (so
+/// the send never sees a disconnect) and never drained (so the channel stays full). The old
+/// `block_on(tx.send)` parked that thread for the life of the process; two threads of the shared
+/// blocking pool per wedged connection is a cross-plane DoS.
+///
+/// The fixture is that consumer exactly: the one channel slot is filled and the receiver is HELD but
+/// never read. The send runs on its own thread guarded by a watchdog that stands in for "pinned
+/// forever" — against the old unbounded park the `recv_timeout` below expires because the thread
+/// never returns. `send_or_expire` returns `Expired` on its own, well inside the watchdog.
+#[test]
+fn a_stalled_consumer_unwedges_within_the_deadline_instead_of_pinning_the_thread() {
+    let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    tx.try_send(vec![0xAA])
+        .expect("the one channel slot fits the first chunk");
+    // `_rx` is held for the whole test: the receiver is ALIVE (never a disconnect) but never drained
+    // — the exact stalled consumer that used to pin the thread.
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let outcome = super::send_or_expire(
+            &tx,
+            vec![0xBB],
+            std::time::Instant::now() + std::time::Duration::from_millis(150),
+            std::time::Duration::from_millis(10),
+        );
+        let _ = done_tx.send(outcome);
+    });
+    let outcome = done_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("a stalled consumer must unwedge the relay thread within the deadline, not pin it");
+    assert_eq!(
+        outcome,
+        super::RelaySend::Expired,
+        "a full channel whose receiver never drains must expire, not send"
+    );
+    worker.join().expect("the relay thread joins cleanly");
+}
+
+/// A DRAINING CONSUMER lets the chunk straight through — the bound never touches the healthy path.
+#[test]
+fn a_draining_consumer_sends_without_parking() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let outcome = super::send_or_expire(
+        &tx,
+        vec![0x11],
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+        std::time::Duration::from_millis(10),
+    );
+    assert_eq!(outcome, super::RelaySend::Sent);
+    assert_eq!(
+        rx.try_recv().expect("the chunk is on the channel"),
+        vec![0x11]
+    );
+}
+
+/// A CLOSED RECEIVER is a disconnect (the caller went away), NOT an expiry — the two ends are told
+/// apart so the normal end of a stream is not logged as a stall.
+#[test]
+fn a_closed_receiver_is_a_disconnect_not_an_expiry() {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    drop(rx);
+    let outcome = super::send_or_expire(
+        &tx,
+        vec![0x22],
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+        std::time::Duration::from_millis(10),
+    );
+    assert_eq!(outcome, super::RelaySend::Disconnected);
+}
