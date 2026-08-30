@@ -254,31 +254,23 @@ impl RelayTransport for RecordingTransport {
         match &self.outcome {
             Outcome::Fails(err) => Err(err.clone()),
             Outcome::AnswersThenStreams(_, _, frames) | Outcome::Streams(frames) => {
-                // THE SINK IS CALLED FROM INSIDE A RUNTIME, exactly as production calls it.
+                // THE SINK IS CALLED ON A BARE BLOCKING THREAD, exactly as production calls it.
                 //
-                // This is not decoration and it is not "more realistic": it is the whole reason the
-                // streaming relay could panic on every single request while every test here was
-                // green. `ReqwestTransport::post_stream` runs the response read inside
-                // `on_a_dedicated_runtime`, i.e. inside a current-thread `Runtime::block_on`, and
-                // invokes `on_chunk` from within it. This fixture called it on a bare thread, where
-                // tokio's "you may not block from within a runtime" guard does not exist — so the
-                // sink's `blocking_send` was never once exercised in the context it actually runs
-                // in, and the first real streaming request answered
-                // `502 … a2a task stream relay: the worker thread panicked`.
-                //
-                // A fixture that is easier to satisfy than production is a fixture that certifies
-                // code nobody can run.
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("a runtime");
-                rt.block_on(async {
-                    for frame in frames {
-                        if on_chunk(frame.as_bytes()) == ChunkFlow::Stop {
-                            break;
-                        }
+                // Production's `ReqwestTransport::post_stream` rides `seam::hostless().stream`,
+                // whose pump (`busbar_core::egress::seam::pump`) invokes `on_chunk` synchronously
+                // on the calling thread — a plain `spawn_blocking` thread, NO runtime context.
+                // This fixture matches that context by doing the same. An earlier revision wrapped
+                // this loop in a nested current-thread `Runtime::block_on` to mirror the transport
+                // of its day (`on_a_dedicated_runtime`, whose only remaining production caller is
+                // the resolver's name lookup) — a context production's sink no longer runs in, and
+                // the one place in the tree with the nested-runtime shape implicated by the
+                // FLAKE-a2a-sse-relay-hang investigation. A fixture that is HARDER to satisfy than
+                // production is as wrong as one that is easier: both certify a context nobody runs.
+                for frame in frames {
+                    if on_chunk(frame.as_bytes()) == ChunkFlow::Stop {
+                        break;
                     }
-                });
+                }
                 Ok(StreamHead {
                     status: 200,
                     content_type: "text/event-stream".to_string(),

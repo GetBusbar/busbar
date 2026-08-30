@@ -2212,22 +2212,23 @@ async fn stream_hop(
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.
             //
-            // NOT `blocking_send`, AND THAT IS THE WHOLE OF A DEFECT THAT MADE EVERY STREAMING
-            // REQUEST FAIL. This closure looks like it runs on a plain blocking thread — it is
-            // created inside `spawn_blocking` — but it is CALLED from inside
-            // `transport::on_a_dedicated_runtime`, i.e. from within a current-thread
-            // `Runtime::block_on` that is driving the backend's response body. tokio refuses to
-            // block a thread that is driving a runtime, so `blocking_send` panicked on the FIRST
-            // event of EVERY stream and the caller got
-            // `502 … a2a task stream relay: the worker thread panicked`.
+            // THE CONTEXT THIS CLOSURE RUNS IN: production's `post_stream` rides the hostless
+            // egress seam, whose pump (`busbar_core::egress::seam::pump`) invokes the sink
+            // synchronously on this `spawn_blocking` thread — a BARE blocking thread, no runtime
+            // driving it. On such a thread `tx.blocking_send` would be legal too (tokio's
+            // may-not-block-in-a-runtime guard has nothing to trip on), and an earlier transport
+            // (`on_a_dedicated_runtime`, a nested current-thread `Runtime::block_on`) is exactly
+            // what made it panic on the first event of every stream — that transport shape is
+            // gone from this path. `futures::executor::block_on` is KEPT deliberately: it waits
+            // on the same future in EITHER context, so a future transport that reintroduces a
+            // runtime around the pump degrades to nothing instead of resurrecting the
+            // `502 … worker thread panicked` failure.
             //
-            // `futures::executor::block_on` waits on the same future without tokio's guard. It
-            // still blocks this thread, which is correct and is the point: BACKPRESSURE IS KEPT.
-            // The channel stays bounded, so a caller that reads slowly slows the upstream read
-            // rather than growing an unbounded queue in busbar — which is what switching to an
-            // unbounded channel would have traded away to make the panic go away. There is no
-            // deadlock: what this thread waits for is the CONSUMER, which is an axum task on a
-            // different runtime and is not waiting on anything here.
+            // Blocking here is correct and is the point: BACKPRESSURE IS KEPT. The channel stays
+            // bounded, so a caller that reads slowly slows the upstream read rather than growing
+            // an unbounded queue in busbar — which is what switching to an unbounded channel
+            // would have traded away. There is no deadlock: what this thread waits for is the
+            // CONSUMER, an axum task on a different runtime that is not waiting on anything here.
             if futures::executor::block_on(tx.send(ev.sse)).is_err() {
                 return super::relay::ChunkFlow::Stop;
             }
