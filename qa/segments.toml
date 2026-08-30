@@ -135,6 +135,30 @@ tier   = "fast"
 run    = "cargo test --release -p busbar --test method_coverage -- --ignored"
 
 [[segment]]
+id     = "field-coverage"
+status = "active"
+tier   = "fast"
+# THE LLM-PROTOCOL FIELD-COVERAGE GATE (crates/busbar/tests/field_coverage.rs) promoted to its own
+# verdict line — the field-level analogue of method-coverage-acceptance above. Every request/response
+# field of every chat dialect busbar speaks is `carried` (with a named test), `waived` (dated
+# reason), or MISSING — and the MISSING set is PINNED, so `pinned_missing_set_is_exact` fails the
+# build the moment coverage changes in EITHER direction. This segment runs the file's three
+# CHANGE-DETECTING gates (every_status_line_names_a_real_field, every_carried_claim_names_a_real_test,
+# pinned_missing_set_is_exact); they PASS today, which is why this lands `active` — not `reserved`.
+# (The reserved slots below name test targets that do NOT yet exist; this target, field_coverage.rs,
+# DOES — so the honesty rule's "active must run something real" bar is met.)
+#
+# NOT run with `-- --ignored`, deliberately. The file's full-strength acceptance,
+# every_field_is_carried_or_waived, is `#[ignore]`d and RED BY DESIGN while the field work queue in
+# qa/field-coverage.missing is non-empty — exactly as method_coverage's own acceptance is, which
+# method-coverage-acceptance above runs with `-- --ignored`. Arming that same acceptance shape here
+# once the queue is worked down is a one-token change (append ` -- --ignored`). The per-push half of
+# these change-gates also rides `cargo test --workspace` in ci.yml; this segment makes the
+# field-coverage verdict a first-class, independently-reported line on the qa promotion gate. Never
+# weaken the test or this segment to keep it green, and launder no gap into a waiver.
+run    = "cargo test --release -p busbar --test field_coverage"
+
+[[segment]]
 id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
