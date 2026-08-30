@@ -303,10 +303,11 @@ pub(crate) async fn handle_queue(
                     // AtCapacity exclusion recorded by `pick_among` on the pool cell), so record its
                     // breaker outcome against the pool cell — mirrors the fallback/least_bad dispatch.
                     pool,
-                    // The probe `try_admit_breaker` won, released OWNER-CHECKED by `forward_once`'s
-                    // `ProbeGuard` (consistent with the `Admit.probe_epoch` discipline everywhere else).
-                    // `Some(_)` = this dispatch owns a probe, so the guard IS built.
-                    Some(probe_epoch),
+                    // The probe `try_admit_breaker` won (or `None` for a Closed-ready no-op admit),
+                    // released OWNER-CHECKED by `forward_once`'s `ProbeGuard` when `Some` (consistent
+                    // with the `Admit.probe_epoch` discipline everywhere else); on `None` this dispatch
+                    // owns no probe and forward_once builds NO guard.
+                    probe_epoch,
                     op,
                     req_content_type,
                     usage_sink,
@@ -1135,8 +1136,9 @@ pub(crate) async fn handle_fallback_pool(
             // CAS-won the single-flight HalfOpen probe on) — record this attempt's breaker outcome
             // against THAT cell, not the default `""` cell.
             pool_name,
-            // `pick_among` CAS-won a single-flight probe for this dispatch, so the guard IS built.
-            Some(probe_epoch),
+            // `pick_among`'s probe token: `Some(epoch)` when this dispatch WON a single-flight probe
+            // (guard IS built), `None` for a Closed-ready no-op admit (no guard).
+            probe_epoch,
             op,
             req_content_type,
             // Clone per attempt: a transient transport failure retries the next member, so the sink

@@ -2528,7 +2528,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
         "inert admit must refuse, not panic"
     );
     app.plane_breakers.record_success("tool:x", 0);
-    app.plane_breakers.release("tool:x", 0, 7);
+    app.plane_breakers.release("tool:x", 0, Some(7));
     assert_eq!(app.plane_breakers.retry_after_secs("tool:x", 0), 1);
 
     // Arm 2: still planeless with an inert prior → the SAME handle (no re-allocation per apply).

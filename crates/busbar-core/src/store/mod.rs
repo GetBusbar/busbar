@@ -141,9 +141,14 @@ pub use busbar_substrate::store::{
 /// which the dispatched request later releases via `release_probe_owned_in` once it records an
 /// outcome. Ownership of the probe transfers OUT of `try_admit` on success; on failure `try_admit`
 /// releases it internally (exactly, owner-checked), so no `Admit` ever leaks a probe.
+///
+/// `probe_epoch` is `Some(epoch)` ONLY when this admission actually WON a single-flight recovery
+/// probe (an expired-Open cell driven Open→HalfOpen). A Closed-and-ready admission wins no probe and
+/// carries `None`: the dispatch path then builds NO `ProbeGuard`, so it can never revert a probe a
+/// peer legitimately won on the same cell (see `ProbeAdmit`).
 pub(crate) struct Admit {
     pub(crate) permit: Permit,
-    pub(crate) probe_epoch: u64,
+    pub(crate) probe_epoch: Option<u64>,
 }
 
 /// RAII concurrency permit, held for the request's lifetime and released on drop.
@@ -385,15 +390,22 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     /// the single-flight probe CAS) WITHOUT acquiring a concurrency permit — for the `on_exhausted:
     /// queue` dispatch path, which has ALREADY won a permit directly on the lane's semaphore (via
     /// [`lane_semaphore`](Self::lane_semaphore)) and must still pass the breaker before dispatch.
-    /// `Ok(epoch)` = the caller may dispatch: it now owns the (possibly newly-won) single-flight probe,
-    /// released OWNER-CHECKED via `release_probe_owned_in(pool, lane, epoch)` after the dispatched
-    /// request records its outcome — the SAME `Admit.probe_epoch` discipline `try_admit` uses, so the
-    /// queue path no longer relies on the weaker unowned `release_probe_in` (a stale unowned release
-    /// could revert a NEWER probe won by a peer). `Err(_)` = the lane went Dead / BudgetExhausted /
-    /// BreakerOpen / lost the probe WHILE the caller was queued; the caller must release its held permit
-    /// and never dispatch onto it. No permit is touched here, so a probe won on the `Ok` path is the
-    /// caller's to release; on `Err` nothing is left armed.
-    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable>;
+    /// `Ok(Some(epoch))` = the caller may dispatch AND it won a single-flight probe: it owns that
+    /// probe, released OWNER-CHECKED via `release_probe_owned_in(pool, lane, epoch)` after the
+    /// dispatched request records its outcome — the SAME `Admit.probe_epoch` discipline `try_admit`
+    /// uses, so the queue path no longer relies on the weaker unowned `release_probe_in` (a stale
+    /// unowned release could revert a NEWER probe won by a peer). `Ok(None)` = the caller may dispatch
+    /// but it won NO probe (a Closed-and-ready no-op admit), so it must build no release guard.
+    /// `Err(_)` = the lane went Dead / BudgetExhausted / BreakerOpen / lost the probe WHILE the caller
+    /// was queued; the caller must release its held permit and never dispatch onto it. No permit is
+    /// touched here, so a probe won on the `Ok(Some)` path is the caller's to release; otherwise
+    /// nothing is left armed.
+    fn try_admit_breaker(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+    ) -> Result<Option<u64>, Unavailable>;
     /// Release a single-flight recovery probe WON by `acquire_for_dispatch_in` but then NOT dispatched
     /// (the chosen lane couldn't get a concurrency slot before the request deadline, the semaphore
     /// closed on shutdown, etc.). The probe winner left the cell in HalfOpen with `probe_in_flight ==
@@ -406,6 +418,12 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     /// HalfOpen, leaving the existing (already-expired) cooldown intact so the very next request can
     /// re-win the probe. No-op when the cell is no longer HalfOpen (a concurrent success/failure
     /// already transitioned it) or when the probe flag was already clear.
+    //
+    // No PRODUCTION caller remains: every dispatch path now covers the won probe with a `ProbeGuard`
+    // whose drop uses the OWNER-CHECKED `release_probe_owned_in` (the unowned variant here could revert
+    // a peer's live probe). Retained for the store regression tests that pin the unowned-release
+    // mechanism directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn release_probe_in(&self, pool: &str, lane: usize);
     /// Read a (pool, lane) cell's current single-flight probe epoch (owner token). A probe winner
     /// captures this immediately after `acquire_for_dispatch_in` succeeds and later passes it to

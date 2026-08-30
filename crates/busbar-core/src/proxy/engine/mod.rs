@@ -1624,13 +1624,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
 
         let _pick = crate::profile::start(crate::profile::Stage::LanePick);
-        // `probe_epoch`: the owner token for whatever single-flight probe this pick won, captured
-        // synchronously by `pick_among` before any await. Every `release_probe_in` call below this
-        // point runs AFTER `read_capped_body(r).await` — a yield point where a successor request
-        // could have already recorded an outcome and won a NEWER probe on this same cell — so they
-        // must release via the OWNER-CHECKED `release_probe_owned_in(pool_name, i, probe_epoch)`,
-        // never the unowned `release_probe_in`, which would revert whichever probe is live at
-        // release time regardless of which one this attempt actually won.
+        // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
+        // synchronously by `pick_among` before any await), `None` for a Closed-ready no-op admit that
+        // won none. The `probe_guard` built right below turns this into a RAII release that covers the
+        // WHOLE dispatch window — including a dropped future — so this path no longer scatters explicit
+        // (and formerly unowned) `release_probe_*` calls across its early-return arms.
         let (i, permit, probe_epoch) = match pick_among(
             app,
             &cands,
@@ -1675,6 +1673,30 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .await;
             }
         };
+        // RAII probe release covering the WHOLE dispatch window of THIS attempt, built ONLY when this
+        // pick actually WON a single-flight recovery probe (`probe_epoch == Some`). Mirrors the
+        // degraded `walk::forward_once` path (which already builds this guard): if this request future
+        // is DROPPED mid-dispatch (a client disconnect while `req.send()` / `read_capped_body` is in
+        // flight) NONE of the explicit early-return paths below run, so without a Drop guard the won
+        // probe would strand the cell HalfOpen + `probe_in_flight` forever and single-flight would
+        // bench the lane until the slow out-of-band prober reset it. `ProbeGuard::drop` releases it
+        // OWNER-CHECKED (keyed on the captured epoch, so a stale drop never reverts a NEWER probe a
+        // peer won). It stays ARMED across every early-return error path (each records a transient
+        // first, which already transitions the cell, making the guard's release a safe owner-checked
+        // no-op) and is DISARMED the moment the request records a legitimate SUCCESS
+        // (`record_success_in` below) — from there the dispatched request/stream owns the probe
+        // through its recorded outcome. A `None` pick (a Closed-ready no-op admit, which won no probe)
+        // builds NO guard: it owns nothing to release. This supersedes the previous scattered
+        // `release_probe_in`/`release_probe_owned_in` early-return calls and fixes their TWO bugs at
+        // once: the pre-dispatch sites used the UNOWNED `release_probe_in` (which could revert a peer's
+        // live probe), and NONE of the calls ran on a dropped future (the strand this closes).
+        let mut probe_guard = probe_epoch.map(|epoch| crate::proxy::select::ProbeGuard {
+            store: app.store.as_ref(),
+            pool: pool_name,
+            lane: i,
+            armed: true,
+            probe_epoch: epoch,
+        });
         // LANE_PICK ends here (a lane + permit are in hand).
         drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and translate_req — exclude, routing
@@ -1766,11 +1788,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     Ok(v) => Some(v),
                     // `body` already validated/parsed once successfully above; this is infallible.
                     Err(()) => {
-                        // Probe class guard: this lane may have CAS-won the single-flight recovery probe in
-                        // `pick_among`. We bail BEFORE dispatching any request, so no outcome will be
-                        // recorded to clear `probe_in_flight` — release it here or the recovering lane stays
-                        // wedged HalfOpen until the slow out-of-band prober resets it.
-                        app.store.release_probe_in(pool_name, i);
+                        // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard`
+                        // above releases any single-flight probe this pick won on drop (owner-checked),
+                        // so a recovering lane never wedges HalfOpen on this early exit.
                         drop(permit);
                         return ingress_error(
                             ingress_protocol,
@@ -1813,9 +1833,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 {
                     Ok(r) => r,
                     // The blocking task itself failed (panic/cancel): internal error, same exit
-                    // shape as a parse failure.
+                    // shape as a parse failure. Pre-dispatch bail — the armed `probe_guard` releases
+                    // any won single-flight probe on drop (owner-checked).
                     Err(_) => {
-                        app.store.release_probe_in(pool_name, i);
                         drop(permit);
                         return ingress_error(
                             ingress_protocol,
@@ -1843,10 +1863,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             match translated {
                 Ok(p) => p,
                 Err(resp) => {
-                    // Probe class guard: a translation failure also bails before dispatch, so release
-                    // the (possibly won) single-flight probe before returning — same wedged-HalfOpen
-                    // leak as the re-parse path above.
-                    app.store.release_probe_in(pool_name, i);
+                    // A translation failure also bails before dispatch — the armed `probe_guard`
+                    // releases any won single-flight probe on drop (owner-checked), same
+                    // wedged-HalfOpen leak avoided as the re-parse path above.
                     drop(permit);
                     return *resp;
                 }
@@ -1933,7 +1952,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // lane's protocol has no registered handler — bail safely, releasing any single-flight
         // probe this lane won so it cannot wedge HalfOpen.
         let Some(target) = app.lanes[i].egress_target(op.operation, wants_stream) else {
-            app.store.release_probe_in(pool_name, i);
+            // Pre-dispatch bail (protocol has no handler for this op): the armed `probe_guard`
+            // releases any won single-flight probe on drop (owner-checked).
             drop(permit);
             return ingress_error(
                 ingress_protocol,
@@ -2000,7 +2020,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             match axum::http::HeaderValue::from_str(egress_ct) {
                 Ok(v) => v,
                 Err(_) => {
-                    app.store.release_probe_in(pool_name, i);
+                    // Pre-dispatch bail: the armed `probe_guard` releases any won single-flight probe
+                    // on drop (owner-checked).
                     drop(permit);
                     return ingress_error(
                         ingress_protocol,
@@ -2231,20 +2252,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // ClientFault branch does the same). The passthrough breaker invariant is
                         // unchanged either way: no breaker penalty for a caller-key auth failure.
                         if ingress_protocol != egress_name {
-                            // Probe class guard: a passthrough 401/403 is the CALLER's own key
-                            // failing — no breaker penalty — so no failure outcome is recorded to
-                            // clear `probe_in_flight`. If this lane won the recovery probe, release
-                            // it before relaying or the lane stays wedged HalfOpen.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            // A passthrough 401/403 is the CALLER's own key failing — no breaker
+                            // penalty — so no failure outcome is recorded to clear `probe_in_flight`.
+                            // The still-armed `probe_guard` releases any won recovery probe on this
+                            // return (owner-checked), so the lane never wedges HalfOpen.
                             // Reshape via the shared finalizer so the kind→native-envelope mapping
                             // (401→authentication_error, 403→permission_error, …) is identical on the
                             // main path, the degraded path, and the ClientFault branch below.
                             return shape_cross_protocol_error(ingress_protocol, status, &bytes);
                         }
-                        // Probe class guard (same-protocol passthrough 401/403): caller-key auth
-                        // failure carries no breaker penalty, so nothing clears `probe_in_flight`.
-                        // Release the won probe before the verbatim relay or the lane wedges HalfOpen.
-                        app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                        // Same-protocol passthrough 401/403: caller-key auth failure carries no
+                        // breaker penalty, so nothing clears `probe_in_flight`. The still-armed
+                        // `probe_guard` releases any won probe on this return (owner-checked) before
+                        // the verbatim relay, so the lane never wedges HalfOpen.
                         use axum::body::Body;
                         let mut rb = Response::builder().status(status);
                         if let Some(ct) = ct {
@@ -2302,15 +2322,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // ADR-0002: Client fault (caller's bad input) → no breaker penalty.
                             // Track client_fault separately from upstream err.
                             app.store.record_client_fault(i);
-                            // Probe class guard: `record_client_fault` only bumps an observability
-                            // counter — it does NOT clear `probe_in_flight`. If this lane CAS-won the
-                            // single-flight recovery probe in `pick_among`, both ClientFault exits
-                            // below (cross-protocol reshape and same-protocol verbatim relay) return
-                            // without recording any breaker outcome, so neither would release the
-                            // probe — leaving the recovering lane wedged HalfOpen until the slow
-                            // out-of-band prober resets it. Release it once here, before either exit,
-                            // so the lane is immediately re-probeable on the next cooldown.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            // `record_client_fault` only bumps an observability counter — it does NOT
+                            // clear `probe_in_flight`. Both ClientFault exits below (cross-protocol
+                            // reshape and same-protocol verbatim relay) return without recording any
+                            // breaker outcome, so the still-armed `probe_guard` is what releases any
+                            // won recovery probe on those returns (owner-checked) — leaving the lane
+                            // immediately re-probeable rather than wedged HalfOpen.
                             // Same-protocol passthrough relays the upstream 4xx body + CT verbatim
                             // (it is already in the client's native shape). Cross-protocol must
                             // RESHAPE the error into the ingress protocol's native envelope —
@@ -2537,13 +2554,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 metric_pool,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
-                            // Probe class guard: ContextLength is a client-fault variant (the request
-                            // is too large for THIS lane's window) — no breaker penalty, so nothing
-                            // records an outcome to clear `probe_in_flight`. If this lane won the
-                            // recovery probe, this `continue` would abandon it set, wedging the lane
-                            // HalfOpen until the slow out-of-band prober rescues it. Release it so the
-                            // lane is immediately probe-eligible again for normal-size requests.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            // ContextLength is a client-fault variant (the request is too large for
+                            // THIS lane's window) — no breaker penalty, so nothing records an outcome
+                            // to clear `probe_in_flight`. The still-armed `probe_guard` releases any
+                            // won recovery probe when it drops at this iteration's end (owner-checked),
+                            // so this `continue` leaves the lane immediately probe-eligible again for
+                            // normal-size requests rather than wedged HalfOpen.
                             last_failure = Some(DISPOSITION_CONTEXT_LENGTH);
                             drop(permit);
                             continue;
@@ -2560,6 +2576,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
                 // admitting the lane once it reaches 0).
                 app.store.record_success_in(pool_name, i);
+                // DISARM the probe guard: `record_success_in` recorded this dispatch's legitimate
+                // outcome (HalfOpen→Closed, probe cleared), so the request now owns the probe through
+                // to that outcome. From here the streamed/buffered success body (or its own mid-stream
+                // failure recording) is responsible for the cell, and the guard must NOT also release
+                // it on drop (buffered return, cross-protocol translate handoff, or FirstByteBody
+                // handoff below). No-op when no guard was built (a Closed-ready no-op admit).
+                if let Some(g) = probe_guard.as_mut() {
+                    g.armed = false;
+                }
                 // Fold this request's time-to-headers into the lane's latency EWMA (the routing
                 // `fastest` signal). Measured to the upstream RESPONSE HEADERS (`req.send().await`
                 // completion) — a cheap, bounded proxy that does NOT wait out an unbounded streaming

@@ -287,16 +287,23 @@ impl LaneRuntime for HealthState {
         };
         // Mutating probe acquisition — the Open→HalfOpen CAS for an expired-Open cell, a no-op for a
         // Closed-ready one. We hold a permit now, so a probe won here is always dispatchable.
-        if !Self::cell_acquire_breaker(cell.as_ref(), now) {
+        let probe_epoch = match Self::cell_acquire_breaker(cell.as_ref(), now) {
             // Lost the single-flight race (or a peer moved the cell on since the verdict peek). Release
             // the permit we grabbed — never hold a slot we won't dispatch to.
-            drop(permit);
-            return Err(Unavailable::ProbeInFlight);
-        }
-        // Owner token for the (possibly newly-won) probe, captured synchronously — the cell is HalfOpen
-        // (single-flight), so no peer can win a newer probe before we read it. Mirrors `pick_among`'s
-        // capture discipline; the dispatched request releases via `release_probe_owned_in`.
-        let probe_epoch = cell.probe_epoch().load(Ordering::Acquire);
+            ProbeAdmit::Denied => {
+                drop(permit);
+                return Err(Unavailable::ProbeInFlight);
+            }
+            // Admitted on a Closed-ready cell — NO probe was won, so there is NO owner token to hand
+            // out. Returning `None` is load-bearing: the dispatch path then builds NO `ProbeGuard`, so
+            // a drop/early-exit on this admission can never revert a probe a peer legitimately won on
+            // this same cell (the phantom-token bug the owner-check alone only narrowly avoided).
+            ProbeAdmit::ReadyNoProbe => None,
+            // Won the single-flight recovery probe — carry the owner token captured at the win (under
+            // the transition lock, before any await); the dispatched request releases it OWNER-CHECKED
+            // via `release_probe_owned_in`.
+            ProbeAdmit::ProbeWon(epoch) => Some(epoch),
+        };
         Ok(Admit {
             permit,
             probe_epoch,
@@ -314,7 +321,12 @@ impl LaneRuntime for HealthState {
         Some(ls.sem.clone())
     }
 
-    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable> {
+    fn try_admit_breaker(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+    ) -> Result<Option<u64>, Unavailable> {
         // Same lane-global gates as `try_admit` (SEPARATE reads): the lane may have gone
         // dead/budget-exhausted while the caller was parked on the semaphore.
         let ls = self.get_lane(lane);
@@ -335,17 +347,15 @@ impl LaneRuntime for HealthState {
         }
         // Win the single-flight probe (a no-op CAS on a Closed-ready cell). Unlike `try_admit` this
         // does NOT then acquire a permit — the queue caller already holds one from the lane's own
-        // semaphore. On success the probe ownership transfers to the caller (the dispatched request
-        // releases it OWNER-CHECKED via `release_probe_owned_in`, using the returned epoch — matching
-        // `try_admit`'s `Admit.probe_epoch` discipline); on a lost race we report `ProbeInFlight` and
-        // leave nothing armed.
-        if !Self::cell_acquire_breaker(cell.as_ref(), now) {
-            return Err(Unavailable::ProbeInFlight);
+        // semaphore. On a probe win the ownership transfers to the caller as `Some(epoch)` (the
+        // dispatched request releases it OWNER-CHECKED via `release_probe_owned_in`, matching
+        // `try_admit`'s `Admit.probe_epoch` discipline); a Closed-ready no-op admit returns `None`
+        // (NO probe won, so the caller builds no guard); a lost race reports `ProbeInFlight`.
+        match Self::cell_acquire_breaker(cell.as_ref(), now) {
+            ProbeAdmit::Denied => Err(Unavailable::ProbeInFlight),
+            ProbeAdmit::ReadyNoProbe => Ok(None),
+            ProbeAdmit::ProbeWon(epoch) => Ok(Some(epoch)),
         }
-        // Owner token for the (possibly newly-won) probe, captured synchronously — the cell is HalfOpen
-        // (single-flight), so no peer can win a newer probe before we read it. Handed back so the queue
-        // dispatch path can release it OWNER-CHECKED, exactly like `try_admit`'s `Admit.probe_epoch`.
-        Ok(cell.probe_epoch().load(Ordering::Acquire))
     }
 
     fn release_probe_in(&self, pool: &str, lane: usize) {

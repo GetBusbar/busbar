@@ -124,3 +124,113 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
 
     server.shutdown().await;
 }
+
+/// FINDING #1 (the MAIN forward path). A request that WON a single-flight recovery probe in
+/// `pick_among`, then has its future DROPPED mid-dispatch (client disconnect while parked in
+/// `read_capped_body(r).await`), MUST release the won probe via `forward_with_pool`'s `ProbeGuard` —
+/// the cell must revert HalfOpen→Open so a later request can win the probe again, NOT stay wedged
+/// HalfOpen forever (single-flight would then bench the recovering lane until the slow out-of-band
+/// prober rescued it).
+///
+/// Red-before-green: before the fix the main path had NO guard — it released a won probe ONLY through
+/// the explicit `release_probe_*` calls on its return/continue arms, and NONE of those run on a
+/// DROPPED future. So a client disconnect against a recovering (expired-Open → HalfOpen) lane stranded
+/// the cell HalfOpen + `probe_in_flight` forever. (Verified red by building the guard with
+/// `armed: false` — i.e. the pre-fix no-release-on-drop behavior — under which this test's final
+/// assertion fails with the cell still HalfOpen.) With the guard the drop reverts the probe
+/// owner-checked.
+#[tokio::test]
+async fn a_dropped_main_path_future_releases_its_won_probe() {
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // Gated 500: the main path receives the 500 headers, enters the non-2xx branch, and parks in
+    // `read_capped_body(r).await` — the mid-dispatch await the dropped-future guard must cover — BEFORE
+    // recording any breaker outcome, so the guard is still ARMED when the future is dropped.
+    state.push(MockResponse::Gated {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({"error": {"message": "boom"}}),
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("pa", &[(0, 1)])
+        .build();
+
+    // Make the lane EXPIRED-OPEN so `pick_among`'s `try_admit` WINS a single-flight recovery probe
+    // (cell → HalfOpen) on the main path — the state that wedges if the won probe leaks on drop.
+    app.store.force_open_in("pa", 0, 0);
+
+    let body = serde_json::to_vec(
+        &json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}),
+    )
+    .unwrap();
+    let app_r = app.clone();
+    let cands = vec![crate::state::WeightedLane {
+        reasoning: None,
+        idx: 0,
+        weight: 1,
+        attempt_timeout_ms: None,
+    }];
+    let request = tokio::spawn(async move {
+        forward_with_pool(
+            &app_r,
+            cands,
+            body.into(),
+            None,
+            "pa",
+            None,
+            "anthropic",
+            crate::handlers::CHAT,
+            None,
+        )
+        .await
+    });
+
+    // Parked in the gated body read, with the won probe held.
+    started.notified().await;
+    assert!(
+        matches!(app.store.breaker_state_in("pa", 0), BreakerState::HalfOpen),
+        "precondition: the main-path dispatch won the recovery probe (cell HalfOpen)"
+    );
+
+    // DROP the request future mid-await (client disconnect): abort the task and let its Drop chain run.
+    request.abort();
+    let _ = request.await;
+
+    // The `ProbeGuard`'s Drop must have released the probe (owner-checked HalfOpen→Open) — the cell
+    // must NOT be stuck HalfOpen. Poll briefly for the drop to take effect.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while matches!(app.store.breaker_state_in("pa", 0), BreakerState::HalfOpen) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped main-path future left the cell stuck HalfOpen — the won probe leaked"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        matches!(
+            app.store.breaker_state_in("pa", 0),
+            BreakerState::Open { .. }
+        ),
+        "a dropped main-path future must release its won probe (HalfOpen→Open), not bench the lane"
+    );
+    // Concretely re-probeable: a later dispatch can win the probe again.
+    assert!(
+        app.store
+            .acquire_for_dispatch_in("pa", 0, crate::store::now().saturating_add(86_400)),
+        "after the guard's release a later request must be able to win the probe again"
+    );
+
+    release.notify_waiters();
+    server.shutdown().await;
+}

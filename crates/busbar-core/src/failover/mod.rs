@@ -223,7 +223,7 @@ pub(crate) fn walk<'a, C: Candidate>(
     members: &'a [C],
     attempt: &Attempt<'_>,
     now: u64,
-) -> Result<Admitted<'a, C>, Refusal> {
+) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
     let mut order = InOrder::new(attempt.tried, members.len());
     // These planes render their refusal from `Refusal` itself (which already carries every reason by
     // name), so the positional buffer is local and dropped here.
