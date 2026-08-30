@@ -913,20 +913,25 @@ async fn admitted(
     };
     let now = engine_host.clock_now_secs();
 
-    // ── THE ONE VERB THAT NAMES NO AGENT. ───────────────────────────────────────────────────────
+    // ── GetExtendedAgentCard: ANSWERED LOCALLY ONLY ON THE PLANE'S OWN ENDPOINT. ─────────────────
     //
-    // `GetExtendedAgentCard` asks busbar about ITSELF, so it is answered before the catalogue
-    // selects an agent, before admission judges one, and before the meter opens a hold against one
-    // — none of which has a subject on this call. Every other local verb is answered after all
-    // three, because every other one names a task, and a task names an agent.
+    // On `POST /a2a` (`Target::FromCatalogue`) the caller named no agent, so the verb asks busbar
+    // about ITSELF and is answered here — before the catalogue selects an agent, before admission
+    // judges one, before the meter opens a hold — because none of those has a subject on this call.
+    // The answer is computed from THIS caller's own catalogue (a caller with no grants gets an empty
+    // card), and it is not free of authorisation for being early: the route is `RouteAuth::Key` and
+    // `gov.key` was required above.
     //
-    // It is not free of authorisation for being early: the route is `RouteAuth::Key`, `gov.key` was
-    // required above, and the ANSWER is computed from this caller's own catalogue. A caller with no
-    // grants gets a card with nothing in it.
-    if matches!(
-        super::local::method_of(&envelope),
-        "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
-    ) {
+    // On `POST /a2a/agents/{id}` (`Target::Named`) the caller DID name an agent, so the verb is a
+    // request for THAT backend's authenticated extended card and busbar RELAYS it — the client leg,
+    // metered and credentialed like any other addressed hop, but TASK-LESS (see `card_fetch` below).
+    // Falling through here is what makes the `a2a|*|client|client|GetExtendedAgentCard` cells real.
+    if matches!(target, FromCatalogue)
+        && matches!(
+            super::local::method_of(&envelope),
+            "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
+        )
+    {
         return super::route::extended_agent_card(&engine_host, key, &rpc_id);
     }
 
@@ -938,6 +943,15 @@ async fn admitted(
             Err(resp) => return *resp,
         },
     };
+    // A CARD FETCH — a `GetExtendedAgentCard` that reached here, so it is `Target::Named` (the
+    // `FromCatalogue` case was answered locally just above). It relays like an addressed hop but
+    // opens NO task: it names no task and carries no `contextId`, so the task machinery below is
+    // skipped for it and the synthetic task id it computes is never persisted. Every guard that
+    // reads this flag exists to keep that promise — no row, no journal, no identity rewrite.
+    let card_fetch = matches!(
+        super::local::method_of(&envelope),
+        "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
+    );
     let context_id = envelope
         .get("params")
         .and_then(|p| p.get("message"))
@@ -1350,6 +1364,20 @@ async fn admitted(
     //    of task-scoped verbs to the member that accepted the task.
     let pool = super::route::pool_of(engine_host.as_ref(), &admitted.dispatch.agent_id);
 
+    // A CARD FETCH TO A POOL HAS NO SINGLE ANSWER. A pool's members are distinct backends that may
+    // each publish a different extended card, so there is no one card to relay and no member a read
+    // may silently pick. Refused HERE, before `select_member`, so a card read never takes the
+    // fresh-submission WALK — which would consume and settle a pool work-probe and let a failed card
+    // read trip the breaker for real submissions. A caller wanting one member's card addresses it.
+    if card_fetch && pool.is_some() {
+        return super::rpcerror::respond(
+            &rpc_id,
+            super::rpcerror::A2aError::UnsupportedOperation,
+            "GetExtendedAgentCard is not defined for a pooled agent: its members may present \
+             different cards",
+        );
+    }
+
     let resumed = if addressed.is_some() || context_id.is_empty() {
         None
     } else if let Some((_, members)) = &pool {
@@ -1497,10 +1525,12 @@ async fn admitted(
             )
                 .into_response();
         }
-    } else if addressed.is_none() {
+    } else if addressed.is_none() && !card_fetch {
         // 4. DISPATCH, recorded durably. The task and its provenance chain are opened BEFORE the
         //    outcome is known, which is the point: a task that ends by the process dying still has a
-        //    row saying it was submitted and to whom it was dispatched.
+        //    row saying it was submitted and to whom it was dispatched. A card fetch opens NO row:
+        //    it names no task and there is no work to record, so the synthetic `task_id` above stays
+        //    unpersisted (metering and audit below key on the caller and the agent, not the task).
         let task = match super::task::Task::submitted(
             &task_id,
             &context_id,
@@ -1671,6 +1701,15 @@ async fn admitted(
         Ok(f) => f,
         Err(refusal) => {
             return refusal.map(|resp| *resp).unwrap_or_else(|| {
+                // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not
+                // an `end_task` (via `fail_task`) against a row that never existed.
+                if card_fetch {
+                    return super::rpcerror::respond(
+                        &rpc_id,
+                        super::rpcerror::A2aError::InvalidAgentResponse,
+                        "the extended agent card could not be fetched",
+                    );
+                }
                 fail_task(
                     &engine_host,
                     &seam,
@@ -1680,7 +1719,7 @@ async fn admitted(
                     now,
                     502,
                 )
-            })
+            });
         }
     };
 
@@ -1693,6 +1732,14 @@ async fn admitted(
             Ok(lease) => Some(lease),
             Err(e) => {
                 diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
+                // A card fetch opened no task: render the failure without journaling one.
+                if card_fetch {
+                    return super::rpcerror::respond(
+                        &rpc_id,
+                        super::rpcerror::A2aError::InvalidAgentResponse,
+                        "the extended agent card could not be fetched",
+                    );
+                }
                 return fail_task(
                     &engine_host,
                     &seam,
@@ -1751,6 +1798,7 @@ async fn admitted(
         framing,
         agent_id: target_agent.clone(),
         addressed: addressed.is_some(),
+        card_fetch,
         backend_url: target_backend_url,
         // THE ONE READING OF THE OPERATOR'S `allow_private:` LINE, obtained where every other
         // caller obtains it. Reaching for `seam.policy()` inside the relay instead is the defect
@@ -1868,6 +1916,12 @@ struct HopContext {
     /// `GetTask` that the backend refuses is a failed READ, and burning the caller's live task row
     /// for it would destroy work that is still running.
     addressed: bool,
+    /// A CARD FETCH — a task-less `GetExtendedAgentCard` relay. No task row was opened, so the
+    /// post-hop task writes (`record_state`, `idmap::remember`, the identity rewrite) are skipped and
+    /// a refusal is rendered without journaling. `rewrite_identity` MUST be skipped, not merely may
+    /// be: it is written for a Task result and would inject `id`/`contextId`/`metadata` into an
+    /// AgentCard. See the derivation and every guard in `invoke`.
+    card_fetch: bool,
     /// THE REGISTRY GENERATION ADMISSION DECIDED UNDER, carried to the pre-socket gate. See
     /// `relay::RelayCall::admitted_generation`.
     admitted_generation: u64,
@@ -2037,9 +2091,20 @@ async fn unary_hop(
 
     let reply = match relayed {
         Ok(Ok(reply)) => reply,
+        // A card fetch opened no task, so a refusal is rendered without journaling: `refuse_hop`
+        // writes a `Rejected`/`Failed` transition when `!addressed`, and there is no row here to
+        // move. `refuse_hop_early` renders the same A2A error body and touches no store.
+        Ok(Err(refusal)) if ctx.card_fetch => return refuse_hop_early(&ctx.rpc_id, &refusal),
         Ok(Err(refusal)) => return refuse_hop(&ctx, &refusal),
         Err(join) => {
             diag_error!(A2A_RELAY_THREAD_INCOMPLETE, task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
+            if ctx.card_fetch {
+                return super::rpcerror::respond(
+                    &ctx.rpc_id,
+                    super::rpcerror::A2aError::InvalidAgentResponse,
+                    "the extended agent card could not be fetched",
+                );
+            }
             return fail_task(
                 &ctx.engine_host,
                 &ctx.seam,
@@ -2051,6 +2116,24 @@ async fn unary_hop(
             );
         }
     };
+
+    // A CARD FETCH CARRIES NO TASK. The post-hop task writes below are all keyed on a row this hop
+    // never opened, so they are skipped and the backend's card is returned VERBATIM. `rewrite_identity`
+    // in particular MUST NOT run on a card: written for a Task result, it would inject `id` (busbar's
+    // task id), `contextId`, and a `metadata["busbar/skill"]` member into the AgentCard — three
+    // members A2A's card schema does not define — corrupting the very card the caller asked for.
+    // Skipping it is a correctness requirement, not an optimisation.
+    if ctx.card_fetch {
+        return (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": ctx.rpc_id,
+                "result": reply.result,
+            })),
+        )
+            .into_response();
+    }
 
     record_state(&ctx, reply.reported_state);
     // WHAT THE BACKEND CALLS THIS TASK, remembered BEFORE the substitution erases it, so the

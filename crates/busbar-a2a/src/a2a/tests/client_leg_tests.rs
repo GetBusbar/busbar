@@ -955,6 +955,86 @@ async fn grpc_client_issues_list_tasks() {
     let _: a2a_pb::proto::ListTasksRequest = grpc_message(&sent);
 }
 
+// ══ GetExtendedAgentCard, busbar as CLIENT ═══════════════════════════════════════════════════════
+//
+// A caller that addresses ONE agent — `POST /a2a/agents/{id}`, which `call_agent` drives — and asks
+// `GetExtendedAgentCard` is asking for THAT backend's authenticated extended card, and busbar issues
+// the hop to fetch it. (On the plane's own endpoint the same verb names no agent and is answered
+// locally about busbar itself; that is the server cell, unchanged.) The hop is TASK-LESS: a card
+// read opens no durable task, so `issued_last` — which requires a hop to have gone out AT ALL — is
+// the whole assertion, and there is no submission to make first the way the addressed verbs need.
+// The three tests below assert the hop on each of A2A's three OUTBOUND bindings.
+
+/// The caller's `GetExtendedAgentCard`, addressed to the agent whose card it wants.
+fn get_extended_card_call() -> serde_json::Value {
+    envelope_for("GetExtendedAgentCard", serde_json::json!({}))
+}
+
+/// A backend's answer to `GetExtendedAgentCard`: an `AgentCard`. Distinctive so the response is not
+/// mistaken for an empty pass-through, and carrying NO JSON-RPC `error` member (which would make the
+/// hop a `BackendError` refusal) and NO `status`/top-level `id` (which the relay would read as a task
+/// state / backend task id).
+fn jsonrpc_card_answer() -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": 7,
+        "result": { "name": "planner-extended", "protocolVersion": "1.0",
+                    "url": "https://backend.agent.test/a2a" }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_get_extended_agent_card() {
+    crate::testkit::install_test_seams();
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, jsonrpc_card_answer()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let sent = issued_last(&h, &get_extended_card_call()).await;
+    assert_jsonrpc(&sent, "GetExtendedAgentCard");
+}
+
+#[tokio::test]
+async fn http_json_client_issues_get_extended_agent_card() {
+    crate::testkit::install_test_seams();
+    let h = harness_on(
+        // A2A section 11.3: the REST answer is the `result`, bare.
+        Outcome::Answers(
+            200,
+            serde_json::json!({ "name": "planner-extended", "protocolVersion": "1.0",
+                                "url": "https://backend.agent.test/a2a" })
+            .to_string(),
+        ),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let sent = issued_last(&h, &get_extended_card_call()).await;
+    assert_eq!(
+        sent.http_method, "GET",
+        "A2A binds `GetExtendedAgentCard` to a GET of the extended card"
+    );
+    assert_eq!(path_of(&sent), "/a2a/extendedAgentCard");
+    assert!(
+        sent.body.is_empty(),
+        "a GET carries no body: {:?}",
+        String::from_utf8_lossy(&sent.body)
+    );
+}
+
+#[tokio::test]
+async fn grpc_client_issues_get_extended_agent_card() {
+    crate::testkit::install_test_seams();
+    let answer = as_fixture(&grpc_frame(&a2a_pb::proto::AgentCard {
+        name: "planner-extended".to_string(),
+        ..Default::default()
+    }));
+    let h = harness_on(Outcome::Answers(200, answer), BINDING_GRPC).await;
+    let sent = issued_last(&h, &get_extended_card_call()).await;
+    assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/GetExtendedAgentCard");
+    let _: a2a_pb::proto::GetExtendedAgentCardRequest = grpc_message(&sent);
+}
+
 /// THE CONSEQUENCE. The backend has moved the task on out of band — no reply to busbar, no stream
 /// event — and the caller's next `ListTasks` says so, because busbar asked.
 ///

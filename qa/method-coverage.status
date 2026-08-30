@@ -766,6 +766,16 @@ mcp|stdio|server|server|sampling/createMessage = implemented
 a2a|grpc|client|client|CancelTask = implemented                         # grpc_client_issues_cancel_task
 a2a|grpc|client|client|CreateTaskPushNotificationConfig = implemented   # grpc_client_issues_create_task_push_notification_config
 a2a|grpc|client|client|DeleteTaskPushNotificationConfig = implemented   # grpc_client_issues_delete_task_push_notification_config
+# GetExtendedAgentCard, busbar as CLIENT, on all three outbound bindings. A caller that addresses one
+# agent (`POST /a2a/agents/{id}`) and asks for its extended card makes busbar ISSUE the hop to fetch
+# it -- the client twin of the server cell above (which answers busbar's OWN card on the plane's
+# endpoint, `Target::FromCatalogue`). The hop is TASK-LESS: a card read opens no durable task row and
+# writes no journal, and its identity rewrite is deliberately skipped so the backend's card is not
+# stamped with busbar's task id. A card fetch to a POOLED agent is refused, not relayed: a pool's
+# members are distinct backends with distinct cards, so there is no one card to relay and no member a
+# read may silently pick. INSTRUMENT: the three `*_client_issues_get_extended_agent_card` tests drive
+# a real hop through busbar's router and read the recorded outbound request off `RecordingTransport`.
+a2a|grpc|client|client|GetExtendedAgentCard = implemented               # grpc_client_issues_get_extended_agent_card
 a2a|grpc|client|client|GetTask = implemented                            # grpc_client_issues_get_task
 a2a|grpc|client|client|GetTaskPushNotificationConfig = implemented      # grpc_client_issues_get_task_push_notification_config
 a2a|grpc|client|client|ListTaskPushNotificationConfigs = implemented    # grpc_client_issues_list_task_push_notification_configs
@@ -777,6 +787,7 @@ a2a|grpc|server|client|GetExtendedAgentCard = implemented
 a2a|http+json|client|client|CancelTask = implemented                    # http_json_client_issues_cancel_task
 a2a|http+json|client|client|CreateTaskPushNotificationConfig = implemented# http_json_client_issues_create_task_push_notification_config
 a2a|http+json|client|client|DeleteTaskPushNotificationConfig = implemented# http_json_client_issues_delete_task_push_notification_config
+a2a|http+json|client|client|GetExtendedAgentCard = implemented          # http_json_client_issues_get_extended_agent_card
 a2a|http+json|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
 a2a|http+json|client|client|GetTask = implemented                       # http_json_client_issues_get_task
 a2a|http+json|client|client|GetTaskPushNotificationConfig = implemented # http_json_client_issues_get_task_push_notification_config
@@ -791,6 +802,7 @@ a2a|http+json|server|client|GetExtendedAgentCard = implemented
 a2a|jsonrpc|client|client|CancelTask = implemented                      # jsonrpc_client_issues_cancel_task
 a2a|jsonrpc|client|client|CreateTaskPushNotificationConfig = implemented# jsonrpc_client_issues_create_task_push_notification_config
 a2a|jsonrpc|client|client|DeleteTaskPushNotificationConfig = implemented# jsonrpc_client_issues_delete_task_push_notification_config
+a2a|jsonrpc|client|client|GetExtendedAgentCard = implemented            # jsonrpc_client_issues_get_extended_agent_card
 a2a|jsonrpc|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
 a2a|jsonrpc|client|client|GetTask = implemented                         # jsonrpc_client_issues_get_task
 a2a|jsonrpc|client|client|GetTaskPushNotificationConfig = implemented   # jsonrpc_client_issues_get_task_push_notification_config
