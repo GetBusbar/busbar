@@ -368,6 +368,15 @@ impl IrHandle for ChatRespHandle {
     fn billing(&self) -> Option<Billing> {
         chat_usage(&self.0)
     }
+    fn fill_response_model_if_absent(&mut self, model: &str) {
+        // Fill-ONLY: the upstream 2xx body carried no model (e.g. a Gemini `generateContent`
+        // response with no `modelVersion`), so stamp the routed lane wire model the proxy KNOWS it
+        // served. NEVER override a model the upstream actually reported — only replace `None`, and
+        // never with an empty string (an empty lane model is treated as "nothing to fill").
+        if self.0.model.is_none() && !model.is_empty() {
+            self.0.model = Some(model.to_string());
+        }
+    }
     fn prepare_for_ingress(&mut self, ingress_protocol: &str, now_epoch: u64) {
         chat_prepare_for_ingress(&mut self.0, ingress_protocol, now_epoch);
     }

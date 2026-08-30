@@ -181,6 +181,10 @@ mod hook_non_chat_projection_tests;
 mod cross_protocol_extra_tests;
 
 #[cfg(test)]
+#[path = "tests/response_model_fill_tests.rs"]
+mod response_model_fill_tests;
+
+#[cfg(test)]
 #[path = "tests/bedrock_eventstream_tests.rs"]
 mod bedrock_eventstream_tests;
 

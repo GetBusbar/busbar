@@ -105,6 +105,15 @@ pub mod handle_impl {
             }
         }
 
+        /// Fill the serving MODEL when the upstream body carried none. On a cross-protocol hop where
+        /// the egress backend's `read_response` produced no model (e.g. a Gemini `generateContent`
+        /// body with no `modelVersion`), the response IR's model is `None` — but the proxy KNOWS the
+        /// lane it routed to. This stamps that resolved lane wire model so EVERY dialect's
+        /// cross-protocol response reports the real serving model losslessly, instead of the writer
+        /// omitting the field. Fill-ONLY: an implementor MUST NOT override a model the upstream
+        /// actually provided (only replace `None`). Default no-op (non-chat handles carry no model).
+        fn fill_response_model_if_absent(&mut self, _model: &str) {}
+
         /// CROSS-PROTOCOL ingress preparation — reshape this response for delivery in the caller's
         /// `ingress_protocol`. Default no-op; chat overrides.
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}

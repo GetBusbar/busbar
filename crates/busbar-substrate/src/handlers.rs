@@ -389,7 +389,9 @@ pub trait TranslateCodec: OperationHandler {
     /// pre-cutover buffered-response pipeline exactly:
     ///   - read (`read_response` / `read_response_value`, `Err` ⇒ [`CodecError`]) → capture the
     ///     billable usage from the PRE-`prepare_for_ingress` IR (byte-identical to the old
-    ///     `record_resp_usage(&ir)` placement) → `prepare_for_ingress` →
+    ///     `record_resp_usage(&ir)` placement) → fill the serving model from `lane_model` IFF the
+    ///     upstream body carried none ([`IrHandle::fill_response_model_if_absent`]) →
+    ///     `prepare_for_ingress` →
     ///   - JSON, wants-stream: `wrap_buffered_as_stream` `Some` ⇒ [`TranslatedResponse::StreamFrames`];
     ///   - JSON: ingress absent ⇒ [`TranslatedResponse::IngressUnsupported`]; else
     ///     `write_response_value` (`Some` ⇒ [`TranslatedResponse::Json`], `None` ⇒
@@ -402,6 +404,7 @@ pub trait TranslateCodec: OperationHandler {
     /// exactly as the pre-cutover arm did. The caller keeps telemetry, the untranslatable-metadata warn,
     /// billing, budget accounting, native response-metrics injection, the gemini-array wrap, and all
     /// response building — none of which is the codec's business.
+    #[allow(clippy::too_many_arguments)]
     fn translate_response(
         &self,
         input: TranslateRespInput<'_>,
@@ -409,6 +412,11 @@ pub trait TranslateCodec: OperationHandler {
         // `op_for`; replaces the former `ingress_op: Option<&dyn OperationHandler>`.)
         ingress_serves_op: bool,
         ingress_protocol: &str,
+        // The resolved lane WIRE model the proxy routed this hop to. Used to fill the response model
+        // when the upstream body carried none — see [`IrHandle::fill_response_model_if_absent`]. Fill
+        // happens AFTER read (so we see the upstream's own model first) and BEFORE `prepare_for_ingress`
+        // + the ingress write, so a cross-protocol response reports the REAL serving model losslessly.
+        lane_model: &str,
         now: u64,
         wants_stream: bool,
         elapsed_ms: Option<u64>,
@@ -417,6 +425,7 @@ pub trait TranslateCodec: OperationHandler {
             TranslateRespInput::Opaque(bytes) => {
                 let mut ir = self.read_response(bytes)?;
                 let usage = ir.billing();
+                ir.fill_response_model_if_absent(lane_model);
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // A4b: the handle writes ITSELF onto the ingress dialect — present=>Typed /
                 // absent=>Untranslatable, keyed by `ingress_protocol` + `ingress_serves_op`.
@@ -428,6 +437,7 @@ pub trait TranslateCodec: OperationHandler {
             TranslateRespInput::Json(v) => {
                 let mut ir = self.read_response_value(v)?;
                 let usage = ir.billing();
+                ir.fill_response_model_if_absent(lane_model);
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // Buffered-2xx-to-native-stream synthesis (a wants-stream ingress served a non-SSE
                 // upstream): try first; `None` falls through to the normal write. The handle resolves
