@@ -1715,15 +1715,16 @@ async fn admitted(
     //    pinned for this registration — never off the request, and never off a URL the card
     //    supplied. See `relay`'s `THE OUTBOUND BINDING` note: the card says HOW, the operator's
     //    `url:` says WHERE.
-    let binding = super::relay::binding_of(
-        plane
-            .with_registrations(|regs| {
-                regs.iter()
-                    .find(|r| r.agent_id == target_agent)
-                    .and_then(|r| r.cached_card.clone())
-            })
-            .as_ref(),
-    );
+    // `binding_of` is computed INSIDE the registry lock and returns the one binding word, rather
+    // than cloning `cached_card` — a verified agent card up to 512KiB of `serde_json::Value` — out
+    // under the read lock on every delegated hop only to read `protocolBinding` from it.
+    let binding = plane.with_registrations(|regs| {
+        super::relay::binding_of(
+            regs.iter()
+                .find(|r| r.agent_id == target_agent)
+                .and_then(|r| r.cached_card.as_ref()),
+        )
+    });
     let Some(framing) = super::relay::framing_for(&binding) else {
         // REFUSED BY NAME, and refused HERE rather than relayed as JSON-RPC anyway. A backend that
         // publishes only a binding this build cannot speak is unreachable, and saying so names the

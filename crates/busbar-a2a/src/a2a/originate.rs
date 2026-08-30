@@ -90,15 +90,16 @@ fn originate(
     // WHICH BINDING, off the registration's own verified card — the same lookup the relayed hop
     // makes, never a branch and never a default. A card declaring a binding this build cannot speak
     // means busbar does not originate here either.
-    let binding = super::relay::binding_of(
-        plane
-            .with_registrations(|regs| {
-                regs.iter()
-                    .find(|r| r.agent_id == admitted.dispatch.agent_id)
-                    .and_then(|r| r.cached_card.clone())
-            })
-            .as_ref(),
-    );
+    // `binding_of` computed INSIDE the registry lock, returning the one binding word rather than
+    // cloning `cached_card` (a verified card up to 512KiB) out under the read lock just to read
+    // `protocolBinding`.
+    let binding = plane.with_registrations(|regs| {
+        super::relay::binding_of(
+            regs.iter()
+                .find(|r| r.agent_id == admitted.dispatch.agent_id)
+                .and_then(|r| r.cached_card.as_ref()),
+        )
+    });
     let Some(framing) = super::relay::framing_for(&binding) else {
         tracing::info!(
             agent = %admitted.dispatch.agent_id, binding = %binding,
