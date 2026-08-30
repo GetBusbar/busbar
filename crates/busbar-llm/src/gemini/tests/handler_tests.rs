@@ -662,3 +662,37 @@ fn gemini_speech_two_speaker_request_round_trips() {
         ]
     );
 }
+
+// carryable-flatten #9: the Imagen `:predict` writer dropped negative_prompt/seed/guidance_scale/
+// image_size_tier (all Imagen-native params typed on `ImageReq`). Carry them. Fails pre-fix: a
+// bedrock->gemini image hop lost the negative prompt and determinism seed. Round-trips through gemini.
+#[test]
+fn gemini_imagen_image_carries_negative_prompt_seed_guidance_and_size_tier() {
+    // Shape a bedrock-ingress ImageReq (negative_prompt + seed are bedrock-native; add guidance +
+    // tier to prove all four survive) and cross to gemini egress.
+    let ir = crate::ir::image::ImageReq {
+        model: "imagen-3.0-generate-002".into(),
+        prompt: Some("a serene lake".into()),
+        negative_prompt: Some("no boats".into()),
+        seed: Some(42),
+        guidance_scale: Some(7.5),
+        image_size_tier: Some("2K".into()),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::image_write_request("gemini", &ir);
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v.pointer("/parameters/negativePrompt"),
+        Some(&json!("no boats")),
+        "{v}"
+    );
+    assert_eq!(v.pointer("/parameters/seed"), Some(&json!(42)));
+    assert_eq!(v.pointer("/parameters/sampleImageSize"), Some(&json!("2K")));
+    let back =
+        super::super::super::leaf_codec::image_read_request("gemini", &out, "application/json")
+            .expect("re-read");
+    assert_eq!(back.negative_prompt.as_deref(), Some("no boats"));
+    assert_eq!(back.seed, Some(42));
+    assert_eq!(back.guidance_scale, Some(7.5));
+    assert_eq!(back.image_size_tier.as_deref(), Some("2K"));
+}

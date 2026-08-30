@@ -376,6 +376,21 @@ pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
     if let Some(p) = &r.person_generation {
         params["personGeneration"] = json!(p);
     }
+    // Carry the Imagen sampling/guidance controls the reader captures, in Imagen's native parameter
+    // names. Dropping them lost the negative prompt, determinism seed, guidance strength, and size
+    // tier on a cross-protocol image hop (e.g. bedrock->gemini), silently falling back to defaults.
+    if let Some(neg) = &r.negative_prompt {
+        params["negativePrompt"] = json!(neg);
+    }
+    if let Some(seed) = r.seed {
+        params["seed"] = json!(seed);
+    }
+    if let Some(g) = r.guidance_scale {
+        params["guidanceScale"] = json!(g);
+    }
+    if let Some(tier) = &r.image_size_tier {
+        params["sampleImageSize"] = json!(tier);
+    }
     let body = json!({
         "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
         "parameters": params,
@@ -746,6 +761,20 @@ pub(crate) fn read_image_request(
             .map(str::to_string),
         person_generation: params
             .get("personGeneration")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // Imagen sampling/guidance controls — carried through so egress re-emits them.
+        negative_prompt: params
+            .get("negativePrompt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        seed: params.get("seed").and_then(Value::as_u64),
+        guidance_scale: params
+            .get("guidanceScale")
+            .and_then(Value::as_f64)
+            .map(|f| f as f32),
+        image_size_tier: params
+            .get("sampleImageSize")
             .and_then(Value::as_str)
             .map(str::to_string),
         ..Default::default()
