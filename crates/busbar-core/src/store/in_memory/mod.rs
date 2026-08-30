@@ -668,7 +668,14 @@ impl HealthState {
         if !self.lane_admissible(lane) {
             return false;
         }
-        Self::cell_acquire_breaker(self.cell(pool, lane).as_ref(), now)
+        // Both ADMIT arms (`ReadyNoProbe`, `ProbeWon`) mean "this lane may dispatch"; only `Denied`
+        // is not usable. This bool projection is for the test-only `acquire_for_dispatch_in`/`usable_*`
+        // callers — the production dispatch paths take the richer `ProbeAdmit` via `try_admit`/
+        // `try_admit_breaker` so they can distinguish "won a probe" from a Closed no-op.
+        !matches!(
+            Self::cell_acquire_breaker(self.cell(pool, lane).as_ref(), now),
+            ProbeAdmit::Denied
+        )
     }
 
     /// Side-effect-FREE readiness check (lane-global gates + a non-mutating breaker peek). Shared

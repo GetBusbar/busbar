@@ -3980,18 +3980,64 @@ fn test_try_admit_probe_winnable_free_permit_succeeds() {
         matches!(store.breaker_state_in("p", 0), BreakerState::HalfOpen),
         "a won probe transitions the cell to HalfOpen"
     );
+    // A ProbeWinnable admit WON a real probe, so `probe_epoch` is `Some(epoch)`.
+    let epoch = admit
+        .probe_epoch
+        .expect("a won ProbeWinnable probe carries Some(epoch)");
     assert_eq!(
-        admit.probe_epoch,
+        epoch,
         store.probe_epoch_in("p", 0),
         "the Admit surfaces the cell's current probe epoch for owner-checked release"
     );
     // The owner token round-trips: releasing with it reverts HalfOpen→Open exactly.
-    store.release_probe_owned_in("p", 0, admit.probe_epoch);
+    store.release_probe_owned_in("p", 0, epoch);
     assert!(
         matches!(store.breaker_state_in("p", 0), BreakerState::Open { .. }),
         "the surfaced epoch is the correct owner token (single owner-checked revert)"
     );
     drop(admit);
+}
+
+/// FINDING #2: a Closed-and-ready `try_admit` wins NO single-flight probe, so its `Admit.probe_epoch`
+/// must be `None` — NOT the cell's current epoch. A `Some` here would let the dispatch build a
+/// `ProbeGuard`/release token for a probe it never won, whose drop could revert a probe a peer
+/// legitimately won on the same cell. An expired-Open admit that DOES win a probe carries `Some(epoch)`.
+/// Red-before-green: before the fix the Closed arm returned `Some(<cell's current epoch>)` (the
+/// unconditional `cell.probe_epoch().load()`), so this test's `None` assertion failed.
+#[test]
+fn test_try_admit_closed_ready_yields_no_probe_token() {
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+
+    // A fresh cell is Closed-ready: it admits with NO probe token.
+    let admit = store
+        .try_admit("p", 0, now)
+        .expect("a Closed-ready lane admits");
+    assert_eq!(
+        admit.probe_epoch, None,
+        "a Closed-ready admit wins no single-flight probe → no owner token"
+    );
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
+        "a Closed-ready admit is a pure no-op — it must NOT transition the cell to HalfOpen"
+    );
+    drop(admit);
+
+    // An expired-Open lane's admit DOES win a recovery probe → `Some(epoch)`.
+    store.force_open_in("p", 0, 0);
+    let admit2 = store
+        .try_admit("p", 0, now)
+        .expect("a ProbeWinnable lane admits");
+    assert_eq!(
+        admit2.probe_epoch,
+        Some(store.probe_epoch_in("p", 0)),
+        "a won recovery probe carries Some(current epoch) as its owner token"
+    );
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "a won probe transitions the cell to HalfOpen"
+    );
+    drop(admit2);
 }
 
 /// A Closed lane at capacity yields `AtCapacity` WITHOUT ever touching the breaker (no probe to

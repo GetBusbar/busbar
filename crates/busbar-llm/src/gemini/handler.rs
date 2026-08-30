@@ -167,6 +167,12 @@ impl OperationHandler for GeminiTranscription {
     }
 }
 
+/// The two synthetic directive texts the transcription writer prepends. Kept as named constants so the
+/// reader can recognize and skip them when recovering the caller's own `prompt` text (see
+/// `read_transcription_request`) — otherwise a round-trip would mistake the directive for the prompt.
+const TRANSCRIBE_INSTRUCTION: &str = "Transcribe the following audio verbatim.";
+const TRANSLATE_INSTRUCTION: &str = "Translate the following audio to text.";
+
 /// IR → gemini candidates transcription request wire (the body of [`GeminiTranscription::write_request`],
 /// moved behind the `(transcription, gemini)` key — G6 A4b option-a). Byte-identical to the inline write.
 pub(crate) fn write_transcription_request(r: &crate::ir::audio::TranscriptionReq) -> Bytes {
@@ -182,16 +188,28 @@ pub(crate) fn write_transcription_request(r: &crate::ir::audio::TranscriptionReq
     };
     // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
     let instruction = if r.target_language.is_some() {
-        "Translate the following audio to text."
+        TRANSLATE_INSTRUCTION
     } else {
-        "Transcribe the following audio verbatim."
+        TRANSCRIBE_INSTRUCTION
     };
-    let body = json!({
-        "contents": [{ "role": "user", "parts": [
-            { "text": instruction },
-            { "inline_data": { "mime_type": mime, "data": data } },
-        ]}],
-    });
+    let mut parts = vec![json!({ "text": instruction })];
+    // Carry the caller's transcription `prompt` as its OWN text part. The IR projects `prompt` to a
+    // forwarded ContentItem::Text (it is screened as sent upstream), but the old writer emitted only
+    // the fixed instruction and dropped the caller's text — the screening gate said "forwarded" while
+    // the wire silently discarded it. A distinct part keeps the instruction and the caller hint both
+    // recoverable on read (the reader skips the known instruction literals).
+    if let Some(prompt) = &r.prompt {
+        if !prompt.is_empty() {
+            parts.push(json!({ "text": prompt }));
+        }
+    }
+    parts.push(json!({ "inline_data": { "mime_type": mime, "data": data } }));
+    let mut body = json!({ "contents": [{ "role": "user", "parts": parts }] });
+    // Carry `temperature` — Gemini exposes it natively via generationConfig; dropping it silently
+    // changed sampling behavior on a cross-protocol transcription hop.
+    if let Some(t) = r.temperature {
+        body["generationConfig"] = json!({ "temperature": t });
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -256,9 +274,25 @@ impl OperationHandler for GeminiSpeech {
 /// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
 /// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub(crate) fn write_speech_request(r: &crate::ir::audio::SpeechReq) -> Bytes {
-    let speech_config = json!({
-        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
-    });
+    // Gemini multi-speaker TTS: when the request names per-speaker voices, emit
+    // `multiSpeakerVoiceConfig.speakerVoiceConfigs[]` (the native shape) instead of the single
+    // `voiceConfig`. The old writer never read `SpeechReq::speakers`, so a two-speaker request was
+    // silently collapsed to one voice on a same-/cross-protocol hop.
+    let speech_config = if r.speakers.is_empty() {
+        json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } } })
+    } else {
+        let configs: Vec<Value> = r
+            .speakers
+            .iter()
+            .map(|(speaker, voice)| {
+                json!({
+                    "speaker": speaker,
+                    "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": voice } },
+                })
+            })
+            .collect();
+        json!({ "multiSpeakerVoiceConfig": { "speakerVoiceConfigs": configs } })
+    };
     // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
     // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
     // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
@@ -341,6 +375,21 @@ pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
     }
     if let Some(p) = &r.person_generation {
         params["personGeneration"] = json!(p);
+    }
+    // Carry the Imagen sampling/guidance controls the reader captures, in Imagen's native parameter
+    // names. Dropping them lost the negative prompt, determinism seed, guidance strength, and size
+    // tier on a cross-protocol image hop (e.g. bedrock->gemini), silently falling back to defaults.
+    if let Some(neg) = &r.negative_prompt {
+        params["negativePrompt"] = json!(neg);
+    }
+    if let Some(seed) = r.seed {
+        params["seed"] = json!(seed);
+    }
+    if let Some(g) = r.guidance_scale {
+        params["guidanceScale"] = json!(g);
+    }
+    if let Some(tier) = &r.image_size_tier {
+        params["sampleImageSize"] = json!(tier);
     }
     let body = json!({
         "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
@@ -508,7 +557,11 @@ pub(crate) fn read_transcription_request(
                     pcm: None,
                 });
             } else if let Some(t) = p.get("text").and_then(Value::as_str) {
-                prompt = Some(t.to_string());
+                // Skip the writer's synthetic directive texts; only a caller-supplied prompt part is
+                // the real `prompt`. The last such text wins (a request carries at most one).
+                if t != TRANSCRIBE_INSTRUCTION && t != TRANSLATE_INSTRUCTION {
+                    prompt = Some(t.to_string());
+                }
             }
         }
     }
@@ -517,9 +570,14 @@ pub(crate) fn read_transcription_request(
             "transcription requires an inline_data audio part".into(),
         ));
     };
+    let temperature = wire
+        .pointer("/generationConfig/temperature")
+        .and_then(Value::as_f64)
+        .map(|t| t as f32);
     Ok(crate::ir::audio::TranscriptionReq {
         audio: Some(audio),
         prompt,
+        temperature,
         ..Default::default()
     })
 }
@@ -593,9 +651,28 @@ pub(crate) fn read_speech_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    // Multi-speaker: recover each (speaker, voiceName) pair so a two-speaker request survives the
+    // hop (the writer re-emits `multiSpeakerVoiceConfig` when this is non-empty).
+    let speakers = wire
+        .pointer("/generationConfig/speechConfig/multiSpeakerVoiceConfig/speakerVoiceConfigs")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let speaker = c.get("speaker").and_then(Value::as_str)?;
+                    let voice_name = c
+                        .pointer("/voiceConfig/prebuiltVoiceConfig/voiceName")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((speaker.to_string(), voice_name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(crate::ir::audio::SpeechReq {
         input,
         voice,
+        speakers,
         ..Default::default()
     })
 }
@@ -684,6 +761,20 @@ pub(crate) fn read_image_request(
             .map(str::to_string),
         person_generation: params
             .get("personGeneration")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // Imagen sampling/guidance controls — carried through so egress re-emits them.
+        negative_prompt: params
+            .get("negativePrompt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        seed: params.get("seed").and_then(Value::as_u64),
+        guidance_scale: params
+            .get("guidanceScale")
+            .and_then(Value::as_f64)
+            .map(|f| f as f32),
+        image_size_tier: params
+            .get("sampleImageSize")
             .and_then(Value::as_str)
             .map(str::to_string),
         ..Default::default()

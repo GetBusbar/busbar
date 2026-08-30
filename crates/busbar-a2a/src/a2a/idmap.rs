@@ -59,7 +59,7 @@
 //! "MUST NOT reveal the existence of resources the client is not authorized to access", obtained by
 //! construction rather than by a check somebody has to remember to write.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 /// How many task identities are remembered. Generous — an entry is two short strings — and finite,
@@ -70,9 +70,11 @@ const CAPACITY: usize = 100_000;
 #[derive(Default)]
 struct Table {
     by_busbar_id: HashMap<String, String>,
-    /// Insertion order, oldest first. A `VecDeque` would be marginally better for the pop; this is
-    /// a `Vec` because eviction happens once per `CAPACITY` insertions and clarity wins.
-    order: Vec<String>,
+    /// Insertion order, oldest first. A `VecDeque` so eviction is a `pop_front` — O(1). A `Vec` here
+    /// evicted with `remove(0)`, which memmoves the whole `CAPACITY`-long tail down one slot under
+    /// the lock on every insertion past the cap, once the map is full: an O(n) shift on the hot path
+    /// exactly when the map is largest.
+    order: VecDeque<String>,
 }
 
 static TABLE: std::sync::LazyLock<Mutex<Table>> =
@@ -101,11 +103,12 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
         .insert(busbar_id.to_string(), backend_id.to_string())
         .is_none()
     {
-        t.order.push(busbar_id.to_string());
+        t.order.push_back(busbar_id.to_string());
     }
     while t.order.len() > CAPACITY {
-        let oldest = t.order.remove(0);
-        t.by_busbar_id.remove(&oldest);
+        if let Some(oldest) = t.order.pop_front() {
+            t.by_busbar_id.remove(&oldest);
+        }
     }
 }
 

@@ -270,6 +270,28 @@ pub(crate) enum BreakerVerdict {
     ProbeWinnable,
 }
 
+/// Outcome of the mutating probe-acquisition step ([`HealthState::cell_acquire_breaker`]). The two
+/// ADMIT arms are DISTINCT because only one of them actually won a single-flight recovery probe:
+/// `ReadyNoProbe` is a Closed-and-ready cell admitted by a pure no-op CAS (it owns NOTHING to
+/// release), while `ProbeWon` won the Open→HalfOpen race and carries the owner-token epoch. A caller
+/// must build a probe-release guard (or carry a release token) ONLY for `ProbeWon` — an armed guard
+/// on a `ReadyNoProbe` admit would, on drop, run an epoch-keyed release against a probe it never won,
+/// which (paired with an unowned release, or with the cell's live epoch handed to an armed guard)
+/// could revert a peer's genuine in-flight probe. Representing "no probe" as its own variant is what
+/// lets the dispatch paths carry `probe_epoch: None` and build no guard at all.
+pub(crate) enum ProbeAdmit {
+    /// The breaker refused admission (HalfOpen with a peer's probe in flight, a still-cooling Open
+    /// cell, or a Closed cell inside a lingering cooldown).
+    Denied,
+    /// Admitted on a Closed-and-ready cell — a pure no-op CAS that won NO single-flight probe, so
+    /// there is nothing to release.
+    ReadyNoProbe,
+    /// Won the single-flight recovery probe (Open→HalfOpen). Carries the owner-token epoch, captured
+    /// under the transition lock before any await (no peer can win a newer probe while the cell is
+    /// HalfOpen), for the caller's owner-checked release.
+    ProbeWon(u64),
+}
+
 /// Read access to the breaker atomics, so the FSM logic can be written once and run against either
 /// a `LaneState` (the default cell) or a per-pool `BreakerCell` without duplication.
 pub(crate) trait BreakerCellAccess {
@@ -692,6 +714,9 @@ impl HealthState {
     /// probe immediately. Only acts when the cell is still HalfOpen (a concurrent success/failure may
     /// have already moved it); otherwise it just clears the flag defensively. The mirror of the
     /// `cell_open` probe-release, but for the no-outcome abandon path rather than a recorded failure.
+    // Reached only via the (now production-unused) `release_probe_in`; the dispatch paths cover their
+    // won probe with an owner-checked `ProbeGuard` instead. Retained for the store regression tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cell_release_probe(c: &dyn BreakerCellAccess) {
         // Serialize against other transitions: this leaves the existing (expired) cooldown intact and
         // only reverts the state HalfOpen → Open, but it must not interleave with a concurrent
@@ -736,15 +761,24 @@ impl HealthState {
 
     /// The mutating probe-acquisition step, run ONLY on the single lane a dispatch path actually
     /// chose. Closed honors any pending cooldown; an expired-cooldown Open lane transitions to
-    /// HalfOpen and admits exactly one probe (CAS); HalfOpen admits nobody else. Returns true iff
-    /// this caller may proceed (Closed-and-ready, or the probe winner).
-    pub(crate) fn cell_acquire_breaker(c: &dyn BreakerCellAccess, now: u64) -> bool {
+    /// HalfOpen and admits exactly one probe (CAS); HalfOpen admits nobody else. Returns
+    /// [`ProbeAdmit`]: `ReadyNoProbe` (Closed-and-ready, won no probe), `ProbeWon(epoch)` (the probe
+    /// winner), or `Denied`.
+    pub(crate) fn cell_acquire_breaker(c: &dyn BreakerCellAccess, now: u64) -> ProbeAdmit {
         // Fast lock-free pre-check: only an Open cell whose cooldown has expired needs the mutating
         // Open→HalfOpen probe-acquisition (which must serialize against trips/closes). Closed and
         // HalfOpen, and a not-yet-expired Open, are decided by a plain consistent read with no lock —
         // keeping the common dispatch case lock-free. We re-confirm the state under the lock below.
         match c.breaker_state().load(Ordering::Acquire) {
-            ST_CLOSED => now >= c.cooldown_until().load(Ordering::Acquire),
+            ST_CLOSED => {
+                // Closed-and-ready admits WITHOUT winning any probe (a pure no-op — no CAS, no epoch
+                // bump, no `probe_in_flight`): there is nothing to release, so callers carry `None`.
+                if now >= c.cooldown_until().load(Ordering::Acquire) {
+                    ProbeAdmit::ReadyNoProbe
+                } else {
+                    ProbeAdmit::Denied
+                }
+            }
             ST_OPEN => {
                 let until = c.cooldown_until().load(Ordering::Acquire);
                 if now >= until {
@@ -758,7 +792,7 @@ impl HealthState {
                     if c.breaker_state().load(Ordering::Acquire) != ST_OPEN
                         || now < c.cooldown_until().load(Ordering::Acquire)
                     {
-                        return false;
+                        return ProbeAdmit::Denied;
                     }
                     // Single CAS Open→HalfOpen under the lock: the state and probe acquisition move as
                     // an atomic pair. A non-CAS `store(ST_HALF_OPEN)` followed by a separate
@@ -784,15 +818,19 @@ impl HealthState {
                         // Bumping under the transition lock keeps it paired with the state store.
                         c.probe_epoch().fetch_add(1, Ordering::AcqRel);
                         c.probe_in_flight().store(true, Ordering::Release);
-                        true
+                        // Capture the owner token synchronously, still under the transition lock: no
+                        // peer can win a newer probe while the cell is HalfOpen, so this is the exact
+                        // epoch a later owner-checked release must match. (Byte-identical to the old
+                        // `probe_epoch().load()` the callers ran immediately after this returned.)
+                        ProbeAdmit::ProbeWon(c.probe_epoch().load(Ordering::Acquire))
                     } else {
-                        false
+                        ProbeAdmit::Denied
                     }
                 } else {
-                    false
+                    ProbeAdmit::Denied
                 }
             }
-            ST_HALF_OPEN => false,
+            ST_HALF_OPEN => ProbeAdmit::Denied,
             // Request-path probe acquisition: fail SAFE (admit nobody) on an unexpected state rather
             // than `unreachable!()`-panicking the dispatching task. Not reachable under today's
             // atomic-sentinel invariant; this only guards a future/corrupt encoding gracefully.
@@ -813,7 +851,7 @@ impl HealthState {
                         "unexpected breaker state; refusing probe acquisition"
                     );
                 }
-                false
+                ProbeAdmit::Denied
             }
         }
     }

@@ -606,7 +606,13 @@ fn effective_access(
         match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
             // ONE print per hook per build (see `banner_seen`'s doc): a hook named in several pools'
             // `hooks:` lists resolves — and would otherwise re-banner — once per reference.
-            Some(banner) if env.banner_seen.lock().unwrap().insert(name.to_string()) => {
+            Some(banner)
+                if env
+                    .banner_seen
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(name.to_string()) =>
+            {
                 eprintln!("[error] {banner}");
                 tracing::error!("{banner}");
             }

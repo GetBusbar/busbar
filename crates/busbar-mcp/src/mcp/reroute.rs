@@ -116,7 +116,7 @@ impl PoolRoute {
     /// tool, not for a twin inventory.
     pub(crate) fn build(
         host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
         selected: &super::catalogue::ToolEntry,
         selected_auth: Authorised,
         arguments: &serde_json::Value,
@@ -175,7 +175,15 @@ impl PoolRoute {
                 // skipped — busbar never widens a grant because an operator declared a pool.
                 let entry = rt.catalogue.tool_on(member, &selected.tool).and_then(|e| {
                     rt.catalogue
-                        .resolve(principal, live, &e.namespaced, generation, now)
+                        // `resolve` reads the key by shared ref; deref the `Arc` for it (the
+                        // per-member `authorise` below keeps the `Arc` so it shares, not clones).
+                        .resolve(
+                            principal.map(std::sync::Arc::as_ref),
+                            live,
+                            &e.namespaced,
+                            generation,
+                            now,
+                        )
                         .ok()
                 });
                 let pin = entry.and_then(|e| e.schema_hash.clone());

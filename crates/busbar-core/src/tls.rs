@@ -397,16 +397,27 @@ impl ConnBalancer {
         if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
             return Some((stream, peer));
         }
+        // `into_std` detaches the accepted stream from THIS worker's reactor so it can cross the
+        // hand-off channel (each worker runs its own runtime; the channel carries std streams). It
+        // consumes `stream` by value and, on error, does NOT hand the stream back — the fd is gone.
+        // This arm therefore cannot serve locally, but it also has not yet touched any counter (the
+        // `fetch_add` is below), so it neither skews the balancer nor is the never-drop contract's
+        // concern: the contract governs the BACKPRESSURE path (a full/closed channel), which the
+        // `Err(e)` arm below re-adopts and serves locally. An `into_std` failure is an OS-level
+        // reactor-deregistration fault on an already-doomed socket, not balancing dropping a live
+        // connection.
         let std_stream = match stream.into_std() {
             Ok(s) => s,
-            // Can't detach — serve it locally (the tokio stream is consumed either way, so this
-            // arm re-adopts; both from_std results are served here).
             Err(_) => return None,
         };
         self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
         match self.txs[min_idx].try_send((std_stream, peer)) {
             Ok(()) => None,
             Err(e) => {
+                // Backpressure (channel full) or a torn-down peer worker (closed): roll back the
+                // increment we just made and serve the connection HERE — balancing must never drop a
+                // live connection on hand-off failure. `from_std` re-attaches it to our reactor; it
+                // fails only on the same OS-level fault as `into_std` above (fd already doomed).
                 self.counts[min_idx].0.fetch_sub(1, Ordering::Relaxed);
                 let (std_stream, peer) = match e {
                     tokio::sync::mpsc::error::TrySendError::Full(v)
@@ -485,8 +496,13 @@ pub async fn serve(
                 if balancer.is_some() =>
             {
                 let Some((std_stream, peer)) = handed else { continue };
-                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
+                // The SENDER already `fetch_add`'d our slot before the hand-off; adopt that
+                // decrement BEFORE the fallible `from_std` re-adopt so a conversion failure drops
+                // the guard (releasing the count) instead of `continue`ing past it — otherwise the
+                // count is stranded high forever and this worker is permanently starved of
+                // placements (balancer skew).
                 let guard = balancer.as_ref().map(|b| b.adopt());
+                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
                 (stream, peer, guard)
             }
             accepted = listener.accept() => match accepted {
@@ -522,6 +538,9 @@ pub async fn serve(
     // serve them under the graceful watcher like any late connection rather than dropping them.
     if let Some(mut b) = balancer.take() {
         while let Ok((std_stream, peer)) = b.rx.try_recv() {
+            // Adopt the sender's increment BEFORE `from_std` (see the accept loop): a conversion
+            // failure here must release the count via the dropped guard, not `continue` past it.
+            let guard = b.adopt();
             let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
                 continue;
             };
@@ -529,7 +548,6 @@ pub async fn serve(
             let router = router.clone();
             let conn_builder = conn_builder.clone();
             let watcher = graceful.watcher();
-            let guard = b.adopt();
             tokio::spawn(async move {
                 serve_one(acceptor, conn_builder, watcher, stream, peer, router).await;
                 drop(guard);
@@ -777,8 +795,10 @@ pub async fn serve_plain(
                 if balancer.is_some() =>
             {
                 let Some((std_stream, peer)) = handed else { continue };
-                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
+                // Adopt the sender's increment BEFORE the fallible re-adopt — see `serve` for why
+                // (a `from_std` failure otherwise strands the count and skews the balancer).
                 let guard = balancer.as_ref().map(|b| b.adopt());
+                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
                 (stream, peer, guard)
             }
             accepted = listener.accept() => match accepted {
@@ -809,13 +829,15 @@ pub async fn serve_plain(
     // Drain late hand-offs (mirrors `serve`).
     if let Some(mut b) = balancer.take() {
         while let Ok((std_stream, peer)) = b.rx.try_recv() {
+            // Adopt the sender's increment BEFORE `from_std` (see the accept loop): a conversion
+            // failure here must release the count via the dropped guard, not `continue` past it.
+            let guard = b.adopt();
             let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
                 continue;
             };
             let router = router.clone();
             let conn_builder = conn_builder.clone();
             let watcher = graceful.watcher();
-            let guard = b.adopt();
             tokio::spawn(async move {
                 serve_one_plain(conn_builder, watcher, stream, peer, router).await;
                 drop(guard);

@@ -1152,6 +1152,56 @@ fn stream_read_captures_chunk_identity() {
     }
 }
 
+// carryable-flatten #7: a preamble-text-then-tool-call stream must close the open TEXT block before
+// opening the tool block. The tool_calls arm closed an open thinking block but NOT an open text
+// block, leaving two content blocks open at once — overlapping blocks that violate the strict
+// bracketing the gemini reader asserts. Fails pre-fix: no BlockStop{text} before BlockStart{tool}.
+#[test]
+fn text_then_tool_closes_text_block_before_opening_tool() {
+    let reader = OpenAiReader;
+    let mut st = crate::ir::StreamDecodeState::default();
+    let mut events = Vec::new();
+    // Chunk 1: assistant preamble TEXT.
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Let me check. "},
+                         "finish_reason": null}]
+        }),
+        &mut st,
+    ));
+    // Chunk 2: a tool call begins.
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"}
+            }]}, "finish_reason": null}]
+        }),
+        &mut st,
+    ));
+    let tool_start = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                IrStreamEvent::BlockStart {
+                    block: IrBlockMeta::ToolUse { .. },
+                    ..
+                }
+            )
+        })
+        .expect("a tool BlockStart must be emitted");
+    assert!(
+        events[..tool_start]
+            .iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockStop { .. })),
+        "the open text block must be closed (BlockStop) BEFORE the tool block opens: {events:?}"
+    );
+}
+
 // --- total_tokens must saturate, never overflow-panic/wrap ---
 
 #[test]
@@ -2401,7 +2451,21 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
         })
         .expect("tool block opens after text");
     assert_eq!(tool_idx, 1, "tool follows the text block at index 1");
-    // Finish closes text at 0 and the tool at 1.
+    // Strict bracketing: the tool chunk closes the still-open TEXT block (index 0) BEFORE opening
+    // the tool block — the two content blocks are never open at once (the carryable-flatten #7 fix).
+    let tool_stops: Vec<usize> = tool_evs
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStop { index } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_stops,
+        vec![0],
+        "the text block (0) must close on the tool chunk, before the tool opens: {tool_stops:?}"
+    );
+    // Finish then closes only the still-open tool at 1 (text already closed above).
     let finish_evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -2419,8 +2483,11 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
             _ => None,
         })
         .collect();
-    assert!(stops.contains(&0), "text BlockStop at 0: {stops:?}");
-    assert!(stops.contains(&1), "tool BlockStop at 1: {stops:?}");
+    assert_eq!(
+        stops,
+        vec![1],
+        "finish closes only the still-open tool at 1: {stops:?}"
+    );
 }
 
 // --- tool_call FIRST, then text, then finish. Text must not collide with the already-open
@@ -2527,10 +2594,18 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
         .expect("second tool opens");
     assert_eq!(tool2_idx, 2, "second tool lands past text");
 
-    // Finish: every BlockStart index emitted above must be matched by a BlockStop at the SAME
-    // index. The old finish-path recomputed text_base (now 1, since text is present) and applied
-    // it to the FIRST tool — pushing its BlockStop to index 1 (tool0 opened at 0) and clobbering
-    // text's stop, so the multiset of stops diverged from the starts.
+    // The second tool chunk (an ET_TOOL_CALL start) closes the still-open TEXT block (index 1)
+    // before opening tool2 — strict bracketing (carryable-flatten #7).
+    assert!(
+        tool2_evs
+            .iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == 1)),
+        "the text block (1) must close on the second tool chunk: {tool2_evs:?}"
+    );
+    // Finish: every remaining open block must be matched by a BlockStop at the SAME index. The old
+    // finish-path recomputed text_base (now 1, since text is present) and applied it to the FIRST
+    // tool — pushing its BlockStop to index 1 (tool0 opened at 0) and clobbering text's stop, so the
+    // multiset of stops diverged from the starts.
     let finish_evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -2541,15 +2616,17 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
         }),
         &mut st,
     );
-    let mut stops: Vec<usize> = finish_evs
+    // Gather every BlockStop across the WHOLE stream (text closed early on the tool2 chunk; the two
+    // tools close at finish). tool0 → 0, text → 1, tool1 → 2: each opened block closed exactly once.
+    let mut stops: Vec<usize> = tool2_evs
         .iter()
+        .chain(finish_evs.iter())
         .filter_map(|e| match e {
             IrStreamEvent::BlockStop { index } => Some(*index),
             _ => None,
         })
         .collect();
     stops.sort_unstable();
-    // tool0 → 0, text → 1, tool1 → 2: each opened block closed exactly once at its open index.
     assert_eq!(
         stops,
         vec![0, 1, 2],

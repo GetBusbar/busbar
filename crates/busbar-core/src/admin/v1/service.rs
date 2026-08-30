@@ -2045,7 +2045,7 @@ impl AdminService {
     /// error. Read scope (no mutation). Env interpolation is out of scope (structure + resolution only).
     pub(crate) async fn validate_config(
         &self,
-        deploy: DeployCfg,
+        mut deploy: DeployCfg,
         defs: std::collections::HashMap<String, ProviderDef>,
     ) -> Result<ConfigValidateView, AdminError> {
         // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
@@ -2057,6 +2057,18 @@ impl AdminService {
         if let Err(errors) = crate::config_validate::validate(&root) {
             return Ok(ConfigValidateView { ok: false, errors });
         }
+        // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
+        // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
+        // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
+        // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
+        // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
+        // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
+        // can no longer be steered off the real install, while validation still lints every
+        // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
+        // meaningful check, and the CI dry-run use case (does this config resolve against what is
+        // deployed?). The caller's `plugins.dir` string was already structurally checked by
+        // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+        deploy.plugins.dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
         // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
         // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE

@@ -146,6 +146,17 @@ pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
     if let Some(cfg) = r.guidance_scale {
         body["imageGenerationConfig"]["cfgScale"] = json!(cfg);
     }
+    // Titan's ImageGenerationConfig takes explicit `width`/`height` (from the IR's pixel geometry)
+    // and a `quality` (standard|premium) — both Titan-native. The old writer dropped them, so an
+    // openai->bedrock image request lost its size and quality tier. Only an explicit W×H is emitted
+    // (Titan has no `auto`); `quality` is carried verbatim.
+    if let Some(crate::ir::image::ImageSize::Wh { width, height }) = r.size {
+        body["imageGenerationConfig"]["width"] = json!(width);
+        body["imageGenerationConfig"]["height"] = json!(height);
+    }
+    if let Some(q) = &r.quality {
+        body["imageGenerationConfig"]["quality"] = json!(q);
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -289,6 +300,11 @@ pub(crate) fn write_rerank_request(r: &crate::ir::rerank::RerankReq) -> Bytes {
     if let Some(n) = r.top_n {
         body["top_n"] = json!(n);
     }
+    // Carry `return_documents` so a rerank hop into Bedrock echoes the ranked text (shared with the
+    // Cohere rerank surface, whose response shape Bedrock mirrors).
+    if let Some(rd) = r.return_documents {
+        body["return_documents"] = json!(rd);
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -298,7 +314,14 @@ pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBo
     let results: Vec<Value> = r
         .results
         .iter()
-        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .map(|x| {
+            let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
+            // Echo the ranked document (Cohere/Bedrock `{text}` shape) when present.
+            if let Some(doc) = &x.document {
+                o["document"] = json!({ "text": doc });
+            }
+            o
+        })
         .collect();
     let mut body = json!({ "results": results });
     if let Some(id) = &r.id {
@@ -347,6 +370,21 @@ pub(crate) fn read_image_request(
             .get("cfgScale")
             .and_then(Value::as_f64)
             .map(|f| f as f32),
+        // Titan-native pixel geometry + quality tier — carried so egress re-emits them.
+        size: match (
+            cfg.get("width").and_then(Value::as_u64),
+            cfg.get("height").and_then(Value::as_u64),
+        ) {
+            (Some(w), Some(h)) => Some(crate::ir::image::ImageSize::Wh {
+                width: w as u32,
+                height: h as u32,
+            }),
+            _ => None,
+        },
+        quality: cfg
+            .get("quality")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         ..Default::default()
     })
 }

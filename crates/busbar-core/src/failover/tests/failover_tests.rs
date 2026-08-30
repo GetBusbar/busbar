@@ -273,20 +273,25 @@ fn your_search_server_in_two_regions_one_dies_and_the_agent_never_learns() {
     )
     .expect("the second region takes the call");
 
-    assert_eq!(admitted.candidate().name(), "search-us");
+    // `candidate()` returns a `&'a C` borrowed from the members slice, NOT from `admitted`, so it
+    // stays valid after `into_token()` consumes the admission below.
+    let cand = admitted.candidate();
+    assert_eq!(cand.name(), "search-us");
     assert_eq!(admitted.position(), 1, "a reroute happened");
-    // The dispatch owns the single-flight probe it was admitted on, and carries the OWNER TOKEN for
-    // the owner-checked release — the same `Admit.probe_epoch` discipline the model plane's queue
-    // dispatch uses, inherited rather than re-invented.
+    // The reroute lands on the HEALTHY (Closed-ready) US region, which wins NO single-flight recovery
+    // probe — so the admission token is `None`, not the cell's current epoch. This is the phantom-token
+    // fix: an armed guard/release built on a non-probe admit could revert a probe a peer legitimately
+    // won on the same cell; representing "won no probe" as `None` means no guard is ever built here.
+    // (Before the fix this returned `Some(<cell's current epoch>)`.)
     assert_eq!(
-        admitted.probe_epoch(),
-        store.probe_epoch_in(POOL, 1),
-        "the caller holds the cell's current probe epoch, so its release cannot revert a peer's"
+        admitted.into_token(),
+        None,
+        "a reroute to a healthy Closed lane wins no probe, so it owns no owner token to release"
     );
 
     // No client-visible error: the caller got a candidate, and the successful outcome closes the
     // cell it was admitted on, exactly as any model-plane dispatch would.
-    record_success(&store, POOL, admitted.candidate());
+    record_success(&store, POOL, cand);
     assert_eq!(
         store.breaker_state_in(POOL, 1),
         crate::store::BreakerState::Closed

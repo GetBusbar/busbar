@@ -289,6 +289,11 @@ pub(crate) fn write_rerank_request(r: &crate::ir::rerank::RerankReq) -> Bytes {
     if let Some(m) = r.max_tokens_per_doc {
         body["max_tokens_per_doc"] = json!(m);
     }
+    // Carry `return_documents` — Cohere echoes each ranked document's text when it is set. Dropping
+    // it meant the caller's ask for the echoed documents was silently ignored on a rerank hop.
+    if let Some(rd) = r.return_documents {
+        body["return_documents"] = json!(rd);
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -298,7 +303,14 @@ pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBo
     let results: Vec<Value> = r
         .results
         .iter()
-        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .map(|x| {
+            let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
+            // Echo the ranked document in Cohere's `{text}` shape when the request asked for it.
+            if let Some(doc) = &x.document {
+                o["document"] = json!({ "text": doc });
+            }
+            o
+        })
         .collect();
     let mut body = json!({ "results": results });
     if let Some(id) = &r.id {
@@ -320,6 +332,13 @@ pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<crate::ir::rerank::R
                     Some(crate::ir::rerank::RerankResult {
                         index: x.get("index").and_then(Value::as_u64)? as usize,
                         relevance_score: x.get("relevance_score").and_then(Value::as_f64)?,
+                        // `return_documents` echoes the ranked text. Cohere returns it as a
+                        // `{text}` object, Bedrock as a bare string — accept both, else None.
+                        document: x.get("document").and_then(|d| {
+                            d.as_str().map(str::to_string).or_else(|| {
+                                d.get("text").and_then(Value::as_str).map(str::to_string)
+                            })
+                        }),
                     })
                 })
                 .collect()
@@ -497,6 +516,7 @@ pub(crate) fn read_rerank_request(
             .get("max_tokens_per_doc")
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
+        return_documents: wire.get("return_documents").and_then(Value::as_bool),
         ..Default::default()
     })
 }

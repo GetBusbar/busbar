@@ -779,6 +779,39 @@ pub(crate) struct ProgressChannel {
     pub(crate) frames: Vec<serde_json::Value>,
 }
 
+impl ProgressChannel {
+    /// The most progress frames busbar retains for one request. A progress stream is UNTRUSTED
+    /// upstream input — both wires (`client::stdio`, `client::transport`) push whatever the peer
+    /// emits, across every round of a multi-round `tools/call`, into this one request-wide channel —
+    /// so it is bounded like the plane's other peer-input surfaces (`MAX_INTERLEAVED_MESSAGES`,
+    /// `max_upstream_buffered_bytes`). Without it a peer that streams progress without end grows
+    /// busbar's per-request memory without end. Mirrors `MAX_INTERLEAVED_MESSAGES` (256): more than
+    /// enough for any real progress UI, few enough that an abusive stream cannot exhaust memory.
+    pub(crate) const MAX_FRAMES: usize = 256;
+
+    /// Append one upstream progress frame, DROPPING it past [`Self::MAX_FRAMES`]. The frames kept are
+    /// the EARLIEST — a caller's progress UI reads them in order, so retaining the first N and
+    /// dropping the tail keeps the run monotonic rather than showing a gap. Over-cap drops are noted
+    /// once (latched) so the condition is visible without a per-frame log storm.
+    pub(crate) fn push_frame(&mut self, frame: serde_json::Value) {
+        if self.frames.len() >= Self::MAX_FRAMES {
+            // Debug rather than a coded warn: the plane's warn/error records must carry a diagnostic
+            // code and there is none in scope to add one here. Latched to one line per process.
+            static OVER_CAP_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !OVER_CAP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::debug!(
+                    cap = Self::MAX_FRAMES,
+                    "mcp: an upstream produced more progress frames than busbar retains for one \
+                     request; the excess is dropped"
+                );
+            }
+            return;
+        }
+        self.frames.push(frame);
+    }
+}
+
 tokio::task_local! {
     /// PER-REQUEST slot: `ingress` scopes it, the outbound builder reads the caller's token from it,
     /// the transport appends the upstream's frames to it, and `ingress` drains it when it frames the
@@ -1105,3 +1138,35 @@ mod config_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/quarantine_boot_tests.rs"]
 mod quarantine_boot_tests;
+
+#[cfg(test)]
+mod progress_cap_tests {
+    use super::ProgressChannel;
+
+    /// An UNTRUSTED upstream progress stream is bounded: past the cap frames are dropped, and the
+    /// ones KEPT are the earliest, in order. Without the bound a peer that emits progress without end
+    /// grows busbar's per-request channel without end (the two wire push sites append verbatim,
+    /// across every round of a multi-round call).
+    #[test]
+    fn push_frame_bounds_an_untrusted_progress_stream_at_the_cap() {
+        let mut ch = ProgressChannel::default();
+        for i in 0..(ProgressChannel::MAX_FRAMES + 50) {
+            ch.push_frame(serde_json::json!({ "n": i }));
+        }
+        assert_eq!(
+            ch.frames.len(),
+            ProgressChannel::MAX_FRAMES,
+            "an unbounded upstream progress stream must not grow the per-request channel past the cap"
+        );
+        assert_eq!(
+            ch.frames.first().and_then(|f| f.get("n")),
+            Some(&serde_json::json!(0)),
+            "the earliest frame is retained"
+        );
+        assert_eq!(
+            ch.frames.last().and_then(|f| f.get("n")),
+            Some(&serde_json::json!(ProgressChannel::MAX_FRAMES - 1)),
+            "the run kept is contiguous from the first frame"
+        );
+    }
+}

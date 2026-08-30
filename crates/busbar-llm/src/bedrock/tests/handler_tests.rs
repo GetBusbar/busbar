@@ -136,3 +136,47 @@ fn embeddings_write_read_roundtrip_preserves_input_text() {
     let r = back;
     assert_eq!(r.input, EmbInput::Text(vec!["roundtrip".to_string()]));
 }
+
+// carryable-flatten #8: the Titan image writer dropped `size` (->width/height) and `quality`
+// (->standard|premium), both Titan-native. Carry them; capture them on read. Fails pre-fix: an
+// openai->bedrock image request lost its pixel geometry and quality tier. Round-trips through bedrock.
+#[test]
+fn bedrock_titan_image_carries_size_and_quality() {
+    // An openai-ingress ImageReq (explicit W×H + a Titan-valid quality) crossing to bedrock egress.
+    let ir = crate::ir::image::ImageReq {
+        model: "amazon.titan-image-generator-v1".into(),
+        prompt: Some("a cat".into()),
+        size: Some(crate::ir::image::ImageSize::Wh {
+            width: 1024,
+            height: 768,
+        }),
+        quality: Some("premium".into()),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::image_write_request("bedrock", &ir);
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v.pointer("/imageGenerationConfig/width"),
+        Some(&json!(1024)),
+        "{v}"
+    );
+    assert_eq!(
+        v.pointer("/imageGenerationConfig/height"),
+        Some(&json!(768))
+    );
+    assert_eq!(
+        v.pointer("/imageGenerationConfig/quality"),
+        Some(&json!("premium"))
+    );
+    let back =
+        super::super::super::leaf_codec::image_read_request("bedrock", &out, "application/json")
+            .expect("re-read");
+    assert_eq!(
+        back.size,
+        Some(crate::ir::image::ImageSize::Wh {
+            width: 1024,
+            height: 768
+        })
+    );
+    assert_eq!(back.quality.as_deref(), Some("premium"));
+}

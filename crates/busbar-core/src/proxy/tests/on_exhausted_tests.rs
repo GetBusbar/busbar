@@ -1264,7 +1264,10 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
         .store
         .try_admit("p", 0, now())
         .unwrap_or_else(|_| panic!("peer A must win the recovery probe"));
-    let e1 = admit_a.probe_epoch;
+    // Peer A won a REAL probe (the cell was expired-Open), so `probe_epoch` is `Some(epoch)`.
+    let e1 = admit_a
+        .probe_epoch
+        .expect("peer A won a single-flight probe on the expired-Open cell");
     assert!(
         matches!(app.store.breaker_state_in("p", 0), BreakerState::HalfOpen),
         "precondition: peer A won the probe (cell HalfOpen)"

@@ -190,15 +190,17 @@ impl PlaneBreakers {
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
     /// admission the model plane's queue dispatch makes. `lane` is the member's position in its
-    /// pool (0 for a degenerate cell). `Ok` carries the single-flight probe owner token; the
-    /// dispatch MUST end in exactly one of `record_success` / `record_signal` / [`Self::release`]
-    /// or a won recovery probe is leaked and the cell wedges HalfOpen. Production call sites use
-    /// [`Self::admit`], whose RAII token cannot be leaked by a dropped future.
+    /// pool (0 for a degenerate cell). `Ok(Some(epoch))` carries the single-flight probe owner token
+    /// (this admit WON a probe); `Ok(None)` is a Closed-and-ready no-op admit that won NO probe (so
+    /// there is nothing to release). On a probe win the dispatch MUST end in exactly one of
+    /// `record_success` / `record_signal` / [`Self::release`] or a won recovery probe is leaked and
+    /// the cell wedges HalfOpen. Production call sites use [`Self::admit`], whose RAII token cannot be
+    /// leaked by a dropped future — and which releases nothing on the `None` path.
     // A2A-only direct admission: the A2A relay admits through this RAII pair, while the MCP leg
     // reaches the same cell via `failover::walk` + [`Self::adopt`]. So with `plane-a2a` off (and MCP
     // on) neither this nor [`Self::admit`] has a caller.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
-    pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<u64, Unavailable> {
+    pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<Option<u64>, Unavailable> {
         // Inert (planeless config): structurally unreachable — no plane is mounted, so nothing
         // dispatches — but fail CLOSED rather than index the empty lane table if a future caller
         // ever gets here.
@@ -230,14 +232,18 @@ impl PlaneBreakers {
     }
 
     /// OWNER-CHECKED release of the probe token [`Self::try_admit`] returned, for a dispatch that
-    /// settles. Safe to call unconditionally after the outcome: a recorded success/failure has
-    /// already consumed the HalfOpen state, so this is a no-op there and only reverts a probe the
-    /// dispatch genuinely abandoned (refused before any leg went out).
-    pub(crate) fn release(&self, key: &str, lane: usize, probe_epoch: u64) {
+    /// settles. Takes the token as `Option<u64>` and is a NO-OP on `None` (a Closed-ready admit that
+    /// won no probe owns nothing to release, so it must never revert a probe a peer won). Safe to call
+    /// unconditionally after the outcome even on `Some`: a recorded success/failure has already
+    /// consumed the HalfOpen state, so it is a no-op there too and only reverts a probe the dispatch
+    /// genuinely abandoned (refused before any leg went out).
+    pub(crate) fn release(&self, key: &str, lane: usize, probe_epoch: Option<u64>) {
         if !self.provisioned {
             return; // inert: nothing was ever admitted (see `try_admit`).
         }
-        self.health.release_probe_owned_in(key, lane, probe_epoch);
+        if let Some(epoch) = probe_epoch {
+            self.health.release_probe_owned_in(key, lane, epoch);
+        }
     }
 
     /// The wire answered and busbar could serve it. Closes a half-open probe, dilutes the
@@ -387,11 +393,16 @@ pub(crate) struct Admission {
     breakers: Arc<PlaneBreakers>,
     key: String,
     lane: usize,
-    epoch: u64,
+    /// `Some(epoch)` when this admission WON a single-flight probe; `None` for a Closed-ready no-op
+    /// admit that won none. Drop releases OWNER-CHECKED only on `Some` — a `None` admit owns no probe,
+    /// so it must never revert one a peer legitimately won on the same cell.
+    epoch: Option<u64>,
 }
 
 impl Drop for Admission {
     fn drop(&mut self) {
+        // `release` is a no-op on `None` (a Closed-ready admit won no probe), so pass the token
+        // straight through — the owner-checked release only ever reverts a probe this admission won.
         self.breakers.release(&self.key, self.lane, self.epoch);
     }
 }

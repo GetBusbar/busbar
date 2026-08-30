@@ -2258,3 +2258,66 @@ fn hook_derived_fields_follow_the_registry() {
         build_with_registry(&app, registry, vec!["declarer".to_string()]).expect("rolls back");
     assert_hook_derived(&rolled_back, "after build_with_registry (config rollback)");
 }
+
+/// SECURITY (R3-B): `POST /api/v1/admin/config/validate` must NOT scan a CALLER-SUPPLIED
+/// `plugins.dir`. The pre-flight does `fs::read_dir` + a read of every tarball it finds on that
+/// directory, so honoring the request's `plugins.dir` made the endpoint an arbitrary-path
+/// readability + directory-enumeration oracle for any token that can reach it (`plugins.dir:
+/// /root/.ssh` reports whether that path is readable and what tarballs it holds). The fix PINS the
+/// scanned directory to the RUNNING install's plugins dir.
+///
+/// Proof (and red-before-green): the request's `plugins.dir` points at a directory holding a GARBAGE
+/// `.tar.gz`. With the pin the running (empty) dir is scanned instead, so the config validates
+/// `ok: true` and the caller's dir is never read. Before the fix the scan honored the request's dir,
+/// choked on the garbage tarball, and returned `ok: false` (the arbitrary directory was probed).
+#[tokio::test]
+async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
+    // The RUNNING install's plugins dir — empty, so a reference-free config lints clean.
+    let running_dir = tmp_plugins_dir("validate-running");
+    let svc = svc_with(running_dir, unsigned_ok_posture());
+
+    // The CALLER's dir: a DIFFERENT directory holding a file any scan would reject. If the endpoint
+    // scanned it, validation would fail on this garbage tarball.
+    let evil_dir = tmp_plugins_dir("validate-evil");
+    std::fs::write(evil_dir.join("probe.tar.gz"), b"not a real tarball at all").unwrap();
+
+    let yaml = format!(
+        r#"
+listen: "0.0.0.0:8080"
+providers:
+  anthropic:
+    api_key: {{ env: ANTHROPIC_API_KEY }}
+models:
+  claude:
+    provider: anthropic
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+plugins:
+  enabled: true
+  dir: "{}"
+"#,
+        evil_dir.display()
+    );
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&yaml).expect("test DeployCfg yaml must parse");
+    let def: crate::config::ProviderDef = serde_yaml::from_str(
+        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
+    )
+    .unwrap();
+    let defs = std::collections::HashMap::from([("anthropic".to_string(), def)]);
+
+    let view = svc
+        .validate_config(deploy, defs)
+        .await
+        .expect("validate returns a view");
+    assert!(
+        view.ok,
+        "the caller's plugins.dir (holding a garbage tarball) must NOT be scanned — the scan is \
+         pinned to the running install dir; got errors: {:?}",
+        view.errors
+    );
+}

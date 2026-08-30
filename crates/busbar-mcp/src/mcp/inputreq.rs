@@ -247,8 +247,13 @@ pub(crate) type ErasedSatisfy<'a> = dyn FnMut(Ask) -> ErasedAskFut<'a> + Send + 
 /// The erased live-grants seam (`grants`). Shared-ref, so `Sync` is the trait that makes the held
 /// `&dyn` `Send`.
 pub(crate) type ErasedGrants<'a> = dyn Fn() -> super::config::ServerRequestGrants + Sync + 'a;
-/// The erased per-round meter seam (`charge`).
-pub(crate) type ErasedCharge<'a> = dyn FnMut(&RoundRecord) -> Result<(), String> + Send + 'a;
+/// The erased per-round meter seam (`charge`). Takes the round's OWN dispatch scope: the concurrency
+/// hold `charge` registers lives in it and releases when [`drive`] drops it at the end of the round,
+/// so a multi-round call holds at most ONE concurrency slot at a time instead of accumulating one per
+/// round into the request-wide arena.
+pub(crate) type ErasedCharge<'a> = dyn FnMut(&RoundRecord, &busbar_substrate::plane_host::DispatchScope) -> Result<(), String>
+    + Send
+    + 'a;
 
 /// DRIVE one logical dispatch to completion, bounded, metered, and gated on every round.
 ///
@@ -286,7 +291,10 @@ pub(crate) async fn drive<C, F, S, SF>(
     mut call: C,
     grants: impl Fn() -> super::config::ServerRequestGrants,
     mut satisfy: S,
-    mut charge: impl FnMut(&RoundRecord) -> Result<(), String>,
+    mut charge: impl FnMut(
+        &RoundRecord,
+        &busbar_substrate::plane_host::DispatchScope,
+    ) -> Result<(), String>,
 ) -> Outcome
 where
     C: FnMut(u32, Option<serde_json::Value>) -> F,
@@ -298,13 +306,25 @@ where
     let mut satisfaction: Option<serde_json::Value> = None;
     let mut satisfied_kind: Option<String> = None;
     loop {
+        // THE ROUND'S OWN DISPATCH SCOPE. The concurrency hold `charge` registers rides THIS arena,
+        // which drops when the round ends (this `loop` body returns or iterates), so a multi-round
+        // dispatch holds at most ONE concurrency slot at a time. Charging into the request-wide arena
+        // instead made every round take a fresh hold that only released at request end, so a call
+        // that needed N rounds self-contended against a `concurrent:N` group limit and blocked on its
+        // own earlier rounds. The rate check, the per-round budget fee and the metering `charge`
+        // performs are UNAFFECTED — they still run once per round; only the hold's lifetime is the
+        // round's rather than the request's.
+        let round_scope = busbar_substrate::plane_host::DispatchScope::new();
         // CHARGE FIRST, and refuse on a refusal. See the `charge` note above: this is the same
         // per-key budget an LLM request is admitted against, and it is what stops a loop that
         // nothing else stops.
-        if let Err(reason) = charge(&RoundRecord {
-            round,
-            satisfied: satisfied_kind.take(),
-        }) {
+        if let Err(reason) = charge(
+            &RoundRecord {
+                round,
+                satisfied: satisfied_kind.take(),
+            },
+            &round_scope,
+        ) {
             return Outcome::Refused(Refusal::BudgetExhausted {
                 server: server.to_string(),
                 round,

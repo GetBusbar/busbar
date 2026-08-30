@@ -242,10 +242,10 @@ impl Drop for ProbeGuard<'_> {
 /// point where a successor could win a NEWER probe on the same cell — releases via the
 /// owner-checked `release_probe_owned_in(pool, lane, epoch)` instead of the unowned
 /// `release_probe_in`, which would revert whichever probe is live at release time regardless of
-/// which one this call actually won. Safe to use even when this pick's `acquire_for_dispatch_in`
-/// did not win a NEW probe (a normal Closed-cell dispatch): the epoch is simply whatever the cell's
-/// current value is, and `cell_release_probe_owned`'s CAS is a no-op on a non-HalfOpen cell either
-/// way.
+/// which one this call actually won. The third tuple element is `Some(epoch)` ONLY when this pick
+/// actually WON a single-flight probe (an expired-Open cell driven Open→HalfOpen); a normal
+/// Closed-cell dispatch won no probe and yields `None`, so the caller builds NO release guard and can
+/// never revert a probe a peer legitimately won on the same cell.
 /// `cands` is a `&[WeightedLane]` slice where each lane carries its configured weight.
 /// `request_ctx` provides accumulated exclusions to avoid retrying failed lanes.
 /// `affinity_key_hash` enables sticky routing as a preference (not a hard constraint). It is the
@@ -264,7 +264,7 @@ pub(crate) async fn pick_among(
     // SWRR, byte-identical to pre-feature behavior. `Some(order)` makes selection walk the ranked
     // lanes through the unchanged breaker filter instead of the blind SWRR pick (see SELECTION below).
     policy_order: Option<&[usize]>,
-) -> Option<(usize, Permit, u64)> {
+) -> Option<(usize, Permit, Option<u64>)> {
     let _t = busbar_timing::timeit!("lane_pick_among");
     // THE MODEL PLANE'S CANDIDATE VIEW, for the ONE selection loop. Built once per pick (never inside
     // the walk's retry hops) and borrowed for its whole life: `wl` is the pool member as configured,

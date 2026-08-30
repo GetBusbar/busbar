@@ -836,7 +836,7 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
         let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
         let sampling = entry.and_then(|s| s.sampling.clone());
         let gov = busbar_api::PlaneRequestCtx {
-            key: Some(Arc::new(runner.authorised.caller.clone())),
+            key: Some(runner.authorised.caller.clone()),
         };
         let server = server_id.clone();
         // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
@@ -860,7 +860,8 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // caller can still be told it has been refused. Charging again from a detached runner would
     // bill a request that has already been answered, against a budget window the caller cannot
     // see, with no way to report the refusal except by failing the task.
-    let mut charge_seam = |_: &super::inputreq::RoundRecord| Ok(());
+    let mut charge_seam =
+        |_: &super::inputreq::RoundRecord, _: &busbar_substrate::plane_host::DispatchScope| Ok(());
     let outcome = super::inputreq::drive(
         &runner.server_id,
         runner.max_rounds,

@@ -574,3 +574,11 @@ mod callerask_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/confirm_once_tests.rs"]
 mod confirm_once_tests;
+
+// The SEP-2243 header/body mirror check re-run after the ask-answer merge, judged from outside: an
+// `x-mcp-header` argument supplied through an ask answer must never reach the upstream without its
+// mirrored header. Here rather than beside the envelope tests because the property spans the ask
+// flow and the merge, and only the upstream witness can settle "did it reach the peer".
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/sep2243_ask_merge_tests.rs"]
+mod sep2243_ask_merge_tests;

@@ -575,7 +575,9 @@ impl StdioChild {
                         // child inject arbitrary JSON-RPC into busbar's answer to its own caller.
                         let _ = crate::mcp::UPSTREAM_PROGRESS.try_with(|slot| {
                             if let Ok(mut ch) = slot.lock() {
-                                ch.frames.push(raw.clone());
+                                // Bounded: an untrusted peer must not grow this per-request channel
+                                // without end. See `ProgressChannel::push_frame`.
+                                ch.push_frame(raw.clone());
                             }
                         });
                     }
@@ -751,6 +753,68 @@ impl ChildSlot {
             spawned_with: None,
         }
     }
+
+    /// ONE cancel-safe request/response exchange against the live child.
+    ///
+    /// ## Why a guard and not just the two arms of the `match`
+    ///
+    /// [`StdioChild::call`] writes a request and reads back the answer to it. If the future that is
+    /// awaiting it is DROPPED between those two — a `notifications/cancelled` firing the dispatch's
+    /// [`AbortHandle`], the ingress EOF drain, a client reset — the write has already reached the
+    /// child and its answer is on the way to a stdout NOBODY WILL READ. The child stays in the slot,
+    /// live, one message ahead. The next caller writes its own request, reads the FIRST line, and
+    /// gets the abandoned exchange's answer; correlation on the JSON-RPC id then fails as
+    /// `Uncorrelated`, which is a *dispatch* failure and not a transport one — so nothing retires the
+    /// child, and every later call on it is served the previous caller's response. A permanent
+    /// one-ahead wedge, entered by a cancellation neither arm of a plain `match` on the result ever
+    /// runs for.
+    ///
+    /// So the retire is moved onto a DROP guard: it fires unless the exchange completed cleanly. An
+    /// `Err` (a real transport failure) and a cancellation are then the same thing — a child whose
+    /// byte stream busbar can no longer find a message boundary in — and both retire it, which is
+    /// exactly the posture the rest of this transport already takes ("a hang is a crash"). Only a
+    /// clean `Ok` disarms the guard and keeps the child for reuse.
+    ///
+    /// [`AbortHandle`]: tokio::task::AbortHandle
+    async fn guarded_call(
+        &mut self,
+        body: &[u8],
+        timeout: Duration,
+        policy: &PeerPolicy<'_>,
+    ) -> Result<Vec<u8>, String> {
+        let mut guard = CallGuard {
+            slot: self,
+            committed: false,
+        };
+        let child = guard
+            .slot
+            .child
+            .as_mut()
+            .expect("a child was spawned or found live above");
+        let out = child.call(body, timeout, policy).await;
+        if out.is_ok() {
+            // The exchange finished cleanly and the child is at a message boundary: keep it.
+            guard.committed = true;
+        }
+        out
+    }
+}
+
+/// Retires the child unless [`CallGuard::committed`] was set, so a call that ends any way OTHER than
+/// a clean return — an `Err`, or the future being dropped mid-exchange — leaves the slot ready to
+/// spawn a fresh child rather than reusing a desynchronised one. See [`ChildSlot::guarded_call`].
+struct CallGuard<'a> {
+    slot: &'a mut ChildSlot,
+    committed: bool,
+}
+
+impl Drop for CallGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.slot.supervisor.crashed(now_ms());
+            self.slot.child = None;
+        }
+    }
 }
 
 /// EVERY LIVE stdio child busbar owns, keyed by registration id.
@@ -841,22 +905,17 @@ impl McpWire for StdioWire {
         // no header block, and the credential the HTTP wire would put in an `Authorization` header
         // has no carrier here. That is not a silent drop — `mcp::config` refuses a stdio
         // registration that configures one, so no credential can reach this point to be lost.
-        let child = slot
-            .child
-            .as_mut()
-            .expect("a child was spawned or found live above");
-        match child.call(&req.body, leg.timeout, &policy).await {
-            Ok(body) => Ok(TransportResponse { status: 200, body }),
-            Err(e) => {
-                // ANY failure of the exchange retires the child. A stdio peer has no way to say "that
-                // request failed but I am fine": the stream is the connection, so a write or read
-                // that failed leaves busbar unable to say where in the byte stream the next answer
-                // starts. Reusing it would risk serving one caller another caller's payload.
-                slot.supervisor.crashed(now_ms());
-                slot.child = None;
-                Err(TransportError::Io(e))
-            }
-        }
+        //
+        // Cancel-safe via [`ChildSlot::guarded_call`]: ANY end other than a clean return — an `Err`,
+        // or this future being dropped mid-exchange (a cancelled dispatch) — retires the child,
+        // because a stdio peer has no way to say "that request failed but I am fine". The stream is
+        // the connection, so a write or read that did not complete leaves busbar unable to say where
+        // in the byte stream the next answer starts; reusing it would serve one caller another
+        // caller's payload.
+        slot.guarded_call(&req.body, leg.timeout, &policy)
+            .await
+            .map(|body| TransportResponse { status: 200, body })
+            .map_err(TransportError::Io)
     }
 
     /// A NOTIFICATION down a child's stdin: written, never read back.
@@ -969,19 +1028,28 @@ impl StdioWire {
                     // `initialize` is a once-per-connection message; re-sending it on every dispatch
                     // would be busbar re-negotiating with a peer it is already talking to, and a
                     // conformant server answers a second one with an error.
+                    // Cancel-safe for the SAME reason a dispatch is (see `guarded_call`): the
+                    // handshake is a `call`, so a future dropped mid-handshake leaves a child in the
+                    // slot with an unread answer on its stdout. The guard retires it on any end
+                    // other than a clean one.
                     let policy = peer_policy(leg);
-                    let child = slot
+                    let mut guard = CallGuard {
+                        slot: &mut slot,
+                        committed: false,
+                    };
+                    let child = guard
+                        .slot
                         .child
                         .as_mut()
                         .expect("the child was just stored two lines up");
-                    if let Err(e) = child.handshake(&policy, leg.timeout).await {
+                    match child.handshake(&policy, leg.timeout).await {
                         // A handshake that fails at the TRANSPORT is a dead child, not a revision
                         // disagreement — `handshake` swallows the latter itself. So it counts as a
                         // crash, exactly as a failed `tools/call` exchange does, and for the same
-                        // reason: the stream is the connection and there is no resync point.
-                        slot.supervisor.crashed(now_ms());
-                        slot.child = None;
-                        return Err(TransportError::Io(e));
+                        // reason: the stream is the connection and there is no resync point. The
+                        // guard (uncommitted) retires it as it drops on this early return.
+                        Err(e) => return Err(TransportError::Io(e)),
+                        Ok(()) => guard.committed = true,
                     }
                 }
                 Err(e) => {

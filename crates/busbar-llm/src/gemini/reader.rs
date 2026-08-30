@@ -1018,6 +1018,16 @@ impl ProtocolReader for GeminiReader {
                                         state.thinking_block_open = false;
                                         out.push(IrStreamEvent::BlockStop { index: 0 });
                                     }
+                                    // Close a still-open TEXT block too (a preamble-then-tool
+                                    // stream): the old arm closed thinking but never text, leaving
+                                    // the text and tool blocks both open — overlapping content blocks
+                                    // that break strict bracketing. Mirror the finishReason-path text
+                                    // close (`text_base` above was already captured pre-close).
+                                    if state.text_block_open {
+                                        state.text_block_open = false;
+                                        let ti = state.text_index.take().unwrap_or(0);
+                                        out.push(IrStreamEvent::BlockStop { index: ti });
+                                    }
 
                                     // A zero-arg Gemini `functionCall` either omits `args` or sends
                                     // `{}`. Default the MISSING case to an empty JSON OBJECT, not

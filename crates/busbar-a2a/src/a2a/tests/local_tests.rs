@@ -224,6 +224,48 @@ async fn list_tasks_is_newest_first_and_speaks_the_wire_state() {
     assert_eq!(tasks[0]["status"]["state"], "TASK_STATE_COMPLETED");
 }
 
+/// `pageSize` and `totalSize` are REQUIRED members of the response and were BOTH omitted.
+///
+/// `a2a::ListTasksResponse` types them `page_size: i32` and `total_size: i32`, neither
+/// `#[serde(default)]` — so a body without them cannot deserialise into the very struct busbar's own
+/// gRPC ListTasks leg builds from this JSON. `totalSize` is the count matching the filter BEFORE
+/// pagination; `pageSize` is the effective (clamped) page this response was cut to.
+#[tokio::test]
+async fn list_tasks_carries_the_required_page_size_and_total_size() {
+    crate::testkit::install_test_seams();
+    let me = "key-list-sizes";
+    for (i, id) in ["ls-1", "ls-2", "ls-3"].iter().enumerate() {
+        open(
+            me,
+            id,
+            "ctx-sizes",
+            TaskState::Working,
+            epoch() + i as u64 * 10,
+        );
+    }
+
+    let listed = result(local::list_tasks(
+        &envelope(
+            "ListTasks",
+            serde_json::json!({ "context_id": "ctx-sizes", "page_size": 2 }),
+        ),
+        &rpc_id(),
+        me,
+    ))
+    .await;
+
+    assert_eq!(
+        listed.get("totalSize"),
+        Some(&serde_json::json!(3)),
+        "total_size counts the whole filtered set before pagination: {listed}"
+    );
+    assert_eq!(
+        listed.get("pageSize"),
+        Some(&serde_json::json!(2)),
+        "page_size is the effective page the response was cut to: {listed}"
+    );
+}
+
 /// `nextPageToken` is PRESENT ON EVERY PAGE and EMPTY on the last one. A client's paging loop
 /// terminates on this member, so omitting it on the final page is how the loop becomes infinite.
 #[tokio::test]

@@ -130,6 +130,11 @@ pub struct TranscriptionResp {
     pub duration_seconds: Option<f64>,
     pub segments: Vec<Segment>,
     pub words: Vec<Word>,
+    /// The response format the body was delivered in, so a writer can reproduce the wire SHAPE the
+    /// caller asked for. OpenAI serves `text`/`srt`/`vtt` as a raw `text/plain` body (not JSON), so a
+    /// reader that parsed a non-JSON body records the plain shape here and the writer re-emits
+    /// `text/plain` instead of JSON-wrapping. `None`/`json`/`verbose_json` → the JSON envelope.
+    pub response_format: Option<String>,
     /// `Duration{seconds}` (whisper-1) | `Tokens` (gpt-4o-transcribe) — model-dependent.
     pub usage: Option<Billing>,
     pub extra: SourceScopedExtra,

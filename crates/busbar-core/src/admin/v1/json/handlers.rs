@@ -3282,12 +3282,19 @@ pub(crate) async fn patch_hook_settings(
     updated.settings = req.settings;
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
-    // PUSH first, COMMIT on ack — a hook that never acked never sees committed state it doesn't
-    // hold. The hook plugin env is captured here; the load()
-    // that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
+    // PUSH first, COMMIT on ack — a hook that NACKs invalid settings (its `configure` veto) must be
+    // able to REJECT the patch BEFORE anything commits (`hook-test-plugin`'s `nack_configure` pins
+    // this: "a rejected push does not commit over the seam"), so the push cannot move to after the
+    // txn. But a SUCCESSFUL push has already made the new settings LIVE on the running hook, while the
+    // txn that follows can still reject (409 drift / build / persist). Those reject arms therefore
+    // COMPENSATE (see the `Err(e)` arm below) — re-pushing the committed settings so a REJECTED patch
+    // never leaves the running hook ahead of committed config. The hook plugin env is captured here;
+    // the load() that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
     if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
     {
+        // The hook NACKed / timed out: nothing was pushed-and-acked, so nothing is live and nothing
+        // committed — the running hook keeps its old settings. Reject cleanly, no compensation needed.
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Validation(format!(
             "hook did not acknowledge the settings push: {e}"
@@ -3354,6 +3361,35 @@ pub(crate) async fn patch_hook_settings(
             )
         }
         Err(e) => {
+            // COMPENSATE the successful pre-txn push: the running hook already acked (and is now
+            // running) the NEW settings, but the txn rejected — 409 drift, a `build_with_hook` error,
+            // or a persist failure — so NOTHING committed. Without this, the running hook would keep
+            // the pushed-but-rejected settings live while the audit records OUTCOME_REJECTED and the
+            // committed config keeps the OLD settings: a running hook silently ahead of committed
+            // policy on a REJECTED patch. Re-push whatever is committed NOW (a fresh `load()` so the
+            // 409 case reverts to the concurrent winner's settings, not our stale snapshot) at its
+            // committed version, so the running hook matches committed state and the REJECTED audit
+            // matches reality. Best-effort and self-healing: a failed revert is re-corrected by the
+            // `configure` preamble the hook re-receives on its next (re)connection, so it is logged at
+            // debug rather than escalated (the committed config — the source of truth — is unchanged).
+            let committed = handle.load();
+            if let Some(committed_hook) = committed.hook_registry.get(&name) {
+                if let Err(re) = crate::hooks::push_configure(
+                    committed_hook,
+                    &name,
+                    committed.config_version,
+                    &committed.hook_env,
+                )
+                .await
+                {
+                    tracing::debug!(
+                        hook = %name,
+                        error = %re,
+                        "hook.settings rejected; reverting the running hook to committed settings \
+                         failed — it will re-sync via the configure preamble on its next reconnect"
+                    );
+                }
+            }
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
             err_json(&e)
         }

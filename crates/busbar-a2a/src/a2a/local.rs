@@ -304,6 +304,13 @@ pub(crate) fn list_tasks(
         serde_json::json!({
             "tasks": page.iter().map(|t| task_json(t)).collect::<Vec<_>>(),
             "nextPageToken": next,
+            // BOTH ARE REQUIRED members of `a2a::ListTasksResponse` (page_size: i32, total_size:
+            // i32, neither `#[serde(default)]`), so omitting them made busbar's OWN gRPC ListTasks
+            // leg fail to deserialise its own answer. `pageSize` is the effective (clamped) page
+            // size this response was cut to; `totalSize` is the count matching the filter BEFORE
+            // pagination — `rows` is that set, taken before the cursor filter and the `take`.
+            "pageSize": i32::try_from(page_size).unwrap_or(i32::MAX),
+            "totalSize": i32::try_from(rows.len()).unwrap_or(i32::MAX),
         }),
     )
 }

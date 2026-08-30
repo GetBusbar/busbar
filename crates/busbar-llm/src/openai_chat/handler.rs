@@ -306,6 +306,11 @@ pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
     if let Some(fmt) = &r.response_format {
         push_field("response_format", fmt);
     }
+    // Carry the sampling `temperature` too — OpenAI's transcription form accepts it natively;
+    // dropping it silently reset sampling to the default on a cross-protocol hop.
+    if let Some(t) = r.temperature {
+        push_field("temperature", &t.to_string());
+    }
     if let Some(blob) = &r.audio {
         let bytes = match &blob.payload {
             MediaPayload::Bytes(b) => b.clone(),
@@ -327,7 +332,57 @@ pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
 /// IR → openai transcription response wire (the body of [`OpenAiTranscription::write_response`], moved
 /// behind the `(transcription, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
 pub(crate) fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
+    // OpenAI serves the plain response formats (`text`/`srt`/`vtt`) as a raw `text/plain` body, not
+    // a JSON envelope. When the response IR records one of those (the reader saw a non-JSON body),
+    // re-emit the transcript verbatim under `text/plain` rather than JSON-wrapping it — otherwise a
+    // WEBVTT/SRT response is mangled into `{"text":"WEBVTT..."}` with the wrong content-type.
+    if matches!(r.response_format.as_deref(), Some("text" | "srt" | "vtt")) {
+        return WireBody::typed(Bytes::from(r.text.clone().into_bytes()), "text/plain");
+    }
     let mut body = json!({ "text": r.text });
+    // `verbose_json` carries language/duration/segments/words alongside the text. These are all
+    // modelled by the IR; emit each when present (a plain-`json` response leaves them unset, so an
+    // absent field emits nothing rather than a fabricated empty array). Cross-protocol readers that
+    // captured timestamps/diarization survive the openai egress hop instead of being flattened away.
+    if let Some(lang) = &r.detected_language {
+        body["language"] = json!(lang);
+    }
+    if let Some(d) = r.duration_seconds {
+        body["duration"] = json!(d);
+    }
+    if !r.segments.is_empty() {
+        body["segments"] = Value::Array(
+            r.segments
+                .iter()
+                .map(|s| {
+                    let mut o = json!({
+                        "id": s.id, "start": s.start, "end": s.end, "text": s.text,
+                    });
+                    if let Some(v) = s.avg_logprob {
+                        o["avg_logprob"] = json!(v);
+                    }
+                    if let Some(v) = s.no_speech_prob {
+                        o["no_speech_prob"] = json!(v);
+                    }
+                    if let Some(v) = s.compression_ratio {
+                        o["compression_ratio"] = json!(v);
+                    }
+                    if let Some(sp) = &s.speaker {
+                        o["speaker"] = json!(sp);
+                    }
+                    o
+                })
+                .collect(),
+        );
+    }
+    if !r.words.is_empty() {
+        body["words"] = Value::Array(
+            r.words
+                .iter()
+                .map(|w| json!({ "word": w.word, "start": w.start, "end": w.end }))
+                .collect(),
+        );
+    }
     // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
     match &r.usage {
         Some(Billing::Duration { seconds }) => {
@@ -577,6 +632,20 @@ pub(crate) fn write_image_request(r: &ImageReq) -> Bytes {
     if let Some(f) = &r.response_format {
         body["response_format"] = json!(f);
     }
+    // gpt-image-1 output controls the reader captures — dropping them downgraded the request
+    // (a transparent-background/webp ask fell back to opaque PNG, a moderation policy was lost).
+    if let Some(b) = &r.background {
+        body["background"] = json!(b);
+    }
+    if let Some(f) = &r.output_format {
+        body["output_format"] = json!(f);
+    }
+    if let Some(c) = r.output_compression {
+        body["output_compression"] = json!(c);
+    }
+    if let Some(m) = &r.moderation {
+        body["moderation"] = json!(m);
+    }
     if let Some(u) = &r.user {
         body["user"] = json!(u);
     }
@@ -603,10 +672,23 @@ pub(crate) fn write_image_response(r: &ImageResp) -> WireBody {
             Value::Object(o)
         })
         .collect();
-    WireBody::json(Bytes::from(
-        serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
-            .unwrap_or_default(),
-    ))
+    let mut body = json!({ "data": data });
+    // Emit `created` only when the upstream actually sent it — fabricating `created:0` invents a
+    // 1970 timestamp on a response that carried none (gpt-image-1 omits it), a wrong wire value.
+    if let Some(created) = r.created {
+        body["created"] = json!(created);
+    }
+    // gpt-image-1 returns a token `usage` object; the reader parses it (for billing) but the writer
+    // dropped it, so a same-/cross-protocol image hop lost the usage the client should see. Re-emit
+    // it in OpenAI's own image-usage shape when present.
+    if let Some(u) = &r.usage {
+        body["usage"] = json!({
+            "input_tokens": u.input,
+            "output_tokens": u.output,
+            "total_tokens": u.input.saturating_add(u.output),
+        });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---------------------------------------------------------------- moderation cell
@@ -779,6 +861,7 @@ pub(crate) fn read_transcription_request(
             "response_format" => {
                 req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
             }
+            "temperature" => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
             "file" => {
                 req.audio = Some(MediaBlob {
                     payload: MediaPayload::Bytes(Bytes::copy_from_slice(f.value)),
@@ -810,20 +893,76 @@ pub(crate) fn read_transcription_response(
     // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
     // real API also carries `usage` — whisper-1 DURATION (`{type:"duration",seconds}`), the
     // gpt-4o-transcribe models TOKENS — captured from the live API (2026-07-10). Both → Billing.
-    let (text, usage) = match serde_json::from_slice::<Value>(wire) {
-        Ok(v) => {
-            let text = v
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            (text, v.get("usage").and_then(parse_transcription_usage))
+    // A `verbose_json` body additionally carries language/duration/segments/words — all modelled by
+    // the IR. Parse them so timestamps/diarization survive the hop instead of being flattened to text.
+    let v = match serde_json::from_slice::<Value>(wire) {
+        Ok(v) => v,
+        // A non-JSON body is one of OpenAI's plain formats (`text`/`srt`/`vtt`), all served as
+        // `text/plain`. Record the plain shape so the writer re-emits `text/plain` rather than
+        // JSON-wrapping (the reader cannot tell text from srt/vtt on the wire; `text` is the
+        // normalized plain marker and the transcript bytes are carried verbatim regardless).
+        Err(_) => {
+            return Ok(TranscriptionResp {
+                text: String::from_utf8_lossy(wire).into_owned(),
+                response_format: Some("text".to_string()),
+                ..Default::default()
+            });
         }
-        Err(_) => (String::from_utf8_lossy(wire).into_owned(), None),
     };
+    let text = v
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let segments = v
+        .get("segments")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|s| crate::ir::audio::Segment {
+                    id: s.get("id").and_then(Value::as_i64).unwrap_or(0),
+                    start: s.get("start").and_then(Value::as_f64).unwrap_or(0.0),
+                    end: s.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                    text: s
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    avg_logprob: s.get("avg_logprob").and_then(Value::as_f64),
+                    no_speech_prob: s.get("no_speech_prob").and_then(Value::as_f64),
+                    compression_ratio: s.get("compression_ratio").and_then(Value::as_f64),
+                    speaker: s.get("speaker").and_then(Value::as_str).map(str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let words = v
+        .get("words")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|w| crate::ir::audio::Word {
+                    word: w
+                        .get("word")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    start: w.get("start").and_then(Value::as_f64).unwrap_or(0.0),
+                    end: w.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(TranscriptionResp {
         text,
-        usage,
+        detected_language: v
+            .get("language")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        duration_seconds: v.get("duration").and_then(Value::as_f64),
+        segments,
+        words,
+        usage: v.get("usage").and_then(parse_transcription_usage),
         ..Default::default()
     })
 }
@@ -1096,6 +1235,23 @@ pub(crate) fn read_image_request(
             .map(str::to_string),
         response_format: wire
             .get("response_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // gpt-image-1 output controls — carried through so egress re-emits them (see write_image_request).
+        background: wire
+            .get("background")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        output_format: wire
+            .get("output_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        output_compression: wire
+            .get("output_compression")
+            .and_then(Value::as_u64)
+            .and_then(|c| u8::try_from(c).ok()),
+        moderation: wire
+            .get("moderation")
             .and_then(Value::as_str)
             .map(str::to_string),
         user: wire.get("user").and_then(Value::as_str).map(str::to_string),

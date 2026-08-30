@@ -385,3 +385,56 @@ async fn a_silent_child_hits_the_timeout() {
         .expect_err("the timeout must bite");
     assert!(err.contains("did not answer within the timeout"), "{err}");
 }
+
+/// A DISPATCH CANCELLED MID-READ RETIRES THE CHILD, so the next caller cannot be served the
+/// abandoned exchange's answer.
+///
+/// This is the one-ahead wedge in full: `notifications/cancelled` (or an EOF drain, or a client
+/// reset) aborts the task awaiting a `call`, dropping the future between the request write and the
+/// answer read. The child is still live, one message ahead. Without the cancel-safety guard the
+/// child stays in the slot; the next `call` reads that stale line, correlation fails as
+/// `Uncorrelated` — a dispatch failure, not a transport one — and NOTHING retires the child, so
+/// every later call is served the previous caller's response forever.
+///
+/// The fixture sleeps before it answers, so the cancel lands while the read is still pending. The
+/// assertion is that the child was RETIRED (`slot.child` is `None`) — a retired slot spawns a fresh
+/// child on the next dispatch, which is exactly "the next call does not read the stale response".
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cancelled_dispatch_retires_the_child_rather_than_wedging_the_next_call() {
+    // Reads the request, sleeps past the cancel, then would answer — the answer is the line that a
+    // reused child would hand the NEXT caller.
+    let child = StdioChild::spawn(&sh(
+        r#"read line; sleep 2; printf '{"jsonrpc":"2.0","id":1,"result":{"content":[]}}\n'"#,
+    ))
+    .await
+    .expect("spawn");
+    let pool = crate::mcp::client::pool::McpConnectionPool::default();
+
+    // A `ChildSlot` holding that live child, dispatchable. The fields are visible here because this
+    // test module is a descendant of `stdio`.
+    let mut slot = crate::mcp::client::stdio::ChildSlot::new();
+    slot.supervisor.ready();
+    slot.child = Some(child);
+
+    // Start the exchange and cancel it while the read is still pending (the child is sleeping).
+    // Dropping the `timeout` future drops the `guarded_call` future mid-`call`.
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(200),
+        slot.guarded_call(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+            Duration::from_secs(30),
+            &bare_policy(&pool),
+        ),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "the exchange must still be mid-read when it is cancelled, or this test proves nothing"
+    );
+    assert!(
+        slot.child.is_none(),
+        "a dispatch cancelled mid-read must retire the child; leaving it live serves the next \
+         caller the abandoned exchange's answer — a permanent one-ahead wedge"
+    );
+}

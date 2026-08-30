@@ -561,3 +561,137 @@ fn speech_response_is_billed() {
         "TTS synthesis must be billed (non-None), got None"
     );
 }
+
+// carryable-flatten #4: OpenAI image response carries a token `usage` object (gpt-image-1) that the
+// reader parses for billing but the writer DROPPED, and the writer fabricated `created:0` when the
+// upstream omitted it. Emit usage; omit created when absent. Fails pre-fix on both counts.
+#[test]
+fn image_response_round_trips_usage_and_omits_created_when_absent() {
+    // gpt-image-1 shape WITHOUT a `created` field but WITH a token usage object.
+    let wire = br#"{"data":[{"b64_json":"AAAA"}],
+        "usage":{"total_tokens":30,"input_tokens":20,"output_tokens":10}}"#;
+    let ir = super::super::super::leaf_codec::image_read_response("openai", wire).unwrap();
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::image_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        back["usage"]["input_tokens"], 20,
+        "usage must survive the writer: {back}"
+    );
+    assert_eq!(back["usage"]["output_tokens"], 10);
+    assert_eq!(back["usage"]["total_tokens"], 30);
+    assert!(
+        back.get("created").is_none(),
+        "created must be omitted when the upstream omitted it, not fabricated as 0: {back}"
+    );
+}
+
+// carryable-flatten #3: OpenAI gpt-image-1 request carries background/output_format/
+// output_compression/moderation — all typed on `ImageReq` but dropped by the reader AND the writer.
+// Carry both directions. Fails pre-fix: the reader never read them, the writer never emitted them.
+#[test]
+fn image_request_round_trips_background_and_output_format() {
+    let body = br#"{"model":"gpt-image-1","prompt":"a cat","background":"transparent",
+        "output_format":"webp","output_compression":80,"moderation":"low"}"#;
+    let ir =
+        super::super::super::leaf_codec::image_read_request("openai", body, "application/json")
+            .expect("valid image body");
+    assert_eq!(ir.background.as_deref(), Some("transparent"));
+    assert_eq!(ir.output_format.as_deref(), Some("webp"));
+    assert_eq!(ir.output_compression, Some(80));
+    assert_eq!(ir.moderation.as_deref(), Some("low"));
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::image_write_request("openai", &ir),
+    )
+    .unwrap();
+    assert_eq!(back["background"], "transparent");
+    assert_eq!(back["output_format"], "webp");
+    assert_eq!(back["output_compression"], 80);
+    assert_eq!(back["moderation"], "low");
+}
+
+// carryable-flatten #2: OpenAI `verbose_json` transcription carries language/duration/segments/words,
+// all modelled by `TranscriptionResp` but flattened to text+usage by the reader/writer. Read + carry +
+// emit them. Fails pre-fix: the reader dropped everything but text, so the writer had nothing to emit.
+#[test]
+fn transcription_verbose_json_round_trips_segments_language_duration() {
+    let wire = json!({
+        "text": "Hello world",
+        "language": "english",
+        "duration": 8.47,
+        "segments": [{
+            "id": 0, "start": 0.0, "end": 3.3, "text": "Hello world",
+            "avg_logprob": -0.2, "compression_ratio": 1.2, "no_speech_prob": 0.01
+        }],
+        "words": [{ "word": "Hello", "start": 0.0, "end": 0.5 }],
+    });
+    let ir = super::super::super::leaf_codec::transcription_read_response(
+        "openai",
+        &serde_json::to_vec(&wire).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ir.detected_language.as_deref(), Some("english"));
+    assert_eq!(ir.duration_seconds, Some(8.47));
+    assert_eq!(ir.segments.len(), 1);
+    assert_eq!(ir.segments[0].text, "Hello world");
+    assert_eq!(ir.words.len(), 1);
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::transcription_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
+    assert_eq!(back["language"], "english");
+    assert_eq!(back["duration"], 8.47);
+    assert_eq!(back["segments"][0]["text"], "Hello world");
+    assert_eq!(back["segments"][0]["id"], 0);
+    assert_eq!(back["words"][0]["word"], "Hello");
+}
+
+// carryable-flatten #6: the OpenAI transcription leg dropped `temperature` both directions. The
+// multipart form accepts it natively. Carry it. Fails pre-fix: no `temperature` part on write, unread.
+#[test]
+fn transcription_temperature_round_trips_openai_multipart() {
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "whisper-1".into(),
+        temperature: Some(0.5),
+        audio: Some(busbar_core::media::MediaBlob {
+            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            mime_type: "audio/mpeg".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("name=\"temperature\"\r\n\r\n0.5\r\n"),
+        "temperature must be emitted as a multipart field: {text}"
+    );
+    let back = super::super::super::leaf_codec::transcription_read_request(
+        "openai",
+        &out,
+        "multipart/form-data; boundary=----busbaraudioMIME",
+    )
+    .expect("re-read");
+    assert_eq!(back.temperature, Some(0.5));
+}
+
+// carryable-flatten #1: OpenAI transcription returns `text/plain` (NOT application/json) for the
+// plain response formats (`text`/`srt`/`vtt`). The reader records the plain shape (JSON parse fails),
+// and the writer must re-emit the raw body under `text/plain`, not JSON-wrap it. Fails pre-fix: the
+// writer always emitted `{"text":...}` under `application/json`, mangling a WEBVTT/SRT round-trip.
+#[test]
+fn transcription_vtt_round_trips_text_plain_not_json_wrapped() {
+    let wire = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello there\n";
+    let ir = super::super::super::leaf_codec::transcription_read_response("openai", wire).unwrap();
+    let out = super::super::super::leaf_codec::transcription_write_response("openai", &ir);
+    assert_eq!(
+        out.content_type, "text/plain",
+        "a plain-format transcription must carry text/plain, not application/json"
+    );
+    assert_eq!(
+        out.bytes.as_ref(),
+        wire.as_slice(),
+        "the raw WEBVTT body must round-trip verbatim, not be JSON-wrapped"
+    );
+}

@@ -1354,19 +1354,15 @@ async fn admitted(
         None
     } else if let Some((_, members)) = &pool {
         // ANY member's interrupted task on this context resumes — and resumes AT that member (the
-        // pinning reads the task's own `agent_id`). Most recent across members, like the
-        // single-agent lookup.
-        let mut c: Vec<super::task::Task> = members
-            .iter()
-            .filter_map(|m| resumable_task(&admitted.dispatch.billed_key_id, context_id, m))
-            .collect();
-        c.sort_by_key(|t| t.updated_at);
-        c.pop()
+        // pinning reads the task's own `agent_id`). Most recent across members, in ONE scan of the
+        // working set rather than one per member.
+        let member_ids: Vec<&str> = members.iter().map(String::as_str).collect();
+        resumable_task(&admitted.dispatch.billed_key_id, context_id, &member_ids)
     } else {
         resumable_task(
             &admitted.dispatch.billed_key_id,
             context_id,
-            &admitted.dispatch.agent_id,
+            &[&admitted.dispatch.agent_id],
         )
     };
 
@@ -1715,15 +1711,16 @@ async fn admitted(
     //    pinned for this registration — never off the request, and never off a URL the card
     //    supplied. See `relay`'s `THE OUTBOUND BINDING` note: the card says HOW, the operator's
     //    `url:` says WHERE.
-    let binding = super::relay::binding_of(
-        plane
-            .with_registrations(|regs| {
-                regs.iter()
-                    .find(|r| r.agent_id == target_agent)
-                    .and_then(|r| r.cached_card.clone())
-            })
-            .as_ref(),
-    );
+    // `binding_of` is computed INSIDE the registry lock and returns the one binding word, rather
+    // than cloning `cached_card` — a verified agent card up to 512KiB of `serde_json::Value` — out
+    // under the read lock on every delegated hop only to read `protocolBinding` from it.
+    let binding = plane.with_registrations(|regs| {
+        super::relay::binding_of(
+            regs.iter()
+                .find(|r| r.agent_id == target_agent)
+                .and_then(|r| r.cached_card.as_ref()),
+        )
+    });
     let Some(framing) = super::relay::framing_for(&binding) else {
         // REFUSED BY NAME, and refused HERE rather than relayed as JSON-RPC anyway. A backend that
         // publishes only a binding this build cannot speak is unreachable, and saying so names the
@@ -2083,6 +2080,69 @@ async fn unary_hop(
         .into_response()
 }
 
+/// How often [`send_or_expire`] retries a full channel while it parks. The park is bounded in TOTAL
+/// by the caller's `deadline`; this is only how finely that bound is checked. Small enough that a
+/// consumer that resumes draining is unblocked promptly, large enough that a genuinely stalled stream
+/// costs a handful of wakeups a second rather than a spin.
+const RELAY_SINK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// The outcome of pushing one streamed chunk onto the bounded relay channel.
+#[derive(Debug, PartialEq, Eq)]
+enum RelaySend {
+    /// The chunk is on the channel.
+    Sent,
+    /// The receiver is gone — the caller closed the stream. The normal end of a relay.
+    Disconnected,
+    /// The channel stayed full for the whole deadline: a consumer that stopped reading its SSE body
+    /// WITHOUT closing the socket. The relay is dropped so its blocking thread is freed.
+    Expired,
+}
+
+/// Push one chunk onto the bounded relay channel, PARKING at most until `deadline` if it is full.
+///
+/// ## Why a bounded park and not `block_on(tx.send)`
+///
+/// The sink runs on a `spawn_blocking` thread that no runtime is driving (the egress pump invokes it
+/// synchronously — see the sink). `block_on(tx.send(..))` there parks the thread FOREVER while the
+/// channel is full, and the channel is full precisely when the consumer has stopped draining. A
+/// caller that stops reading its SSE body without closing the socket leaves the receiver ALIVE (so
+/// `send` never returns `Err`) and NEVER drained (so `send` never returns `Ok`): the two threads this
+/// relay owns are pinned until the process exits. [`RELAY_STREAM_TIMEOUT`] cannot rescue them —
+/// it is a timeout on the very runtime this thread has stopped serving. At scale that is a
+/// cross-plane denial of service: two threads of the shared blocking pool per wedged connection.
+///
+/// So the park is bounded HERE, with a primitive that needs no runtime: `try_send` on the fast path
+/// (a healthy consumer never blocks), and when the channel is full a bounded wait that gives up at
+/// `deadline` and drops the relay. Runtime-independent by design — it behaves the same whether or not
+/// a runtime happens to be driving this thread, which is the property `futures::executor::block_on`
+/// was chosen for in the first place.
+///
+/// [`RELAY_STREAM_TIMEOUT`]: super::transport::RELAY_STREAM_TIMEOUT
+fn send_or_expire(
+    tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    item: Vec<u8>,
+    deadline: std::time::Instant,
+    poll: std::time::Duration,
+) -> RelaySend {
+    use tokio::sync::mpsc::error::TrySendError;
+    let mut payload = item;
+    loop {
+        match tx.try_send(payload) {
+            Ok(()) => return RelaySend::Sent,
+            Err(TrySendError::Closed(_)) => return RelaySend::Disconnected,
+            Err(TrySendError::Full(returned)) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return RelaySend::Expired;
+                }
+                payload = returned;
+                // Never overshoot the deadline: the last park is only as long as what is left of it.
+                std::thread::sleep(deadline.saturating_duration_since(now).min(poll));
+            }
+        }
+    }
+}
+
 /// THE STREAMING HOP: the backend's events, re-framed under busbar's identity, written to
 /// the caller as they arrive.
 ///
@@ -2218,24 +2278,50 @@ async fn stream_hop(
             // THE CONTEXT THIS CLOSURE RUNS IN: production's `post_stream` rides the hostless
             // egress seam, whose pump (`busbar_core::egress::seam::pump`) invokes the sink
             // synchronously on this `spawn_blocking` thread — a BARE blocking thread, no runtime
-            // driving it. On such a thread `tx.blocking_send` would be legal too (tokio's
-            // may-not-block-in-a-runtime guard has nothing to trip on), and an earlier transport
-            // (`on_a_dedicated_runtime`, a nested current-thread `Runtime::block_on`) is exactly
-            // what made it panic on the first event of every stream — that transport shape is
-            // gone from this path. `futures::executor::block_on` is KEPT deliberately: it waits
-            // on the same future in EITHER context, so a future transport that reintroduces a
-            // runtime around the pump degrades to nothing instead of resurrecting the
-            // `502 … worker thread panicked` failure.
+            // driving it. An earlier transport (`on_a_dedicated_runtime`, a nested current-thread
+            // `Runtime::block_on`) is exactly what made a runtime-bound send panic on the first
+            // event of every stream — that transport shape is gone from this path. `send_or_expire`
+            // is runtime-INDEPENDENT (`try_send` plus a `std::thread::sleep` park), so a future
+            // transport that reintroduces a runtime around the pump degrades to nothing instead of
+            // resurrecting the `502 … worker thread panicked` failure — the same robustness the old
+            // `futures::executor::block_on` was chosen for, now with a bound on the park.
             //
             // Blocking here is correct and is the point: BACKPRESSURE IS KEPT. The channel stays
             // bounded, so a caller that reads slowly slows the upstream read rather than growing
             // an unbounded queue in busbar — which is what switching to an unbounded channel
             // would have traded away. There is no deadlock: what this thread waits for is the
             // CONSUMER, an axum task on a different runtime that is not waiting on anything here.
-            if futures::executor::block_on(tx.send(ev.sse)).is_err() {
-                return super::relay::ChunkFlow::Stop;
+            //
+            // But the park is BOUNDED, by the relay-stream deadline. `block_on(tx.send)` parked
+            // this thread forever while the channel was full, and it is full exactly when the
+            // consumer stopped draining — a caller that stops reading its SSE body without closing
+            // the socket leaves the receiver alive (no `Err`) and never drained (no `Ok`), pinning
+            // two threads of the shared blocking pool per connection with no timeout able to fire
+            // (it would run on the runtime this thread has stopped serving). `send_or_expire` gives
+            // the stall the same `RELAY_STREAM_TIMEOUT` the rest of the relay honours and drops the
+            // relay when it elapses, freeing the thread. See `send_or_expire`.
+            match send_or_expire(
+                &tx,
+                ev.sse,
+                std::time::Instant::now() + super::transport::RELAY_STREAM_TIMEOUT,
+                RELAY_SINK_POLL,
+            ) {
+                RelaySend::Sent => super::relay::ChunkFlow::Continue,
+                RelaySend::Disconnected => super::relay::ChunkFlow::Stop,
+                RelaySend::Expired => {
+                    // Debug, not warn: the plane's warn/error records must carry a diagnostic code
+                    // (the `diag_*` macros), and there is no code for this in scope to add here.
+                    // The disconnect twin above is silent, so a debug line is already a strict gain,
+                    // and the consumer stall is an operational condition rather than a busbar fault.
+                    tracing::debug!(
+                        task = %task_id,
+                        timeout_ms = super::transport::RELAY_STREAM_TIMEOUT.as_millis() as u64,
+                        "a2a: the streaming consumer stopped draining for the relay-stream timeout; \
+                         the relay is dropped so its blocking thread is freed"
+                    );
+                    super::relay::ChunkFlow::Stop
+                }
             }
-            super::relay::ChunkFlow::Continue
         };
         super::relay::relay_stream(
             &super::relay::RelayCall {
@@ -2833,12 +2919,25 @@ fn addressed_task(
     None
 }
 
-/// AN INTERRUPTED TASK OF THIS CALLER'S, ON THIS AGENT, UNDER THIS `contextId` — the resume target.
+/// AN INTERRUPTED TASK OF THIS CALLER'S, ON ANY OF THESE AGENTS, UNDER THIS `contextId` — the resume
+/// target.
 ///
 /// Scoped to the PRINCIPAL through `list_scoped`, so a caller cannot resume somebody else's task by
 /// guessing a `contextId`. The most recently updated one wins where a context somehow has two, which
 /// is the only ordering that cannot resume a task that has since been superseded.
-fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
+///
+/// `agent_ids` is a SET so a pool's whole membership is answered in ONE scan. The pool path used to
+/// call this once per member — M scans, each cloning the caller's ENTIRE working set (`list_scoped`
+/// clones every row under the registry lock) — to pick the most recent interrupted task across the
+/// members. Filtering `agent_id ∈ agent_ids` in a single scan is the same task chosen (most recent
+/// interrupted across the set) at one clone of the working set rather than M. A `find_resumable`
+/// returning a single cloned row under the lock would be tighter still, but that needs a method on
+/// the neutral `TaskReader` seam this crate only consumes.
+fn resumable_task(
+    principal: &str,
+    context_id: &str,
+    agent_ids: &[&str],
+) -> Option<super::task::Task> {
     let mut candidates: Vec<super::task::Task> = busbar_substrate::plane_host::task_reader()
         .map(|reader| reader.list_scoped(principal))
         .unwrap_or_default()
@@ -2847,7 +2946,9 @@ fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<s
         // so the `is_interrupted` / field reads stay codec-side. Working-set rows are always readable.
         .filter_map(|r| super::task::Task::from_row(r).ok())
         .filter(|t| {
-            t.context_id == context_id && t.agent_id == agent_id && t.state.is_interrupted()
+            t.context_id == context_id
+                && agent_ids.contains(&t.agent_id.as_str())
+                && t.state.is_interrupted()
         })
         .collect();
     candidates.sort_by_key(|t| t.updated_at);

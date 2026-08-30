@@ -1352,14 +1352,24 @@ impl FrameReader for GrpcFrameReader {
     fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
+        // ONE CURSOR, ONE DRAIN. Draining per message shifted the whole unconsumed tail of the
+        // buffer down one frame at a time — O(n) per frame, quadratic across a batched poll that
+        // carries many frames at once. A cursor walks the frames and a single `drain` at the end
+        // removes everything consumed, so the work is linear in the bytes. (The same shape
+        // `busbar_llm::proto_stream` uses for its consumed-sink.)
+        //
         // A malformed frame STOPS the reader rather than being skipped: the length prefix is how
         // the next frame is found, so a frame busbar cannot read is a stream busbar has lost its
         // place in, and guessing where the next one starts is how a caller is served somebody
         // else's bytes.
-        while let Ok(Some((len, consumed))) = grpc_split(&self.buf) {
-            let message = self.buf[GRPC_PREFIX..GRPC_PREFIX + len].to_vec();
-            self.buf.drain(..consumed);
-            let Ok(event) = grpc_decode(&self.rpc, &message) else {
+        let mut cursor = 0usize;
+        while let Ok(Some((len, consumed))) = grpc_split(&self.buf[cursor..]) {
+            let start = cursor + GRPC_PREFIX;
+            // Consumed the moment its bounds are known — before the decode — so a frame that reads
+            // as protobuf but fails to decode is still stepped over exactly as the per-message drain
+            // stepped over it, and the reader stops on THIS frame rather than re-reading it forever.
+            cursor += consumed;
+            let Ok(event) = grpc_decode(&self.rpc, &self.buf[start..start + len]) else {
                 break;
             };
             out.push(format!(
@@ -1367,6 +1377,7 @@ impl FrameReader for GrpcFrameReader {
                 serde_json::json!({ "jsonrpc": "2.0", "id": self.rpc_id, "result": event })
             ));
         }
+        self.buf.drain(..cursor);
         out
     }
 

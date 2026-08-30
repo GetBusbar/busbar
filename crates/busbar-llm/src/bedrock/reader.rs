@@ -867,18 +867,33 @@ impl ProtocolReader for BedrockReader {
                             });
                         }
 
-                        out.push(IrStreamEvent::BlockDelta {
-                            index: idx,
-                            delta: crate::ir::IrDelta::TextDelta(text_val),
-                        });
+                        // Only emit the delta once the text block is actually open. On a conformant
+                        // stream the lazy-open above set the flag; on a malformed/reordered stream (a
+                        // delta before messageStart, so `started` is false and no open happened) this
+                        // guard drops the ORPHAN delta instead of emitting one with no BlockStart —
+                        // the same started/open discipline the reasoningContent arm below enforces.
+                        if state.text_block_open {
+                            out.push(IrStreamEvent::BlockDelta {
+                                index: idx,
+                                delta: crate::ir::IrDelta::TextDelta(text_val),
+                            });
+                        }
                     } else if let Some(tool_use) =
                         delta_obj.get("toolUse").and_then(|t| t.as_object())
                     {
+                        // A tool-use input delta is valid only inside a tool block the
+                        // `contentBlockStart` arm already opened (recorded in `open_tools`). On a
+                        // malformed/reordered stream where the delta precedes its start, drop it
+                        // rather than emit an orphan delta (the guard every sibling arm has).
                         if let Some(input_str) = tool_use.get("input").and_then(|i| i.as_str()) {
-                            out.push(IrStreamEvent::BlockDelta {
-                                index: idx,
-                                delta: crate::ir::IrDelta::InputJsonDelta(input_str.to_string()),
-                            });
+                            if state.started && state.open_tools.contains(&idx) {
+                                out.push(IrStreamEvent::BlockDelta {
+                                    index: idx,
+                                    delta: crate::ir::IrDelta::InputJsonDelta(
+                                        input_str.to_string(),
+                                    ),
+                                });
+                            }
                         }
                     } else if let Some(reasoning) = delta_obj
                         .get("reasoningContent")

@@ -292,7 +292,9 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                 NotificationEffect::RelayProgress => {
                     let _ = super::super::UPSTREAM_PROGRESS.try_with(|slot| {
                         if let Ok(mut ch) = slot.lock() {
-                            ch.frames.push(frame.clone());
+                            // Bounded: an untrusted peer must not grow this per-request channel
+                            // without end. See `ProgressChannel::push_frame`.
+                            ch.push_frame(frame.clone());
                         }
                     });
                 }

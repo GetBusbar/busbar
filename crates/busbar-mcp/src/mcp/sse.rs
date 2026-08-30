@@ -222,7 +222,17 @@ pub(crate) async fn as_event_stream(
     // attacker-supplied input being buffered — the inbound body limit is applied at the ingress, on
     // the way in, where it belongs.
     let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
-        return (parts.status, "").into_response();
+        // A drain failure must NOT masquerade as a `200` with an empty body — that is a failure
+        // wearing success's clothes, which a client reads as "the call returned nothing" and stops.
+        // Answer a JSON-RPC internal error (-32603) at `500`. The id is unrecoverable (it rode in the
+        // body that never arrived), so it is `null` per JSON-RPC 2.0 section 5.
+        return super::envelope::error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            None,
+            -32603,
+            "the response body could not be read to re-frame it as an event stream",
+            None,
+        );
     };
     let Ok(result) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return Response::from_parts(parts, axum::body::Body::from(bytes));

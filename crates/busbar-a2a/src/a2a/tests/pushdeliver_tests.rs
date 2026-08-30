@@ -642,6 +642,32 @@ fn the_push_notification_body_is_a_stream_response_carrying_the_task_and_not_a_j
         doc.pointer("/task/contextId").is_some() && doc.pointer("/task/status/state").is_some(),
         "{doc}"
     );
+    // THE STATE VALUE, not just its presence: the state token is the one thing a receiver acts on.
+    assert_eq!(
+        doc.pointer("/task/status/state"),
+        Some(&serde_json::json!("completed")),
+        "the delivered state is the task's own token: {doc}"
+    );
+    // THE TIMESTAMP TYPE. `TaskStatus.timestamp` is a Timestamp — RFC3339 in the JSON binding,
+    // `google.protobuf.Timestamp` (ProtoJSON: an RFC3339 string) in the proto binding — so it must be
+    // a STRING, never a JSON number. A number here is a type error at any receiver's boundary.
+    let ts = doc
+        .pointer("/task/status/timestamp")
+        .expect("the status carries a timestamp");
+    assert!(
+        ts.is_string(),
+        "the timestamp must be an RFC3339 string, not a {}: {doc}",
+        if ts.is_number() {
+            "number"
+        } else {
+            "non-string"
+        }
+    );
+    let ts = ts.as_str().unwrap();
+    assert!(
+        ts.ends_with('Z') && ts.contains('T') && ts.len() >= "1970-01-01T00:00:00Z".len(),
+        "the timestamp must be an RFC3339 UTC instant: {ts}"
+    );
 }
 
 // ══ THE DELIVERY IS AUDITED ══════════════════════════════════════════════════════════════════════

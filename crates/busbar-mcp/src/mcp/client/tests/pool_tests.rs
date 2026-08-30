@@ -122,3 +122,65 @@ async fn an_unresolvable_host_is_reported_as_such_rather_than_as_a_connection_er
         "got {err:?}"
     );
 }
+
+/// A READER NEVER SKIPS AN EVENT IT STARTED BEFORE, even under a writer racing it.
+///
+/// `since` returns `latest()` as the cursor a reader holds next. When `record` allocated its
+/// sequence BEFORE taking the events lock, a reader could poll in the window between the allocation
+/// and the push: it saw `latest()` already advanced, found the event not yet in the ring, and moved
+/// its cursor PAST an event it would then never be returned — a silently skipped notification.
+///
+/// The fixture is that race made likely: a writer records N (< the ring bound, so nothing evicts)
+/// while a reader polls concurrently, advancing its cursor by the returned value exactly as the
+/// server-leg relay does. Across many iterations a skip on the old code leaves the reader short.
+/// With the allocation moved under the lock the reader always sees every event.
+#[test]
+fn a_racing_reader_never_skips_an_event_it_started_before() {
+    use crate::mcp::client::pool::ResourceUpdates;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    const N: usize = 200; // below MAX_RESOURCE_UPDATES so the ring never evicts during the test
+
+    for _iteration in 0..100 {
+        let updates = Arc::new(ResourceUpdates::default());
+        let start = updates.latest();
+
+        let writer = {
+            let u = Arc::clone(&updates);
+            std::thread::spawn(move || {
+                for i in 0..N {
+                    u.record("srv", &format!("res://{i}"));
+                }
+            })
+        };
+
+        let mut cursor = start;
+        let mut seen: HashSet<String> = HashSet::new();
+        // Poll concurrently with the writer — this is the window the skip lives in.
+        loop {
+            let (batch, next) = updates.since(cursor);
+            for (_server, uri) in batch {
+                seen.insert(uri);
+            }
+            cursor = next;
+            if writer.is_finished() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        writer.join().expect("the writer thread joins");
+        // A final drain from wherever the cursor landed. Any event skipped mid-race has a sequence
+        // at or below this cursor and is filtered out here — it is genuinely lost to this reader.
+        let (batch, _next) = updates.since(cursor);
+        for (_server, uri) in batch {
+            seen.insert(uri);
+        }
+
+        assert_eq!(
+            seen.len(),
+            N,
+            "a reader that started before every write must see every event, none skipped"
+        );
+    }
+}

@@ -56,6 +56,7 @@ use super::client::ssrf::SsrfPolicy;
 use super::client::wire::{TransportError, WireLeg};
 use super::inputreq::{Ask, Round};
 use busbar_api::{Redacted, VirtualKey};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The wall-clock budget for ONE outbound leg — the tool call, and separately the token exchange —
@@ -121,8 +122,11 @@ pub(crate) struct Authorised {
     /// The credential MODE this server is configured with.
     pub(crate) credential: UpstreamCredential,
     /// The INBOUND principal, carried through so the credential planner re-derives the same
-    /// down-scope the gate was computed from.
-    pub(crate) caller: VirtualKey,
+    /// down-scope the gate was computed from. An `Arc` because `PoolRoute::build` authorises the
+    /// SAME caller against every pool member, and `VirtualKey` is a large record (several `String`s,
+    /// a scope `Vec`, two maps) — sharing the one the request already holds by refcount rather than
+    /// deep-cloning it per member is what keeps a wide `tool_pools` route cheap.
+    pub(crate) caller: Arc<VirtualKey>,
     /// THE DEADLINE for each leg of this dispatch, lifted from the snapshot the call was admitted
     /// against. Resolved to a concrete `Duration` here — never `Option` past this point — so no
     /// send site can forget to apply the default.
@@ -195,15 +199,17 @@ pub(crate) fn authorise(
     server: &ServerEntry,
     selected: &ToolEntry,
     arguments: &serde_json::Value,
-    caller: Option<&VirtualKey>,
+    caller: Option<&Arc<VirtualKey>>,
 ) -> Result<Authorised, SetupRefusal> {
     let server_id =
         ServerId::new(&selected.server).map_err(|e| SetupRefusal::Malformed(e.to_string()))?;
     let key = ToolKey::new(server_id.clone(), &selected.tool)
         .map_err(|e| SetupRefusal::Malformed(e.to_string()))?;
+    // A refcount bump of the caller the request already holds — never a deep clone — so authorising
+    // one caller against every member of a pool costs one `Arc` per member, not one `VirtualKey`.
     let caller = match caller {
-        Some(k) => k.clone(),
-        None => ungoverned_principal(),
+        Some(k) => Arc::clone(k),
+        None => Arc::new(ungoverned_principal()),
     };
     let credential = credential_mode(server).map_err(SetupRefusal::Credential)?;
     // THE TRANSITIVE-DEPUTY CALL. `plan_credential` runs `authorise_tool_egress` first and returns nothing to a caller
@@ -277,18 +283,19 @@ pub(crate) fn authorise(
 pub(crate) fn authorise_verb(
     server: &ServerEntry,
     sighting: &busbar_substrate::trust::Sighting<super::client::catalogue::TransportPin>,
-    caller: Option<&VirtualKey>,
+    caller: Option<&Arc<VirtualKey>>,
     generation: busbar_substrate::trust::validate::Generations,
     now: u64,
 ) -> Result<Authorised, SetupRefusal> {
     let server_id =
         ServerId::new(&server.id).map_err(|e| SetupRefusal::Malformed(e.to_string()))?;
+    // Shared by refcount, not deep-cloned — see `authorise`.
     let caller = match caller {
-        Some(k) => k.clone(),
-        None => ungoverned_principal(),
+        Some(k) => Arc::clone(k),
+        None => Arc::new(ungoverned_principal()),
     };
     busbar_substrate::trust::validate::validate_request(&busbar_substrate::trust::validate::Ask {
-        principal: Some(&caller),
+        principal: Some(caller.as_ref()),
         now,
         grants: &[busbar_substrate::trust::validate::Grant::Scope {
             kind: "mcp_server",
