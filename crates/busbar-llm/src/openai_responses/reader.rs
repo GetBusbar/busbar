@@ -743,6 +743,18 @@ impl ProtocolReader for ResponsesReader {
                     // Use the wire `output_index` for BOTH the lazy BlockStart and the BlockDelta so
                     // the open/close pair stays index-matched even when the text part is not at
                     // index 0 (e.g. it follows a tool call at index 0).
+                    //
+                    // ASSUMPTION — ONE output_text part per message item. This keys the block on
+                    // `output_index` ALONE and ignores the frame's `content_index`. The Responses
+                    // wire allows a single message `item` to carry MULTIPLE content parts (each with
+                    // its own `content_index`); two `output_text` parts under the SAME `output_index`
+                    // would collapse onto one IR block here (their deltas would merge into a single
+                    // text block rather than two). OpenAI does not emit multi-part `output_text`
+                    // message items today — every text item ships exactly one `output_text` part — so
+                    // this is latent, not a live defect. A full fix would key the open set on the
+                    // (output_index, content_index) pair (and thread content_index through the tool
+                    // arm and the finish-path close symmetrically); do that here if OpenAI ever ships
+                    // multi-part text items. See carryable-flatten audit item #11.
                     let idx = data
                         .get("output_index")
                         .and_then(|i| i.as_u64())
