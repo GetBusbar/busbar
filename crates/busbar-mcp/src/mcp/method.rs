@@ -1426,6 +1426,17 @@ async fn tools_call(
                 merged.insert(key.clone(), value.clone());
             }
         }
+        // (2b-i) RE-RUN THE SEP-2243 HEADER/BODY MIRROR CHECK on the MERGED arguments. The first
+        // pass (2a-i) ran BEFORE this merge, so a property carrying an `x-mcp-header` annotation that
+        // is supplied through `inputResponses` — now present in the body, but with no mirrored
+        // `Mcp-Param-*` header, since the headers were fixed at the original request — slipped past
+        // rule 4 (header-omitted-while-body-carries): an intermediary would route on a parameter it
+        // cannot see. The check is cheap (a walk of the tool's own schema plus one header lookup per
+        // annotated property, no I/O), so it is simply re-run over what actually goes upstream. Only
+        // reached when a merge happened, so the common no-ask path pays nothing.
+        if let Some(refusal) = custom_param_mismatch(ctx, &selected, &arguments) {
+            return log.refused("custom_param_mismatch", header_mismatch(id, &refusal));
+        }
     }
 
     // (2b-i) THE OPERATOR'S HOOK GATE — `tools.hooks:` and `tools.<server>.hooks:`, fired here.
