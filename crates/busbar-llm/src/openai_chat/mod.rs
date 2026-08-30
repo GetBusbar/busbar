@@ -145,6 +145,16 @@ const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 /// collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
+/// Busbar-internal sentinel key parking OpenAI's per-message PROVIDER-SPECIFIC fields — an assistant
+/// history turn's `audio` reference, the legacy `function_call`, and any future message-level key this
+/// reader does not model into typed IR. The value is an object keyed by IR-message index, each entry
+/// the raw unmodeled fields of that message. The reader stashes them (see the message loop) so a
+/// same-protocol pool-alias re-serialize (which rebuilds the body from the IR rather than forwarding
+/// the caller's bytes) re-emits them verbatim; `extra` is cleared on the cross-protocol seam, so they
+/// naturally drop there — the correct scope, since no other dialect models them. The `__busbar` prefix
+/// never collides with a real OpenAI field, and the writer consumes (does not leak) it.
+const MESSAGE_EXTRAS_SENTINEL: &str = "__busbar_openai_message_extras";
+
 // `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` —
 // lives in `busbar_core::proto::openai_family` (NOT here), because core's own `ir/variant.rs`
 // names it in the generic cross-protocol dropped-keys warn and core cannot name a protocol crate.
@@ -1188,3 +1198,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/audio_format_regression_tests.rs"]
 mod audio_format_regression_tests;
+
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

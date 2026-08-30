@@ -942,6 +942,25 @@ pub struct IrUsageDetail {
     /// the Anthropic reader/writer touch it, other dialects leave it `None`. (ADDITIVE — anthropic
     /// field carry.)
     pub service_tier: Option<String>,
+    // ── 1.6.x field-carry additions (OpenAI Chat usage sub-buckets) ──────────────────────────────
+    // These four are the OpenAI-family attribution slices that had no IR carrier, so a cross-protocol
+    // (or pool-alias re-serialize) OpenAI response reported a hard `0`/absent for them even though the
+    // totals were right. Each is a SLICE OF a total in `IrUsage` (never an addition — `billable_tokens`
+    // ignores this whole struct), so carrying them can never change what busbar bills. Added here
+    // (not on `IrUsage`) for the same optionality reason the rest of this struct exists, and because
+    // every construction site already spreads `..Default::default()`, so the additions are non-breaking.
+    /// OpenAI `usage.prompt_tokens_details.audio_tokens` — the audio slice of the (uncached) input
+    /// tokens on a multimodal request. `None` == the provider did not report it (NOT `Some(0)`).
+    pub input_audio_tokens: Option<u64>,
+    /// OpenAI `usage.completion_tokens_details.audio_tokens` — the audio slice of the output tokens
+    /// on an audio-out response. `None` == the provider did not report it.
+    pub output_audio_tokens: Option<u64>,
+    /// OpenAI `usage.completion_tokens_details.accepted_prediction_tokens` — predicted-outputs tokens
+    /// that matched and were accepted. A SUB-BUCKET of `output_tokens`. `None` == not reported.
+    pub accepted_prediction_tokens: Option<u64>,
+    /// OpenAI `usage.completion_tokens_details.rejected_prediction_tokens` — predicted-outputs tokens
+    /// that did not match and were rejected (still billed as output). `None` == not reported.
+    pub rejected_prediction_tokens: Option<u64>,
 }
 
 impl IrUsage {

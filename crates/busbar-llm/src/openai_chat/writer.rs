@@ -53,6 +53,14 @@ impl ProtocolWriter for OpenAiWriter {
             .extra
             .get(MESSAGE_NAMES_SENTINEL)
             .and_then(|v| v.as_object());
+        // Per-message provider-specific fields this protocol's own reader parked (see
+        // `MESSAGE_EXTRAS_SENTINEL`). Same SAME-protocol-only scope as `message_names` — the
+        // cross-protocol seam clears `extra`, which is exactly where these fields (an assistant
+        // `audio` reference, a legacy `function_call`) have no home anyway.
+        let message_extras = req
+            .extra
+            .get(MESSAGE_EXTRAS_SENTINEL)
+            .and_then(|v| v.as_object());
 
         // Add regular messages
         for (msg_idx, msg) in req.messages.iter().enumerate() {
@@ -146,6 +154,21 @@ impl ProtocolWriter for OpenAiWriter {
             {
                 if let Some(o) = msg_obj.as_object_mut() {
                     o.insert("name".to_string(), serde_json::json!(name));
+                }
+            }
+
+            // Re-attach any provider-specific fields this message arrived with (parked by this
+            // protocol's own reader under `MESSAGE_EXTRAS_SENTINEL`). Use `entry().or_insert` so a
+            // modeled key already emitted above (e.g. `content`/`tool_calls`) is never overwritten by
+            // a stale stash — the reader excluded those from the stash, so this is defence-in-depth.
+            if let Some(ex) = message_extras
+                .and_then(|m| m.get(&msg_idx.to_string()))
+                .and_then(|v| v.as_object())
+            {
+                if let Some(o) = msg_obj.as_object_mut() {
+                    for (k, v) in ex {
+                        o.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                 }
             }
 
@@ -474,7 +497,10 @@ impl ProtocolWriter for OpenAiWriter {
             // Both busbar-internal markers are consumed above (one selected the cap's emitted key,
             // the other re-attached `messages[].name`); neither is a real OpenAI field, so neither
             // may reach the wire — that would be an invalid body AND a proxy tell.
-            if key == MAX_COMPLETION_TOKENS_SENTINEL || key == MESSAGE_NAMES_SENTINEL {
+            if key == MAX_COMPLETION_TOKENS_SENTINEL
+                || key == MESSAGE_NAMES_SENTINEL
+                || key == MESSAGE_EXTRAS_SENTINEL
+            {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -1061,20 +1087,54 @@ impl ProtocolWriter for OpenAiWriter {
             "total_tokens".to_string(),
             serde_json::json!(prompt_tokens.saturating_add(resp.usage.output_tokens)),
         );
-        if resp.usage.cache_read_input_tokens.is_some() {
-            usage_map.insert(
-                "prompt_tokens_details".to_string(),
-                serde_json::json!({ "cached_tokens": cache_read }),
-            );
+        // `prompt_tokens_details` carries the cached AND audio input slices. Emit the object when
+        // EITHER is present, and inside it emit each member only when the source reported it (an
+        // absent member is not `Some(0)`), matching the native shape.
+        {
+            let mut ptd = serde_json::Map::new();
+            if resp.usage.cache_read_input_tokens.is_some() {
+                ptd.insert("cached_tokens".to_string(), serde_json::json!(cache_read));
+            }
+            if let Some(a) = resp.usage.detail.input_audio_tokens {
+                ptd.insert("audio_tokens".to_string(), serde_json::json!(a));
+            }
+            if !ptd.is_empty() {
+                usage_map.insert(
+                    "prompt_tokens_details".to_string(),
+                    serde_json::Value::Object(ptd),
+                );
+            }
         }
-        // Reasoning attribution, in OpenAI's native spelling. Emitted only when the backend actually
-        // reported it: a hardcoded `0` is a CLAIM that the model did no thinking, and inventing that
-        // claim on a non-reasoning response is exactly the failure this field exists to end.
-        if let Some(rt) = resp.usage.detail.reasoning_tokens {
-            usage_map.insert(
-                "completion_tokens_details".to_string(),
-                serde_json::json!({ "reasoning_tokens": rt }),
-            );
+        // `completion_tokens_details` carries the reasoning, audio, and predicted-outputs
+        // (accepted/rejected) attribution slices. Same rule: emit the object only when a member is
+        // present, and each member only when reported — a hardcoded `0` would falsely CLAIM the model
+        // did no thinking / emitted no audio, the exact failure this attribution exists to end.
+        {
+            let mut ctd = serde_json::Map::new();
+            if let Some(rt) = resp.usage.detail.reasoning_tokens {
+                ctd.insert("reasoning_tokens".to_string(), serde_json::json!(rt));
+            }
+            if let Some(a) = resp.usage.detail.output_audio_tokens {
+                ctd.insert("audio_tokens".to_string(), serde_json::json!(a));
+            }
+            if let Some(t) = resp.usage.detail.accepted_prediction_tokens {
+                ctd.insert(
+                    "accepted_prediction_tokens".to_string(),
+                    serde_json::json!(t),
+                );
+            }
+            if let Some(t) = resp.usage.detail.rejected_prediction_tokens {
+                ctd.insert(
+                    "rejected_prediction_tokens".to_string(),
+                    serde_json::json!(t),
+                );
+            }
+            if !ctd.is_empty() {
+                usage_map.insert(
+                    "completion_tokens_details".to_string(),
+                    serde_json::Value::Object(ctd),
+                );
+            }
         }
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
 

@@ -160,6 +160,13 @@ impl ProtocolReader for OpenAiReader {
         // Per-message participant names, collected during the loop and parked in `extra` afterwards
         // (see `MESSAGE_NAMES_SENTINEL`).
         let mut message_names = serde_json::Map::new();
+        // Per-message PROVIDER-SPECIFIC fields with no cross-protocol analog (an assistant history
+        // turn's `audio` reference, the legacy `function_call`, and any future message-level key),
+        // parked verbatim by IR-message index under `MESSAGE_EXTRAS_SENTINEL` so a same-protocol
+        // pool-alias re-serialize preserves them; `extra` is cleared on the cross-protocol seam, so
+        // they drop there (named in the generic dropped-keys warn) — the correct scope, since no other
+        // dialect models them. See that const for the full rationale.
+        let mut message_extras = serde_json::Map::new();
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
@@ -334,6 +341,25 @@ impl ProtocolReader for OpenAiReader {
                         });
                     }
 
+                    // A message-level `refusal` string (an assistant turn OpenAI echoes into replayed
+                    // history) carries the same content as a `refusal` content PART: reason-neutral
+                    // assistant text. Map it to a Text block so it survives a CROSS-protocol hop
+                    // (Anthropic/Gemini/Bedrock have no distinct refusal part — it is plain assistant
+                    // text there), mirroring `read_openai_block`'s `"refusal"` content-part arm and the
+                    // response reader's `message.refusal` handling. A same-protocol re-serialize
+                    // reshapes it into `content` text (value preserved).
+                    if let Some(refusal) = msg_val
+                        .get("refusal")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        msg_content.push(crate::ir::IrBlock::Text {
+                            text: refusal.to_string(),
+                            cache_control: None,
+                            citations: Vec::new(),
+                        });
+                    }
+
                     // OpenAI's optional per-message participant `name`. Parked under
                     // `MESSAGE_NAMES_SENTINEL` keyed by the IR message index (see that const for why
                     // this is not an `IrMessage` field): it survives a same-protocol re-serialize and
@@ -344,6 +370,35 @@ impl ProtocolReader for OpenAiReader {
                         .filter(|s| !s.is_empty())
                     {
                         message_names.insert(messages.len().to_string(), serde_json::json!(name));
+                    }
+
+                    // Capture any message-level field this reader does NOT model into a per-message
+                    // extras stash (keyed by IR-message index), so a provider-specific construct —
+                    // an assistant `audio` reference, the legacy `function_call`, or a future key —
+                    // survives a same-protocol re-serialize verbatim rather than vanishing. The keys
+                    // already projected into typed IR (`content`/`tool_calls`/`name`/`refusal`) and the
+                    // structural `role`/`tool_call_id` are EXCLUDED so the writer never double-emits.
+                    if let Some(mo) = msg_val.as_object() {
+                        let mut this_extras = serde_json::Map::new();
+                        for (k, v) in mo {
+                            if !matches!(
+                                k.as_str(),
+                                "role"
+                                    | "content"
+                                    | "name"
+                                    | "tool_calls"
+                                    | "tool_call_id"
+                                    | "refusal"
+                            ) {
+                                this_extras.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if !this_extras.is_empty() {
+                            message_extras.insert(
+                                messages.len().to_string(),
+                                serde_json::Value::Object(this_extras),
+                            );
+                        }
                     }
                     messages.push(crate::ir::IrMessage {
                         role,
@@ -400,6 +455,14 @@ impl ProtocolReader for OpenAiReader {
             extra.insert(
                 MESSAGE_NAMES_SENTINEL.to_string(),
                 serde_json::Value::Object(message_names),
+            );
+        }
+        // Park the per-message provider-specific extras (only when some message carried one) so an
+        // ordinary request's `extra` is untouched. Same same-protocol-only scope as the names sentinel.
+        if !message_extras.is_empty() {
+            extra.insert(
+                MESSAGE_EXTRAS_SENTINEL.to_string(),
+                serde_json::Value::Object(message_extras),
             );
         }
 
@@ -1071,6 +1134,26 @@ impl ProtocolReader for OpenAiReader {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64()),
+                // OpenAI multimodal / predicted-outputs attribution sub-buckets (all SLICES of the
+                // totals above, never additions). Unread, they arrived as absent on every
+                // cross-protocol / pool-alias-re-serialize OpenAI response even though the totals were
+                // right — the same attribution gap `reasoning_tokens` closed.
+                input_audio_tokens: usage_val
+                    .and_then(|u| u.get("prompt_tokens_details"))
+                    .and_then(|d| d.get("audio_tokens"))
+                    .and_then(|v| v.as_u64()),
+                output_audio_tokens: usage_val
+                    .and_then(|u| u.get("completion_tokens_details"))
+                    .and_then(|d| d.get("audio_tokens"))
+                    .and_then(|v| v.as_u64()),
+                accepted_prediction_tokens: usage_val
+                    .and_then(|u| u.get("completion_tokens_details"))
+                    .and_then(|d| d.get("accepted_prediction_tokens"))
+                    .and_then(|v| v.as_u64()),
+                rejected_prediction_tokens: usage_val
+                    .and_then(|u| u.get("completion_tokens_details"))
+                    .and_then(|d| d.get("rejected_prediction_tokens"))
                     .and_then(|v| v.as_u64()),
                 ..Default::default()
             },
