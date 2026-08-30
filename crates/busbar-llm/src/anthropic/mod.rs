@@ -656,10 +656,19 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
             })
         }
         STOP_TOOL_USE => {
+            // A present `tool_use` block MUST carry a non-empty string `id`: it is the correlation
+            // key a later `tool_result` (and any egress dialect) pairs against. An absent/blank/
+            // wrong-typed id yields an empty IR id that silently breaks that pairing — reject the
+            // malformed block rather than inventing an id.
             let id = obj
                 .get("id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .filter(|s| !s.is_empty())
+                .ok_or(IrError {
+                    class: StatusClass::ClientError,
+                    provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                    retry_after: None,
+                })?
                 .to_string();
             let name = obj
                 .get("name")
@@ -993,6 +1002,17 @@ fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrE
     };
 
     let content_val = obj.get("content").unwrap_or(&serde_json::Value::Null);
+    // EDGE-VALIDATE the per-message `content` TYPE. Anthropic `content` is legally a string or an
+    // array of content blocks (absent/`null` is tolerated as an empty turn). A present number/bool/
+    // object is a genuine TYPE violation the lenient `as_str().unwrap_or("")` fallback below would
+    // silently swallow into an empty Text block — reject it with a 400 instead.
+    if !content_val.is_null() && !content_val.is_string() && !content_val.is_array() {
+        return Err(IrError {
+            class: StatusClass::ClientError,
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            retry_after: None,
+        });
+    }
     let content = if let Some(arr) = content_val.as_array() {
         arr.iter().map(read_block).collect::<Result<_, _>>()?
     } else {
@@ -1826,6 +1846,10 @@ pub(crate) fn anthropic_auth_headers(
 #[cfg(test)]
 #[path = "tests/anthropic_hardening_tests.rs"]
 mod anthropic_hardening_tests;
+
+#[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
 
 #[cfg(test)]
 #[path = "tests/user_and_parallelism_carry_tests.rs"]

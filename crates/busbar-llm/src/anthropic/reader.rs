@@ -231,7 +231,16 @@ impl ProtocolReader for AnthropicReader {
         // empty-Text placeholder `read_block` already applies for shape-preservation.
         let mut unmodeled_blocks: Vec<serde_json::Value> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
-            for msg_val in messages_val.as_array().unwrap_or(&Vec::new()) {
+            // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`
+            // (string/number/object where an array is required) is a genuine structural violation.
+            // Reject it with a 400 rather than silently coercing to an empty conversation (matching
+            // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
+            let messages_arr = messages_val.as_array().ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
+            for msg_val in messages_arr {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::ir::IrRole::System {
                     system_blocks.extend(msg.content);

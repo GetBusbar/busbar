@@ -178,6 +178,22 @@ impl ProtocolReader for OpenAiReader {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 let content_val = msg_val.get("content");
 
+                // EDGE-VALIDATE the per-message `content` TYPE. OpenAI chat `content` is legally a
+                // string, an array of content parts, or absent/`null` (an assistant turn carrying
+                // only `tool_calls`). A present number/bool/object is a genuine TYPE violation that
+                // the lenient str/array projection below would silently coerce to an empty turn —
+                // reject it with the same 400 the top-level `messages` array uses. Absent/null/empty
+                // stay lenient (forward-compat).
+                if let Some(cv) = content_val {
+                    if !cv.is_null() && !cv.is_string() && !cv.is_array() {
+                        return Err(IrError {
+                            class: StatusClass::ClientError,
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            retry_after: None,
+                        });
+                    }
+                }
+
                 let role = match role_str {
                     // OpenAI's o1/o3 reasoning models replace "system" with "developer" (the
                     // Responses API reader already treats them as equivalent). Map both to the IR
@@ -260,10 +276,22 @@ impl ProtocolReader for OpenAiReader {
                         if let Some(tool_calls) = msg_val.get("tool_calls") {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
+                                    // A present tool call MUST carry a non-empty string `id`: it is
+                                    // the correlation key an egress dialect emits back to pair the
+                                    // eventual tool result. An absent/blank/wrong-typed id yields an
+                                    // empty IR id that silently breaks that pairing downstream, so
+                                    // reject the malformed call rather than inventing an id.
                                     let id = tc_val
                                         .get("id")
                                         .and_then(|v| v.as_str())
-                                        .unwrap_or("")
+                                        .filter(|s| !s.is_empty())
+                                        .ok_or(IrError {
+                                            class: StatusClass::ClientError,
+                                            provider_signal: Some(
+                                                busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                            ),
+                                            retry_after: None,
+                                        })?
                                         .to_string();
                                     let func = tc_val.get("function").ok_or(IrError {
                                         class: StatusClass::ClientError,

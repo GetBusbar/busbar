@@ -1988,12 +1988,13 @@ fn read_message_delta_with_usage_flows_through() {
     }
 }
 
-/// Conformance: the non-stream `write_response` must
-/// emit `model` UNCONDITIONALLY — the official SDKs type `Message.model` as a required string, so
-/// a body that omits it fails to decode. On a Bedrock→Anthropic path where `resp.model` is None,
-/// the key must still be present (empty-string fallback), not dropped.
+/// Fix 3 (1.6.0): the non-stream `write_response` must NEVER emit `"model": ""`. An empty string is
+/// never a valid model id (it is a lie and a proxy tell). On a cross-protocol path where
+/// `resp.model` is None (e.g. Bedrock/Gemini→Anthropic), the key must be OMITTED entirely — not
+/// present-with-empty-string. This is the deliberate reversal of the pre-1.6.0
+/// emit-empty-string-unconditionally behavior.
 #[test]
-fn write_response_emits_model_even_when_none() {
+fn write_response_omits_model_when_none() {
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
@@ -2013,10 +2014,16 @@ fn write_response_emits_model_even_when_none() {
         stop_sequence: None,
     };
     let out = AnthropicWriter.write_response(&resp);
-    assert_eq!(
+    // The key must be ABSENT, and in particular must NOT be present-with-empty-string.
+    assert_ne!(
         out.get("model").and_then(|v| v.as_str()),
         Some(""),
-        "model is mandatory; absent source model must emit \"\" rather than omit the key"
+        "must never emit an empty-string model"
+    );
+    assert!(
+        out.get("model").is_none(),
+        "an unknown (None) source model must OMIT the key entirely, got {:?}",
+        out.get("model")
     );
 }
 
@@ -2048,12 +2055,10 @@ fn write_response_preserves_present_model() {
     );
 }
 
-/// Conformance (streaming sibling): the streaming
-/// `message_start.message` must also carry `model` UNCONDITIONALLY — it's the skeleton the SDK
-/// reads to populate the assembled streaming Message. A None source model emits "" rather than
-/// dropping the mandatory field.
+/// Fix 3 (1.6.0), streaming sibling: the streaming `message_start.message` must likewise NEVER emit
+/// `"model": ""`. A None source model OMITS the key rather than emitting an empty-string placeholder.
 #[test]
-fn message_start_emits_model_even_when_none() {
+fn message_start_omits_model_when_none() {
     let ev = IrStreamEvent::MessageStart {
         role: crate::ir::IrRole::Assistant,
         usage: None,
@@ -2064,12 +2069,15 @@ fn message_start_emits_model_even_when_none() {
     let (_, out) = AnthropicWriter
         .write_response_event(&ev)
         .expect("message_start writes");
-    assert_eq!(
-        out.get("message")
-            .and_then(|m| m.get("model"))
-            .and_then(|v| v.as_str()),
+    let model = out.get("message").and_then(|m| m.get("model"));
+    assert_ne!(
+        model.and_then(|v| v.as_str()),
         Some(""),
-        "message_start.message.model is mandatory; emit \"\" when source model is None"
+        "must never emit an empty-string model in message_start"
+    );
+    assert!(
+        model.is_none(),
+        "an unknown (None) source model must OMIT message_start.message.model, got {model:?}"
     );
 }
 

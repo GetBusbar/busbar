@@ -1601,5 +1601,9 @@ pub(crate) fn bedrock_response_to_eventstream(
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
+
+#[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;

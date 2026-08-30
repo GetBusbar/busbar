@@ -1788,6 +1788,10 @@ impl busbar_core::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
+
+#[cfg(test)]
 #[path = "tests/logprobs_carry_tests.rs"]
 mod logprobs_carry_tests;
 

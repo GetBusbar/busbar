@@ -262,7 +262,16 @@ impl ProtocolReader for BedrockReader {
         }
 
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
-        if let Some(msgs_arr) = obj.get("messages").and_then(|m| m.as_array()) {
+        if let Some(messages_val) = obj.get("messages") {
+            // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`
+            // (string/number/object where the array is required) is a genuine structural violation.
+            // Reject with a 400 rather than silently coercing to an empty conversation (matching the
+            // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
+            let msgs_arr = messages_val.as_array().ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
@@ -279,6 +288,19 @@ impl ProtocolReader for BedrockReader {
                 };
 
                 let mut msg_content: Vec<crate::ir::IrBlock> = Vec::new();
+                // EDGE-VALIDATE the per-message `content` TYPE. Bedrock Converse `content` is
+                // array-only; a PRESENT-but-wrong-typed `content` (string/number/object) is a genuine
+                // TYPE violation the lenient projection below would silently drop into an empty turn —
+                // reject with a 400 instead. An ABSENT `content` stays lenient.
+                if let Some(cv) = msg_val.get("content") {
+                    if !cv.is_array() {
+                        return Err(IrError {
+                            class: StatusClass::ClientError,
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            retry_after: None,
+                        });
+                    }
+                }
                 if let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) {
                     for (block_idx, content_val) in content_arr.iter().enumerate() {
                         if let Some(text_val) = content_val.get("text").and_then(|t| t.as_str()) {
@@ -288,10 +310,21 @@ impl ProtocolReader for BedrockReader {
                                 citations: Vec::new(),
                             });
                         } else if let Some(tool_use) = content_val.get("toolUse") {
+                            // A present `toolUse` block MUST carry a non-empty string `toolUseId`: it
+                            // is the correlation key a later `toolResult` (and any egress dialect)
+                            // pairs against. An absent/blank/wrong-typed id yields an empty IR id that
+                            // silently breaks that pairing — reject rather than invent an id.
                             let tu_id = tool_use
                                 .get("toolUseId")
                                 .and_then(|id| id.as_str())
-                                .unwrap_or("")
+                                .filter(|s| !s.is_empty())
+                                .ok_or(IrError {
+                                    class: StatusClass::ClientError,
+                                    provider_signal: Some(
+                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                    ),
+                                    retry_after: None,
+                                })?
                                 .to_string();
                             let name = tool_use
                                 .get("name")

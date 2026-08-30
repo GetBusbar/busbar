@@ -173,6 +173,22 @@ impl ProtocolReader for CohereReader {
                     }
                 };
 
+                // EDGE-VALIDATE the per-message `content` TYPE (all roles). Cohere `content` is
+                // legally a string, an array of content parts, or absent/`null` (an assistant turn
+                // carrying only `tool_calls`). A present number/bool/object is a genuine TYPE
+                // violation the lenient projections below would silently coerce (to empty, or to a
+                // JSON-stringified blob) — reject it with the same 400 the top-level `messages` array
+                // uses. Absent/null/empty stay lenient (forward-compat).
+                if let Some(cv) = msg_val.get("content") {
+                    if !cv.is_null() && !cv.is_string() && !cv.is_array() {
+                        return Err(IrError {
+                            class: StatusClass::ClientError,
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            retry_after: None,
+                        });
+                    }
+                }
+
                 // System content is canonicalized into IrRequest.system (matching the other
                 // protocols), not carried as a System-role message — so it survives translation
                 // to a protocol whose writer reads req.system.
@@ -332,10 +348,21 @@ impl ProtocolReader for CohereReader {
                         if let Some(tc_arr) = tool_calls.as_array() {
                             for tc_val in tc_arr {
                                 if let Some(func_obj) = tc_val.get("function") {
+                                    // A present tool call MUST carry a non-empty string `id`: it is
+                                    // the correlation key an egress dialect emits to pair the eventual
+                                    // tool result. An absent/blank/wrong-typed id yields an empty IR id
+                                    // that silently breaks that pairing — reject rather than invent.
                                     let id = tc_val
                                         .get("id")
                                         .and_then(|v| v.as_str())
-                                        .unwrap_or("")
+                                        .filter(|s| !s.is_empty())
+                                        .ok_or(IrError {
+                                            class: StatusClass::ClientError,
+                                            provider_signal: Some(
+                                                busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                            ),
+                                            retry_after: None,
+                                        })?
                                         .to_string();
                                     let name = func_obj
                                         .get("name")

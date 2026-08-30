@@ -122,6 +122,18 @@ impl ProtocolReader for ResponsesReader {
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
 
         if let Some(input_val) = obj.get("input") {
+            // EDGE-VALIDATE the top-level `input` TYPE: Responses `input` is legally a bare string or
+            // an array of input items. A PRESENT number/bool/object is a genuine structural violation
+            // the lenient string/array projection below would silently coerce to an empty
+            // conversation — reject it with a 400 (matching the strict openai_chat/cohere readers). A
+            // `null` input is tolerated as absent (an instructions-only request stays valid).
+            if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
+                return Err(IrError {
+                    class: StatusClass::ClientError,
+                    provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                    retry_after: None,
+                });
+            }
             if input_val.is_string() {
                 let text = input_val.as_str().unwrap_or("").to_string();
                 messages.push(crate::ir::IrMessage {
@@ -189,10 +201,21 @@ impl ProtocolReader for ResponsesReader {
                             });
                         }
                         Some(ITEM_TYPE_FUNCTION_CALL) => {
+                            // A present function-call item MUST carry a non-empty string `call_id`:
+                            // it is the correlation key its `function_call_output` (and any egress
+                            // dialect) pairs against. An absent/blank/wrong-typed id yields an empty
+                            // IR id that silently breaks that pairing — reject rather than invent.
                             let call_id = item
                                 .get("call_id")
                                 .and_then(|c| c.as_str())
-                                .unwrap_or("")
+                                .filter(|s| !s.is_empty())
+                                .ok_or(IrError {
+                                    class: StatusClass::ClientError,
+                                    provider_signal: Some(
+                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                    ),
+                                    retry_after: None,
+                                })?
                                 .to_string();
                             let name = item
                                 .get("name")
@@ -262,6 +285,21 @@ impl ProtocolReader for ResponsesReader {
                             // typed message turn would be silently dropped. Read role+content and
                             // map the content blocks via `responses_block`, mirroring the untyped
                             // branch.
+                            // EDGE-VALIDATE the message `content` TYPE: legally a string, an array of
+                            // content parts, or absent/`null`. A present number/bool/object is a
+                            // genuine TYPE violation `message_content_blocks`/`push_system_content`
+                            // would silently drop into an empty (vanished) turn — reject with a 400.
+                            if let Some(cv) = item.get("content") {
+                                if !cv.is_null() && !cv.is_string() && !cv.is_array() {
+                                    return Err(IrError {
+                                        class: StatusClass::ClientError,
+                                        provider_signal: Some(
+                                            busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                        ),
+                                        retry_after: None,
+                                    });
+                                }
+                            }
                             let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
                             // `system`/`developer` turns carry the system prompt. They have no
                             // IrRole and must NOT become conversation messages — accumulate their
@@ -367,6 +405,21 @@ impl ProtocolReader for ResponsesReader {
                     if item.get("type").is_none() && item.get("role").is_some() {
                         let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
                         let content_val = item.get("content");
+
+                        // EDGE-VALIDATE the message `content` TYPE (see the typed `message` arm):
+                        // string/array/absent/null are legal; a present number/bool/object is a TYPE
+                        // violation the projections below would silently drop — reject with a 400.
+                        if let Some(cv) = content_val {
+                            if !cv.is_null() && !cv.is_string() && !cv.is_array() {
+                                return Err(IrError {
+                                    class: StatusClass::ClientError,
+                                    provider_signal: Some(
+                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                    ),
+                                    retry_after: None,
+                                });
+                            }
+                        }
 
                         // As in the typed `message` arm, untyped `system`/`developer` turns carry
                         // the system prompt and must be accumulated into `system_blocks` rather than

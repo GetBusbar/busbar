@@ -1555,6 +1555,10 @@ impl ResponsesWriter {
 #[path = "tests/tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
+
 // The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
 // test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
 #[cfg(test)]

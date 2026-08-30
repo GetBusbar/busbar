@@ -1196,6 +1196,10 @@ pub struct OpenAiWriter;
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/input_hardening_tests.rs"]
+mod input_hardening_tests;
+
+#[cfg(test)]
 #[path = "tests/audio_format_regression_tests.rs"]
 mod audio_format_regression_tests;
 

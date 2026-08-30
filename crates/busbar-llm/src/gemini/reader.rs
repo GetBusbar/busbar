@@ -282,7 +282,16 @@ impl ProtocolReader for GeminiReader {
 
         // Handle contents array (messages)
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
-        if let Some(contents_arr) = obj.get("contents").and_then(|c| c.as_array()) {
+        if let Some(contents_val) = obj.get("contents") {
+            // EDGE-VALIDATE the top-level `contents` TYPE: a PRESENT-but-wrong-typed `contents`
+            // (string/number/object where the array is required) is a genuine structural violation.
+            // Reject with a 400 rather than silently coercing to an empty conversation (matching the
+            // strict openai_chat/cohere readers). ABSENT `contents` stays lenient.
+            let contents_arr = contents_val.as_array().ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
             for content_val in contents_arr {
                 let role_str = content_val
                     .get("role")
@@ -311,7 +320,21 @@ impl ProtocolReader for GeminiReader {
                 // passthrough, which round-trips the name verbatim) — we only warn.
                 let mut seen_func_resp_names: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                if let Some(parts_arr) = content_val.get("parts").and_then(|p| p.as_array()) {
+                // EDGE-VALIDATE the per-turn `parts` TYPE. Gemini's `Content.parts` is array-only; a
+                // PRESENT-but-wrong-typed `parts` (string/number/object) is a genuine TYPE violation
+                // the lenient projection below would silently drop into an empty turn — reject with a
+                // 400 instead. An ABSENT `parts` stays lenient.
+                let parts_val = content_val.get("parts");
+                if let Some(pv) = parts_val {
+                    if !pv.is_array() {
+                        return Err(IrError {
+                            class: StatusClass::ClientError,
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            retry_after: None,
+                        });
+                    }
+                }
+                if let Some(parts_arr) = parts_val.and_then(|p| p.as_array()) {
                     for part in parts_arr {
                         // Thinking part: a `thought: true` part carries reasoning text + an
                         // opaque `thoughtSignature`; read it as IrBlock::Thinking (not plain Text) so
