@@ -49,6 +49,10 @@ pub mod ingress {
 }
 pub mod billing;
 pub mod breaker;
+// The proleptic-Gregorian civil-date split shared by the plane crates that render an epoch timestamp
+// (MCP task `iso8601_ms`, A2A push `status.timestamp`) without pulling a date-time crate into their
+// closure. One copy here, in the substrate both planes depend on, rather than one per plane.
+pub mod civil;
 pub mod duration;
 // The neutral protocol handler matrix — `OperationHandler`/`RequestHandler` and their codec-cell
 // value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from

@@ -329,44 +329,11 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
                 // types deserialise the field as a date-time and a JSON NUMBER is a type error at the
                 // boundary — the delivery parsed as far as this member and then failed. `task.updated_at`
                 // is whole seconds since the epoch; it is rendered rather than emitted raw.
-                "timestamp": rfc3339_from_secs(task.updated_at),
+                "timestamp": busbar_substrate::civil::rfc3339_from_secs(task.updated_at),
             },
         }
     });
     serde_json::to_vec(&doc).unwrap_or_default()
-}
-
-/// Whole seconds since the Unix epoch → an RFC3339 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`.
-///
-/// Hand-rolled rather than pulling a date-time crate into this plane for one field: the calendar
-/// split is Hinnant's `civil_from_days` (the same algorithm the MCP plane's `iso8601_ms` uses),
-/// which needs no table and no dependency. Whole seconds because `task.updated_at` has no sub-second
-/// component to render, and a bare-second RFC3339 instant is valid and parses back to the same time.
-fn rfc3339_from_secs(secs: u64) -> String {
-    // Signed arithmetic over an unsigned clock, cast once here: `div_euclid`/`rem_euclid` make the
-    // day/second split correct with no special case, and they need a signed remainder. Lossless for
-    // every instant this process can observe.
-    let secs = secs as i64;
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-/// Days since the Unix epoch → (year, month, day). Hinnant's algorithm, shifted to an era beginning
-/// on 0000-03-01 so the leap day lands at the end of the era's year and needs no special case.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// DELIVER ONE NOTIFICATION for `task`, re-running the full guard against a FRESH resolution first,
