@@ -305,17 +305,22 @@ fn inject_extras(resp: &mut Response<Incoming>, extras: &pool::ConnSnapshot) {
 /// Preparation, part 3 — insert `Host` (or `host:port` when the port is non-default for the scheme)
 /// when the caller set none. Legacy's `set_host` default-true behavior, h1-only by call site.
 fn set_host_header(req: &mut Request<Full<Bytes>>) {
-    let uri = req.uri().clone();
-    req.headers_mut().entry(HOST).or_insert_with(|| {
-        let hostname = uri.host().expect("an absolute-form URI implies a host");
-        match get_non_default_port(&uri) {
-            Some(port) => {
-                http::HeaderValue::from_maybe_shared(Bytes::from(format!("{hostname}:{port}")))
-            }
-            None => http::HeaderValue::from_str(hostname),
+    // A caller-set Host wins, checked FIRST so the common already-set case is one map probe and
+    // the value is computed BEFORE `headers_mut()` is taken — which is what lets the URI be read
+    // in place instead of cloned whole to satisfy the headers_mut/uri borrow split.
+    if req.headers().contains_key(HOST) {
+        return;
+    }
+    let uri = req.uri();
+    let hostname = uri.host().expect("an absolute-form URI implies a host");
+    let value = match get_non_default_port(uri) {
+        Some(port) => {
+            http::HeaderValue::from_maybe_shared(Bytes::from(format!("{hostname}:{port}")))
         }
-        .expect("a URI host is a valid header value")
-    });
+        None => http::HeaderValue::from_str(hostname),
+    }
+    .expect("a URI host is a valid header value");
+    req.headers_mut().insert(HOST, value);
 }
 
 /// Legacy `get_non_default_port`: 443-on-secure and 80-on-plain are the default ports and stay
@@ -362,21 +367,21 @@ fn authority_form(uri: &mut Uri) {
 /// Preparation, part 2 — the pool key is the URI's scheme+authority; a relative URI is an immediate
 /// error. The CONNECT arm infers a scheme from the port (443 → https), legacy-verbatim.
 fn extract_domain(uri: &mut Uri, is_http_connect: bool) -> Result<PoolKey, EngineError> {
-    let uri_clone = uri.clone();
-    match (uri_clone.scheme(), uri_clone.authority()) {
-        (Some(scheme), Some(auth)) => Ok((scheme.clone(), auth.clone())),
-        (None, Some(auth)) if is_http_connect => {
+    // The common arm reads through an immutable reborrow and returns — no full-Uri clone on the
+    // hot path (only the two component clones that build the owned PoolKey). The `&mut` parameter
+    // exists solely for the CONNECT scheme-inference arm below.
+    if let (Some(scheme), Some(auth)) = (uri.scheme(), uri.authority()) {
+        return Ok((scheme.clone(), auth.clone()));
+    }
+    match uri.authority() {
+        Some(auth) if is_http_connect && uri.scheme().is_none() => {
+            let auth = auth.clone();
             let scheme = match auth.port_u16() {
-                Some(443) => {
-                    set_scheme(uri, http::uri::Scheme::HTTPS);
-                    http::uri::Scheme::HTTPS
-                }
-                _ => {
-                    set_scheme(uri, http::uri::Scheme::HTTP);
-                    http::uri::Scheme::HTTP
-                }
+                Some(443) => http::uri::Scheme::HTTPS,
+                _ => http::uri::Scheme::HTTP,
             };
-            Ok((scheme, auth.clone()))
+            set_scheme(uri, scheme.clone());
+            Ok((scheme, auth))
         }
         _ => Err(EngineError::new(ErrorKind::UserAbsoluteUriRequired)),
     }

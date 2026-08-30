@@ -315,10 +315,17 @@ pub(crate) async fn checkout(
         let rx = {
             let mut pm = inner.pool.lock().expect("engine pool lock");
             let h2_pinned = inner.h2_pinned();
+            // Hit-path first: every checkout after an authority's first goes through `get_mut`
+            // and never clones the PoolKey; only the once-per-authority miss pays the
+            // `entry(key.clone())` insert. (Not a `match get_mut / entry` — NLL rejects the
+            // reborrow — so the miss arm inserts and re-probes, which is the cold path.)
+            if !pm.map.contains_key(key) {
+                pm.map.insert(key.clone(), AuthorityState::new(h2_pinned));
+            }
             let st = pm
                 .map
-                .entry(key.clone())
-                .or_insert_with(|| AuthorityState::new(h2_pinned));
+                .get_mut(key)
+                .expect("authority state present: ensured above under the same lock hold");
 
             // h2 fast path: the shared conn multiplexes — clone the handle, stamp the idle
             // clock, go. No waiter, no dial. (Backpressure past the peer's stream cap lands in
