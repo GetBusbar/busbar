@@ -326,7 +326,7 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
     // the real host credential store resolves `(credential_ref, audience)` to the provider secret; the
     // host-derived placeholder here keeps the plaintext off the plane while that lookup is wired.
     let secret = format!("hostcred:{}:{}", query.credential_ref, audience).into_bytes();
-    let resolved_ref = super::creds::mint(secret, expires_unix);
+    let resolved_ref = super::creds::mint(secret, expires_unix, now);
     Some(AuthResolved {
         size: core::mem::size_of::<AuthResolved>() as u32,
         version: POD_VERSION,
