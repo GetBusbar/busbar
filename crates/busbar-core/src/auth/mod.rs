@@ -34,8 +34,11 @@ const AUTH_SCHEME_BEARER: &str = "bearer";
 /// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
 pub(crate) const HEALTHZ_PATH: &str = "/healthz";
 /// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
-/// see `admin::v1::contract::API_ROOT`).
-const ADMIN_PATH: &str = "/api";
+/// see `admin::v1::contract::API_ROOT`). `pub(crate)` so the config validator derives its
+/// reserved-name segment from THIS constant rather than a copied literal (see
+/// `config_validate::reserved_admin_name`), which is what keeps the reserved name and the
+/// middleware's `is_admin` boundary from drifting apart.
+pub(crate) const ADMIN_PATH: &str = "/api";
 /// The `/api/` prefix that all native-API sub-routes share. A path must match ADMIN_PATH exactly
 /// OR start with ADMIN_PATH_PREFIX to be treated as an admin-plane request — preventing sibling
 /// paths like `/apix/…` from being mis-classified. The WHOLE `/api/` root is admin-classified

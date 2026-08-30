@@ -1076,85 +1076,86 @@ fn test_validate_rejects_pool_name_equals_model_name() {
 }
 
 #[test]
-fn test_validate_rejects_pool_named_admin() {
-    // A pool named `admin` is reached at `/api/v1/admin/messages`, which the auth middleware
-    // intercepts as the operator admin surface — making the pool unreachable to clients and
-    // (in governance mode) bypassing per-pool enforcement. Must fail loud at boot.
+fn test_validate_rejects_pool_named_api() {
+    // A pool named `api` is reached at `/api/v1/messages`, whose first segment the auth middleware
+    // intercepts as the native-API operator surface — making the pool unreachable to clients and
+    // (in governance mode) bypassing per-pool enforcement. Must fail loud at boot. The name is
+    // `api`, not `admin`, because the admin boundary is `ADMIN_PATH = /api`; the validator derives
+    // the reserved segment from that constant, so this and the middleware cannot drift.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
-    pools.insert("admin".to_string(), make_pool(vec![make_member("mymodel")]));
+    pools.insert("api".to_string(), make_pool(vec![make_member("mymodel")]));
     let cfg = make_root_cfg(providers, models, pools);
-    let errs = validate(&cfg).expect_err("a pool named 'admin' must fail validation");
+    let errs = validate(&cfg).expect_err("a pool named 'api' must fail validation");
     assert!(
         errs.iter()
-            .any(|e| e.contains("pool name 'admin' is reserved")),
+            .any(|e| e.contains("pool name 'api' is reserved")),
         "expected a reserved-admin-name error for the pool; got: {errs:?}"
     );
 }
 
 #[test]
-fn test_validate_rejects_provider_named_admin() {
-    // A provider named `admin` is reachable via the adhoc route `/admin/<model>/v1/messages`,
-    // which the auth middleware likewise intercepts as the admin surface. Reject symmetrically.
+fn test_validate_rejects_provider_named_api() {
+    // A provider named `api` is reachable via the adhoc route `/api/<model>/v1/messages`, whose
+    // first segment the auth middleware likewise intercepts as the native-API surface. Symmetric.
     let mut providers = HashMap::new();
     providers.insert(
-        "admin".to_string(),
+        "api".to_string(),
         make_provider("anthropic", "https://api.example.com", "API_KEY"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    let errs = validate(&cfg).expect_err("a provider named 'admin' must fail validation");
+    let errs = validate(&cfg).expect_err("a provider named 'api' must fail validation");
     assert!(
         errs.iter()
-            .any(|e| e.contains("provider name 'admin' is reserved")),
+            .any(|e| e.contains("provider name 'api' is reserved")),
         "expected a reserved-admin-name error for the provider; got: {errs:?}"
     );
 }
 
 #[test]
-fn test_validate_rejects_model_named_admin() {
-    // Regression: a MODEL named `admin` is reached at `/api/v1/admin/messages`,
-    // which the auth middleware intercepts as the operator admin surface — unreachable to clients
-    // and (in governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() admin
-    // branch. The model loop previously skipped the reserved-name check the pool/provider loops
-    // run. Must fail loud at boot, symmetric with the pool and provider cases.
+fn test_validate_rejects_model_named_api() {
+    // Regression: a MODEL named `api` is reached at `/api/v1/messages`, whose first segment the
+    // auth middleware intercepts as the native-API surface — unreachable to clients and (in
+    // governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() admin branch.
+    // The model loop previously skipped the reserved-name check the pool/provider loops run. Must
+    // fail loud at boot, symmetric with the pool and provider cases.
     let (mut providers, mut models, pools) = valid_maps();
     providers
         .entry("myprovider".to_string())
         .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
-    models.insert("admin".to_string(), make_model("myprovider", 10));
+    models.insert("api".to_string(), make_model("myprovider", 10));
     let cfg = make_root_cfg(providers, models, pools);
-    let errs = validate(&cfg).expect_err("a model named 'admin' must fail validation");
+    let errs = validate(&cfg).expect_err("a model named 'api' must fail validation");
     assert!(
         errs.iter()
-            .any(|e| e.contains("model name 'admin' is reserved")),
+            .any(|e| e.contains("model name 'api' is reserved")),
         "expected a reserved-admin-name error for the model; got: {errs:?}"
     );
 }
 
 #[test]
-fn test_validate_allows_admin_prefixed_but_boundary_safe_names() {
+fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
     // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
-    // the exact `admin` segment collides. `adminx` / `administrative` / `admin-pool` are normal
-    // routes (proven by test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected.
-    for name in ["adminx", "administrative", "admin-pool", "admin_portal"] {
+    // the exact `api` segment collides. `apix` and friends are normal routes (proven by
+    // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `admin` is now a
+    // NORMAL lane too — the admin surface moved to `/api`, so `/admin/v1/messages` is an ordinary
+    // client route — which is exactly the drift the derive-from-ADMIN_PATH fix closes.
+    for name in ["apix", "api-pool", "api_portal", "admin", "adminx"] {
         assert!(
             !reserved_admin_name(name),
             "'{name}' is a boundary-safe name and must not be treated as reserved"
         );
     }
-    assert!(reserved_admin_name("admin"), "'admin' must be reserved");
+    assert!(reserved_admin_name("api"), "'api' must be reserved");
 
-    // A full validate() pass with an `adminx` pool must succeed (no reserved-name error).
+    // A full validate() pass with an `apix` pool must succeed (no reserved-name error).
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
-    pools.insert(
-        "adminx".to_string(),
-        make_pool(vec![make_member("mymodel")]),
-    );
+    pools.insert("apix".to_string(), make_pool(vec![make_member("mymodel")]));
     let cfg = make_root_cfg(providers, models, pools);
     assert!(
         validate(&cfg).is_ok(),
-        "an 'adminx' pool is boundary-safe and must validate"
+        "an 'apix' pool is boundary-safe and must validate"
     );
 }
 

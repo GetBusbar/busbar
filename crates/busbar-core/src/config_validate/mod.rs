@@ -189,12 +189,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // model is unreachable to normal clients AND, in governance mode, the admin branch inserts
         // `GovCtx::default()` (key: None) which skips per-model `allowed_pools` enforcement — a
         // governance bypass. Reject at boot rather than ship a silently-inaccessible / governance-
-        // bypassing model. (`reserved_admin_name` centralises the rule across models/pools/providers
-        // so none can drift from the auth-middleware `is_admin` boundary.)
+        // bypassing model. (`reserved_admin_name` derives the segment from the auth-middleware
+        // `ADMIN_PATH`, so models/pools/providers all share one drift-proof rule.)
         if reserved_admin_name(model_name) {
             errors.push(format!(
-                "model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
-                model_name, model_name
+                "model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+                model_name, admin_root_segment(), admin_root_segment(), admin_root_segment(), model_name
             ));
         }
     }
@@ -220,21 +220,21 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             ));
         }
         // Reserved-name check: the auth middleware classifies any request path that is exactly
-        // `/admin` or starts with `/admin/` as the operator admin surface (guarded by the governance
-        // admin_token, NOT a client/virtual-key token). A pool named `admin` is reached at
-        // `POST /api/v1/admin/messages`, which the middleware intercepts as an admin request — so a
+        // `/api` or starts with `/api/` as the native-API operator surface (guarded by the admin
+        // auth chain, NOT a client/virtual-key token). A pool named `api` is reached at
+        // `POST /api/v1/messages`, which the middleware intercepts as an admin request — so a
         // normal client_token / virtual-key holder gets a 401 and the pool is permanently
         // unreachable; worse, in governance mode the admin branch inserts `GovCtx::default()`
         // (key: None), so an admin-token holder reaching the pool this way bypasses per-pool
-        // allowed_pools enforcement entirely. The collision also extends to any name whose first
-        // path segment would be `admin` — i.e. a name equal to `admin` or beginning with `admin/`.
-        // Reject these at boot rather than shipping a silently-inaccessible / governance-bypassing
-        // pool. (`reserved_admin_name` centralises the rule so the pool and provider checks — and
-        // the auth-middleware `is_admin` boundary — cannot drift.)
+        // allowed_pools enforcement entirely. The collision extends to any name whose first path
+        // segment would be `api`. Reject these at boot rather than shipping a silently-inaccessible
+        // / governance-bypassing pool. (`reserved_admin_name` DERIVES the segment from the
+        // middleware's own `ADMIN_PATH`, so the check and the `is_admin` boundary cannot drift —
+        // the previous copied `admin` literal is exactly how they drifted apart.)
         if reserved_admin_name(pool_name) {
             errors.push(format!(
-                "pool name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
-                pool_name
+                "pool name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
+                pool_name, admin_root_segment(), admin_root_segment(), admin_root_segment()
             ));
         }
     }
@@ -246,14 +246,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // `--validate` is a clean boot — the same reason the context_max conflict moved here.
     validate_unified_pool_names(cfg, &mut errors);
 
-    // The same reserved-prefix collision applies to PROVIDER names: a provider named `admin` is
-    // reachable via the adhoc route `POST /admin/<model>/v1/messages`, which the auth middleware
-    // intercepts as an admin request for the identical reason. Reject it symmetrically.
+    // The same reserved-prefix collision applies to PROVIDER names: a provider named `api` is
+    // reachable via the adhoc route `POST /api/<model>/v1/messages`, whose first segment the auth
+    // middleware intercepts as an admin request for the identical reason. Reject it symmetrically.
     for provider_name in cfg.providers.keys() {
         if reserved_admin_name(provider_name) {
             errors.push(format!(
-                "provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
-                provider_name
+                "provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
+                provider_name, admin_root_segment(), admin_root_segment(), admin_root_segment(), admin_root_segment()
             ));
         }
     }
@@ -897,7 +897,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 ));
             }
             for (role, binding) in roles {
-                if reserved_admin_name(role) {
+                if reserved_operator_principal_id(role) {
                     errors.push(format!(
                         "role_bindings.{module} binds role '{role}', which shadows the reserved \
                          operator principal id; choose another role name"
@@ -1511,19 +1511,52 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     }
 }
 
-/// True when a pool / provider `name` would collide with the built-in `/admin` operator surface.
+/// The native-API root SEGMENT — `api`, derived from the ONE constant the auth middleware
+/// classifies admin requests with ([`crate::auth::ADMIN_PATH`] = `/api`), never a copied literal.
+/// This is what keeps [`reserved_admin_name`] and the middleware's `is_admin` boundary from
+/// drifting: the drift this replaces is exactly what let a lane named `api` pass validation while
+/// the middleware routed `/api/v1/messages` to the admin surface.
+fn admin_root_segment() -> &'static str {
+    crate::auth::ADMIN_PATH.trim_start_matches('/')
+}
+
+/// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID (`admin`,
+/// the id the `admin-tokens` module mints — [`busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID`]).
+///
+/// A DIFFERENT reservation from [`reserved_admin_name`], and split from it deliberately: that one
+/// guards a URL path SEGMENT (`api`), this one guards an identity string (`admin`). They shared one
+/// literal only by the coincidence that the admin path used to be `/admin` too; when the path moved
+/// to `/api` a single shared check would have silently moved the principal-id reservation to `api`
+/// as well. With `auth-admin-tokens` compiled out there is no operator principal to shadow, so
+/// nothing is reserved.
+fn reserved_operator_principal_id(role: &str) -> bool {
+    #[cfg(feature = "auth-admin-tokens")]
+    {
+        role == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
+    }
+    #[cfg(not(feature = "auth-admin-tokens"))]
+    {
+        let _ = role;
+        false
+    }
+}
+
+/// True when a pool / provider / model `name` would collide with the built-in native-API operator
+/// surface (`/api`, the admin plane's root).
 ///
 /// The auth middleware (`auth::auth_middleware`) classifies a request as admin with the
-/// PATH-BOUNDARY-SAFE test `path == "/admin" || path.starts_with("/admin/")` — deliberately NOT a
-/// bare `starts_with("/admin")`, so sibling names like `adminx` / `admin_portal` are NOT admin
-/// (see `test_admin_prefix_is_boundary_safe`). A pool/provider name lands as a path SEGMENT
-/// (`/<name>/v1/messages`, or `/admin/<model>/...` for the adhoc provider route), so a name collides
-/// with the admin surface IFF the segment is exactly `admin`. We mirror that exact boundary here
-/// rather than the finding's looser `starts_with("admin")` (which would wrongly reject the safe
-/// `adminx` the boundary test proves is a normal route). A name containing a `/` could also smuggle
-/// an `admin/` first segment, so reject that family too.
+/// PATH-BOUNDARY-SAFE test `path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)` where
+/// `ADMIN_PATH == "/api"` — deliberately NOT a bare `starts_with("/api")`, so sibling names like
+/// `apix` are NOT admin. A pool/model name lands as a path SEGMENT (`/<name>/v1/messages`) and a
+/// provider name as the first segment of the adhoc route (`/<provider>/<model>/v1/messages`), so a
+/// name collides with the admin surface IFF its first `/`-segment is exactly that root segment
+/// (`api`). Derived from [`admin_root_segment`] rather than a literal so it can never again name a
+/// segment the middleware no longer uses (it used to guard `admin`, long after the admin surface
+/// moved to `/api` — the exact drift a customer's `api` pool would have walked through). A name
+/// containing a `/` could also smuggle an `api/` first segment, so the first-segment test covers
+/// that family too.
 fn reserved_admin_name(name: &str) -> bool {
-    name == "admin" || name.starts_with("admin/") || name.split('/').next() == Some("admin")
+    name.split('/').next() == Some(admin_root_segment())
 }
 
 /// Resolve the single `on_exhausted: fallback_pool:<name>` edge out of `pool_name`, if it has one.
