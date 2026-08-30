@@ -575,7 +575,9 @@ impl StdioChild {
                         // child inject arbitrary JSON-RPC into busbar's answer to its own caller.
                         let _ = crate::mcp::UPSTREAM_PROGRESS.try_with(|slot| {
                             if let Ok(mut ch) = slot.lock() {
-                                ch.frames.push(raw.clone());
+                                // Bounded: an untrusted peer must not grow this per-request channel
+                                // without end. See `ProgressChannel::push_frame`.
+                                ch.push_frame(raw.clone());
                             }
                         });
                     }
