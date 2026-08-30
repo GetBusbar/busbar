@@ -1233,6 +1233,18 @@ fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUs
     if trailing.detail.tool_use_prompt_tokens.is_some() {
         acc.detail.tool_use_prompt_tokens = trailing.detail.tool_use_prompt_tokens;
     }
+    // Cohere `billed_units.{input,output}_tokens`/`classifications` ride the same Some-wins rule: a
+    // streamed Cohere call reports them only on the terminal `message-end.delta.usage`, so the fold
+    // must carry them or a streamed call under-reports the billed attribution its buffered twin has.
+    if trailing.detail.billed_input_tokens.is_some() {
+        acc.detail.billed_input_tokens = trailing.detail.billed_input_tokens;
+    }
+    if trailing.detail.billed_output_tokens.is_some() {
+        acc.detail.billed_output_tokens = trailing.detail.billed_output_tokens;
+    }
+    if trailing.detail.billed_classifications.is_some() {
+        acc.detail.billed_classifications = trailing.detail.billed_classifications;
+    }
 }
 
 #[cfg(test)]

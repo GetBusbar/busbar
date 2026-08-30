@@ -285,6 +285,48 @@ impl ProtocolReader for CohereReader {
                     }
                 }
 
+                // A REQUEST assistant message may replay the model's pre-tool-call plan in
+                // `tool_plan` (the request-history counterpart of the response `message.tool_plan`).
+                // Read it into a LEADING Thinking block — exactly as `read_response` does — so the
+                // internal plan is not silently dropped from the conversation history and is not
+                // mistaken for visible content. The writer reshapes it back into the native
+                // `tool_plan` slot on a Cohere egress.
+                if role == crate::ir::IrRole::Assistant {
+                    if let Some(plan) = msg_val.get("tool_plan").and_then(|p| p.as_str()) {
+                        if !plan.is_empty() {
+                            msg_content.insert(
+                                0,
+                                crate::ir::IrBlock::Thinking {
+                                    text: plan.to_string(),
+                                    signature: None,
+                                    redacted: false,
+                                    cache_control: None,
+                                },
+                            );
+                        }
+                    }
+                }
+
+                // A REQUEST message may carry grounding `citations` (the request-history counterpart
+                // of the response `message.citations`) — replayed when a prior grounded assistant turn
+                // is sent back. Attach them to the FIRST text block (Cohere offsets are character
+                // offsets into the assembled content text, which every writer's join starts from), so
+                // they are neither dropped nor multiplied across blocks. Uses the same
+                // `read_cohere_citations` seam as the response path.
+                if role != crate::ir::IrRole::Tool {
+                    if let Some(cits_val) = msg_val.get("citations") {
+                        let cits = super::read_cohere_citations(cits_val);
+                        if !cits.is_empty() {
+                            if let Some(crate::ir::IrBlock::Text { citations, .. }) = msg_content
+                                .iter_mut()
+                                .find(|b| matches!(b, crate::ir::IrBlock::Text { .. }))
+                            {
+                                *citations = cits;
+                            }
+                        }
+                    }
+                }
+
                 if role == crate::ir::IrRole::Assistant {
                     if let Some(tool_calls) = msg_val.get("tool_calls") {
                         if let Some(tc_arr) = tool_calls.as_array() {
@@ -519,6 +561,15 @@ impl ProtocolReader for CohereReader {
             .get("response_format")
             .and_then(read_cohere_response_format);
 
+        // Cohere v2 chat's REQUEST `logprobs` is a top-level BOOLEAN ask (return per-token log
+        // probabilities?), the SAME shape/meaning as OpenAI's `logprobs` and Gemini's
+        // `responseLogprobs` — a cross-protocol-meaningful control. Promote it to the first-class
+        // `IrRequest.logprobs` so the ask survives the seam instead of dying in `extra` (and add
+        // `logprobs` to the modeled-key set so it is not ALSO echoed via `extra`, which would
+        // double-emit on a same-protocol passthrough). The RESPONSE-side logprobs data is a separate,
+        // provider-specific concern (see `read_response`).
+        let logprobs = obj.get("logprobs").and_then(|v| v.as_bool());
+
         // Cohere-native `documents` (RAG grounding) has NO cross-protocol analog and is NOT
         // modeled in the IR — it stays in `extra`. On a SAME-protocol Cohere->Cohere hop it survives
         // byte-exact (it is echoed through `extra`). On a CROSS-protocol hop, `extra` is CLEARED at
@@ -549,7 +600,8 @@ impl ProtocolReader for CohereReader {
         Ok(crate::ir::IrRequest {
             reasoning: None,
             reasoning_budgets: None,
-            logprobs: None,
+            // Cohere v2 request `logprobs` (bool) promoted so the ask carries cross-protocol.
+            logprobs,
             top_logprobs: None,
             user: None,
             parallel_tool_calls: None,
@@ -820,6 +872,22 @@ impl ProtocolReader for CohereReader {
                                 search_units: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("search_units"))
+                                    .and_then(|v| v.as_u64()),
+                                // Cohere's `billed_units.{input,output}_tokens`/`classifications`
+                                // ride the STREAM's terminal `message-end.delta.usage` exactly as
+                                // `search_units` does; reading them only on the buffered path meant
+                                // a streamed call silently dropped the billed attribution.
+                                billed_input_tokens: u
+                                    .get("billed_units")
+                                    .and_then(|b| b.get("input_tokens"))
+                                    .and_then(|v| v.as_u64()),
+                                billed_output_tokens: u
+                                    .get("billed_units")
+                                    .and_then(|b| b.get("output_tokens"))
+                                    .and_then(|v| v.as_u64()),
+                                billed_classifications: u
+                                    .get("billed_units")
+                                    .and_then(|b| b.get("classifications"))
                                     .and_then(|v| v.as_u64()),
                                 ..Default::default()
                             },
@@ -1104,9 +1172,43 @@ impl ProtocolReader for CohereReader {
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("search_units"))
                     .and_then(|v| v.as_u64()),
+                // Cohere reports a raw `tokens` bucket AND a separately-metered `billed_units`
+                // bucket. The raw totals populate `input_tokens`/`output_tokens` above; carry the
+                // billed attribution here so a Cohere->Cohere read->write does not drop it (the raw
+                // totals reconcile perfectly, so a lost billed count is invisible — the same trap
+                // `search_units` sits in). No cross-protocol analog: a foreign writer never emits it.
+                billed_input_tokens: usage_val
+                    .and_then(|u| u.get("billed_units"))
+                    .and_then(|b| b.get("input_tokens"))
+                    .and_then(|v| v.as_u64()),
+                billed_output_tokens: usage_val
+                    .and_then(|u| u.get("billed_units"))
+                    .and_then(|b| b.get("output_tokens"))
+                    .and_then(|v| v.as_u64()),
+                billed_classifications: usage_val
+                    .and_then(|u| u.get("billed_units"))
+                    .and_then(|b| b.get("classifications"))
+                    .and_then(|v| v.as_u64()),
                 ..Default::default()
             },
         };
+
+        // Cohere v2 response `logprobs` are TOKEN-ID sequences (integer ids + per-chunk floats), not
+        // the token-STRING shape the neutral `IrTokenLogprob` (and the OpenAI/Gemini logprobs it
+        // carries between) models — there is no faithful cross-protocol mapping, so they are NOT
+        // promoted to `IrResponse.logprobs`. A same-protocol Cohere->Cohere response preserves them
+        // byte-exact via the verbatim relay (this read->write path is never taken same-protocol). On
+        // a CROSS-protocol hop they are dropped; warn HERE (the only Cohere site that still sees the
+        // inbound `logprobs` before the IR is rebuilt for a foreign writer) so the loss is
+        // operator-visible rather than silent — the same drop-with-warn discipline as native
+        // `documents`.
+        if obj.contains_key("logprobs") {
+            tracing::warn!(
+                "cohere: response carries native `logprobs` (token-id sequences) with no \
+                 cross-protocol analog; they survive a same-protocol Cohere->Cohere relay byte-exact \
+                 but are DROPPED when this response is translated to a non-Cohere client"
+            );
+        }
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
 

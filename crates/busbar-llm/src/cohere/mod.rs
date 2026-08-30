@@ -268,6 +268,11 @@ const ET_TOOL_PLAN_DELTA: &str = "tool-plan-delta";
 /// every streamed citation on the belief that Cohere v2 had no citation frame, which made a
 /// grounded answer arrive with sources when not streaming and without them when streaming.
 const ET_CITATION_START: &str = "citation-start";
+/// Cohere v2 stream `type` field value for the citation-end event — the bare structural close that
+/// natively PAIRS with each `citation-start` (docs.cohere.com/v2/docs/streaming). Emitted by the
+/// writer's multi-frame `write_response_events` override so a streamed citation is bracketed exactly
+/// like a native Cohere one instead of leaving an unbalanced lone `citation-start`.
+const ET_CITATION_END: &str = "citation-end";
 /// Cohere v2 stream `type` field value for the content-end event.
 const ET_CONTENT_END: &str = "content-end";
 /// Cohere v2 stream `type` field value for the tool-call-start event.
@@ -455,6 +460,10 @@ fn cohere_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
             "presence_penalty",
             "seed",
             "response_format",
+            // Request `logprobs` (bool) is modeled into `IrRequest.logprobs` (cross-protocol ask),
+            // so it must be excluded from `extra` or a same-protocol passthrough would double-emit it
+            // (once from the modeled writer path, once echoed via extra).
+            "logprobs",
         ]
         .into_iter()
         .collect()
@@ -753,3 +762,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/egress_media_regression_tests.rs"]
 mod egress_media_regression_tests;
+
+#[cfg(test)]
+#[path = "tests/field_carry_tests.rs"]
+mod field_carry_tests;

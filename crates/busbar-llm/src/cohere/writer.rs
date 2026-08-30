@@ -310,6 +310,50 @@ impl ProtocolWriter for CohereWriter {
                 msg_obj.insert("content".to_string(), content_val);
             }
 
+            // Replay a request-history assistant message's pre-tool-call plan in Cohere's native
+            // `tool_plan` slot. The reader reads request `tool_plan` into a LEADING Thinking block
+            // (so it is not shown as content), and this is its inverse — folding every Thinking
+            // block's text back into `tool_plan`. Assistant-only: no other role carries a plan.
+            if msg.role == crate::ir::IrRole::Assistant {
+                let plan: String = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::ir::IrBlock::Thinking {
+                            text,
+                            redacted: false,
+                            ..
+                        } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if !plan.is_empty() {
+                    msg_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
+                }
+            }
+
+            // Replay any grounding citations carried on this message's text blocks into Cohere's
+            // native `citations` slot — the request-history inverse of `read_cohere_citations`. A
+            // citation this protocol itself read re-emits verbatim via its `raw`; a cross-protocol
+            // one is synthesized from the neutral fields. Emitted only when non-empty so an
+            // ungrounded message does not gain a spurious `citations: []`.
+            let msg_citations: Vec<serde_json::Value> = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+                    _ => None,
+                })
+                .flatten()
+                .map(write_cohere_citation)
+                .collect();
+            if !msg_citations.is_empty() {
+                msg_obj.insert(
+                    "citations".to_string(),
+                    serde_json::Value::Array(msg_citations),
+                );
+            }
+
             if msg.role == crate::ir::IrRole::Assistant {
                 let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
                 for block in &msg.content {
@@ -472,6 +516,12 @@ impl ProtocolWriter for CohereWriter {
         // sampling survives the seam (the reader models it as a modeled key, so no double-emit).
         if let Some(seed) = req.seed {
             out.insert("seed".to_string(), serde_json::json!(seed));
+        }
+        // Cohere v2 chat's request `logprobs` is a boolean ask (return per-token log probs?), the
+        // same shape OpenAI/Gemini model. Emit it when the IR carries the ask so it survives the
+        // seam (the reader models it as a modeled key, so there is no double-emit via `extra`).
+        if let Some(logprobs) = req.logprobs {
+            out.insert("logprobs".to_string(), serde_json::json!(logprobs));
         }
         // `response_format` (structured output): a Cohere-native object passes through verbatim; a
         // foreign shape (OpenAI `type:"json_schema"` with a nested `json_schema.schema`, or Gemini
@@ -731,11 +781,24 @@ impl ProtocolWriter for CohereWriter {
                 // it only on the buffered path meant a streamed RAG call under-reported the charge.
                 // Emitted only when the source reported it, so no stream acquires a fabricated
                 // `billed_units` object.
+                let mut billed_units = serde_json::Map::new();
+                if let Some(v) = usage.detail.billed_input_tokens {
+                    billed_units.insert("input_tokens".to_string(), serde_json::json!(v));
+                }
+                if let Some(v) = usage.detail.billed_output_tokens {
+                    billed_units.insert("output_tokens".to_string(), serde_json::json!(v));
+                }
                 if let Some(su) = usage.detail.search_units {
+                    billed_units.insert("search_units".to_string(), serde_json::json!(su));
+                }
+                if let Some(v) = usage.detail.billed_classifications {
+                    billed_units.insert("classifications".to_string(), serde_json::json!(v));
+                }
+                if !billed_units.is_empty() {
                     if let Some(uo) = usage_obj.as_object_mut() {
                         uo.insert(
                             "billed_units".to_string(),
-                            serde_json::json!({ "search_units": su }),
+                            serde_json::Value::Object(billed_units),
                         );
                     }
                 }
@@ -805,6 +868,40 @@ impl ProtocolWriter for CohereWriter {
                 ))
             }
         }
+    }
+
+    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+        // Cohere v2's native SSE brackets EACH citation with a `citation-start` (which carries the
+        // Citation object) AND a matching `citation-end` (a bare structural close) — see
+        // docs.cohere.com/v2/docs/streaming. `write_response_event` can only return ONE frame, so on
+        // its own it emits the `citation-start` and DROPS the `citation-end`, leaving an unbalanced
+        // lone-start a native Cohere SDK (or a passive fingerprinter) can tell from a real stream.
+        // Override the multi-frame seam (the same one `ResponsesWriter` uses) to emit the native
+        // PAIR. The `citation-start` itself is still built by the single-frame arm above, so there is
+        // ONE source of truth for its shape; this only appends the paired close. Every other event
+        // keeps the historical one-frame behavior via the base wrapper.
+        if let IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::CitationsDelta(cits),
+        } = ev
+        {
+            if !cits.is_empty() {
+                // The framing seam fans a multi-citation delta out to one citation per delta
+                // (`max_citations_per_delta == Some(1)`) BEFORE it reaches here, matching the
+                // single-frame arm's own invariant, so this emits exactly one start/end pair.
+                if let Some(start) = self.write_response_event(ev) {
+                    return vec![
+                        start,
+                        (
+                            "".to_string(),
+                            serde_json::json!({ "type": ET_CITATION_END, "index": index }),
+                        ),
+                    ];
+                }
+                return Vec::new();
+            }
+        }
+        self.write_response_event(ev).into_iter().collect()
     }
 
     fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
@@ -942,13 +1039,28 @@ impl ProtocolWriter for CohereWriter {
         // Wrap tokens under "tokens" key per Cohere API spec
         let mut usage_map = serde_json::Map::new();
         usage_map.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
-        // The separately-billed search units, in Cohere's native `billed_units` slot. Emitted only
-        // when the source actually reported them, so a plain chat response does not acquire a
-        // fabricated `billed_units` object.
+        // Cohere's native `billed_units` slot: the separately-metered BILLED attribution, distinct
+        // from the raw `tokens` bucket above. Each member is emitted only when the source actually
+        // reported it (so a plain chat response does not acquire a fabricated `billed_units` object,
+        // and a partial bucket is not padded with invented zeros). `input_tokens`/`output_tokens`
+        // are the billed token counts, `search_units`/`classifications` are non-token billed units.
+        let mut billed_units = serde_json::Map::new();
+        if let Some(v) = resp.usage.detail.billed_input_tokens {
+            billed_units.insert("input_tokens".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = resp.usage.detail.billed_output_tokens {
+            billed_units.insert("output_tokens".to_string(), serde_json::json!(v));
+        }
         if let Some(su) = resp.usage.detail.search_units {
+            billed_units.insert("search_units".to_string(), serde_json::json!(su));
+        }
+        if let Some(v) = resp.usage.detail.billed_classifications {
+            billed_units.insert("classifications".to_string(), serde_json::json!(v));
+        }
+        if !billed_units.is_empty() {
             usage_map.insert(
                 "billed_units".to_string(),
-                serde_json::json!({ "search_units": su }),
+                serde_json::Value::Object(billed_units),
             );
         }
         out.insert("usage".to_string(), serde_json::Value::Object(usage_map));

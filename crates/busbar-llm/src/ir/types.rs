@@ -967,6 +967,23 @@ pub struct IrUsageDetail {
     /// addition, so `billable_tokens` ignores it. Only the Gemini reader populates it and only the
     /// Gemini writer re-emits it; other protocols have no native analog and leave it `None`.
     pub tool_use_prompt_tokens: Option<u64>,
+    // ADDED (cohere field-carry, 2026-08-30): Cohere reports usage TWICE — a raw `tokens` bucket and
+    // a separately-metered `billed_units` bucket that ROUNDS/attributes the charge (e.g. a short
+    // request still bills a minimum). The raw totals live in `IrUsage.{input,output}_tokens`; these
+    // three carry the Cohere-specific BILLED attribution so it survives a Cohere->Cohere read->write
+    // (the raw-token totals reconcile perfectly, so a dropped billed count is invisible — the same
+    // trap `search_units` sits in). No cross-protocol analog: a foreign writer simply never emits
+    // them. `Option` = "this provider did not report it" (never `Some(0)`), matching the sibling
+    // buckets. Owner reconciles IR.
+    /// Cohere `usage.billed_units.input_tokens` — the BILLED input attribution (distinct from the raw
+    /// `usage.tokens.input_tokens` total).
+    pub billed_input_tokens: Option<u64>,
+    /// Cohere `usage.billed_units.output_tokens` — the BILLED output attribution (distinct from the
+    /// raw `usage.tokens.output_tokens` total).
+    pub billed_output_tokens: Option<u64>,
+    /// Cohere `usage.billed_units.classifications` — billed classification units, a SEPARATELY BILLED
+    /// unit (like `search_units`) that is not a token count at all.
+    pub billed_classifications: Option<u64>,
 }
 
 impl IrUsage {
