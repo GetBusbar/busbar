@@ -196,9 +196,10 @@ pub struct CandidatePoolCfg {
 impl CandidatePoolCfg {
     /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
     /// never be got wrong by a second caller spelling the lookup differently.
-    // MCP-only reader: the MCP dispatch path consults `repeatable:`; the A2A relay does not, so with
-    // `plane-mcp` off (and A2A on) this has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
+    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
+    // feature.
+    #[allow(dead_code)]
     pub fn repeatability(&self, operation: &str) -> Repeatable {
         if self.repeatable.iter().any(|o| o == operation) {
             Repeatable::Yes

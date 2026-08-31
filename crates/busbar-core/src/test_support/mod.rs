@@ -151,7 +151,7 @@ impl Default for MockResponse {
 
 #[derive(Debug, Default)]
 pub struct MockServerState {
-    responses: Mutex<Vec<MockResponse>>,
+    queued_replies: Mutex<Vec<MockResponse>>,
     last_auth_header: std::sync::Mutex<Option<String>>,
     last_request_body: std::sync::Mutex<Option<Vec<u8>>>,
     last_request_headers: std::sync::Mutex<Option<axum::http::HeaderMap>>,
@@ -163,10 +163,10 @@ impl MockServerState {
         Self::default()
     }
     pub fn push(&self, response: MockResponse) {
-        self.responses.lock().unwrap().push(response);
+        self.queued_replies.lock().unwrap().push(response);
     }
     fn next_response(&self) -> Option<MockResponse> {
-        self.responses.lock().unwrap().pop()
+        self.queued_replies.lock().unwrap().pop()
     }
 
     /// Record the last seen Authorization header for testing passthrough token forwarding

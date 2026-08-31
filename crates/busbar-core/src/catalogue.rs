@@ -7,14 +7,11 @@
 //! `crate::trust::validate::validate_visibility` (resolved here through core's own `trust::validate`
 //! re-export).
 
-// The catalogue serves the MCP and/or A2A plane and nothing else; with BOTH compiled out the glob
-// re-export names nothing any in-core caller uses, exactly as the pre-split module read dead there.
-// Same cfg the original carried, `unused_imports` rather than `dead_code` because this is now a
-// re-export.
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(unused_imports)
-)]
+// The catalogue serves whichever protocol planes are installed and nothing else; with none installed
+// the glob re-export names nothing any in-core caller uses, exactly as the pre-split module read dead
+// there. `unused_imports` rather than `dead_code` because this is now a re-export; unconditional (the
+// neutral seam names no plane feature — the re-export is public API whichever planes are compiled in).
+#![allow(unused_imports)]
 
 pub use busbar_substrate::catalogue::*;
 

@@ -407,7 +407,10 @@ impl GovState {
     /// the subkey and signs. The subkey secret is derived and used entirely here; the caller receives
     /// only the 64 signature bytes. `None` when no signing key is configured or no plane declares a
     /// card-signing domain.
-    #[cfg(feature = "plane-a2a")]
+    // Reached only through the host `card_sign` vtable slot, which a plane declaring a card-signing
+    // domain wires; with no such plane installed this has no caller. Unconditional allow — the neutral
+    // host names no plane feature; the card-signing domain is resolved from the registry.
+    #[allow(dead_code)]
     pub(crate) fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
         let domain =
             crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
@@ -428,9 +431,10 @@ impl GovState {
     /// The FLEET-SHARED property is the reason this is usable for a state seal at all. One logical
     /// caller-facing exchange spans several independent requests, which different nodes may serve;
     /// a per-process key would make the second request fail on whichever node did not mint the first.
-    // MCP-only: its consumer is the MCP ask-state sealer (`crate::plane::approvals::Sealer`), so with
-    // `plane-mcp` off (and A2A on) it has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    // Its consumer is the ask-state sealer (`crate::plane::approvals::Sealer`), driven by whichever
+    // plane seals caller-facing state; with no such plane installed it has no caller. Unconditional
+    // allow — the neutral seam names no plane feature.
+    #[allow(dead_code)]
     pub(crate) fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }

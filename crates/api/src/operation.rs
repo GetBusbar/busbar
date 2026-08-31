@@ -203,13 +203,13 @@ impl Operation {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
-    pub const CHAT: Operation = Operation::llm("chat");
-    pub const EMBEDDINGS: Operation = Operation::llm("embeddings");
-    pub const MODERATION: Operation = Operation::llm("moderation");
-    pub const IMAGE: Operation = Operation::llm("image");
-    pub const TRANSCRIPTION: Operation = Operation::llm("transcription");
-    pub const SPEECH: Operation = Operation::llm("speech");
-    pub const RERANK: Operation = Operation::llm("rerank");
+    pub const CHAT: Operation = Operation::named_invoke("chat");
+    pub const EMBEDDINGS: Operation = Operation::named_invoke("embeddings");
+    pub const MODERATION: Operation = Operation::named_invoke("moderation");
+    pub const IMAGE: Operation = Operation::named_invoke("image");
+    pub const TRANSCRIPTION: Operation = Operation::named_invoke("transcription");
+    pub const SPEECH: Operation = Operation::named_invoke("speech");
+    pub const RERANK: Operation = Operation::named_invoke("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
     //    and A2A both address these through their own method names, which the protocol's
@@ -246,10 +246,11 @@ impl Operation {
         Operation::CONTROL,
     ];
 
-    /// An LLM-family verb: one shape, seven words. Private, `const`, and the only way the seven are
-    /// spelled — so "are they really all one shape?" is answered by the constructor rather than by
-    /// seven arms that could drift.
-    const fn llm(name: &'static str) -> Operation {
+    /// A NAMED `Invoke` verb: one shape, an explicit wire word. Private, `const`, and the only way
+    /// the family's several words are spelled — so "are they really all one shape?" is answered by the
+    /// constructor rather than by several arms that could drift. (The LLM family's seven verbs — chat,
+    /// embeddings, … — are all built here; the constructor names no protocol.)
+    const fn named_invoke(name: &'static str) -> Operation {
         Operation::Verb {
             op: OpShape::Invoke,
             name,
@@ -257,7 +258,7 @@ impl Operation {
     }
 
     /// The verb a shape carries when the shape's own word is the name. Private for the same reason
-    /// [`Self::llm`] is: constructing an `Operation` is this module's business.
+    /// [`Self::named_invoke`] is: constructing an `Operation` is this module's business.
     const fn of(op: OpShape) -> Operation {
         Operation::Verb {
             op,

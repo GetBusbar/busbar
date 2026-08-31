@@ -1533,12 +1533,10 @@ pub(crate) fn resolve_gate_hooks(
 /// so an extracted plane crate reaches it without naming `busbar_core::hooks`. Re-exported here so
 /// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
 /// unchanged.
-// Referenced only from the MCP/A2A container-gate resolution; with BOTH planes compiled out
-// [`resolve_container_gates`] has no caller, so the re-export reads unused in that config.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(unused_imports)
-)]
+// Referenced only from the protocol planes' container-gate resolution; with none installed
+// [`resolve_container_gates`] has no caller, so the re-export reads unused. Unconditional allow —
+// the neutral seam names no plane feature; it is a public re-export whichever planes are compiled in.
+#[allow(unused_imports)]
 pub use busbar_substrate::plane::config::attach_list;
 
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
@@ -1552,13 +1550,10 @@ pub use busbar_substrate::plane::config::attach_list;
 ///
 /// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
 /// per request would put a library load on a dispatch path.
-// Resolves the per-container gate chains for the MCP (`tools.hooks:`) and A2A (`agents.hooks:`)
-// registries; with BOTH planes compiled out neither registry is built, so it reads dead in that
-// config alone.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+// Resolves the per-container gate chains for each installed protocol plane's registry; with none
+// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam
+// names no plane feature.
+#[allow(dead_code)]
 pub fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],

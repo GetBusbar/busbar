@@ -52,13 +52,10 @@
 //! `on_error` decides, exactly as on the model plane. `reject` there means a gate an operator
 //! declared load-bearing cannot be skipped by being broken.
 
-// The request gate fires only from the MCP and A2A ingress paths. With BOTH planes compiled out
-// nothing fires it, so its items read dead — scoped to exactly that config so a real single-plane
-// build still lints every item (this gate is plane-agnostic and used by whichever plane remains).
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+// The request gate fires only from the protocol-plane ingress paths. With no such plane installed
+// nothing fires it, so its items read dead. This gate is plane-agnostic (used by whichever plane is
+// installed); the allow is unconditional so the neutral seam names no plane feature.
+#![allow(dead_code)]
 
 use crate::hooks::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use crate::ir::facts::{ContentItem, IrFacts, Slot};
