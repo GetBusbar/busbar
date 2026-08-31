@@ -450,7 +450,7 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
 }
 
 /// The A2A task provenance digest is byte-for-byte what `a2a/provenance.rs` computed before the
-/// unification, and byte-for-byte the formula `busbar_api::TaskEventRow` publishes. Minted through the
+/// unification, and byte-for-byte the formula `busbar_a2a::TaskEventRow` publishes. Minted through the
 /// NEUTRAL journal seam over the plane's pre-framed `task_event_suffix` content (PipeSeparated), which
 /// is the exact shape production persists, and required to agree with the legacy canonical string.
 #[test]

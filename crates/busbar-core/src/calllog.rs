@@ -128,7 +128,7 @@ pub(crate) const KIND_ID_CALL: u32 = 2;
 
 /// The MCP `call` stream's FFI reframe slot: delegates the raw-buffer work to the audited
 /// [`crate::plane_host::journal::reframe_bridge`] (so this file stays `deny(unsafe)`) over the native
-/// [`reframe_call`] decode, which handles BOTH the neutral body and a legacy a typed serde row.
+/// [`reframe_call`] decode of the neutral journal body.
 extern "C-unwind" fn reframe_call_ffi(
     _host: HostCtx,
     _kind_id: u32,
@@ -256,8 +256,8 @@ const CALL_DIGESTS_SCOPE: bool = true;
 
 /// The MCP call's pre-framed content SUFFIX: the chained fields AFTER the prelude
 /// (`prev_hash`/`principal`/`seq`), framed LengthPrefixed EXACTLY as [`crate::audit::Digest`] frames
-/// them, so `frame_prelude(prev_hash, principal, seq) ⧺ suffix` reproduces the legacy
-/// the call record digest byte stream byte-for-byte. Every field is `len:u64-be ⧺ bytes`; a `num`
+/// them, so `frame_prelude(prev_hash, principal, seq) ⧺ suffix` reproduces the call record's digest
+/// byte stream byte-for-byte. Every field is `len:u64-be ⧺ bytes`; a `num`
 /// is its eight big-endian bytes carried as one such length-prefixed field (matching `Digest::push`
 /// under LengthPrefixed). The field ORDER is the tail of the call digest fields: ts, server,
 /// tool, outcome, reason, tool_digest, pin_generation. `request_id` is EXCLUDED, matching the digest
@@ -292,7 +292,7 @@ fn call_suffix(
 }
 
 /// Parse a LengthPrefixed call SUFFIX back into its typed fields — the exact inverse of
-/// [`call_suffix`], for reconstructing a typed the call record from a stored neutral body. Fails
+/// [`call_suffix`], for reconstructing a typed call record from a stored neutral body. Fails
 /// closed on a truncated/oversized field rather than reading past the buffer.
 #[allow(dead_code)]
 fn parse_call_suffix(
@@ -348,8 +348,9 @@ fn parse_call_suffix(
 /// post-cleave append writes. `scope` is the principal (the store parent), supplied by the caller and
 /// never read from the body. Core names no plane record type here: the neutral body carries the
 /// pre-framed `content` suffix verbatim, so no typed reconstruction is needed to rebuild the digest
-/// stream. (A pre-1.6 a typed serde body is not neutral and is a plane-side grandfather
-/// concern — see the handoff note; core no longer names that type.)
+/// stream. (There is no legacy typed-body path to grandfather: the typed serde call format was a
+/// 1.6.0-internal shape that never shipped in a released store, no `KIND_CALL` migration exists, and
+/// the neutral body is the only shape this decode ever sees.)
 fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
     let nb = decode::<NeutralBody>(body)?;
     Ok(PlaneJournalRecord::from_parts(
@@ -369,7 +370,7 @@ fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// `verify_chain`-passes byte-identically. `request_id` comes back EMPTY: it is a join key, never in
 /// the digest and so never in the neutral content. `principal` is the chain scope, supplied by the
 /// caller (the store parent), never read from a neutral body. Core names no plane record type; a
-/// plane crate reconstructs its typed the call record from this where it wants one.
+/// plane crate reconstructs its typed call record from this where it wants one.
 #[allow(dead_code)]
 pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult<CallRecorded> {
     let nb = decode::<NeutralBody>(body)?;
@@ -420,7 +421,7 @@ pub(crate) fn call_record_to_journal_body(rec: &CallRecorded) -> StoreResult<Vec
 
 /// TEST ONLY: verify a chain presented as neutral [`CallRecorded`] rows by reframing each into the
 /// neutral journal record the seam persists and running the ONE verifier. Core names no plane record
-/// type; a test that holds typed the call records converts them to [`CallRecorded`] first. The scope,
+/// type; a test that holds typed call records converts them to [`CallRecorded`] first. The scope,
 /// and the digest's inclusion of it, come from each row's own `principal`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn verify_call_rows(rows: &[CallRecorded]) -> Result<(), ChainBreak> {
