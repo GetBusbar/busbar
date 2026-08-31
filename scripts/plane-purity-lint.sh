@@ -41,6 +41,27 @@
 #   Plane/Protocol-prefix construction of the scanner mean none of them can match a KEY/DIALECT/TYPE
 #   rule; the allow-list below is the defensive belt-and-braces and the thing the GREEN fixture proves.
 #
+# THE FROZEN-WIRE CARVE-OUT (the ONE documented exception — narrow, reviewable, per-line):
+#   The config grammar is FROZEN, additive-only, BYTE-IDENTICAL since 1.5.3, enforced by
+#   scripts/config-stability-gate.sh against the committed config-schema.snapshot.json. A handful of
+#   the KEY/TYPE tokens above are ALSO frozen external-wire config-grammar tokens that the neutral
+#   crate CANNOT stop naming without breaking that contract:
+#     * the `mcp:` top-level WIRE KEY on `DeployCfg` — a 1.5.x operator's YAML carries `mcp:` and MUST
+#       parse byte-identically; renaming the field (even with `#[serde(rename="mcp")]`) still leaves
+#       the `mcp` token in source, and the snapshot records the wire key `mcp` verbatim.
+#     * the `McpEndpointSection` TYPE name — recorded verbatim in config-schema.snapshot.json as the
+#       `type` of that field. Renaming it to anything plane-neutral is a config-schema RETYPE
+#       (`DeployCfg.mcp: field RETYPED …`) that the additive-only classifier fails RED and that a
+#       snapshot refresh CANNOT launder (the baseline is a git ref). PROVEN, not asserted.
+#   These are genuine grammar tokens, not lazily-un-extracted vocabulary — Path 1 (eliminate the token
+#   while preserving the wire) is PROVABLY IMPOSSIBLE for them. So a neutral-source line may carry a
+#     // plane-purity: frozen-wire <reason tied to the frozen-config contract>
+#   pragma, which EXEMPTS THAT LINE from the KEY/DIALECT/TYPE vocabulary rules ONLY. It is NEVER an
+#   exemption from PATH-INCLUDE or SYMBOL (a `#[path]` witness include or a `busbar_{plane}::` reach is
+#   a structural side channel no config-freeze can justify), and the self-test proves a pragma does not
+#   launder either. NOT a `concat!`/hex obfuscation of the token — the token stays PLAIN and greppable;
+#   this is an explicit, reviewed allow, one pragma per excused line, each justifying itself in the diff.
+#
 # THE REVERSE EDGE ("no backwards reach", §2.1 item 2): a plane crate (busbar-{llm,mcp,a2a}) MAY name
 #   the substrate ABI (busbar_substrate:: / busbar_api::) but must NOT name `busbar_core::`
 #   implementation items. Core→plane and plane→core-internals are both forbidden; only plane→ABI and
@@ -135,13 +156,24 @@ scan() {
     function emit(cat, text) { printf "%s\t%s:%d\t%s\n", cat, FILENAME, FNR, trim(text) }
 
     # Per-FILE reset (awk shares state across the file list).
-    FNR == 1 { inblk = 0; testdepth = 0; pend = 0 }
+    FNR == 1 { inblk = 0; testdepth = 0; pend = 0; prevfz = 0 }
 
     {
       code = strip($0)
       pad  = " " code " "
       lc   = tolower(pad)
       nopen = gsub(/[{]/, "{", code); nclose = gsub(/[}]/, "}", code)
+
+      # ── FROZEN-WIRE pragma (see header + the carve-out gate below). Read on the RAW line so the
+      # marker lives in a comment. A line is frozen-exempt when it carries the pragma ITSELF (a trailing
+      # `// plane-purity: frozen-wire …`) OR the line directly above was a STANDALONE pragma comment —
+      # the latter because rustfmt relocates a comment that trails an opening `{` onto the line above.
+      # A trailing pragma (the line has code) does NOT bleed onto the next line; only a pure-comment
+      # pragma line exempts the single code line that follows it. Computed here, before any early
+      # `next`, so `prevfz` stays in step across test-scope and reverse-mode skips.
+      curpragma = ($0 ~ /plane-purity:[[:space:]]*frozen-wire/)
+      frozen    = (curpragma || prevfz)
+      prevfz    = (curpragma && trim(code) == "")           # standalone pragma line ⇒ exempt next line
 
       istestfile = (FILENAME ~ /\/tests\// || FILENAME ~ /_tests?\.rs$/)
 
@@ -169,13 +201,31 @@ scan() {
       }
 
       # ── forward: neutral-crate side channels ──
-      # (a) PATH-INCLUDE — unconditional, test scope included (instant fail).
+      # (a) PATH-INCLUDE — unconditional, test scope included (instant fail). NEVER excusable by the
+      #     frozen-wire pragma below: a witness `#[path]` include is a STRUCTURAL side channel, not a
+      #     grammar token, so no config-freeze can justify it.
       if (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a)\//) emit("PATH-INCLUDE", code)
 
       if (intest) next                                    # (b)/(c) exclude test code
 
-      # (b) SYMBOL — a plane-crate symbol path.
+      # (b) SYMBOL — a plane-crate symbol path. ALSO never excusable by the frozen-wire pragma: a
+      #     frozen config FIELD/TYPE never requires naming `busbar_{llm,mcp,a2a}::` — that is a
+      #     backwards reach into plane implementation, orthogonal to the wire grammar.
       if (code ~ /busbar_(llm|mcp|a2a)::/) emit("SYMBOL", code)
+
+      # ── FROZEN-WIRE CARVE-OUT (the config-stability contract; see header "THE FROZEN-WIRE CARVE-OUT")
+      # A neutral-source line bearing a `// plane-purity: frozen-wire <reason>` pragma is EXEMPT from
+      # the VOCABULARY rules ONLY — (c1) KEY, (c2) DIALECT, (c3) TYPE. It is NEVER exempt from
+      # PATH-INCLUDE or SYMBOL (checked ABOVE this gate). `frozen` is computed at the top of the block
+      # (pragma on this line, or a standalone pragma comment directly above — the rustfmt-relocated
+      # case). This is the narrow, reviewable escape hatch for the handful of tokens the FROZEN config
+      # grammar (byte-identical since 1.5.3, guarded by config-stability-gate.sh +
+      # config-schema.snapshot.json) forces a neutral crate to keep naming: the `mcp:` top-level wire
+      # KEY on `DeployCfg`, and the `McpEndpointSection` TYPE name recorded verbatim in the committed
+      # snapshot (renaming either is a config-schema RETYPE = RED, proven un-launderable). Every excused
+      # line is one reviewable pragma in the diff, each tied by its <reason> to the frozen-config
+      # contract — exactly the config-schema.waivers discipline.
+      if (frozen) next
 
       # (c3) TYPE — the named plane record structs, plus any plane-/dialect-prefixed CamelCase type.
       #      (Checked before the bare-key rule so McpFoo reads as TYPE, not KEY.)
@@ -248,6 +298,63 @@ GREEN
     note "GREEN neutral: flagged none of the ABI / comment / block-comment / cfg(test) fixtures"
   else
     fail=1; note "GREEN neutral FAILED: expected 0 flags, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── FROZEN-WIRE CARVE-OUT: the pragma exempts the VOCABULARY rules (KEY/DIALECT/TYPE) on ITS line
+  # ONLY, and NEVER launders a PATH-INCLUDE or SYMBOL. Three fixtures, one property each. ──
+  # (1) GREEN: a frozen `mcp:` wire field + its `McpEndpointSection` snapshot type flag nothing, in
+  #     BOTH pragma placements: (a) a TRAILING pragma on a line that does not end in `{`, and (b) a
+  #     STANDALONE pragma comment directly ABOVE a brace-terminated line — the exact shape rustfmt
+  #     produces when it relocates a comment that trailed an opening `{` (proven on this very tree).
+  cat >"$tmp/frozen_green.rs" <<'FZG'
+    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire DeployCfg mcp: key + snapshot type
+pub(crate) struct McpEndpointSection(Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire snapshot type
+    // plane-purity: frozen-wire reads the frozen mcp: field (rustfmt moved this off the { line below)
+    if cfg.mcp.is_some() {
+        errors.push("ok");
+    }
+FZG
+  out="$(scan forward "$tmp/frozen_green.rs")"
+  if [ -z "$out" ]; then
+    note "frozen-wire GREEN: trailing AND standalone-above pragmas both exempt KEY/TYPE (flagged none)"
+  else
+    fail=1; note "frozen-wire GREEN FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+  # (1b) BLEED CONTROL: a TRAILING pragma must NOT exempt the FOLLOWING line — only a standalone
+  #      pragma comment does. The line after a trailing-pragma line still flags its own tokens.
+  cat >"$tmp/frozen_bleed.rs" <<'FZB'
+    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire DeployCfg mcp: key + snapshot type
+    pub(crate) other: McpDemotionRow,
+FZB
+  out="$(scan forward "$tmp/frozen_bleed.rs")"
+  if printf '%s\n' "$out" | awk -F'\t' '$1=="TYPE" && $2 ~ /:2$/{n++} END{exit !n}'; then
+    note "frozen-wire BLEED CONTROL: a trailing pragma did NOT exempt the following line"
+  else
+    fail=1; note "frozen-wire BLEED FAILED: trailing pragma leaked onto the next line (got: $out)"
+  fi
+  # (2) CONTROL: the SAME tokens WITHOUT the pragma still flag — proving the pragma, not some other
+  #     quirk, is what exempts them (a green fixture that would be green anyway proves nothing).
+  cat >"$tmp/frozen_control.rs" <<'FZC'
+    pub(crate) mcp: McpEndpointSection,
+FZC
+  out="$(scan forward "$tmp/frozen_control.rs")"
+  if printf '%s\n' "$out" | awk -F'\t' '$1=="KEY"{k++} $1=="TYPE"{t++} END{exit !(k&&t)}'; then
+    note "frozen-wire CONTROL: the same line WITHOUT the pragma still flags KEY+TYPE"
+  else
+    fail=1; note "frozen-wire CONTROL FAILED: unpragma'd mcp:/McpEndpointSection must still flag (got: $out)"
+  fi
+  # (3) RED: the pragma must NOT launder a structural side channel. A `#[path=…busbar-mcp…]` and a
+  #     `busbar_mcp::` reach, each carrying the pragma, must STILL be flagged.
+  cat >"$tmp/frozen_abuse.rs" <<'FZA'
+#[path = "../../../busbar-mcp/src/witness.rs"] mod w; // plane-purity: frozen-wire (abuse: must NOT excuse)
+use busbar_mcp::Thing; // plane-purity: frozen-wire (abuse: must NOT excuse)
+FZA
+  out="$(scan forward "$tmp/frozen_abuse.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="PATH-INCLUDE"{n++} END{print n+0}')" -ge 1 ] \
+   && [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="SYMBOL"{n++} END{print n+0}')" -ge 1 ]; then
+    note "frozen-wire ABUSE: the pragma did NOT launder PATH-INCLUDE or SYMBOL (both still flagged)"
+  else
+    fail=1; note "frozen-wire ABUSE FAILED: pragma laundered a structural side channel (got: $out)"
   fi
 
   # ── RED (reverse): (iv) a plane crate reaching BACK into core implementation ──
