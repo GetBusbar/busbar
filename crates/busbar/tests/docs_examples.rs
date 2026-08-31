@@ -137,9 +137,12 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     let effective = rewritten.as_deref().unwrap_or(config_path);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    // 1.6.0: the catalog lives at the shipped root, NOT next to the temp config, so point busbar at
+    // it with the `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
     cmd.arg("--validate")
-        .env("BUSBAR_CONFIG", effective)
-        .env("BUSBAR_PROVIDERS", providers_path);
+        .arg("--providers")
+        .arg(providers_path)
+        .env("BUSBAR_CONFIG", effective);
     for name in &referenced {
         // 64 hex chars: valid for `auth.signing_key`, and harmless as any other secret's value.
         cmd.env(
