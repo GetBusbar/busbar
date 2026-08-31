@@ -8,7 +8,7 @@
 //! through an installed fn-ptr in production, or directly via the `#[path]` net in its test build.
 //! Addresses core as `busbar_core::`; the concrete IR is `crate::ir::*` (this crate's own).
 
-use busbar_core::proto::{
+use busbar_substrate::proto::{
     find_frame_terminator, parse_sse_frame, write_sse_frame, IrError, StreamTranslator,
     SSE_DONE_FRAME, SSE_DONE_SENTINEL, STREAM_ABORT_DETAIL,
 };
@@ -795,7 +795,7 @@ impl StreamTranslate {
                     self.scanned = end;
 
                     if self.same_proto
-                        && self.egress.name_static() == busbar_core::proto::PROTO_ANTHROPIC
+                        && self.egress.name_static() == "anthropic"
                         && !matches!(
                             busbar_substrate::proto::sse_event_type(frame),
                             "message_start" | "message_delta" | "error"

@@ -10,30 +10,11 @@
 
 use std::sync::OnceLock;
 
-/// Neutral streaming byte-in/byte-out translator seam. The WHOLE [`StreamTranslate`] sits
-/// behind this trait so emission ORDER is preserved verbatim — the streaming forward path
-/// (`FirstByteBody`) holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
-/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
-/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR;
-/// the projection is billing-lossless. The other methods forward 1:1 to `StreamTranslate`'s inherent
-/// methods, so behavior is byte-identical to the pre-trait direct calls.
-pub trait StreamTranslator: Send {
-    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
-    /// are now available (empty if only a partial frame is buffered).
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
-    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
-    fn finish(&mut self) -> Vec<u8>;
-    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
-    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
-    /// for the per-request token fee.
-    fn usage(&self) -> Option<crate::billing::TokenUsage>;
-    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
-    fn terminal_error(&self) -> Option<&str>;
-    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
-    fn aborted(&self) -> bool;
-    /// Record whether the ORIGINAL client request opted into streaming usage.
-    fn set_client_include_usage(&mut self, include: bool);
-}
+// The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_substrate::proto` so the
+// `busbar-llm` plugin's `StreamTranslate` implements it without reaching into `busbar-core`. Core
+// keeps only the fn-ptr factory glue below; the trait is re-exported at `crate::proto::StreamTranslator`
+// (see `proto/mod.rs`). By-identity relocation — behavior byte-identical.
+use busbar_substrate::proto::StreamTranslator;
 
 /// The plugin-provided factory that builds a concrete `StreamTranslate` for an ingress→egress pair.
 /// Installed once by the composition root (production); the test build routes to the netted

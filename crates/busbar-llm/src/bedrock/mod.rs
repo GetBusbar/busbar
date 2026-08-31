@@ -5,8 +5,10 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::{HeaderName, HeaderValue, StatusCode};
-use busbar_core::proto::*;
+#[cfg(test)]
+use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 use busbar_substrate::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
@@ -29,7 +31,7 @@ mod writer;
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires. Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_BEDROCK, BedrockReader, BedrockWriter)
+    Protocol::new("bedrock", BedrockReader, BedrockWriter)
 }
 
 /// BEDROCK'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the AWS SigV4
@@ -79,12 +81,11 @@ fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
 /// BEDROCK'S DECLARATION. The only protocol declaring SigV4 ingress auth and a non-SSE streaming
 /// content type — the two facts core used to learn by allocating a reader and a writer to ask.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_BEDROCK,
+    name: "bedrock",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_BEDROCK);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("bedrock");
         Some(&CODEC)
     },
     handler: Some(&handler::BedrockRequestHandler),
@@ -577,7 +578,7 @@ fn bedrock_image_block(source: &crate::ir::IrImageSource) -> Option<serde_json::
 /// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
 /// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
 /// and is meaningless to any other backend.
-const VENDOR_NAME: &str = busbar_core::proto::PROTO_BEDROCK;
+const VENDOR_NAME: &str = "bedrock";
 
 /// Read a native Converse `document` / `video` block body into an [`crate::ir::IrBlock::Media`].
 ///

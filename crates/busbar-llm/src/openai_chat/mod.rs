@@ -13,8 +13,10 @@ use busbar_core::proto::openai_family::{
 };
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
-use busbar_core::proto::*;
+#[cfg(test)]
+use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 use busbar_substrate::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
@@ -39,7 +41,7 @@ mod writer;
 /// resolution, exactly as the registry's field doc requires. Mirrors
 /// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_OPENAI, OpenAiReader, OpenAiWriter)
+    Protocol::new("openai", OpenAiReader, OpenAiWriter)
 }
 
 /// The [`ProtocolDecl::egress_auth_headers`] builder: OpenAI's native credential scheme is a plain
@@ -47,7 +49,7 @@ pub fn protocol() -> Protocol {
 /// wrinkle) and no signing context needed. Retires the `_ => StaticBearer{"openai"}` arm that used
 /// to be `egress_auth::resolve`'s catch-all default.
 fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-    busbar_substrate::proto::bearer_auth_headers(PROTO_OPENAI, key)
+    busbar_substrate::proto::bearer_auth_headers("openai", key)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
@@ -101,12 +103,11 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
 
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_OPENAI,
+    name: "openai",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_OPENAI);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("openai");
         Some(&CODEC)
     },
     handler: Some(&handler::OpenAiRequestHandler),
@@ -265,7 +266,7 @@ const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 /// `file.file_id`, an uploads-API handle with no neutral (base64/url) form. Only an OpenAI-family
 /// writer recognizes the tag and re-emits the reference; every other writer drops it with a warn
 /// rather than emitting a handle its own backend cannot resolve.
-const VENDOR_NAME: &str = busbar_core::proto::PROTO_OPENAI;
+const VENDOR_NAME: &str = "openai";
 
 // ────────────────────────────────────────────────────────────────────────────
 

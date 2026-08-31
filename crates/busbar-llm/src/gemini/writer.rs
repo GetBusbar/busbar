@@ -388,10 +388,7 @@ impl ProtocolWriter for GeminiWriter {
         }
 
         // tools → tools[0].functionDeclarations[]
-        super::super::ir_encode::warn_dropped_tool_strict(
-            &req.tools,
-            busbar_core::proto::PROTO_GEMINI,
-        );
+        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "gemini");
         if !req.tools.is_empty() {
             let func_decls: Vec<_> = req
                 .tools

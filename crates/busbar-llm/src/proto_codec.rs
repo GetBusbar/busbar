@@ -15,10 +15,18 @@
 
 use axum::http::StatusCode;
 use busbar_core::proto::registry;
-use busbar_core::proto::{
-    ArrayStreamFramer, DialectCodec, IrError, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE,
-    PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
-};
+use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec, IrError};
+
+// The six dialect NAMES, plane-local (no longer `busbar_core::proto::PROTO_*` — that was a backwards
+// reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
+// compile shapes (this plugin standalone, and `#[path]`-netted into `core::proto`), and reads as a
+// const pattern in the `protocol_for` match below. The values are the interned dialect names.
+const PROTO_ANTHROPIC: &str = "anthropic";
+const PROTO_OPENAI: &str = "openai";
+const PROTO_GEMINI: &str = "gemini";
+const PROTO_BEDROCK: &str = "bedrock";
+const PROTO_COHERE: &str = "cohere";
+const PROTO_RESPONSES: &str = "responses";
 
 use crate::ir::IrStreamEvent;
 #[cfg(any(test, feature = "test-support"))]

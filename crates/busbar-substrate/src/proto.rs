@@ -145,6 +145,110 @@ pub fn sse_event_type(frame: &[u8]) -> &str {
     name
 }
 
+/// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
+/// translate step failed after first byte). Relocated DOWN here so BOTH `busbar-core`'s proxy
+/// engine (SSE/forward abort path) and the `busbar-llm` Bedrock-eventstream reassembler emit it
+/// without either re-spelling the literal or the plugin reaching into core. Single source of truth
+/// so the abort text a client sees is identical on every framing.
+pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
+
+/// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
+/// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
+/// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
+/// Returns `None` if no complete terminator is present yet.
+pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] == b'\n' {
+            // LF-LF: `\n\n` — the blank-line terminator begins at this `\n` and is 2 bytes long.
+            if buf.get(i + 1) == Some(&b'\n') {
+                return Some((i, 2));
+            }
+            // CRLF-CRLF: `\r\n\r\n` — the full spec-legal terminator is 4 bytes. We anchor the scan
+            // on the `\n` that ENDS the preceding line's CRLF, then confirm the blank line's own
+            // `\r\n` follows (`...\n` + `\r\n`). The terminator proper begins at the trailing `\r`
+            // of the preceding line (one byte BEFORE this `\n`), so report `offset = i - 1` and
+            // `len = 4`. (`i >= 1` is guaranteed here: a leading `\n` at index 0 cannot match this
+            // arm, since the preceding `\r` it requires would have to sit at index -1.)
+            if i >= 1
+                && buf[i - 1] == b'\r'
+                && buf.get(i + 1) == Some(&b'\r')
+                && buf.get(i + 2) == Some(&b'\n')
+            {
+                return Some((i - 1, 4));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
+/// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
+/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
+/// frame with only an `event:` line) or is invalid UTF-8.
+pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(frame).ok()?;
+    let mut event_type = String::new();
+    let mut data_lines: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_type = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            // Per the SSE spec a single leading space after the colon is stripped; the rest of the
+            // value is preserved verbatim so multi-line JSON payloads survive intact.
+            data_lines.push(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    if data_lines.is_empty() {
+        // No `data:` line at all (e.g. an `event:`-only frame) — nothing to translate.
+        return None;
+    }
+    Some((event_type, data_lines.join("\n")))
+}
+
+/// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
+/// `event_type` yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style
+/// bare `data:`. Writes THROUGH the caller's buffer, not into a returned `String`. Serializes via
+/// `crate::json::to_vec` (the sonic seam), not `Value`'s `Display`-via-`format!`.
+pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value) {
+    if !event_type.is_empty() {
+        out.extend_from_slice(b"event: ");
+        out.extend_from_slice(event_type.as_bytes());
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"data: ");
+    // `unwrap_or_default()` matches the identical decision already made one call site up
+    // (`stream.rs`'s `crate::json::to_vec(&out_data).unwrap_or_default()`): a `Value` that fails to
+    // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
+    out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
+    out.extend_from_slice(b"\n\n");
+}
+
+/// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete `StreamTranslate` (in the
+/// `busbar-llm` plugin) sits behind this trait so emission ORDER is preserved verbatim — the
+/// streaming forward path holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
+/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
+/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR.
+/// Relocated DOWN here so the plugin implements it without reaching into `busbar-core`.
+pub trait StreamTranslator: Send {
+    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
+    /// are now available (empty if only a partial frame is buffered).
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
+    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
+    fn finish(&mut self) -> Vec<u8>;
+    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
+    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
+    /// for the per-request token fee.
+    fn usage(&self) -> Option<crate::billing::TokenUsage>;
+    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
+    fn terminal_error(&self) -> Option<&str>;
+    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
+    fn aborted(&self) -> bool;
+    /// Record whether the ORIGINAL client request opted into streaming usage.
+    fn set_client_include_usage(&mut self, include: bool);
+}
+
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
 /// binds TIGHTER — it names an earlier rung of the historical detection ladder (a mandatory-unique
 /// auth header binds tighter than a path verb, which binds tighter than a bare path suffix). The

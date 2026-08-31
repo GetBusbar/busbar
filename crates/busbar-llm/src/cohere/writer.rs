@@ -385,10 +385,7 @@ impl ProtocolWriter for CohereWriter {
             serde_json::Value::Array(messages_arr),
         );
 
-        super::super::ir_encode::warn_dropped_tool_strict(
-            &req.tools,
-            busbar_core::proto::PROTO_COHERE,
-        );
+        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere");
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {

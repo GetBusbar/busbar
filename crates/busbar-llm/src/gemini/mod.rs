@@ -5,8 +5,10 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::proto::*;
+#[cfg(test)]
+use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 use busbar_substrate::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
@@ -30,7 +32,7 @@ mod writer;
 /// resolution, exactly as the registry's field doc requires. Mirrors
 /// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
+    Protocol::new("gemini", GeminiReader, GeminiWriter)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: Gemini's `GET /v1(beta)/models` shape. Each
@@ -113,12 +115,11 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_GEMINI,
+    name: "gemini",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_GEMINI);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("gemini");
         Some(&CODEC)
     },
     handler: Some(&handler::GeminiRequestHandler),

@@ -163,10 +163,7 @@ impl ProtocolWriter for AnthropicWriter {
             "messages".to_string(),
             serde_json::Value::Array(messages_array),
         );
-        super::super::ir_encode::warn_dropped_tool_strict(
-            &req.tools,
-            busbar_core::proto::PROTO_ANTHROPIC,
-        );
+        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "anthropic");
         if !req.tools.is_empty() {
             let tools_array: Vec<_> = req.tools.iter().map(write_tool).collect();
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));

@@ -9,8 +9,10 @@ use axum::http::StatusCode;
 use busbar_core::proto::openai_family::{bearer_error_code, CODE_INVALID_API_KEY};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
-use busbar_core::proto::*;
+#[cfg(test)]
+use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 use busbar_substrate::proto::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
@@ -36,7 +38,7 @@ mod writer;
 /// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
 /// Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_RESPONSES, ResponsesReader, ResponsesWriter)
+    Protocol::new("responses", ResponsesReader, ResponsesWriter)
 }
 
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
@@ -63,12 +65,11 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_RESPONSES,
+    name: "responses",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_RESPONSES);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("responses");
         Some(&CODEC)
     },
     handler: Some(&handler::ResponsesRequestHandler),
@@ -228,7 +229,7 @@ const INCOMPLETE_REASON_OTHER: &str = "other";
 
 /// Top-level `object` field value and vendor tag for the Responses protocol.
 const OBJ_RESPONSE: &str = "response";
-const VENDOR_NAME: &str = busbar_core::proto::PROTO_RESPONSES;
+const VENDOR_NAME: &str = "responses";
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
 const RESPONSE_ID_PREFIX: &str = "resp_";

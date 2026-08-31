@@ -96,12 +96,10 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 // Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
 pub use busbar_substrate::proto::{BASE62_ALPHABET, BASE62_REJECT_THRESHOLD};
 
-/// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-/// translate step failed after first byte). Lives in the proto layer — the lowest common ancestor —
-/// because BOTH `proxy engine` (SSE/forward abort path) and the Bedrock-eventstream reassembler in this
-/// module emit it, and `proxy engine → proto` is the only legal dependency direction. Single source of
-/// truth so the abort text a client sees is identical on every framing.
-pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
+// `STREAM_ABORT_DETAIL` RELOCATED DOWN to `busbar_substrate::proto` (the `busbar-llm`
+// Bedrock-eventstream reassembler emits it without reaching into core); re-exported here at its
+// historical `busbar_core::proto::STREAM_ABORT_DETAIL` path so core's proxy-engine caller is unchanged.
+pub use busbar_substrate::proto::STREAM_ABORT_DETAIL;
 
 /// THE RESIDUAL ARM of the ingress resolver: which wire dialect a path names, from its shape alone.
 /// `None` when it names none.
@@ -220,12 +218,11 @@ pub(crate) fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static 
 /// The NEUTRAL streaming-translator seam (`StreamTranslator` trait + the fn-ptr factory) — STAYS in
 /// core (names zero concrete stream IR). See `stream_translator.rs`.
 pub(crate) mod stream_translator;
-pub(crate) use stream_translator::new_stream_translator;
-// `pub` (not `pub(crate)`): the plugin's `proto_stream::StreamTranslate` implements this neutral
-// byte-in/byte-out seam, and busbar-llm compiles standalone (workspace build), so it must reach the
-// trait cross-crate as `busbar_core::proto::StreamTranslator`.
 pub use stream_translator::install_stream_translator_factory;
-pub use stream_translator::StreamTranslator;
+pub(crate) use stream_translator::new_stream_translator;
+// The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_substrate::proto`; re-exported here
+// at its historical `busbar_core::proto::StreamTranslator` path so core's forward path is unchanged.
+pub use busbar_substrate::proto::StreamTranslator;
 
 /// THE EXTRACTED CONCRETE STREAM TRANSLATOR (`StreamTranslate` + factory + frame helpers), compiled
 /// back in for TEST BUILDS ONLY (G6 A4b). Sources live in `crates/busbar-llm/src/proto_stream.rs`
@@ -261,60 +258,10 @@ pub(crate) mod proto_codec;
 #[cfg(any(test, feature = "test-support"))]
 pub use proto_codec::*;
 
-/// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
-/// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
-/// Returns `None` if no complete terminator is present yet.
-pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    let mut i = 0;
-    while i < buf.len() {
-        if buf[i] == b'\n' {
-            // LF-LF: `\n\n` — the blank-line terminator begins at this `\n` and is 2 bytes long.
-            if buf.get(i + 1) == Some(&b'\n') {
-                return Some((i, 2));
-            }
-            // CRLF-CRLF: `\r\n\r\n` — the full spec-legal terminator is 4 bytes. We anchor the scan
-            // on the `\n` that ENDS the preceding line's CRLF, then confirm the blank line's own
-            // `\r\n` follows (`...\n` + `\r\n`). The terminator proper begins at the trailing `\r`
-            // of the preceding line (one byte BEFORE this `\n`), so report `offset = i - 1` and
-            // `len = 4`. (`i >= 1` is guaranteed here: a leading `\n` at index 0 cannot match this
-            // arm, since the preceding `\r` it requires would have to sit at index -1.)
-            if i >= 1
-                && buf[i - 1] == b'\r'
-                && buf.get(i + 1) == Some(&b'\r')
-                && buf.get(i + 2) == Some(&b'\n')
-            {
-                return Some((i - 1, 4));
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
-/// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
-/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
-/// frame with only an `event:` line) or is invalid UTF-8.
-pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
-    let text = std::str::from_utf8(frame).ok()?;
-    let mut event_type = String::new();
-    let mut data_lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("event:") {
-            event_type = rest.trim().to_string();
-        } else if let Some(rest) = line.strip_prefix("data:") {
-            // Per the SSE spec a single leading space after the colon is stripped; the rest of the
-            // value is preserved verbatim so multi-line JSON payloads survive intact.
-            data_lines.push(rest.strip_prefix(' ').unwrap_or(rest));
-        }
-    }
-    if data_lines.is_empty() {
-        // No `data:` line at all (e.g. an `event:`-only frame) — nothing to translate.
-        return None;
-    }
-    Some((event_type, data_lines.join("\n")))
-}
+// `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (the
+// `busbar-llm` stream translator + gemini reassembler drive them); re-exported here at their
+// historical `busbar_core::proto::…` paths so every in-core caller is unchanged.
+pub use busbar_substrate::proto::{find_frame_terminator, parse_sse_frame};
 
 /// The `event:` name of one SSE frame, BORROWED from the frame bytes — the cheap probe for a
 /// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
@@ -330,27 +277,9 @@ pub use busbar_substrate::proto::sse_event_type;
 // `busbar_substrate::proto`; re-exported here at its historical path.
 pub use busbar_substrate::proto::strip_top_level_usage_member;
 
-/// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
-/// `event_type` yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style
-/// bare `data:`. Writes THROUGH the caller's buffer, not into a returned `String`: this is the
-/// per-chunk streaming path (`stream.rs`'s `emit_ir_event`), and every call site immediately threw
-/// the returned `String` away into its own `out: &mut Vec<u8>` — one allocation per translated
-/// frame for nothing. Serializes via `crate::json::to_vec` (the sonic seam), not `Value`'s
-/// `Display`-via-`format!`: this function used to bypass that seam even though `json.rs`'s own
-/// module doc claims every body-JSON path, including the SSE-event paths, goes through it.
-pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value) {
-    if !event_type.is_empty() {
-        out.extend_from_slice(b"event: ");
-        out.extend_from_slice(event_type.as_bytes());
-        out.push(b'\n');
-    }
-    out.extend_from_slice(b"data: ");
-    // `unwrap_or_default()` matches the identical decision already made one call site up
-    // (`stream.rs`'s `crate::json::to_vec(&out_data).unwrap_or_default()`): a `Value` that fails to
-    // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
-    out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
-    out.extend_from_slice(b"\n\n");
-}
+// `write_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (the `busbar-llm` stream translator
+// emits through it); re-exported here at its historical `busbar_core::proto::write_sse_frame` path.
+pub use busbar_substrate::proto::write_sse_frame;
 
 /// THE EXTRACTED ANTHROPIC DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-llm/src/anthropic` (a module of the ONE LLM plugin crate; the `busbar`

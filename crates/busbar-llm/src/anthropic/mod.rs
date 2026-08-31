@@ -29,10 +29,10 @@ mod writer;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
-use busbar_core::proto::*;
 #[cfg(test)]
 use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -50,7 +50,7 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_ANTHROPIC, AnthropicReader, AnthropicWriter)
+    Protocol::new("anthropic", AnthropicReader, AnthropicWriter)
 }
 
 /// The [`ProtocolDecl::egress_auth_headers`] builder: Anthropic's native credential shaping,
@@ -124,12 +124,11 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
 }
 
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_ANTHROPIC,
+    name: "anthropic",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_ANTHROPIC);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("anthropic");
         Some(&CODEC)
     },
     handler: Some(&handler::AnthropicRequestHandler),
@@ -266,7 +265,7 @@ fn is_modeled_anthropic_block_type(t: &str) -> bool {
 /// Files-API `{"type":"file","file_id":…}` document source, or a `{"type":"content"}` document whose
 /// body is a block array. Neither has a neutral (base64/url) form, so only this protocol's writer
 /// re-emits it; any other writer drops it with a warn.
-const VENDOR_NAME: &str = busbar_core::proto::PROTO_ANTHROPIC;
+const VENDOR_NAME: &str = "anthropic";
 
 /// Native Anthropic `document` content block type — a PDF/text attachment the model reads.
 const BLOCK_TYPE_DOCUMENT: &str = "document";

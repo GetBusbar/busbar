@@ -5,7 +5,7 @@
 
 //! The seventh operation, round-tripped through the IR: cohere <-> bedrock are the two rerank
 //! wires, and their result shapes are identical, so translation must be exact both ways.
-use super::super::bedrock::handler::BedrockRequestHandler;
+use super::super::super::bedrock::handler::BedrockRequestHandler;
 use super::*;
 use serde_json::Value;
 

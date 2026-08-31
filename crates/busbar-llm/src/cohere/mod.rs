@@ -5,8 +5,10 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::proto::*;
+#[cfg(test)]
+use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -27,7 +29,7 @@ mod writer;
 /// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
 /// state). Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new(PROTO_COHERE, CohereReader, CohereWriter)
+    Protocol::new("cohere", CohereReader, CohereWriter)
 }
 
 /// COHERE'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the v2/v1 chat paths
@@ -58,12 +60,11 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
 
 /// COHERE'S DECLARATION.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: PROTO_COHERE,
+    name: "cohere",
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef =
-            super::proto_codec::dialect_ref(PROTO_COHERE);
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("cohere");
         Some(&CODEC)
     },
     handler: Some(&handler::CohereRequestHandler),
@@ -245,7 +246,7 @@ fn write_cohere_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
 /// tool-result `document` object, whose `data` is an arbitrary map of string fields rather than
 /// bytes with a mime type, so it has NO neutral base64/url form. Only this protocol's writer
 /// re-emits it; a foreign writer, which could only mangle it, drops it with a warn.
-const VENDOR_NAME: &str = busbar_core::proto::PROTO_COHERE;
+const VENDOR_NAME: &str = "cohere";
 
 /// Hard cap on the number of distinct tool-call frame indices recorded in `state.open_tools` for a
 /// single stream. The set is intentionally never shrunk (so each tool's IR block index stays stable
