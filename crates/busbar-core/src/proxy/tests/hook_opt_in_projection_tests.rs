@@ -694,14 +694,8 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
     assert_eq!(f.shape().text_chars, 19);
 }
 
-/// THE EXHAUSTIVENESS GUARD, AND WHY IT IS NOW WEAKER ON PURPOSE.
-///
-/// It used to carry a witness table with one row per protocol, because the old dispatch keyed on a
-/// `&str` protocol name and rustc cannot make an unmatched string a compile error. The subject is
-/// now `IrBlock` — a real enum, matched with no catch-all arm in `ir::facts` — so exhaustiveness
-/// over CONTENT KINDS is compiler-enforced and needs no table at all. What a table can still say is
-/// the thing the compiler cannot: every registered protocol has a reader that produces a readable
-/// IR, so a seventh protocol is covered by REGISTERING rather than by an arm added here.
+// THE EXHAUSTIVENESS GUARD (every registered protocol has a reader that produces a readable IR, so
+// a seventh protocol is covered by REGISTERING rather than by an arm added anywhere) —
 // `every_known_protocol_has_a_declared_reasoning_wire_shape` RELOCATED to `busbar-llm`
 // (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5): it drove the
 // witnessed codec (`protocol_for(...).reader()`) and named the concrete IR (`ir.shape()`,

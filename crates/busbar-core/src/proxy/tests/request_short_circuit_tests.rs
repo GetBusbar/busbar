@@ -67,7 +67,7 @@ fn pristine_same_proto_is_byte_identical_body_model() {
         // lane.model == body.model → rewrite_model_if_needed is a no-op (#3 not triggered).
         let lane_model = body.get("model").and_then(|m| m.as_str()).unwrap();
         let hop_bytes = crate::json::to_vec(body).unwrap();
-        let out = shape_same_proto(*proto, name, lane_model, body.clone());
+        let out = shape_same_proto(proto, name, lane_model, body.clone());
         assert_eq!(
             out, hop_bytes,
             "{name}: pristine same-proto request must short-circuit to the retained original bytes"
@@ -204,7 +204,7 @@ fn pristine_same_proto_is_byte_identical_url_model() {
         // default rewrite inserts the lane model which the same-proto strip then removes — a net
         // no-op on the Value, so canonical re-serialization still yields the identical bytes. Both
         // satisfy the byte-fidelity contract (the test that matters); only the path differs.
-        let out = shape_same_proto(*proto, name, "url-model-x", body.clone());
+        let out = shape_same_proto(proto, name, "url-model-x", body.clone());
         assert_eq!(
             out, hop_bytes,
             "{name}: pristine same-proto url-model request egress must be byte-identical to input"

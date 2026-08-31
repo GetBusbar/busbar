@@ -120,7 +120,7 @@ fn head_pristine_matches_translate_output() {
     ];
     for (proto, name, lane_model, body) in cases {
         let app = TestApp::new()
-            .lane(LaneSpec::new(lane_model, *proto, "http://unused.local"))
+            .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
             .build();
         let hop_bytes = Bytes::from(crate::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
