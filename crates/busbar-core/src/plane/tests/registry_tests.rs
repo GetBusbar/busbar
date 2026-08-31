@@ -18,6 +18,17 @@ use crate::plane::registry::{
 use std::any::Any;
 use std::collections::BTreeMap;
 
+/// THE SHIPPED `[llm, mcp, a2a]` PROCESS PLANE LIST for core's OWN test binary. The three plane
+/// crates are dev-dependencies here, so this names their public `PLANE_DECL`s across the honest crate
+/// boundary. It lives in this `tests/` module — off the neutral source the plane-purity lint scans —
+/// and `super::builtin_plane_decls()` returns it under `#[cfg(test)]`, so the neutral registry names
+/// no plane crate while core's tests still boot the same list the shipped `busbar` binary does.
+pub(super) static TEST_BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
+    &busbar_llm::PLANE_DECL,
+    &busbar_mcp::PLANE_DECL,
+    &busbar_a2a::PLANE_DECL,
+];
+
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
 /// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.

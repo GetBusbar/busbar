@@ -113,7 +113,7 @@ pub fn stateful_plane_ephemeral_store_warn(
 ) -> Option<&'static str> {
     if store_is_memory && (mcp_stateful || a2a_stateful) {
         Some(
-            "MCP/A2A task state will NOT survive a restart — in-flight tasks will break on the next \
+            "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
              request. Configure a durable store (sqlite/postgres).",
         )
     } else {
@@ -1097,14 +1097,11 @@ pub fn build_app_from_config(
         // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
         // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
         // for a stateful deployment — never for an LLM-only (stateless) one.
-        #[cfg(feature = "plane-mcp")]
+        // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
+        // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
+        // these read identically to the former per-feature branches without naming a plane feature.
         let mcp_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
-        #[cfg(not(feature = "plane-mcp"))]
-        let mcp_stateful = !cfg.tool_pools.is_empty();
-        #[cfg(feature = "plane-a2a")]
         let a2a_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
-        #[cfg(not(feature = "plane-a2a"))]
-        let a2a_stateful = !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> = if g.module
             == crate::config::GOVERNANCE_STORE_MEMORY
         {
@@ -1259,7 +1256,10 @@ pub fn build_app_from_config(
     // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
     // The MCP `tools:` per-server gates read the typed `tools:` registry, which exists only when
     // the plane is compiled in. With `plane-mcp` off there is no registry, so the map is empty.
-    #[cfg(feature = "plane-mcp")]
+    // Data-driven: `container_gates()` is a neutral `PlaneCfg` method; with the owning plane compiled
+    // out the section is the raw carrier that answers empty containers/section-hooks, so `resolve_
+    // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
+    // plane feature named.
     let mcp_server_gates = {
         let g = cfg.tool_defs.container_gates();
         hooks::resolve_container_gates(
@@ -1272,15 +1272,6 @@ pub fn build_app_from_config(
             app_config_version,
         )
     };
-    #[cfg(not(feature = "plane-mcp"))]
-    let mcp_server_gates: std::collections::HashMap<
-        String,
-        Vec<(u16, crate::hooks::ResolvedPolicy)>,
-    > = std::collections::HashMap::new();
-    // The A2A per-agent gates read the typed `agents:` registry, which exists only when the plane is
-    // compiled in. With `plane-a2a` off there is no registry, so the map is empty (the neutral twin
-    // of `mcp_server_gates` above).
-    #[cfg(feature = "plane-a2a")]
     let a2a_agent_gates = {
         let g = cfg.agent_defs.container_gates();
         hooks::resolve_container_gates(
@@ -1293,11 +1284,6 @@ pub fn build_app_from_config(
             app_config_version,
         )
     };
-    #[cfg(not(feature = "plane-a2a"))]
-    let a2a_agent_gates: std::collections::HashMap<
-        String,
-        Vec<(u16, crate::hooks::ResolvedPolicy)>,
-    > = std::collections::HashMap::new();
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
@@ -1570,8 +1556,16 @@ pub fn build_app_from_config(
         // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the A2A
         // relay's `agent_pools:` set; the MCP `tool_pools:` set keeps its own dedicated field above).
         plane_pools: {
+            // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from the
+            // registry, never spelled as a literal — so this composition names no plane. A compiled-out
+            // plane has no decl for its section, so nothing is inserted; the pool read treats an absent
+            // key identically to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
-            m.insert("a2a", cfg.agent_pools.clone());
+            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                crate::config::named_map::NamedMapSection::Agents.key(),
+            ) {
+                m.insert(decl.key, cfg.agent_pools.clone());
+            }
             m
         },
         by_model,
@@ -1589,9 +1583,21 @@ pub fn build_app_from_config(
         // key — in place of the former per-plane `mcp_server_gates`/`a2a_agent_gates` fields. Each
         // plane's resolved gate map (built above, empty when its feature is off) goes under its key.
         plane_gates: {
+            // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named as a
+            // literal: the `tools:` section's plane takes `mcp_server_gates`, the `agents:` section's
+            // plane takes `a2a_agent_gates`. A compiled-out plane has no decl for its section, so its
+            // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
-            m.insert("mcp", mcp_server_gates);
-            m.insert("a2a", a2a_agent_gates);
+            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                crate::config::named_map::NamedMapSection::Tools.key(),
+            ) {
+                m.insert(decl.key, mcp_server_gates);
+            }
+            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                crate::config::named_map::NamedMapSection::Agents.key(),
+            ) {
+                m.insert(decl.key, a2a_agent_gates);
+            }
             m
         },
         hook_env: hook_env.clone(),

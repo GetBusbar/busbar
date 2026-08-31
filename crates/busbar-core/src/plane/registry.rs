@@ -260,37 +260,31 @@ impl BootCtx {
 /// makes the row — rather than a table of strings — the thing that leaves with the plane.
 ///
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
-static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
-    // THE LLM PLANE ROW, now on the SAME terms as the MCP/A2A rows below: it exists ONLY in this
-    // crate's own test binary (`#[cfg(test)]`), naming the plane crate's PUBLIC `PLANE_DECL` across
-    // the honest crate boundary — NOT the former unconditional `&crate::proto::PLANE_DECL` builtin.
-    // The LLM plane's declaration relocated to `busbar-llm` with the rest of its vocabulary; the
-    // shipped binary registers it through the composition root (`register_planes`, behind `proto-llm`),
-    // and this test row gives core's registry/plane tests the same `[llm, mcp, a2a]` process list the
-    // binary boots with. Production core carries the plane crate nowhere in its closure, so this row
-    // compiles out and core "serves the LLM plane" only when the composition root installs it.
-    #[cfg(test)]
-    &busbar_llm::PLANE_DECL,
-    // The MCP and A2A plane rows, present in THIS crate's own test binary (`#[cfg(test)]`), where the
-    // two plane crates are dev-dependencies and core can name their PUBLIC `PLANE_DECL` across the
-    // HONEST crate boundary — NOT the old `#[path]` dual-compile of their source. This gives the test
-    // binary the same process plane list `[llm, mcp, a2a]` the shipped `busbar` binary boots with (its
-    // composition root `install_planes`es the two), so the registry/plane/sections tests drive the real
-    // vocabulary and every `TestApp` carries the MCP plane's always-present runtime slot (build() fills
-    // it through the plane test-kit). Production core has neither crate in its closure, so these rows
-    // compile out; an EXTERNAL `test-support` consumer (the plane suites, core's integration target)
-    // has `cfg(test)` false and registers through [`register_test_plane`] from each plane's `testkit`.
-    #[cfg(test)]
-    &busbar_mcp::PLANE_DECL,
-    #[cfg(test)]
-    &busbar_a2a::PLANE_DECL,
-];
+/// Production carries NO built-in plane rows: every plane is a plugin the composition root installs
+/// through [`install_planes`]. Naming a plane crate's `PLANE_DECL` here would be a plane-crate symbol
+/// reference in neutral source — a side channel around the ABI — so this stays empty.
+///
+/// Core's OWN test binary still needs the shipped `[llm, mcp, a2a]` process list (the plane crates are
+/// dev-dependencies there), but that list names `busbar_{llm,mcp,a2a}::PLANE_DECL`, which belongs OFF
+/// the neutral source. It is therefore defined in the test module (`registry_tests`, a `tests/` file
+/// the neutral-purity lint excludes) and reached ONLY through [`builtin_plane_decls`]. An EXTERNAL
+/// `test-support` consumer (the plane suites, core's integration target) has `cfg(test)` false and
+/// registers through [`register_test_plane`] from each plane's `testkit`.
+#[cfg(not(test))]
+static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[];
 
 /// The built-in declarations. Read by [`plane_decls`] to build the process list, and by the
 /// registry's own tests to build a list with ONE MORE declaration in it — which is the whole of what
-/// a loader will do differently.
+/// a loader will do differently. Empty in production and under `test-support`; under core's own
+/// `#[cfg(test)]` binary it is the test-module list, so no plane crate is named in neutral source.
+#[cfg(not(test))]
 pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     BUILTIN_PLANE_DECLS
+}
+
+#[cfg(test)]
+pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
+    registry_tests::TEST_BUILTIN_PLANE_DECLS
 }
 
 /// The process plane list, folded on first read from the built-ins plus anything installed. Under the
@@ -417,7 +411,7 @@ fn canonical_key_order(
 pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
     PLANES.get_or_init(|| {
         let installed = INSTALLED.get().copied().unwrap_or(&[]);
-        merged_boot_plane_decls(installed, BUILTIN_PLANE_DECLS)
+        merged_boot_plane_decls(installed, builtin_plane_decls())
     })
 }
 
@@ -462,7 +456,7 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
     // registrations ahead of the built-ins, then leak ONCE for this (grown) set.
     let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
     all.extend(reg.iter().copied());
-    let merged = merged_boot_plane_decls(&all, BUILTIN_PLANE_DECLS);
+    let merged = merged_boot_plane_decls(&all, builtin_plane_decls());
     let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
     *memo = Some((want, leaked));
     leaked

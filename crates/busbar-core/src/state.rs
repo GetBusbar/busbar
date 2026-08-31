@@ -451,10 +451,7 @@ pub struct App {
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
     // Read only by the plane request gate's incremental-scan tenant; with BOTH planes compiled out
     // nothing fires that gate, so the field goes unread in that config alone.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[allow(dead_code)]
     pub(crate) incremental_scan: bool,
     /// The `tool_pools:` failover pools — operator-declared interchangeable MCP server sets,
     /// carried resolved-verbatim onto the snapshot so the dispatch path's route builder
@@ -462,7 +459,7 @@ pub struct App {
     /// server keeps its degenerate single-member cell and no reroute exists to be had.
     // MCP-only: read by the MCP dispatch route builder (`mcp::reroute`); with `plane-mcp` off (and
     // A2A on) it is carried on the snapshot but never read.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
     /// ([`busbar_substrate::plane_host::EngineHost::plane_pool_members`]), keyed by the plane's stable
@@ -473,7 +470,7 @@ pub struct App {
     /// keeps its own dedicated field + 3-tuple `tool_pool_members` seam, which also carries the pool's
     /// `repeatable:` list.)
     // Read on a plane's route/admission path; with `plane-a2a` off (and MCP on) it is never read.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) plane_pools: std::collections::BTreeMap<
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
@@ -552,10 +549,7 @@ pub struct App {
     /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
     // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
     // gate, so the map goes unread in that config alone.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[allow(dead_code)]
     pub(crate) plane_gates: PlaneGateMap,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
@@ -642,7 +636,7 @@ pub struct App {
     // the admin view and gate resolution are byte-identical to the typed field this replaced.
     // With `plane-a2a` off the whole A2A module (its only reader) is compiled out, so the field is set
     // at build and never read — allow it dead in exactly that config.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) agent_defs: Arc<dyn std::any::Any + Send + Sync>,
     // THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything accumulated against
     // it — has NO typed `App` field. Like its MCP sibling it lives ONLY in the type-erased
@@ -923,7 +917,7 @@ impl App {
     // Reached unconditionally through the `PlaneSlots` trait impl below (`App::plane_slot`), so the
     // inherent fn is never truly dead; the `allow(dead_code)` gate is legacy from when MCP was its
     // only direct reader.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[allow(dead_code)]
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
@@ -933,10 +927,7 @@ impl App {
     /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a
     /// plane-named field. The dispatch/admission gate paths read it; `None` and an empty inner map are
     /// both "no gate attached" (the zero-cost `Proceed` early-out).
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[allow(dead_code)]
     pub(crate) fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
         self.plane_gates.get(plane_key)
     }
@@ -944,7 +935,7 @@ impl App {
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
     /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
     /// map read, reached through the key instead of a plane-named field.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn plane_pools(
         &self,
         plane_key: &str,
@@ -960,10 +951,7 @@ impl App {
     /// pass and the in-core A2A twin.
     // Called only from a container plane's gate rebuild (MCP/A2A); with BOTH planes compiled out it
     // has no caller, exactly like the `crate::hooks::resolve_container_gates` it wraps.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[allow(dead_code)]
     pub fn resolve_container_gates<'a>(
         &self,
         containers: impl Iterator<Item = (&'a str, &'a [String])>,

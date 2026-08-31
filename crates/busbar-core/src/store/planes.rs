@@ -47,10 +47,7 @@
 // the A2A relay. With BOTH planes compiled out nothing holds it, so its items read dead — scoped to
 // exactly that config. The two per-plane key helpers below carry their own attrs because each is
 // used by only ONE plane and so reads dead in the other's single-plane build too.
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#![allow(dead_code)]
 
 use super::in_memory::{BreakerCfg, HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
@@ -172,7 +169,7 @@ impl PlaneBreakers {
     /// The MCP plane's key for one registered tool server. The `tool:` prefix is the audit's
     /// keyspace rule; the id is the operator's registration id, which is what every refusal names.
     // MCP-only: keyed by the MCP plane alone, so with `plane-mcp` off (and A2A on) it has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[allow(dead_code)]
     pub fn tool_key(server: &str) -> String {
         // The prefix spelling MOVED DOWN to the neutral substrate so the MCP plane builds this key
         // without reaching into core; delegate so the one `tool:` spelling stays single-sourced.
@@ -181,7 +178,7 @@ impl PlaneBreakers {
 
     /// The A2A plane's key for one registered agent.
     // A2A-only: keyed by the A2A plane alone, so with `plane-a2a` off (and MCP on) it has no caller.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub fn agent_key(agent: &str) -> String {
         // The prefix spelling MOVED DOWN to the neutral substrate so the A2A plane builds this key
         // without reaching into core; delegate so the one `agent:` spelling stays single-sourced.
@@ -199,7 +196,7 @@ impl PlaneBreakers {
     // A2A-only direct admission: the A2A relay admits through this RAII pair, while the MCP leg
     // reaches the same cell via `failover::walk` + [`Self::adopt`]. So with `plane-a2a` off (and MCP
     // on) neither this nor [`Self::admit`] has a caller.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<Option<u64>, Unavailable> {
         // Inert (planeless config): structurally unreachable — no plane is mounted, so nothing
         // dispatches — but fail CLOSED rather than index the empty lane table if a future caller
@@ -216,7 +213,7 @@ impl PlaneBreakers {
     /// admission and the wire, a caller that disconnected (axum drops the handler future), a task
     /// runner aborted by `tasks/cancel`. An explicit release call misses the dropped-future cases,
     /// and a missed release wedges the cell HalfOpen forever.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn admit(
         self: &Arc<Self>,
         key: &str,

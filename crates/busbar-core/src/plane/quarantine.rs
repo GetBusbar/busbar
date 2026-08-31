@@ -138,7 +138,7 @@ impl DemotionRecord {
                 server = %server,
                 reason = %reason,
                 error = %e,
-                "the durable MCP demotion record could NOT be written: this upstream is demoted in \
+                "the durable demotion record could NOT be written: this upstream is demoted in \
                  THIS process and a restart will re-open it until the next sweep looks again"
             );
         }
@@ -156,7 +156,7 @@ impl DemotionRecord {
                 crate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
                 server = %server,
                 error = %e,
-                "the durable MCP demotion record for this upstream could NOT be cleared: it is \
+                "the durable demotion record for this upstream could NOT be cleared: it is \
                  serving again in THIS process, and a restart would re-establish a quarantine the \
                  operator has already worked"
             );
@@ -179,7 +179,7 @@ impl DemotionRecord {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
                     error = %e,
-                    "the durable MCP demotion records could NOT be read at boot; any upstream this \
+                    "the durable demotion records could NOT be read at boot; any upstream this \
                      deployment had demoted is re-opened until the first sweep looks again"
                 );
                 Vec::new()
