@@ -185,7 +185,7 @@ pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<Strin
     // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
     // `saturating_sub` would only imply a doubt that isn't there.
     let dropped = provided - cap;
-    ::tracing::debug!(diag = %busbar_core::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
+    ::tracing::debug!(diag = %busbar_substrate::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
         proto,
         cap,
         provided,

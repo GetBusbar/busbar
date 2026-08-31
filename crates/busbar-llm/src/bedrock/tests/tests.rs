@@ -57,7 +57,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
         canonical_uri: &canonical,
         body: br#"{"messages":[]}"#,
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
 
@@ -91,7 +91,7 @@ fn test_bedrock_sigv4_session_token() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET:SESSIONTOKEN", &ctx);
     let tok = headers
@@ -117,7 +117,7 @@ fn test_bedrock_sigv4_misconfigured_key_no_signature() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     assert!(super::writer::sigv4_sign_headers("not-a-valid-key", &ctx).is_empty());
 }
@@ -687,7 +687,7 @@ fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     // CR/LF embedded in the access key id → invalid Authorization header value
     // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
@@ -1818,7 +1818,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     // Session token with an embedded control char → un-encodable HeaderValue.
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\r\nEN", &ctx);
@@ -3087,7 +3087,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers
@@ -3115,7 +3115,7 @@ fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers

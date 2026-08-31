@@ -66,7 +66,7 @@ fn auth_headers_api_key_trims_leading_whitespace() {
         canonical_uri: PATH_UPSTREAM,
         body: b"{}",
         timestamp_epoch: 0,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     };
     for headers in [
         super::anthropic_auth_headers(raw, None),
@@ -113,7 +113,7 @@ fn auth_headers_oauth_and_passthrough_preserve_leading_whitespace() {
         canonical_uri: PATH_UPSTREAM,
         body: b"{}",
         timestamp_epoch: 0,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Passthrough,
+        upstream_creds: busbar_api::UpstreamCreds::Passthrough,
     };
     let pt = super::anthropic_auth_headers(amb, Some(ctx.upstream_creds));
     assert_eq!(
@@ -164,7 +164,7 @@ fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
     // Passthrough: forward the caller's token as Bearer ONLY (no x-api-key tell).
     let pt = super::anthropic_auth_headers(
         amb,
-        Some(ctx(busbar_core::auth::UpstreamCreds::Passthrough).upstream_creds),
+        Some(ctx(busbar_api::UpstreamCreds::Passthrough).upstream_creds),
     );
     assert_eq!(
         header_value(&pt, "authorization").as_deref(),
@@ -178,7 +178,7 @@ fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
     // Own (configured lane key): present the API-key shape ONLY (no Bearer tell).
     let h = super::anthropic_auth_headers(
         amb,
-        Some(ctx(busbar_core::auth::UpstreamCreds::Own).upstream_creds),
+        Some(ctx(busbar_api::UpstreamCreds::Own).upstream_creds),
     );
     assert_eq!(
         header_value(&h, "x-api-key").as_deref(), // golden wire-contract literal (kept bare on purpose)
@@ -192,7 +192,7 @@ fn sign_request_resolves_ambiguous_credential_to_single_header_by_mode() {
     // Clear API-key / OAuth credentials stay single-header on the wire path regardless of mode.
     let api = super::anthropic_auth_headers(
         "sk-ant-api03-x",
-        Some(ctx(busbar_core::auth::UpstreamCreds::Own).upstream_creds),
+        Some(ctx(busbar_api::UpstreamCreds::Own).upstream_creds),
     );
     assert!(
         header_value(&api, "x-api-key").is_some() // golden wire-contract literal (kept bare on purpose)

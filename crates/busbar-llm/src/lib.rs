@@ -109,8 +109,8 @@ pub mod proto_stream;
 /// other field is `None`/trivial: the LLM plane's runtime state is the many `App` fields the data plane
 /// reads directly (lanes, pools, cost, …), not one object this seam can erase — see the original field
 /// docs in git history for the per-field rationale, unchanged by the relocation.
-pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
-    busbar_core::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
+    busbar_substrate::plane::registry::PlaneDecl {
         key: "llm",
         config_section: "pools",
         scope_kinds: &["pool"],
@@ -147,7 +147,7 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
         default_section: None,
     };
 
-pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
+pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
     &anthropic::DECL,
     &gemini::DECL,
     &openai_chat::DECL,

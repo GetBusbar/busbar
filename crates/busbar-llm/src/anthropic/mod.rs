@@ -1811,7 +1811,7 @@ impl AnthropicWriter {
 /// load.
 pub(crate) fn anthropic_auth_headers(
     key: &str,
-    creds: Option<busbar_core::auth::UpstreamCreds>,
+    creds: Option<busbar_api::UpstreamCreds>,
 ) -> Vec<(HeaderName, HeaderValue)> {
     // Build a credential header pair, OMITTING it (returning None) when the value carries bytes
     // invalid for an HTTP header value. Never logs the key bytes — only the header name and the fact
@@ -1871,8 +1871,8 @@ pub(crate) fn anthropic_auth_headers(
         // Unrecognized shape: the mode resolves it to a single native header on the wire path;
         // the mode-blind primitive falls back to both so neither path silently drops.
         AnthropicCredScheme::Ambiguous => match creds {
-            Some(busbar_core::auth::UpstreamCreds::Passthrough) => assemble(vec![authorization()]),
-            Some(busbar_core::auth::UpstreamCreds::Own) => assemble(vec![x_api_key()]),
+            Some(busbar_api::UpstreamCreds::Passthrough) => assemble(vec![authorization()]),
+            Some(busbar_api::UpstreamCreds::Own) => assemble(vec![x_api_key()]),
             None => assemble(vec![x_api_key(), authorization()]),
         },
     }
