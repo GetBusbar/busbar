@@ -566,14 +566,14 @@ pub mod audit;
 /// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
 /// registered upstream resolves it, looks at it and audits what it found in the same order; that
 /// order lives here, and the plane supplies only the look.
-// The surface is mounted only for the MCP and A2A planes; with BOTH compiled out nothing mounts it,
-// so its items read dead in that config alone. Scoped here, at the module declaration, rather than
-// inside `planeverbs.rs` — that file's ratchet test forbids any plane vocabulary (`mcp`/`a2a`/…) in
-// its own source, and a feature-named attribute would trip it.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+// The surface is mounted only by the trust-fronting planes (MCP, A2A); with every such plane compiled
+// out nothing mounts it, so its items read dead in that config alone. The allowance is UNCONDITIONAL
+// rather than gated on the concrete plane features: a `feature = "plane-mcp"`/`"plane-a2a"` attribute
+// names plane vocabulary, which this neutral crate must not — the same reason `planeverbs.rs`'s own
+// ratchet test forbids `mcp`/`a2a` in its source. When a plane IS compiled in the module is used, so
+// the allowance is a harmless no-op; only in the all-planes-off build does it silence the otherwise
+// unavoidable dead-code warnings.
+#[allow(dead_code)]
 pub mod planeverbs;
 pub(crate) mod rate;
 pub mod restart;

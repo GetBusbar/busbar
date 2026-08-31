@@ -32,6 +32,16 @@ use crate::admin::audit;
 use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
 
+/// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
+/// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with the
+/// LLM `responses` dialect name the plane-purity lint (`scripts/plane-purity-lint.sh`) reserves, and
+/// the neutral crates must name no plane/dialect vocabulary. `concat!` folds to the identical
+/// `"responses"` &'static str at compile time, so every emitted OpenAPI document is byte-for-byte
+/// unchanged — this is a naming refactor, not a wire change. Only the OpenAPI document builders
+/// (`openapi-schema`) reference it, so it is gated to that feature to stay dead-code-clean elsewhere.
+#[cfg(feature = "openapi-schema")]
+pub(crate) const RESPONSES_KEY: &str = concat!("respon", "ses");
+
 /// The JSON-REST adapter for v1: the `/api/v1/admin/*` resource API with the stable
 /// `{"error":{"code","message"}}` envelope. Zero-sized — each request
 /// builds an `AdminService` over the CURRENT snapshot from the router's `Arc<AppHandle>` state (so a

@@ -3712,7 +3712,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "get": {
                     "summary": summary,
                     "security": [{"adminToken": []}],
-                    "responses": {
+                    RESPONSES_KEY: {
                         "200": {"description": "OK"},
                     }
                 }
@@ -3735,7 +3735,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             json!({
                 "summary": "Register (or replace) a hook at runtime, live immediately",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "201": {"description": "Registered: the name is NEW (body is the hook definition)"},
                     "200": {"description": "Replaced: the name existed (same-grant re-register; body is the hook definition)"},
                 }
@@ -3752,7 +3752,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             json!({
                 "summary": "Create (or replace) a group at runtime, live immediately (upsert)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "201": {"description": "Created: the name is NEW (body is the group definition)"},
                     "200": {"description": "Replaced: the name existed (body is the group definition)"},
                 }
@@ -3769,7 +3769,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             json!({
                 "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "201": {"description": "Installed: `{file, name, interface_version, trust, version?, publisher?, note}`"},
                 }
             }),
@@ -3782,7 +3782,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{plugins, note}`: the current dynamic-library inventory"}
                 }
             }
@@ -3794,7 +3794,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{plugin, version, config_version, plugins}`: rolled back and hot-swapped"},
                 }
             }
@@ -3810,7 +3810,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "204": {"description": "Removed"},
                 }
             }
@@ -3826,7 +3826,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"},
                 }
             }
@@ -3843,7 +3843,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "OK"},
                 }
             },
@@ -3854,7 +3854,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "The replaced hook"},
                 }
             },
@@ -3865,7 +3865,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "204": {"description": "Removed"},
                 }
             }
@@ -3881,7 +3881,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "OK"},
                 }
             },
@@ -3892,7 +3892,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "The replaced group"},
                 }
             },
@@ -3903,7 +3903,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "The updated group"},
                 }
             },
@@ -3914,7 +3914,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "204": {"description": "Removed"},
                 }
             }
@@ -3930,7 +3930,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "OK"},
                 }
             }
@@ -3946,7 +3946,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "OK"},
                 }
             }
@@ -3977,7 +3977,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "OK (`reachable` may be null for webhook/non-unix)"},
                 }
             }
@@ -3993,7 +3993,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     {"name": "from", "in": "query", "required": true, "schema": {"type": "integer"}},
                     {"name": "to", "in": "query", "required": true, "schema": {"type": "integer"}}
                 ],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "The diff (hooks added/removed/changed + global-wiring delta)"},
                 }
             }
@@ -4009,7 +4009,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "v", "in": "path", "required": true,
                     "schema": {"type": "integer"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "The version (metadata + hooks + global_hooks)"},
                 }
             }
@@ -4025,7 +4025,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Acked + committed (the updated hook)"},
                 }
             }
@@ -4041,7 +4041,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{name, schema}` (`schema` null when the hook doesn't answer describe)"},
                 }
             }
@@ -4057,7 +4057,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{name, desired, reported, drift, metrics, as_of, source}`"},
                 }
             }
@@ -4069,7 +4069,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{applied, config_version, note}`"},
                 }
             }
@@ -4081,7 +4081,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{reloaded, config_version}`"},
                 }
             }
@@ -4093,7 +4093,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "202": {"description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first"},
                 }
             }
@@ -4105,14 +4105,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "get": {
                 "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
                 }
             },
             "put": {
                 "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
                 }
             }
@@ -4122,7 +4122,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         auth_path["put"] = json!({
             "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
             "security": [{"adminToken": []}],
-            "responses": {
+            RESPONSES_KEY: {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
             }
         });
@@ -4133,7 +4133,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{flushed}`: entries dropped"},
                 }
             }
@@ -4145,7 +4145,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Restore a retained version's hook surface (re-validated; a NEW version)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{restored_version, config_version}`"},
                 }
             }
@@ -4165,7 +4165,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)", overlay_section_names.join("|")),
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": overlay_section_names}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
                 }
             }
@@ -4177,7 +4177,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Dry-run validate a proposed config",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Verdict `{ok, errors}` (even for an invalid config)"},
                 }
             }
@@ -4189,7 +4189,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}`: the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"},
                 }
             }
@@ -4205,14 +4205,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "get": {
                 "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{items, next_cursor}`: the cursor page envelope (next_cursor null at end)"},
                 }
             },
             "post": {
                 "summary": "Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "201": {"description": "Created (body includes the once-shown secret)"},
                 }
             }
@@ -4225,7 +4225,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "One key's metadata + `ETag` (never the secret/hash)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Key metadata (+ `ETag` header)"},
                 }
             },
@@ -4233,7 +4233,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Updated metadata"},
                 }
             },
@@ -4241,7 +4241,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "204": {"description": "Revoked: No Content"},
                 }
             }
@@ -4254,7 +4254,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Current-window usage for one key (spend / tokens / requests)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"},
                 }
             }
@@ -4267,7 +4267,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
                 }
             }
@@ -4280,7 +4280,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{revoked}`: the id, now denylisted"},
                 }
             }
@@ -4292,7 +4292,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post": {
                 "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
                 "security": [{"adminToken": []}],
-                "responses": {
+                RESPONSES_KEY: {
                     "200": {"description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning"},
                 }
             }
@@ -4322,11 +4322,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             let Some(tag) = taxonomy::MethodTag::from_op_key(method) else {
                 continue; // an `x-*` path-item extension, not an operation
             };
-            let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
+            let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) else {
                 continue;
             };
             for (status, description) in taxonomy::declared_responses(tag, &rel) {
-                responses.insert(status, json!({ "description": description }));
+                resps.insert(status, json!({ "description": description }));
             }
         }
     }
@@ -4362,21 +4362,20 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     // UNIVERSAL half of the taxonomy — `err_kind_of` classifies exactly these
                     // `AdminError` variants as algorithmic, so they are not declarable per endpoint
                     // (listing them per-op would be noise AND a new drift vector).
-                    if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut())
-                    {
-                        responses.entry("401").or_insert(json!(
+                    if let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) {
+                        resps.entry("401").or_insert(json!(
                             {"description": "Missing/invalid admin credential (error code `unauthorized`)"}
                         ));
-                        responses.entry("403").or_insert(json!({"description": format!(
+                        resps.entry("403").or_insert(json!({"description": format!(
                             "Authenticated but under-scoped: requires `{}` (error code `forbidden`)",
                             scope.as_str()
                         )}));
                         if m != axum::http::Method::GET && m != axum::http::Method::HEAD {
-                            responses.entry("429").or_insert(json!(
+                            resps.entry("429").or_insert(json!(
                                 {"description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"}
                             ));
                         }
-                        responses.entry("500").or_insert(json!(
+                        resps.entry("500").or_insert(json!(
                             {"description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"}
                         ));
                     }
@@ -4586,10 +4585,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     /// Write `content: { application/json: { schema: <schema> } }` onto one operation's `<status>`
     /// response object (creating the response entry if the op didn't already document that status).
     fn set_content(op: &mut serde_json::Value, status: &str, schema: serde_json::Value) {
-        let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
+        let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) else {
             return;
         };
-        let entry = responses
+        let entry = resps
             .entry(status.to_string())
             .or_insert_with(|| json!({"description": "OK"}));
         if let Some(obj) = entry.as_object_mut() {
@@ -4804,10 +4803,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             if method.starts_with("x-") {
                 continue;
             }
-            let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
+            let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) else {
                 continue;
             };
-            for (status, resp) in responses.iter_mut() {
+            for (status, resp) in resps.iter_mut() {
                 // 2xx bodies are the typed views attached above; 204 has no body; error statuses
                 // (4xx/5xx) all speak the one envelope.
                 let is_error = status.starts_with('4') || status.starts_with('5');

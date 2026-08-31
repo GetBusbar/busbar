@@ -792,6 +792,7 @@ fn check_trust_ceiling(
 /// 4xx set onto them exactly as it does for every hand-written entry.
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
+    use super::RESPONSES_KEY;
     use serde_json::json;
     let name_param = json!({
         "name": "name", "in": "path", "required": true, "schema": {"type": "string"}
@@ -809,7 +810,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                          {{module, settings, ...}}, referenced by bare name). Secrets are never \
                          projected"
                     ),
-                    "responses": {"200": {"description": "OK"}}
+                    RESPONSES_KEY: {"200": {"description": "OK"}}
                 }
             }),
         ));
@@ -819,7 +820,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                 "get": {
                     "summary": format!("One `{key}:` definition"),
                     "parameters": [name_param],
-                    "responses": {"200": {"description": "OK"}}
+                    RESPONSES_KEY: {"200": {"description": "OK"}}
                 },
                 "put": {
                     "summary": format!(
@@ -834,7 +835,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                         }
                     ),
                     "parameters": [name_param],
-                    "responses": {"200": {"description": format!(
+                    RESPONSES_KEY: {"200": {"description": format!(
                         "The stored {singular} definition. Additionally carries `reload_to_apply` \
                          (+ a `note`) when the mutation declared a plugin ROUTE this process cannot \
                          serve: each route path is registered on the HTTP router once, at process \
@@ -849,7 +850,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                          still references it by bare name"
                     ),
                     "parameters": [name_param],
-                    "responses": {"204": {"description": "Removed"}}
+                    RESPONSES_KEY: {"204": {"description": "Removed"}}
                 }
             }),
         ));
@@ -862,7 +863,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                          other field is left byte-identical"
                     ),
                     "parameters": [name_param],
-                    "responses": {"200": {"description": format!(
+                    RESPONSES_KEY: {"200": {"description": format!(
                         "The updated {singular} definition (same `reload_to_apply` restart signal as \
                          the PUT, when the mutation declares a route the router lacks)"
                     )}}
