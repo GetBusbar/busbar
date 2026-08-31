@@ -5,9 +5,13 @@
 # file exists so every plugin repo's CI is the SAME file, not a fork of it.
 #
 # Standard stages every plugin gets, in this order:
-#   1. Checkout the plugin + a sibling checkout of busbar (this repo) at BUSBAR_REF — the same
-#      interim local-path-dependency pattern every plugin's Cargo.toml already uses. Update
-#      BUSBAR_REF's default below once 1.5.0 ships and plugins can track `main` again.
+#   0. RESOLVE WHICH BUSBAR. Every stage below runs ONCE PER LEG of a matrix with two legs: the
+#      PINNED busbar from the caller's own `.busbar-ref` (what that repo's release will actually
+#      build against) and the MOVING busbar from `busbar_ref` (the engine branch it tracks). Either
+#      leg red is red. The two collapse to one leg when they are the same commit. See the `refs`
+#      job for why running only one of them loses real coverage.
+#   1. Checkout the plugin + a sibling checkout of busbar (this repo) at that leg's commit: the
+#      same interim local-path-dependency pattern every plugin's Cargo.toml already uses.
 #   2. Optionally boot a real backend service container (`postgres:16` / `valkey/valkey:8` /
 #      `hashicorp/vault` dev-mode) — never a mock. `pg_isready`/the image's own Docker healthcheck
 #      (or, for vault, a `wget` against its own `/v1/sys/health` endpoint) gates every later step so
@@ -45,14 +49,6 @@ on:
         required: false
         type: string
         default: "none"
-      extra_sibling_test_command:
-        description: >-
-          Optional extra shell command run from the sibling busbarAI checkout after this repo's own
-          tests pass — e.g. `cargo test -p busbar-store-postgres` to also exercise the monorepo's
-          own live-service test against the same running container.
-        required: false
-        type: string
-        default: ""
       busbar_ref:
         description: "Which busbar branch to check out as the sibling dependency"
         required: false
@@ -60,15 +56,103 @@ on:
         # main since v1.5.0 shipped (2026-08-02): plugins build against the released engine by
         # default, per the header's own "update once 1.5.0 ships" note. Pass busbar_ref: dev
         # explicitly to test a plugin against unreleased engine work.
+        #
+        # NOTE this is now only the MOVING leg of a two-leg matrix. See the `refs` job below: the
+        # PINNED leg is derived from the caller's own `.busbar-ref` and is not configurable, because
+        # it is not an opinion. It is whatever that repo's release will actually build against.
         default: "main"
 
 jobs:
+  # === WHICH BUSBAR DOES A PLUGIN'S CI ACTUALLY PROVE ANYTHING ABOUT ===
+  #
+  # THE DEFECT THIS JOB EXISTS TO CLOSE. Until now a plugin's CI and a plugin's RELEASE built against
+  # two different busbars, and nothing anywhere compared them:
+  #   - CI  built against `inputs.busbar_ref`, which every caller sets to `github.ref_name` (or
+  #     leaves at `main`). That is the MOVING engine: whatever busbar's branch holds right now.
+  #   - RELEASE builds against field 1 of the plugin repo's own `.busbar-ref`, a PINNED SHA that
+  #     `release-on-upstream.yml` rewrites only when it cuts. That is the engine the shipped
+  #     artifact is actually compiled and linked against.
+  # So a green CI proved the plugin worked against a busbar its release would never build, and an
+  # API or config-grammar break between the two refs stayed INVISIBLE UNTIL RELEASE DAY. That is not
+  # hypothetical: it is why the 1.5.3 fixture breaks were latent across a long list of first-party
+  # repos whose CI was green the whole time they were writing configs 1.5.3 had already retired.
+  #
+  # WHY NOT SIMPLY UNIFY ON THE PIN. Because both refs are load-bearing and they answer different
+  # questions, and dropping either one loses real coverage:
+  #   PINNED  is the only ref whose green is load-bearing for SHIPPING. If this is red, the release
+  #           is broken today. Nothing may be green without it.
+  #   MOVING  is the early warning. Testing only the pin makes a ratchet that never turns: a plugin
+  #           stays green forever while drifting arbitrarily far from the engine, and the break
+  #           finally lands inside `release-on-upstream.yml`, which re-pins `.busbar-ref` AND cuts
+  #           the tag in one workflow. Discovering it there is discovering it too late.
+  # So: run BOTH, fail on EITHER. The cost is bounded, because when the pin and the moving ref
+  # resolve to the SAME COMMIT this job emits ONE leg, not two, and says so. On a plugin that is
+  # up to date with the engine (the steady state) this is free.
+  refs:
+    name: resolve the busbar refs this plugin must be proven against
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Checkout the plugin (for .busbar-ref only)
+        uses: actions/checkout@v7
+        with:
+          path: plugin
+
+      # The sibling busbar checkout is what OWNS the decision logic, in a script with a --selftest,
+      # rather than inline YAML nobody can run. `dev` deliberately, not the leg refs being resolved:
+      # this step is what decides those, so it cannot depend on them.
+      - name: Checkout busbar (for the resolver script)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/busbar
+          ref: dev
+          path: busbarAI
+
+      - name: Ref resolver SELF-TEST (prove the decisions before trusting the verdict)
+        # A gate nobody watched fail is not a gate. This covers the dedupe, the hard failure on an
+        # unresolvable `.busbar-ref` pin, and the `<number>/merge` pull_request fallback, offline.
+        run: bash busbarAI/scripts/plugin-ci-refs.sh --selftest
+
+      - name: Build the ref matrix
+        id: build
+        run: |
+          bash busbarAI/scripts/plugin-ci-refs.sh \
+            --plugin-root plugin \
+            --moving-ref "${{ inputs.busbar_ref }}" >> "$GITHUB_OUTPUT"
+
+
   build-test-signoff:
-    name: build, test, clippy, fmt, signoff
+    name: build, test, clippy, fmt, signoff [busbar ${{ matrix.label }}]
+    needs: refs
+    strategy:
+      # fail-fast off ON PURPOSE. When the pinned leg and the moving leg disagree, the single most
+      # useful fact is WHICH ONE broke: pinned-red means the release is broken now, moving-red means
+      # the engine has moved out from under this plugin and the next re-pin will break it. Cancelling
+      # the sibling leg on the first failure destroys exactly that signal.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
     runs-on: ubuntu-latest
     services:
+    # SERVICE IMAGES ARE DIGEST-PINNED. A floating tag means a third party can change what this
+    # workflow tests against, overnight, with no commit here. That matters more in THIS file than
+    # anywhere else in the fleet: every first-party plugin repo calls it, so one upstream retag
+    # moves all of them at once, and the resulting breakage looks like the plugin's own tests
+    # failing. ci.yml pinned its own postgres and valkey containers; these are the same two images
+    # and reuse the SAME digests, so core and the plugin fleet cannot drift apart.
+    #
+    # `hashicorp/vault` was worse than unpinned: it carried NO tag at all, so it resolved to
+    # `latest`. It is pinned by digest alone, with no tag, and that digest is what `latest`
+    # resolved to at pin time, so this is behaviour-preserving rather than a version bump. Moving
+    # vault to a newer explicit version is a real change to what the secret-backend tests run
+    # against and belongs in its own commit, with a run to back it.
+    #
+    # wiremock and openldap already carried explicit VERSION tags rather than `latest`, which is
+    # most of the value, but a version tag can still be retagged upstream. They are digest-pinned
+    # too, at the digest their existing tag resolves to now, so no image in this file can move
+    # without a commit.
       postgres:
-        image: ${{ inputs.service == 'postgres' && 'postgres:16' || '' }}
+        image: ${{ inputs.service == 'postgres' && 'postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b' || '' }}
         env:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
@@ -78,7 +162,7 @@ jobs:
         options: >-
           ${{ inputs.service == 'postgres' && '--health-cmd "pg_isready -U busbar" --health-interval 10s --health-timeout 5s --health-retries 5' || '' }}
       valkey:
-        image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8' || '' }}
+        image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6' || '' }}
         ports:
           - 6379:6379
         # Runs INSIDE the container (it has its own valkey-cli — the runner does not); GitHub
@@ -91,7 +175,7 @@ jobs:
       # once the container's healthy, rather than a boot flag — GitHub's `services:` block has no
       # supported way to pass mysqld command-line args, only `docker run` options.
       mysql:
-        image: ${{ inputs.service == 'mysql' && 'mysql:8' || '' }}
+        image: ${{ inputs.service == 'mysql' && 'mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb' || '' }}
         env:
           MYSQL_ROOT_PASSWORD: busbar
           MYSQL_USER: busbar
@@ -105,7 +189,7 @@ jobs:
       # BUSBAR_TEST_VAULT_TOKEN, set on the Test steps below) — same hard-fail-under-CI-if-unset
       # discipline the plugin's own tests apply, mirroring busbarAI's own ci.yml vault service block.
       vault:
-        image: ${{ inputs.service == 'vault' && 'hashicorp/vault' || '' }}
+        image: ${{ inputs.service == 'vault' && 'hashicorp/vault@sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2' || '' }}
         env:
           VAULT_DEV_ROOT_TOKEN_ID: ${{ inputs.service == 'vault' && 'root' || '' }}
         ports:
@@ -118,7 +202,7 @@ jobs:
       # nothing here mounts a fixture file (service containers start before checkout). Exposed to the
       # test via BUSBAR_TEST_WIREMOCK_URL on the cargo test step below.
       wiremock:
-        image: ${{ inputs.service == 'wiremock' && 'wiremock/wiremock:3.9.2' || '' }}
+        image: ${{ inputs.service == 'wiremock' && 'wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176' || '' }}
         ports:
           - 8080:8080
       # Ready-made OpenLDAP — the directory auth-ldap binds against for its live e2e. PINNED. The
@@ -126,7 +210,7 @@ jobs:
       # tests/e2e.rs then seeds the test user/group over LDAP itself (ldap3) and retries the admin bind
       # until the container is ready. Exposed via BUSBAR_TEST_LDAP_URL on the cargo test step below.
       openldap:
-        image: ${{ inputs.service == 'openldap' && 'osixia/openldap:1.5.0' || '' }}
+        image: ${{ inputs.service == 'openldap' && 'osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28' || '' }}
         env:
           LDAP_ORGANISATION: ${{ inputs.service == 'openldap' && 'Example Org' || '' }}
           LDAP_DOMAIN: ${{ inputs.service == 'openldap' && 'example.org' || '' }}
@@ -139,17 +223,44 @@ jobs:
         with:
           path: plugin
 
+      # The ref was resolved to a COMMIT SHA by the `refs` job above (which also owns the
+      # `<number>/merge` fallback and the pinned-vs-moving decision). Checking out a sha rather than
+      # a branch name also removes a race: the two matrix legs cannot silently pick up different
+      # commits of the same branch if busbar is pushed mid-run.
+      - name: Announce which busbar this leg proves the plugin against
+        run: echo "This leg builds against busbar ${{ matrix.ref }} -- ${{ matrix.label }}."
+
       - name: Checkout busbar (sibling path dependency)
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
-          ref: ${{ inputs.busbar_ref }}
+          ref: ${{ matrix.ref }}
           path: busbarAI
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # `workspaces:` IS REQUIRED HERE and its absence was a silent, total cache miss. The action
+          # defaults to a single workspace at `$GITHUB_WORKSPACE`, and NOTHING is checked out there:
+          # both checkouts above use `path:`, so the two Cargo workspaces live at `plugin/` and
+          # `busbarAI/`. With no `workspaces:` the action looked for a Cargo.toml at the checkout
+          # root, did not find one, printed "could not find Cargo.toml", and carried on WITHOUT
+          # FAILING -- so every plugin repo rebuilt busbar and its whole dependency graph from
+          # scratch on every single run while the log said the cache step succeeded.
+          #
+          # Both entries are needed, not just the plugin: this workflow builds busbar-plugin-pack and
+          # a full `cargo build --release --bin busbar` out of busbarAI/, which is by far the larger
+          # of the two.
+          #
+          # The key must also separate the matrix legs. Two legs build DIFFERENT busbar commits into
+          # the same `busbarAI/target`; sharing one cache entry between them means each leg restores
+          # the other's artifacts and immediately invalidates them, which is worse than no cache.
+          workspaces: |
+            plugin
+            busbarAI
+          key: busbar-${{ matrix.ref }}
 
       - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
         # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
@@ -208,16 +319,27 @@ jobs:
           BUSBAR_TEST_LDAP_URL: ${{ inputs.service == 'openldap' && 'ldap://127.0.0.1:389' || '' }}
         run: cargo test
 
-      - name: cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)
-        if: inputs.extra_sibling_test_command != ''
-        working-directory: busbarAI
-        env:
-          BUSBAR_TEST_POSTGRES_URL: ${{ inputs.service == 'postgres' && 'postgres://busbar:busbar@localhost:5432/busbar_test' || '' }}
-          VALKEY_URL: ${{ inputs.service == 'valkey' && 'redis://localhost:6379/0' || '' }}
-          BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
-          BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
-          BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
-        run: ${{ inputs.extra_sibling_test_command }}
+      # REMOVED, and deliberately not replaced by a skippable equivalent: a step named
+      # `cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)`
+      # used to sit here behind `if: inputs.extra_sibling_test_command != ''`. NO CALLER IN THE
+      # FLEET EVER PASSED THAT INPUT, so on every run of every plugin repo the step reported
+      # `skipped` while the job reported `success` — a leg that read like the one place a plugin was
+      # exercised against the engine, and had never run once. That is the same "a skipped step reads
+      # as a passed step" shape the A2A conformance leg cost this release, and a gate nobody can
+      # tell apart from coverage is worse than no gate.
+      #
+      # It is gone rather than armed because there is nothing left for it to run: it existed to call
+      # `cargo test -p busbar-store-<backend>` against the monorepo's own copy of a store crate, and
+      # those crates no longer live in busbarAI — each backend's real logic is now in its own repo,
+      # covered by the `cargo test` step ABOVE (which cannot skip). The engine-side integration
+      # coverage this step pretended to give is what the FILE-DROP, INSTALL-AND-SERVE and
+      # EXECUTABLE-CONFIG steps below actually do — a real busbar boot with the real plugin — plus
+      # each store repo's own over-the-ABI e2e, whose `plugin_path()` PANICS under CI rather than
+      # skipping when the cdylib is missing.
+      #
+      # A repo that genuinely needs a second, service-backed job should declare it as its own job,
+      # the way store-valkey's `migrate-destructive-wipe-test` does: visible, named, and impossible
+      # to confuse with a skip.
 
       - name: Build busbar-plugin-pack (from the sibling checkout)
         working-directory: busbarAI
@@ -732,3 +854,44 @@ jobs:
             -H "Content-Type: application/json" -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')
           echo "$CHAT" | grep -q "ci-tokenx-marker" || { echo "chat via issued key failed: $CHAT" >&2; exit 1; }
           echo "OK: ${{ inputs.plugin_crate }} — POST /auth/token issued a working self-scoped key that drove a real chat-completion"
+
+  # ── Coverage (NON-GATING): upload this plugin's llvm-cov to Codecov. A SEPARATE job with
+  # `continue-on-error: true` so a coverage/build hiccup can NEVER affect the gating
+  # `build-test-signoff` job or any required check — it can only ever leave THIS job amber. Runs on
+  # push only (not every PR) to bound cost. Uses the org-level CODECOV_TOKEN, which the caller hands
+  # over via `secrets: inherit`; the slug is the calling plugin repo (`github.repository`). Mirrors
+  # busbar core's own coverage job (--ignore-run-fail: this REPORTS coverage, the matrix job is the
+  # real test gate).
+  coverage:
+    name: coverage (llvm-cov · codecov)
+    if: github.event_name == 'push'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the plugin
+        uses: actions/checkout@v7
+        with:
+          path: plugin
+      - name: Checkout busbar (sibling path dependency)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ inputs.busbar_ref }}
+          path: busbarAI
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugin
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Collect coverage (report only, not a re-gate)
+        working-directory: plugin
+        run: cargo llvm-cov --workspace --ignore-run-fail --lcov --output-path lcov.info
+      - name: Upload to Codecov (never fails the build)
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: plugin/lcov.info
+          slug: ${{ github.repository }}
+          fail_ci_if_error: false

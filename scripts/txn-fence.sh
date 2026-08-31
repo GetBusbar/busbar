@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # THE COMPILE FENCE for the config-mutation transaction guard.
 #
-# `crates/busbar/src/admin/v1/json/tests/txn_fence.rs` is a NEGATIVE test: a transaction body that
+# `crates/busbar-core/src/admin/v1/json/tests/txn_fence.rs` is a NEGATIVE test: a transaction body that
 # tries to reach a blocking store call (`store.list_keys()`, `txn.store()`) or to `.await` inside the
 # section. It must FAIL to compile. This script builds it and inverts the verdict: a clean build is a
 # FAILED fence, because it would mean `Txn` had grown a way to touch the store from the async thread
@@ -14,10 +14,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== txn compile fence (this build MUST fail) =="
-out=$(cargo check -p busbar --features txn-fence-red 2>&1) && status=0 || status=$?
+# Both packages: the fence module rides the core split (step 3.7) into busbar-core; naming both
+# sides keeps this a fence in either state of the tree.
+out=$(cargo check -p busbar -p busbar-core --features txn-fence-red 2>&1) && status=0 || status=$?
 
 if [ "$status" -eq 0 ]; then
-  echo "  FENCE BREACHED: crates/busbar/src/admin/v1/json/tests/txn_fence.rs COMPILED."
+  echo "  FENCE BREACHED: crates/busbar-core/src/admin/v1/json/tests/txn_fence.rs COMPILED."
   echo "  A transaction body must not be able to name a store, reach one through Txn, or .await."
   exit 1
 fi

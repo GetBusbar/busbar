@@ -1,0 +1,240 @@
+name: release-fleet
+
+# release-fleet.yml — THE downstream fan-out gate for a busbar release. ONE verdict across every
+# artifact and every downstream a release publishes: given a version, prove a user can, today, on any
+# supported platform, through any documented channel, get the release we said we shipped — AND that
+# every downstream (docker, helm, homebrew, terraform, install.sh, the marketing page, the
+# busbar-headroom bundle) is on that version and working.
+#
+# RECONCILIATION — ONE MECHANISM, NOT TWO. This is the `ci/release-verify-gate` branch's proven
+# `release gate` (54 checks, ledger/contract design, red on real 1.5.3 for #50 and #52), promoted
+# onto dev and made `workflow_call`-first so release.yml can REQUIRE it as its final job. The logic
+# still lives in scripts/release-gate/ so every block is dry-runnable on a laptop against any
+# published version; nothing about the detection changed. What this file adds over the branch:
+#   * `workflow_call` is the primary entry (release.yml calls it) — the branch already had it; kept.
+#   * a `fleet` job for the getbusbar/busbar-headroom BUNDLE (fleet-checks.sh): the one downstream
+#     the channel checks did not cover, rebuilt on the new busbar and asserted to BOOT.
+# Everything else — resolve/platform/docker/channels + the aggregating `release gate` verdict — is
+# the branch's design verbatim, because it was validated against real broken releases and this task
+# is to extend that thinking, not replace it.
+#
+# THE THREE PROPERTIES (each is a defect that already happened; see scripts/release-gate/lib.sh):
+#   1. NO CHECK MASKS ANOTHER — every check appends a ledger row and returns; one job aggregates.
+#   2. A CHECK THAT CANNOT RUN IS NOT A PASS — expected ids are DERIVED from the contract, so a
+#      missing row is `did not run` and RED; ZERO rows is RED by name (vacuous-green guard).
+#   3. FLAKE IS NEITHER A FALSE RED NOR A FALSE GREEN — bounded retries; the ONLY allowlisted skip
+#      is the Cloudflare-blocked getbusbar.com set, counted and named, never folded into pass.
+#
+# THE TERMINAL JOB NAME IS `release gate` — that is the required status check main's branch
+# protection carries. A skipped required check reads as PASSING on GitHub, which is why the gate job
+# is `if: always()` and `needs:` everything: a skipped/failed/cancelled leg reaches aggregation as
+# `did not run` rather than disappearing.
+
+on:
+  # release.yml's FINAL job calls this so a failing consumer check turns the RELEASE RUN red on the
+  # release's own status page, not in a separate run nobody is watching.
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  # On demand, without re-tagging: a release must be re-verifiable after a downstream is fixed.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to verify (e.g. 1.5.4, no leading v). Blank = current latest release."
+        required: false
+        type: string
+  # The moment a release becomes visible to users.
+  release:
+    types: [published]
+  # push/pull_request on main so `release gate` EXISTS as a status on main and can be REQUIRED — a
+  # gate that is not required is one people learn to ignore, which was the root cause of the six days.
+  # On a non-release run it verifies the CURRENT latest release, which is a real assertion (install.sh
+  # rots between releases via api.github.com rate limiting; a release-only trigger cannot catch that).
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Rot cover between releases, off the top of the hour (contended cron slots).
+  schedule:
+    - cron: "41 6 * * *"
+
+permissions:
+  contents: read
+  attestations: read
+  id-token: write
+
+concurrency:
+  group: release-fleet-${{ github.event.inputs.version || github.event.release.tag_name || inputs.version || github.ref }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  BUSBAR_REPO: ${{ github.repository }}
+
+jobs:
+  # ── Which version, and which platforms it owes (matrix DERIVED from the contract) ──────────────
+  resolve:
+    name: resolve (version + platform matrix)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      matrix: ${{ steps.r.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        env:
+          SUPPLIED: ${{ inputs.version || github.event.inputs.version || github.event.release.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          V="${SUPPLIED#v}"
+          if [ -z "$V" ]; then
+            # Resolve "the current latest release" the way an unauthenticated user's shell would (the
+            # plain 302 on github.com), NOT via api.github.com, which install:no-api-github forbids.
+            loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
+              "https://github.com/${BUSBAR_REPO}/releases/latest" || true)"
+            case "$loc" in
+              */releases/tag/v*) V="${loc##*/releases/tag/v}" ;;
+              *) echo "::error::could not resolve the latest release of ${BUSBAR_REPO} (redirect '${loc:-<none>}'). Every downstream assertion would be vacuous, so this fails."; exit 1 ;;
+            esac
+          fi
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::not a plain X.Y.Z version: '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          m="$(jq -c '[.targets[] | select(.published == true) | {target, runner}]' .github/release-targets.json)"
+          [ "$(printf '%s' "$m" | jq 'length')" -gt 0 ] \
+            || { echo "::error::.github/release-targets.json declares no published targets; the platform fan-out would be empty and the gate vacuous."; exit 1; }
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          echo "Verifying busbar ${V} across $(printf '%s' "$m" | jq 'length') platforms."
+
+  # ── The platform fan-out: the shipped bytes, EXECUTED, on a native runner. fail-fast:false is
+  # ── load-bearing — #52 broke one of five targets, and one broken leg must not take four legs'
+  # ── evidence with it.
+  platform:
+    name: platform (${{ matrix.target }})
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the shipped ${{ matrix.target }} artifact
+        shell: bash
+        env:
+          LEDGER: ${{ runner.temp }}/ledger-platform-${{ matrix.target }}.tsv
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/release-gate/platform-checks.sh "$VERSION" "$TARGET"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-platform-${{ matrix.target }}
+          path: ${{ runner.temp }}/ledger-platform-${{ matrix.target }}.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── The container fan-out (registries + the image actually boots, #50) ─────────────────────────
+  docker:
+    name: docker (registries + the image actually boots)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify both registries and boot the published image
+        env:
+          LEDGER: ${{ runner.temp }}/ledger-docker.tsv
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: scripts/release-gate/docker-checks.sh "$VERSION"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-docker
+          path: ${{ runner.temp }}/ledger-docker.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── Every other downstream channel (release · helm · terraform · brew · install.sh · site) ─────
+  channels:
+    name: channels (release · helm · terraform · brew · install.sh · site · plugins)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # helm:render is a hard FAIL if helm is absent (a defect in this workflow, not a release fact),
+      # so it is installed rather than probed for.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: Verify every downstream channel
+        env:
+          LEDGER: ${{ runner.temp }}/ledger-channels.tsv
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: scripts/release-gate/channel-checks.sh "$VERSION"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-channels
+          path: ${{ runner.temp }}/ledger-channels.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── The busbar-headroom BUNDLE, rebuilt on the new busbar and asserted to boot ─────────────────
+  fleet:
+    name: fleet (the busbar-headroom bundle rebuilt on this release)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the headroom bundle image
+        env:
+          LEDGER: ${{ runner.temp }}/ledger-fleet.tsv
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: scripts/release-gate/fleet-checks.sh "$VERSION"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-fleet
+          path: ${{ runner.temp }}/ledger-fleet.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ══ THE GATE — THIS JOB'S NAME (`release gate`) IS THE REQUIRED STATUS CHECK ════════════════════
+  # `if: always()` + needs everything: a needed job that FAILED, was CANCELLED, or was SKIPPED must
+  # still reach aggregation, because "the docker job never ran" has to be reportable as `did not run`
+  # rather than disappearing into a skipped gate (GitHub reports a skipped required check as PASSING —
+  # the exact vacuous green this file exists to eliminate).
+  gate:
+    name: release gate
+    needs: [resolve, platform, docker, channels, fleet]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # continue-on-error so a total absence of ledgers reaches gate.sh, which reports it as the
+      # vacuous run it is rather than failing the step with a message about artifacts.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ledgers
+          pattern: ledger-*
+          merge-multiple: true
+      - name: Aggregate every check and deliver the single verdict
+        env:
+          LEDGER_DIR: ${{ runner.temp }}/ledgers
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -uo pipefail
+          if [ -z "${VERSION:-}" ]; then
+            echo "::error title=release gate::the resolve job did not produce a version, so no check could run against anything. RED."
+          fi
+          scripts/release-gate/gate.sh "${VERSION:-}"

@@ -1,0 +1,26 @@
+# Codecov is INFORMATIONAL here, never a gate. The correctness gate is CI's `check` job; coverage is
+# an observation surfaced on the README badge and as per-PR context. So:
+#   * status.*.informational: true  → Codecov posts a check for visibility but it is NEVER "failing",
+#     so it can never block a PR or turn a branch red over a coverage delta.
+#   * comment: false                → no bot comments on PRs; the signal lives on the badge + the
+#     Codecov UI, keeping PRs seamless.
+#   * ignore                        → exclude test-only / example / non-product paths so the reported
+#     percentage reflects the shipped code, not fixtures and sample plugins.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment: false
+
+ignore:
+  - "crates/*-example-plugin"
+  - "crates/hook-test-plugin"
+  - "crates/plugin-testkit"
+  - "tests"
+  - "examples"
+  - "docs"

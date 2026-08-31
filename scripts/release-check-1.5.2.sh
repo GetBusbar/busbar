@@ -118,11 +118,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR; it does NOT echo the path. Capturing this in a command substitution ran it in a
+# SUBSHELL, so `TMP_DIRS+=` mutated a copy that died with the subshell and `cleanup` iterated an
+# EMPTY array — 27 working directories per full run, none of them ever deleted. Callers read
+# $NEW_TMPDIR immediately after the call.
 new_tmpdir() {
-  local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-1.5.2-gate.XXXXXX")"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-1.5.2-gate.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 wait_for_http() {
@@ -156,7 +158,7 @@ assert_yaml() {
     note "  per-phase \`busbar --validate\` (still rejects malformed YAML). Install PyYAML for fast-fail."
     return 0
   fi
-  local err; err="$(new_tmpdir)/yamlerr"
+  local err; new_tmpdir; err="$NEW_TMPDIR/yamlerr"
   # Concise diagnostic (not a Python traceback): print just the YAML scanner/parser message + mark.
   if ! python3 -c 'import sys,yaml
 try:
@@ -251,7 +253,7 @@ note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
 #    cache-by-pin phase can PROVE the second boot did not re-download (the served-request counter). ─
 start_plugin_registry() {
   local root="$1" port="$2" hits="$3"
-  local script; script="$(new_tmpdir)/registry.py"
+  local script; new_tmpdir; script="$NEW_TMPDIR/registry.py"
   cat >"$script" <<PYEOF
 import http.server, os, sys
 ROOT = ${root@Q}
@@ -274,13 +276,14 @@ PYEOF
   # actually talks to (otherwise the cache-by-pin "zero hits" assertion could pass VACUOUSLY).
   local sentinel="registry-sentinel-$$-${RANDOM}"
   echo ok >"${root}/${sentinel}"
-  # Redirect the SERVER's stdout/stderr to /dev/null: this function is captured via `$(...)` (see
-  # run_phase_a's `reg_pid="$(start_plugin_registry ...)"`), and a backgrounded serve_forever that
-  # inherits the command-substitution's stdout pipe holds it open forever → `$(...)` blocks on EOF
-  # for the full CI timeout. The function's own `echo "$pid"` below still reaches `$(...)`.
+  # Redirect the SERVER's stdout/stderr to /dev/null: a backgrounded serve_forever that inherits its
+  # caller's stdout pipe holds it open forever, which wedges any command substitution that ever wraps
+  # this launcher — the 2h31m CI hang scripts/release-script-lint.sh exists to prevent. That lint
+  # requires the redirect unconditionally, so it stays even though the launcher now sets
+  # $NEW_BG_PID instead of echoing (capturing it would have discarded the BG_PIDS append).
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!
-  BG_PIDS+=("$pid")
+  NEW_BG_PID=$!
+  BG_PIDS+=("$NEW_BG_PID")
   local waited=0
   until [ "$(curl -fsS "http://127.0.0.1:${port}/${sentinel}" 2>/dev/null)" = "ok" ]; do
     waited=$((waited + 1))
@@ -292,13 +295,12 @@ PYEOF
   done
   rm -f "${root}/${sentinel}"
   : >"$hits"   # discard the sentinel GET so the hits log starts clean for the caller's assertions
-  echo "$pid"
 }
 
 # ── Tiny mock Anthropic upstream (verbatim from release-check.sh's start_mock_upstream) ───────────
 start_mock_upstream() {
   local port="$1" marker="$2"
-  local script; script="$(new_tmpdir)/mock_upstream.py"
+  local script; new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json
 MARKER = ${marker@Q}
@@ -320,12 +322,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
 PYEOF
-  # stdout/stderr → /dev/null: this function is captured via `$(...)` (mock_pid="$(start_mock_upstream ...)");
-  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  # stdout/stderr → /dev/null: a backgrounded serve_forever inheriting its caller's stdout pipe holds
+  # it open forever and wedges any command substitution around this launcher — required
+  # unconditionally by scripts/release-script-lint.sh's GATE-HANG rule.
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!
-  BG_PIDS+=("$pid")
-  echo "$pid"
+  NEW_BG_PID=$!
+  BG_PIDS+=("$NEW_BG_PID")
 }
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -370,8 +372,8 @@ run_phase_a() {
   phase "Phase A: plugins.fetch — download → verify → stage → load (hermetic, real binary, local http)"
 
   local A_PORT=19151 A_LISTEN=19150
-  local srv_root; srv_root="$(new_tmpdir)"          # served tarballs live here
-  local hits; hits="$(new_tmpdir)/registry-hits.log"
+  local srv_root; new_tmpdir; srv_root="$NEW_TMPDIR"          # served tarballs live here
+  local hits; new_tmpdir; hits="$NEW_TMPDIR/registry-hits.log"
 
   # Pack the plugin ONCE, serve it, compute its REAL sha256 pin.
   local tarball="${srv_root}/busbar-hook-test.tar.gz"
@@ -381,7 +383,7 @@ run_phase_a() {
   ok "packed + pinned: $(basename "$tarball") sha256=${PIN}"
 
   echo "  starting local plugin registry (request-logging http server) on 127.0.0.1:${A_PORT}..."
-  local reg_pid; reg_pid="$(start_plugin_registry "$srv_root" "$A_PORT" "$hits")"
+  local reg_pid; start_plugin_registry "$srv_root" "$A_PORT" "$hits"; reg_pid="$NEW_BG_PID"
   ok "registry up (pid ${reg_pid}), serving ${srv_root}"
 
   local URL="http://127.0.0.1:${A_PORT}/busbar-hook-test.tar.gz"
@@ -411,7 +413,7 @@ models:
 EOF
     assert_yaml "$out" "Phase A plugins.fetch config"
   }
-  local PROVIDERS; PROVIDERS="$(new_tmpdir)/providers.yaml"
+  local PROVIDERS; new_tmpdir; PROVIDERS="$NEW_TMPDIR/providers.yaml"
   cat >"$PROVIDERS" <<EOF
 mock:
   protocol: anthropic
@@ -419,22 +421,22 @@ mock:
 EOF
   assert_yaml "$PROVIDERS" "Phase A providers"
 
-  boot_fetch() {  # $1 config, $2 pluginsdir (for log path). echoes pid.
+  boot_fetch() {  # $1 config, $2 log path. Sets $NEW_BG_PID (see new_tmpdir for why not an echo).
     local cfg="$1" log="$2"
     BUSBAR_CONFIG="$cfg" BUSBAR_PROVIDERS="$PROVIDERS" MOCK_KEY=unused RUST_LOG=info \
       "$BUSBAR_BIN" >"$log" 2>&1 &
-    local pid=$!; BG_PIDS+=("$pid"); echo "$pid"
+    NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
   }
 
   # ---- A.1 HAPPY PATH: fetched → verified → staged → loaded ----
   echo
   echo "  A.1 happy path: correct pin, empty dir → download + verify + load"
-  local d1; d1="$(new_tmpdir)/plugins"
-  local c1; c1="$(new_tmpdir)/config.yaml"
+  local d1; new_tmpdir; d1="$NEW_TMPDIR/plugins"
+  local c1; new_tmpdir; c1="$NEW_TMPDIR/config.yaml"
   write_fetch_config "$d1" "    - url: \"${URL}\"
       sha256: \"${PIN}\"" "$c1"
-  local log1; log1="$(new_tmpdir)/busbar.log"
-  local p1; p1="$(boot_fetch "$c1" "$log1")"
+  local log1; new_tmpdir; log1="$NEW_TMPDIR/busbar.log"
+  local p1; boot_fetch "$c1" "$log1"; p1="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${A_LISTEN}/healthz" 30
   ok "busbar booted (pid ${p1})"
   grep -q "plugins.fetch: downloaded + verified" "$log1" \
@@ -452,8 +454,8 @@ EOF
   echo
   echo "  A.2 cache-by-pin: artifact already present + matching pin → second boot must NOT re-download"
   : >"$hits"   # reset the registry hit log; the artifact is already in ${d1} from A.1
-  local c2="$c1" log2; log2="$(new_tmpdir)/busbar.log"
-  local p2; p2="$(boot_fetch "$c2" "$log2")"
+  local c2="$c1" log2; new_tmpdir; log2="$NEW_TMPDIR/busbar.log"
+  local p2; boot_fetch "$c2" "$log2"; p2="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${A_LISTEN}/healthz" 30
   grep -q "plugins.fetch: cached (pin match, no download)" "$log2" \
     || { echo "  A.2: boot log missing 'cached (pin match, no download)'" >&2; cat "$log2" >&2; exit 1; }
@@ -468,13 +470,13 @@ EOF
   # ---- A.3 WRONG PIN: fetch REJECTED, file never written, boot FATAL ----
   echo
   echo "  A.3 wrong pin: a bogus sha256 → fetch REJECTED, artifact never written, boot FATAL"
-  local d3; d3="$(new_tmpdir)/plugins"
-  local c3; c3="$(new_tmpdir)/config.yaml"
+  local d3; new_tmpdir; d3="$NEW_TMPDIR/plugins"
+  local c3; new_tmpdir; c3="$NEW_TMPDIR/config.yaml"
   local WRONG="0000000000000000000000000000000000000000000000000000000000000000"
   write_fetch_config "$d3" "    - url: \"${URL}\"
       sha256: \"${WRONG}\"" "$c3"
-  local log3; log3="$(new_tmpdir)/busbar.log"
-  local p3; p3="$(boot_fetch "$c3" "$log3")"
+  local log3; new_tmpdir; log3="$NEW_TMPDIR/busbar.log"
+  local p3; boot_fetch "$c3" "$log3"; p3="$NEW_BG_PID"
   local st3; st3="$(wait_up_or_dead "http://127.0.0.1:${A_LISTEN}/healthz" "$p3" 30)"
   [ "$st3" = "down" ] || { echo "  A.3: busbar should have DIED on a wrong-pin boot (got: ${st3})" >&2; cat "$log3" >&2; exit 1; }
   grep -Eiq "mismatch|plugins.fetch failed" "$log3" \
@@ -488,12 +490,12 @@ EOF
   echo
   echo "  A.4 boot-miss: unreachable url + no cached copy → boot FATAL"
   local dead_port=19199   # nothing is listening here
-  local d4; d4="$(new_tmpdir)/plugins"
-  local c4; c4="$(new_tmpdir)/config.yaml"
+  local d4; new_tmpdir; d4="$NEW_TMPDIR/plugins"
+  local c4; new_tmpdir; c4="$NEW_TMPDIR/config.yaml"
   write_fetch_config "$d4" "    - url: \"http://127.0.0.1:${dead_port}/busbar-hook-test.tar.gz\"
       sha256: \"${PIN}\"" "$c4"
-  local log4; log4="$(new_tmpdir)/busbar.log"
-  local p4; p4="$(boot_fetch "$c4" "$log4")"
+  local log4; new_tmpdir; log4="$NEW_TMPDIR/busbar.log"
+  local p4; boot_fetch "$c4" "$log4"; p4="$NEW_BG_PID"
   local st4; st4="$(wait_up_or_dead "http://127.0.0.1:${A_LISTEN}/healthz" "$p4" 30)"
   [ "$st4" = "down" ] || { echo "  A.4: busbar should have DIED on an unreachable-fetch boot (got: ${st4})" >&2; cat "$log4" >&2; exit 1; }
   grep -Eiq "download failed|plugins.fetch failed|GET .*: " "$log4" \
@@ -504,11 +506,11 @@ EOF
   # ---- A.5 ENV SOURCE: {env: VAR} where VAR holds the url ----
   echo
   echo "  A.5 env source: fetch { env: BUSBAR_GATE_FETCH_URL } where the VAR holds the url"
-  local d5; d5="$(new_tmpdir)/plugins"
-  local c5; c5="$(new_tmpdir)/config.yaml"
+  local d5; new_tmpdir; d5="$NEW_TMPDIR/plugins"
+  local c5; new_tmpdir; c5="$NEW_TMPDIR/config.yaml"
   # The env-var value carries url@sha256 (the split-on-last-'@' form fetch_spec_from parses).
   write_fetch_config "$d5" "    - env: BUSBAR_GATE_FETCH_URL" "$c5"
-  local log5; log5="$(new_tmpdir)/busbar.log"
+  local log5; new_tmpdir; log5="$NEW_TMPDIR/busbar.log"
   BUSBAR_CONFIG="$c5" BUSBAR_PROVIDERS="$PROVIDERS" MOCK_KEY=unused RUST_LOG=info \
     BUSBAR_GATE_FETCH_URL="${URL}@${PIN}" \
     "$BUSBAR_BIN" >"$log5" 2>&1 &
@@ -532,7 +534,7 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }        # stdin (binar
 
 OIDC_WORK=""
 oidc_setup_keys() {
-  OIDC_WORK="$(new_tmpdir)"
+  new_tmpdir; OIDC_WORK="$NEW_TMPDIR"
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${OIDC_WORK}/rsa.pem" 2>/dev/null
   # JWKS n = base64url(modulus bytes); e = AQAB (65537, the openssl default public exponent).
   local mod_hex n
@@ -583,11 +585,12 @@ srv = http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), H)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()
 PYEOF
-  # stdout/stderr → /dev/null: this function is captured via `$(...)` (jwks_pid="$(oidc_start_https_jwks ...)");
-  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  # stdout/stderr → /dev/null: a backgrounded serve_forever that inherits its caller's stdout keeps
+  # that pipe open for its whole life, which is the 2h31m CI hang this gate is named for in
+  # scripts/release-script-lint.sh. Kept unconditionally even though this launcher is no longer
+  # captured, exactly as that lint rule requires.
   python3 "$script" >/dev/null 2>&1 &
-  local pid=$!; BG_PIDS+=("$pid")
-  echo "$pid"
+  NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
 }
 
 # Build + pack the sibling auth-oidc plugin into $1/plugins as alias `oidc`. Echoes 0 on success,
@@ -756,9 +759,9 @@ run_tokenx_oidc_post() {
 
   # 2) Build the config exactly as an operator would for headless token exchange.
   local B_LISTEN=19160 B_ADMIN=19161 B_MOCK=19162 B_JWKS=19163
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   local ISS="https://idp.gate.local/" AUD="gate-audience" SUB="alice"
-  local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$B_JWKS")"
+  local jwks_pid; oidc_start_https_jwks "$B_JWKS"; jwks_pid="$NEW_BG_PID"
   local JWKS_URL="https://127.0.0.1:${B_JWKS}/jwks.json"
   # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces, so block-scalar CONTENT must be
   # indented MORE than the key (>=12) on every line, or YAML parses the PEM lines as new mapping keys.
@@ -854,7 +857,7 @@ EOF
 
   if [ "$HAVE_OIDC" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
     echo "  booting busbar + driving POST /auth/token with the minted JWT..."
-    local mock_pid; mock_pid="$(start_mock_upstream "$B_MOCK" "gate-B-marker")"
+    local mock_pid; start_mock_upstream "$B_MOCK" "gate-B-marker"; mock_pid="$NEW_BG_PID"
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
       "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
@@ -949,7 +952,7 @@ run_tokenx_github_get() {
     return 0
   fi
 
-  local work pdir; work="$(new_tmpdir)"; pdir="${work}/plugins"
+  local work pdir; new_tmpdir; work="$NEW_TMPDIR"; pdir="${work}/plugins"
   pack_login_plugin "$plugin_dir" busbar-auth-github-plugin github busbar_auth_github_plugin "$pdir" \
     || { echo "  github: pack failed" >&2; exit 1; }
   ok "packed sibling auth-github plugin as alias 'github'"
@@ -965,7 +968,7 @@ run_tokenx_github_get() {
     || { echo "  WireMock did not become ready" >&2; docker logs "$cid" >&2 || true; exit 1; }
   ok "WireMock up; github stubs loaded"
 
-  local mock_pid; mock_pid="$(start_mock_upstream "$MOCK" "gate-github-marker")"
+  local mock_pid; start_mock_upstream "$MOCK" "gate-github-marker"; mock_pid="$NEW_BG_PID"
   "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
 
   cat >"${work}/config.yaml" <<EOF
@@ -1099,7 +1102,7 @@ run_tokenx_ldap_form() {
     return 0
   fi
 
-  local work pdir; work="$(new_tmpdir)"; pdir="${work}/plugins"
+  local work pdir; new_tmpdir; work="$NEW_TMPDIR"; pdir="${work}/plugins"
   pack_login_plugin "$plugin_dir" busbar-auth-ldap-plugin ldap busbar_auth_ldap_plugin "$pdir" \
     || { echo "  ldap: pack failed" >&2; exit 1; }
   ok "packed sibling auth-ldap plugin as alias 'ldap'"
@@ -1128,7 +1131,7 @@ run_tokenx_ldap_form() {
   done
   ok "OpenLDAP up + seeded (uid=alice resolvable; member of cn=admins)"
 
-  local mock_pid; mock_pid="$(start_mock_upstream "$MOCK" "gate-ldap-marker")"
+  local mock_pid; start_mock_upstream "$MOCK" "gate-ldap-marker"; mock_pid="$NEW_BG_PID"
   "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
 
   cat >"${work}/config.yaml" <<EOF
@@ -1262,7 +1265,7 @@ run_phase_c() {
   # ---- Posture (c): admin_auth: [] → OPEN admin. Fully RUNS here (no OIDC needed). ----
   echo
   echo "  Posture (c): admin_auth: [] → an UNAUTHENTICATED caller can mutate; the open-relay banner is loud"
-  local wc; wc="$(new_tmpdir)"
+  local wc; new_tmpdir; wc="$NEW_TMPDIR"
   "$BUSBAR_BIN" --generate-signing-key >"${wc}/signing.key" 2>/dev/null
   cat >"${wc}/config.yaml" <<EOF
 listen: "127.0.0.1:${C_LISTEN}"
@@ -1327,7 +1330,7 @@ EOF
   oidc_setup_keys
   local C2_LISTEN=19180 C2_ADMIN=19181 C2_JWKS=19183
   local ISS="https://idp.gate.local/" AUD="gate-admin-audience"
-  local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$C2_JWKS")"
+  local jwks_pid; oidc_start_https_jwks "$C2_JWKS"; jwks_pid="$NEW_BG_PID"
   local JWKS_URL="https://127.0.0.1:${C2_JWKS}/jwks.json"
   # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces; block-scalar CONTENT must be
   # indented STRICTLY MORE than the key (>=12), else YAML reads the PEM lines as new mapping keys.
@@ -1377,7 +1380,7 @@ EOF
     # (the config is not complete until then) — see the assert_yaml calls on ${wa}/${wb} below.
   }
 
-  local pdir_a; pdir_a="$(new_tmpdir)/plugins"
+  local pdir_a; new_tmpdir; pdir_a="$NEW_TMPDIR/plugins"
   if oidc_pack_plugin "$pdir_a"; then
     HAVE_OIDC_C=1
     ok "packed sibling auth-oidc plugin as alias 'oidc' for the admin-plane postures"
@@ -1387,7 +1390,7 @@ EOF
   fi
 
   if [ "$HAVE_OIDC_C" = "1" ]; then
-    local wa; wa="$(new_tmpdir)"; write_admin_oidc_config "full" "$wa"
+    local wa; new_tmpdir; wa="$NEW_TMPDIR"; write_admin_oidc_config "full" "$wa"
     # write_admin_oidc_config emits no plugins block, so append one pointing at the packed oidc plugin.
     cat >>"${wa}/config.yaml" <<EOF
 plugins:
@@ -1403,7 +1406,7 @@ EOF
       "$BUSBAR_BIN" --validate
     ok "admin-plane OIDC config (full) validates: admin_auth[oidc] + role_bindings.oidc.admins.admin_scope"
 
-    local wb; wb="$(new_tmpdir)"; write_admin_oidc_config "read-only" "$wb"
+    local wb; new_tmpdir; wb="$NEW_TMPDIR"; write_admin_oidc_config "read-only" "$wb"
     cat >>"${wb}/config.yaml" <<EOF
 plugins:
   enabled: true
@@ -1426,12 +1429,16 @@ EOF
   jwt_admin="$(oidc_mint_jwt "$ISS" "$AUD" "admin-user" '["admins"]' "$exp")"
 
   if [ "$HAVE_OIDC_C" = "1" ] && [ "${BUSBAR_1_5_2_RUN_OIDC_BOOT:-0}" = "1" ]; then
+    # Sets $MATRIX_MUT_CODE rather than echoing it: captured in a command substitution, the
+    # `BG_PIDS+=` below lands in a SUBSHELL and is lost, so the `exit 1` assertion paths (which skip
+    # the inline kill at the end) leave a busbar holding ${C2_LISTEN} with nothing tracking it.
     drive_matrix() {  # $1 workdir (full|read-only config), $2 expect_mutation (200|403)
       local w="$1" expect="$2"
       BUSBAR_CONFIG="${w}/config.yaml" BUSBAR_PROVIDERS="${w}/providers.yaml" \
         MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
         "$BUSBAR_BIN" >"${w}/busbar.log" 2>&1 &
-      local pid=$!; BG_PIDS+=("$pid")
+      NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
+      local pid="$NEW_BG_PID"
       wait_for_http "http://127.0.0.1:${C2_LISTEN}/healthz" 30
       # READ must always succeed for a bound admin identity.
       local read_code
@@ -1447,13 +1454,13 @@ EOF
         200) { [ "$mut_code" = "200" ] || [ "$mut_code" = "201" ]; } || { echo "  matrix(full): mutation ${mut_code}, expected 200/201" >&2; exit 1; } ;;
         403) [ "$mut_code" = "403" ] || { echo "  matrix(read-only): mutation ${mut_code}, expected 403" >&2; exit 1; } ;;
       esac
-      echo "$mut_code"
+      MATRIX_MUT_CODE="$mut_code"
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
     }
     local full_code ro_code
-    full_code="$(drive_matrix "$wa" 200)"
+    drive_matrix "$wa" 200; full_code="$MATRIX_MUT_CODE"
     ok "posture (a) FULL: GET /keys 200 AND POST /keys ${full_code} (mutation ALLOWED)"
-    ro_code="$(drive_matrix "$wb" 403)"
+    drive_matrix "$wb" 403; ro_code="$MATRIX_MUT_CODE"
     ok "posture (b) READ-ONLY: GET /keys 200 BUT POST /keys ${ro_code} (mutation FORBIDDEN on the SAME endpoint)"
     ok "matrix proven: full CAN do what read-only CANNOT, on the identical endpoint"
   else

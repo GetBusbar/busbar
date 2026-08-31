@@ -29,7 +29,7 @@ OUT="$HERE/mutants-report/${LABEL}"
 # Scope: a glob/path list passed to `cargo mutants --file`. Whole-workspace is not viable (a smaller
 # crate alone clocked 2,318 mutants x ~60s, 38h serial) — always scope to the files the change
 # actually touched. Space-separated globs, e.g.:
-#   MUTANT_FILES="crates/busbar/src/admin/v1/service.rs crates/busbar/src/governance/*.rs" ./scripts/run-mutants-ec2.sh
+#   MUTANT_FILES="crates/busbar-core/src/admin/v1/service.rs crates/busbar-core/src/governance/*.rs" ./scripts/run-mutants-ec2.sh
 FILES="${MUTANT_FILES:-}"
 SKIP_TESTS="${MUTANT_SKIP_TESTS:-declared_error_set_is_exactly_what_the_handlers_emit}"
 

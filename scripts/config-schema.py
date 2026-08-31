@@ -7,11 +7,13 @@
 # Two jobs, one file (no external deps; stdlib only, so it runs on the same bare runner every other
 # scripts/*-lint.sh does):
 #
-#   gen <config-src-dir>            Emit a DETERMINISTIC structural fingerprint of the config surface
-#                                   (every serde-`Deserialize` struct/enum under crates/busbar/src/config)
-#                                   as canonical pretty JSON on stdout. This is the "schema snapshot"
-#                                   the drift guard freezes — the config-grammar analogue of the
-#                                   committed openapi.json the admin API drift-guards against.
+#   gen [src ...]                   Emit a DETERMINISTIC structural fingerprint of the config surface
+#                                   (every serde-`Deserialize` struct/enum in the TRACKED SOURCE SET,
+#                                   `SOURCES` below) as canonical pretty JSON on stdout. This is the
+#                                   "schema snapshot" the drift guard freezes — the config-grammar
+#                                   analogue of the committed openapi.json the admin API
+#                                   drift-guards against. With no arguments the tracked set is used;
+#                                   explicit paths (dirs or files) are for the gate's self-test.
 #
 #   classify <baseline.json> <fresh.json>
 #                                   Walk baseline-vs-fresh fingerprint trees and classify every delta
@@ -31,6 +33,136 @@ import json
 import re
 import sys
 from pathlib import Path
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE TRACKED SOURCE SET — every file whose serde surface IS config grammar.
+#
+# This list is the gate's reach, and it used to be a single `crates/busbar-core/src/config/*.rs` glob.
+# That glob is where a config type HAPPENS to live, not what a config type IS, and two of the most
+# load-bearing grammars in the product sat outside it with ZERO fingerprint:
+#
+#   * `SecretRef` (crates/secret-ref/src/lib.rs) is the grammar of EVERY secret reference in the
+#     config: the canonical `{ module, settings }` form and the `{ env: … }` / `{ file: … }` sugar.
+#     It lives in its own crate precisely so plugins and schema tooling can reach it, which is what
+#     put it outside a glob anchored on the busbar crate's config module.
+#   * `UpstreamCreds` (crates/busbar-core/src/auth/mod.rs) is the `upstream_credentials:` key's value
+#     grammar. It is deserialized straight out of the config document; it lives beside the
+#     middleware that consumes it.
+#   * `crates/busbar-a2a/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
+#     four pin mechanisms, and the leased outbound credential. It was outside the set for the same
+#     reason the two above were: it lives with the plane that consumes it rather than under the
+#     config module. The snapshot recorded `agents: crate::a2a::config::AgentsCfg` and stopped
+#     there, so every key an operator writes under an agent had NO fingerprint at all and a
+#     BREAKING change to that grammar passed the additive-only check silently. Only the two files
+#     that declare config types are tracked; the rest of the plane is runtime.
+#   * `crates/busbar-mcp/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
+#     MCP server's endpoint, its pin, its allowed tools/prompts/resources/templates, its token
+#     exchange, its request grants — and it was outside the set for the same reason `a2a/` was
+#     (#60). The snapshot recorded `tools: crate::mcp::config::ToolsCfg` and stopped, so retyping
+#     `tools.<server>.url` or dropping a `transport:` value rendered ZERO delta and passed green.
+#     Adding it required resolving a bare-name COLLISION first — see `collide()` in `extract`.
+#
+# A path is a directory (every `*.rs` directly inside it) or a single file. A path that does not
+# exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
+# un-freeze its grammar, which is the exact failure this gate exists to prevent.
+# Core split (step 3.7): every tracked grammar source lives in the engine library crate root.
+CORE = "crates/busbar-core/src"
+
+
+def plane_dir(plane: str) -> str:
+    """Locate a plane's source root wherever the tree currently keeps it.
+
+    1.6.0's owner ruling R-E makes MCP and A2A PLUGIN CRATES — a crate depending on `busbar-api`
+    alone, which `busbar-core` depends on — so `crates/busbar-core/src/{mcp,a2a}` is a fact about
+    today's tree, not a permanent address. The two plane entries in SOURCES are the ENTIRE grammar
+    of the `tools:` and `agents:` sections; a hardcoded path is a path that goes stale on the day
+    the plane moves, and this gate's own SOURCES comment already records what happens when a
+    grammar drops out of the set — it silently un-freezes.
+
+    So the root is FOUND, not spelled: the one directory named after the plane anywhere under
+    `crates/`. None is a hard error (the grammar left the set — the exact hole `resolve_sources`
+    refuses); more than one is also a hard error, because two directories claiming to be one plane
+    means the gate cannot say whose grammar it froze. Both are raised with the remedy in the
+    message. Nothing about WHICH files are tracked changes — only how their address is obtained.
+    """
+    roots = sorted(
+        str(p)
+        for p in Path("crates").glob(f"*/**/{plane}")
+        if p.is_dir() and "target" not in p.parts
+    )
+    if len(roots) == 1:
+        return roots[0]
+    if not roots:
+        raise SystemExit(
+            f"config-schema: no directory named {plane!r} under crates/. That plane's config "
+            "grammar is the whole of its config section and it has just left the tracked set. "
+            "Point plane_dir() at its new home; do not delete the SOURCES entries."
+        )
+    raise SystemExit(
+        f"config-schema: {plane!r} resolves to {len(roots)} directories ({', '.join(roots)}). "
+        "Two homes for one plane means this gate cannot say whose grammar it froze."
+    )
+
+
+MCP = plane_dir("mcp")
+A2A = plane_dir("a2a")
+
+SOURCES = [
+    f"{CORE}/config",
+    "crates/secret-ref/src/lib.rs",
+    # `UpstreamCreds` — the `upstream_credentials:` key's value grammar — moved to `busbar-api` (the
+    # neutral contracts crate the plane crates name) in 1.6.0's plane extraction, exactly as
+    # `SecretRef` did to `secret-ref`. Track it at its new home so its `Own`/`Passthrough` grammar
+    # stays fingerprinted rather than degrading to an opaque string the moment it left core.
+    "crates/api/src/auth.rs",
+    f"{CORE}/auth/mod.rs",
+    f"{A2A}/config.rs",
+    # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,
+    # because the alternative is the hole this list already closed once for `a2a/`: the type name
+    # would appear in the snapshot as an opaque string and every field inside it — including the
+    # `default_grant` CEILING that decides what a self-registered client may ever hold — would be
+    # free to change without the additive-only gate noticing.
+    f"{CORE}/oauth_as/config.rs",
+    f"{A2A}/creds.rs",
+    f"{MCP}/config.rs",
+    # `tool_pools:` / `agent_pools:` — the failover grammar, which is CORE's rather than either
+    # plane's (one type, two sections). Added WITH the block for the reason stated for `oauth_as:`
+    # above: `config/mod.rs` names the type, so without this line `CandidatePoolCfg` would appear in
+    # the snapshot as an opaque string and `members:`/`repeatable:` — the latter being the SAFETY
+    # declaration that decides whether an operation with effects may be performed twice — would be
+    # free to change without the additive-only gate noticing.
+    f"{CORE}/failover/mod.rs",
+]
+
+
+def resolve_sources(paths):
+    """Expand the tracked source set to a deduplicated, sorted list of .rs files.
+
+    A missing path, a directory holding no `*.rs`, or a non-`.rs` file is a hard error. There is no
+    "the file moved, so the gate quietly stopped covering it" path."""
+    files = []
+    for raw in paths:
+        p = Path(raw)
+        if not p.exists():
+            raise SystemExit(
+                f"config-schema: tracked source {raw!r} does not exist. The config-grammar gate "
+                "covers a FIXED set of sources; a vanished one is a coverage hole, not a skip. If "
+                "the file moved, update SOURCES in scripts/config-schema.py."
+            )
+        if p.is_dir():
+            found = sorted(p.glob("*.rs"))
+            if not found:
+                raise SystemExit(
+                    f"config-schema: tracked source directory {raw!r} contains no *.rs files"
+                )
+            files.extend(found)
+        else:
+            if p.suffix != ".rs":
+                raise SystemExit(f"config-schema: tracked source {raw!r} is not a .rs file")
+            files.append(p)
+    # Stable order, no double-counting when a file is also reached through its directory.
+    return sorted(set(files), key=lambda p: str(p))
+
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # Source extraction: strip comments, then brace-match out every `#[derive(..Deserialize..)] struct|enum`.
@@ -112,6 +244,25 @@ def match_block(src: str, open_idx: int) -> int:
     return n
 
 
+CFG_TEST_MOD_RE = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{")
+
+
+def strip_cfg_test_mods(src: str) -> str:
+    """Blank out `#[cfg(test)] mod … { … }` bodies (length-preserving, like strip_comments).
+
+    A test-only `#[derive(Deserialize)]` fixture is NOT config grammar, and the tracked source set
+    now includes files that carry inline test modules. Left in, a fixture type would be frozen into
+    the grammar, and — because the extractor is last-definition-wins — a fixture sharing a real
+    type's name would REPLACE the real grammar in the fingerprint. Neither is acceptable."""
+    while True:
+        m = CFG_TEST_MOD_RE.search(src)
+        if not m:
+            return src
+        end = match_block(src, m.end() - 1)
+        blanked = "".join("\n" if c == "\n" else " " for c in src[m.start():end])
+        src = src[: m.start()] + blanked + src[end:]
+
+
 # An attribute cluster (`#[...]` lines, possibly several) immediately preceding a `struct`/`enum`.
 ITEM_RE = re.compile(
     r"(?P<attrs>(?:^[ \t]*#\[[^\n]*\]\s*)*)"
@@ -135,8 +286,14 @@ ALIAS_RE = re.compile(
     re.MULTILINE,
 )
 
-# rename_all mappings we honor (the ones config types actually use).
-_RENAME_ALL = {
+# rename_all mappings, in serde's own two flavours.
+#
+# serde applies a rename rule to the IDENT, and a field ident is `snake_case` while a variant ident
+# is `PascalCase` — so the SAME rule name is a different transform on each. `kebab-case` on the
+# variant `LeastBad` is `least-bad`, but on the field `max_tokens` it is `max-tokens`, and the
+# PascalCase-shaped transform would leave `max_tokens` untouched. Getting that wrong does not
+# produce a loud error, it produces a fingerprint that quietly disagrees with the parser.
+_VARIANT_RENAME_ALL = {
     "snake_case": lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower(),
     "kebab-case": lambda s: re.sub(r"(?<!^)(?=[A-Z])", "-", s).lower(),
     "lowercase": lambda s: s.lower(),
@@ -144,6 +301,20 @@ _RENAME_ALL = {
     "camelCase": lambda s: s[:1].lower() + s[1:],
     "PascalCase": lambda s: s,
     "SCREAMING_SNAKE_CASE": lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).upper(),
+    "SCREAMING-KEBAB-CASE": lambda s: re.sub(r"(?<!^)(?=[A-Z])", "-", s).upper(),
+}
+
+_FIELD_RENAME_ALL = {
+    "snake_case": lambda s: s,
+    "kebab-case": lambda s: s.replace("_", "-"),
+    "lowercase": lambda s: s.lower(),
+    "UPPERCASE": lambda s: s.upper(),
+    "camelCase": lambda s: "".join(
+        w if i == 0 else w.capitalize() for i, w in enumerate(s.split("_"))
+    ),
+    "PascalCase": lambda s: "".join(w.capitalize() for w in s.split("_")),
+    "SCREAMING_SNAKE_CASE": lambda s: s.upper(),
+    "SCREAMING-KEBAB-CASE": lambda s: s.replace("_", "-").upper(),
 }
 
 
@@ -156,14 +327,34 @@ def container_serde(attrs: str) -> dict:
     m = re.search(r'#\[serde\([^)]*rename_all\s*=\s*"([^"]+)"', attrs)
     if m:
         rename_all = m.group(1)
-    deny = "deny_unknown_fields" in attrs
-    transparent = "transparent" in attrs
+    deny = bool(re.search(r"#\[serde\([^)]*\bdeny_unknown_fields\b", attrs))
+    transparent = bool(re.search(r"#\[serde\([^)]*\btransparent\b", attrs))
     return {
         "is_de": is_de,
         "rename_all": rename_all,
         "deny_unknown_fields": deny,
         "transparent": transparent,
     }
+
+
+def rename_fn_for(csd: dict, ident: str):
+    """The container-level `rename_all` transform for `ident` in ("field", "variant").
+
+    An unknown value is a hard error rather than a silent identity fallback: `rename_all` rewrites
+    every wire key on the container, so quietly not applying one would report a grammar the parser
+    does not accept — a fingerprint that lies is worse than no fingerprint."""
+    ra = csd.get("rename_all")
+    if ra is None:
+        return lambda s: s
+    table = _FIELD_RENAME_ALL if ident == "field" else _VARIANT_RENAME_ALL
+    fn = table.get(ra)
+    if fn is None:
+        raise SystemExit(
+            f"config-schema: unsupported #[serde(rename_all = {ra!r})] on a {ident}. Add it to the "
+            "rename tables in this file — an "
+            "unhandled rename_all would fingerprint wire keys the parser does not actually accept."
+        )
+    return fn
 
 
 def field_serde(attrs: str):
@@ -178,6 +369,54 @@ def field_serde(attrs: str):
     )
     flatten = bool(re.search(r"#\[serde\([^)]*\bflatten\b", attrs))
     return rename, has_default, skip, flatten
+
+
+# An IN-TREE module path: `crate::…`, `super::…`, `self::…`, or a `busbar…` crate root. These are
+# the paths that MOVE when a type moves; `std::`, `indexmap::`, `serde_json::` and friends are
+# foreign and their qualification is part of their identity, so they are left exactly as written.
+IN_TREE_PATH = re.compile(
+    r"\b(?:crate|super|self|busbar[a-z0-9_]*)(?:::[A-Za-z_][A-Za-z0-9_]*)+\b"
+)
+
+
+def strip_in_tree_paths(t: str) -> str:
+    """Reduce every IN-TREE module path in a type expression to its final segment.
+
+    This is a COMPARISON aid for the classifier, never a change to what `gen` records. The snapshot
+    keeps the path exactly as the source writes it — that is what makes it readable and what the
+    drift guard freezes. What this function answers is a narrower question: are these two type
+    expressions THE SAME TYPE, differing only in where it lives?
+    """
+    return IN_TREE_PATH.sub(lambda m: m.group(0).rsplit("::", 1)[1], t)
+
+
+def relocated_only(before, after) -> bool:
+    """True when two type expressions name the same type and differ ONLY in module path.
+
+    WHY THE GATE NEEDS THIS. 1.6.0's owner ruling R-E makes the MCP and A2A planes plugin CRATES, at
+    which point `agents: crate::a2a::config::AgentsCfg` is written
+    `agents: busbar_proto_a2a::config::AgentsCfg` — the same type, the same fields, the same
+    operator-visible grammar, in a new crate. Read as a string that is a RETYPE, and the
+    additive-only gate would go RED on a change that alters no config grammar at all. A gate that
+    reds on a pure relocation teaches reviewers to wave it through, which is how a stability gate
+    dies; that is the failure this rule prevents, and it prevents it WITHOUT touching the snapshot,
+    so no artefact has to be laundered through a transition.
+
+    IT IS NOT A PASS, IT IS A THIRD VERDICT. A relocation is printed on its own line, loudly, every
+    run. The fingerprint's own type map is keyed by the BARE name already (see `extract`) and
+    `collide()` makes a duplicate bare name a HARD ERROR across the tracked set, so inside this gate
+    the bare name IS the type's identity — which is exactly why this comparison is sound and why
+    retyping `agents:` to any OTHER type still reads as BREAKING (the bare names differ).
+
+    NOTHING ELSE IS RELAXED: foreign paths are left alone, so
+    `std::collections::BTreeMap<String, CandidatePoolCfg>` -> `Vec<CandidatePoolCfg>` is still a
+    break; and `AgentsCfg`'s OWN fields are fingerprinted in their own right, by bare name, wherever
+    the file lives — `plane_dir()` above is what keeps that file inside the tracked set after the
+    move. So the grammar stays frozen; only its ADDRESS is allowed to change.
+    """
+    if not isinstance(before, str) or not isinstance(after, str) or before == after:
+        return False
+    return strip_in_tree_paths(before) == strip_in_tree_paths(after)
 
 
 def norm_type(t: str):
@@ -212,8 +451,23 @@ def split_top(body: str):
     return parts
 
 
+def container_flags(csd: dict) -> dict:
+    """The container-level knobs that are part of the ACCEPTED-DOCUMENT grammar, recorded on every
+    node so a flip is a snapshot delta.
+
+    `deny_unknown_fields` decides whether a document carrying an extra key parses or is rejected;
+    turning it ON breaks every config that carries a key busbar used to ignore. `transparent`
+    decides whether the wire form is a map or the single inner value. Both were parsed and then
+    thrown away, so either could be flipped with ZERO snapshot delta."""
+    return {
+        "deny_unknown_fields": bool(csd.get("deny_unknown_fields")),
+        "transparent": bool(csd.get("transparent")),
+    }
+
+
 def parse_struct(body: str, csd: dict) -> dict:
     fields = {}
+    rename_fn = rename_fn_for(csd, "field")
     # Pull leading attribute clusters attached to each field. We walk the body linearly, buffering
     # `#[...]` attrs until a field decl consumes them.
     # First, split off attribute lines vs field decls by scanning tokens.
@@ -254,14 +508,17 @@ def parse_struct(body: str, csd: dict) -> dict:
             # change to WHICH type is flattened is caught, without needing cross-type resolution.
             fields[f"<<flatten:{inner}>>"] = {"type": inner, "optional": True}
             continue
-        serde_name = rename or name
+        # Container `rename_all` renames the WIRE KEY of every field it covers (a per-field
+        # `rename` still wins). This used to be applied to enum variants only, so adding
+        # `rename_all` to a config struct renamed every one of its keys with zero snapshot delta.
+        serde_name = rename or rename_fn(name)
         fields[serde_name] = {"type": inner, "optional": bool(opt or has_default)}
-    return {"kind": "struct", "fields": fields}
+    return {"kind": "struct", "fields": fields, **container_flags(csd)}
 
 
 def parse_enum(body: str, csd: dict) -> dict:
     variants = []
-    rename_fn = _RENAME_ALL.get(csd.get("rename_all") or "PascalCase", lambda s: s)
+    rename_fn = rename_fn_for(csd, "variant")
     entries = split_top(body)
     pending_attrs = ""
     for raw in entries:
@@ -286,27 +543,119 @@ def parse_enum(body: str, csd: dict) -> dict:
         if skip:
             continue
         variants.append(rename or rename_fn(vname))
-    return {"kind": "enum", "variants": sorted(set(variants))}
+    return {"kind": "enum", "variants": sorted(set(variants)), **container_flags(csd)}
 
 
-def extract(src_dir: str) -> dict:
+# The string-literal match arms of a hand-written `Deserialize` impl. A hand-written impl exists in
+# this tree for exactly one reason — to accept a SUGAR spelling the derive cannot express — and the
+# spellings it accepts are these literals (`"env"`/`"file"`/`"module"`/`"settings"` for `SecretRef`,
+# `"requests"`/`"tokens"`/`"per"`/… for `LimitCfg`). They are wire keys, so they are grammar.
+MATCH_ARM_RE = re.compile(r'((?:"[^"\n]*"\s*\|\s*)*"[^"\n]*")\s*=>')
+STR_LIT_RE = re.compile(r'"([^"\n]*)"')
+
+
+def manual_de_detail(src: str, impl_open_idx: int, decls: dict, name: str):
+    """Fingerprint a hand-written `impl<'de> Deserialize<'de> for X`.
+
+    Two halves, because a hand-written impl has two halves of grammar:
+      * the ACCEPTED WIRE KEYS — the impl's string match arms, i.e. the spellings a document may
+        use. For `SecretRef` that is `module` / `settings` / `env` / `file`.
+      * the TYPE of each wire-visible member, taken from `X`'s own struct declaration. `X` carries
+        no `Deserialize` derive (that is the point of a hand-written impl), so the derive-gated walk
+        skipped it entirely and `SecretRef { module: String, settings: Map<String, Value> }` could
+        be retyped freely.
+
+    ONLY wire-visible members are recorded. A hand-impl'd type's declaration is also its PARSED
+    RESULT, and those two things are not the same set: `LimitCfg` accepts `requests:`/`tokens:` and
+    stores `amount`/`metric`, `PoolCfg` accepts nothing by literal at all (it delegates to derived
+    `Raw*` helpers that this generator already fingerprints). Freezing the whole declaration would
+    fire RED on a purely internal field rename that no config can observe, and a gate that cries
+    wolf is a gate that gets muted. Intersecting with the wire keys keeps every entry here
+    something a user's document can actually contain."""
+    end = match_block(src, impl_open_idx)
+    body = src[impl_open_idx:end]
+    keys = set()
+    for m in MATCH_ARM_RE.finditer(body):
+        keys.update(STR_LIT_RE.findall(m.group(1)))
+    decl_fields = (decls.get(name) or {}).get("fields", {})
+    return {
+        "kind": "manual",
+        "wire_keys": sorted(keys),
+        "fields": {k: v for k, v in decl_fields.items() if k in keys},
+    }
+
+
+def declared_shape(src: str, m) -> dict:
+    """Parse a struct/enum declaration REGARDLESS of whether it derives Deserialize."""
+    csd = container_serde(m.group("attrs") or "")
+    if m.group("open") == ";":
+        return {"fields": {}, **container_flags(csd)}
+    open_idx = m.start("open")
+    end = match_block(src, open_idx)
+    body = src[open_idx + 1 : end - 1]
+    if m.group("kw") == "enum":
+        return parse_enum(body, csd)
+    return parse_struct(body, csd)
+
+
+def extract(paths) -> dict:
     types = {}
-    files = sorted(
-        p
-        for p in Path(src_dir).glob("*.rs")
-        if p.name != "mod.rs" or True  # include mod.rs
-    )
+    files = resolve_sources(paths)
+    sources = {}
+    decls = {}
+    # WHERE EACH FINGERPRINTED BARE NAME CAME FROM — see `collide` below. The fingerprint is a FLAT
+    # map keyed by the bare Rust type name, with no module path, so two planes that both call a type
+    # `PinMechanism` occupy one key and the second one read silently REPLACES the first.
+    origin = {}
     for path in files:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        src = strip_comments(raw)
+        src = strip_cfg_test_mods(strip_comments(path.read_text(encoding="utf-8", errors="replace")))
+        sources[path] = src
+        # Every declaration in the tracked set, derive or not, so a hand-written `Deserialize` impl
+        # in one file can be matched to its type's declaration in another.
+        for m in ITEM_RE.finditer(src):
+            shape = declared_shape(src, m)
+            decls[m.group("name")] = {k: v for k, v in shape.items() if k != "kind"}
+
+    def collide(name, path):
+        """A bare name may be fingerprinted ONCE. A second definition is a HARD ERROR, never a
+        last-one-wins overwrite.
+
+        This used to be an unenforced comment — "config has no duplicate type names across the
+        module" — which was true only while the tracked set was one directory. It stopped being true
+        the moment a SECOND plane's grammar was tracked: `crates/busbar-a2a/src/a2a/config.rs` and
+        `crates/busbar-mcp/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
+        (`jws_issuer_key` vs `pinned_pubkey`). Sorted by path, MCP's is read second, so it replaced
+        A2A's under the shared key and the classifier reported
+        `PinMechanism::jws_issuer_key: enum variant REMOVED` — a break in a grammar nobody touched,
+        while the A2A pin grammar quietly stopped being fingerprinted AT ALL. Waive that false RED
+        and the real coverage hole is what you are left with.
+
+        So the collision is refused where it happens. Resolve it by giving one of the two types a
+        distinct Rust ident — which is free, because the ident is not wire grammar: `rename_all`
+        decides the variant spellings an operator writes, and it is untouched by a rename."""
+        prior = origin.get(name)
+        if prior is not None:
+            first, second = sorted([prior, str(path)])
+            raise SystemExit(
+                f"config-schema: the bare type name {name!r} is declared in BOTH {first!r} and "
+                f"{second!r}. The fingerprint is keyed by bare name with no module path, so the "
+                "second one read would REPLACE the first — the replaced grammar would stop being "
+                "covered entirely, and the classifier would report the swap as a break in a "
+                "grammar nobody edited. Rename one of the two Rust types (the ident is not wire "
+                "grammar; serde's rename_all decides what an operator actually writes)."
+            )
+        origin[name] = str(path)
+
+    for path, src in sources.items():
         for m in ITEM_RE.finditer(src):
             csd = container_serde(m.group("attrs") or "")
             if not csd["is_de"]:
                 continue
             name = m.group("name")
+            collide(name, path)
             if m.group("open") == ";":
                 # unit struct or tuple-struct-with-semicolon; record as opaque struct (no fields)
-                types[name] = {"kind": "struct", "fields": {}}
+                types[name] = {"kind": "struct", "fields": {}, **container_flags(csd)}
                 continue
             open_idx = m.start("open")
             end = match_block(src, open_idx)
@@ -321,13 +670,24 @@ def extract(src_dir: str) -> dict:
         # ── HOLE 1: types with a HAND-WRITTEN `impl<'de> Deserialize<'de> for X` carry no derive, so
         # the derive-gated walk above skips them entirely — yet they ARE config surface (PoolCfg,
         # PoolsCfg, LimitCfg, OnErrorCfg, OnExhaustedCfg all deserialize by hand to accept a
-        # shorthand-scalar-or-table). Their INNER `Raw*` helper structs are already captured above
-        # (they do derive), so the field-level surface is tracked; what would otherwise be invisible
-        # is the type itself DISAPPEARING. Record each as a sentinel so a section removal is still
-        # caught RED. `custom` is a marker, not a field, so it never produces field-level noise.
+        # shorthand-scalar-or-table, and `SecretRef` is the grammar of every secret reference).
+        # The `X` sentinel below records that the type EXISTS, so a section removal is caught RED.
+        # It records nothing else, which was the hole: `SecretRef`'s own `{ module, settings }`
+        # shape and its `{ env: … }` / `{ file: … }` sugar were both unfingerprinted, so retyping
+        # either sailed through the additive gate green.
+        #
+        # The detail lands under a SEPARATE `manual-de X` key rather than being folded into the `X`
+        # sentinel. That is deliberate: folding it in would turn every already-tracked hand-impl'd
+        # type's `fields: {}` into a populated map, and the classifier would read that fidelity
+        # increase as a pile of new REQUIRED fields, i.e. a false RED on the very commit that adds
+        # the coverage. A new key is honestly additive, and from here on it is frozen like anything
+        # else. Same shape as the `type X` alias keys.
         for m in MANUAL_DE_RE.finditer(src):
             name = m.group("name")
             types.setdefault(name, {"kind": "struct", "fields": {}, "deserialize": "manual"})
+            open_idx = src.find("{", m.end())
+            if open_idx != -1:
+                types[f"manual-de {name}"] = manual_de_detail(src, open_idx, decls, name)
 
         # ── HOLE 2: `pub type HookDefs = IndexMap<String, HookDefCfg>;` — the named-DEFINITION-map
         # aliases are the shape of `hooks:`/`export:`/`identity-providers:` themselves.
@@ -350,8 +710,11 @@ def extract(src_dir: str) -> dict:
             "additive-only forever (enforced by the config-stability gate).",
             "frozen_at": "1.5.3",
             "generator": "scripts/config-schema.py gen",
-            "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd) + the "
-            "named-definition-map type aliases under crates/busbar/src/config",
+            "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each "
+            "hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map "
+            "type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the "
+            "busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the "
+            "MCP `tools:` grammar",
         },
         "types": types,
     }
@@ -370,6 +733,116 @@ FROZEN_MSG = (
     "variant). 1.5.3 was the LAST config-breaking release. Regenerating the snapshot does NOT "
     "launder a break: the additive check reads the committed baseline, not your working tree."
 )
+
+
+def field_findings(tname: str, bf: dict, ff: dict, findings: list):
+    """Classify a field map (a derived struct's, or a hand-impl'd type's declared shape)."""
+    for fld in sorted(set(bf) | set(ff)):
+        path = f"{tname}.{fld}"
+        bv = bf.get(fld)
+        fv = ff.get(fld)
+        if bv is None:
+            if fv.get("optional"):
+                findings.append(("ADDITIVE", path, "new OPTIONAL field added"))
+            else:
+                findings.append(
+                    ("BREAKING", path, "new REQUIRED field added (breaks a config that omits it)")
+                )
+            continue
+        if fv is None:
+            findings.append(("BREAKING", path, "field REMOVED (breaks a config that sets it)"))
+            continue
+        if bv.get("type") != fv.get("type"):
+            if relocated_only(bv.get("type"), fv.get("type")):
+                findings.append(
+                    (
+                        "RELOCATED",
+                        path,
+                        f"field type MOVED {bv.get('type')!r} -> {fv.get('type')!r} "
+                        "(same type, new module path; the grammar it declares is unchanged and is "
+                        "fingerprinted in its own right)",
+                    )
+                )
+            else:
+                findings.append(
+                    (
+                        "BREAKING",
+                        path,
+                        f"field RETYPED {bv.get('type')!r} -> {fv.get('type')!r} (shape change)",
+                    )
+                )
+        if bv.get("optional") and not fv.get("optional"):
+            findings.append(
+                (
+                    "BREAKING",
+                    path,
+                    "field made REQUIRED (was optional; breaks a config that omits it)",
+                )
+            )
+        elif not bv.get("optional") and fv.get("optional"):
+            findings.append(
+                ("ADDITIVE", path, "field relaxed required -> optional (widens accepted set)")
+            )
+
+
+def variant_findings(tname: str, bvar, fvar, findings: list, what="enum variant"):
+    bvar, fvar = set(bvar or []), set(fvar or [])
+    for v in sorted(fvar - bvar):
+        findings.append(("ADDITIVE", f"{tname}::{v}", f"{what} APPENDED"))
+    for v in sorted(bvar - fvar):
+        findings.append(
+            (
+                "BREAKING",
+                f"{tname}::{v}",
+                f"{what} REMOVED/RENAMED (breaks a config using the old value)",
+            )
+        )
+
+
+def container_flag_findings(tname: str, b: dict, f: dict, findings: list):
+    """Classify the container knobs that decide WHICH DOCUMENTS PARSE.
+
+    Both were previously extracted and thrown away, so both could be flipped with zero delta.
+
+    `deny_unknown_fields` off -> on is BREAKING in the plainest possible sense: a config carrying an
+    extra key parsed yesterday and is a hard boot error today. On -> off only widens what is
+    accepted, so it is additive. `transparent` changes the wire form between a map and a bare inner
+    value, so a flip in EITHER direction breaks configs written against the other.
+
+    A key ABSENT from the baseline means that snapshot predates flag recording; it is not evidence
+    of the flag being off, so it yields no finding. That branch is self-extinguishing (the generator
+    now writes both flags on every struct/enum node, and the gate's self-test asserts it does), and
+    it is the only tolerant reading in here."""
+    for flag, both_ways in (("deny_unknown_fields", False), ("transparent", True)):
+        bv, fv = b.get(flag), f.get(flag)
+        if bv is None or fv is None or bool(bv) == bool(fv):
+            continue
+        if flag == "deny_unknown_fields" and not bv:
+            findings.append(
+                (
+                    "BREAKING",
+                    f"{tname}[deny_unknown_fields]",
+                    "deny_unknown_fields turned ON (a config carrying any extra key under this "
+                    "section parsed before and is a hard error now)",
+                )
+            )
+        elif flag == "deny_unknown_fields":
+            findings.append(
+                (
+                    "ADDITIVE",
+                    f"{tname}[deny_unknown_fields]",
+                    "deny_unknown_fields turned OFF (widens the accepted set)",
+                )
+            )
+        elif both_ways:
+            findings.append(
+                (
+                    "BREAKING",
+                    f"{tname}[transparent]",
+                    f"serde(transparent) {bv} -> {fv} (the wire form changes between a map and the "
+                    "bare inner value; configs written for either spelling break)",
+                )
+            )
 
 
 def classify(baseline: dict, fresh: dict):
@@ -403,78 +876,44 @@ def classify(baseline: dict, fresh: dict):
             # retarget is a grammar change — `IndexMap<String, T>` -> `Vec<T>` turns a named map into
             # a list, which breaks every config that used the map form.
             if b.get("target") != f.get("target"):
-                findings.append(
-                    (
-                        "BREAKING",
-                        tname,
-                        f"type alias RETARGETED {b.get('target')!r} -> {f.get('target')!r} "
-                        "(the definition-map shape changed)",
+                if relocated_only(b.get("target"), f.get("target")):
+                    findings.append(
+                        (
+                            "RELOCATED",
+                            tname,
+                            f"alias target MOVED {b.get('target')!r} -> {f.get('target')!r} "
+                            "(same type, new module path; the map shape is unchanged)",
+                        )
                     )
-                )
+                else:
+                    findings.append(
+                        (
+                            "BREAKING",
+                            tname,
+                            f"type alias RETARGETED {b.get('target')!r} -> {f.get('target')!r} "
+                            "(the definition-map shape changed)",
+                        )
+                    )
             continue
-        if b["kind"] == "struct":
-            bf, ff = b.get("fields", {}), f.get("fields", {})
-            for fld in sorted(set(bf) | set(ff)):
-                path = f"{tname}.{fld}"
-                bv = bf.get(fld)
-                fv = ff.get(fld)
-                if bv is None:
-                    if fv.get("optional"):
-                        findings.append(("ADDITIVE", path, "new OPTIONAL field added"))
-                    else:
-                        findings.append(
-                            (
-                                "BREAKING",
-                                path,
-                                "new REQUIRED field added (breaks a config that omits it)",
-                            )
-                        )
-                    continue
-                if fv is None:
-                    findings.append(
-                        ("BREAKING", path, "field REMOVED (breaks a config that sets it)")
-                    )
-                    continue
-                if bv.get("type") != fv.get("type"):
-                    findings.append(
-                        (
-                            "BREAKING",
-                            path,
-                            f"field RETYPED {bv.get('type')!r} -> {fv.get('type')!r} (shape change)",
-                        )
-                    )
-                if bv.get("optional") and not fv.get("optional"):
-                    findings.append(
-                        (
-                            "BREAKING",
-                            path,
-                            "field made REQUIRED (was optional; breaks a config that omits it)",
-                        )
-                    )
-                elif not bv.get("optional") and fv.get("optional"):
-                    findings.append(
-                        ("ADDITIVE", path, "field relaxed required -> optional (widens accepted set)")
-                    )
+        # The knobs that decide WHICH DOCUMENTS PARSE, on every kind that can carry them.
+        container_flag_findings(tname, b, f, findings)
+        if b["kind"] == "manual":
+            # A hand-written `Deserialize`: its accepted spellings and their declared types.
+            field_findings(tname, b.get("fields", {}), f.get("fields", {}), findings)
+            variant_findings(
+                tname, b.get("wire_keys"), f.get("wire_keys"), findings, what="accepted wire key"
+            )
+        elif b["kind"] == "struct":
+            field_findings(tname, b.get("fields", {}), f.get("fields", {}), findings)
         else:  # enum
-            bvar, fvar = set(b.get("variants", [])), set(f.get("variants", []))
-            for v in sorted(fvar - bvar):
-                findings.append(("ADDITIVE", f"{tname}::{v}", "enum variant APPENDED"))
-            for v in sorted(bvar - fvar):
-                findings.append(
-                    (
-                        "BREAKING",
-                        f"{tname}::{v}",
-                        "enum variant REMOVED/RENAMED (breaks a config using the old value)",
-                    )
-                )
+            variant_findings(tname, b.get("variants"), f.get("variants"), findings)
     return findings
 
 
 def cmd_gen(argv):
-    if len(argv) != 1:
-        print("usage: config-schema.py gen <config-src-dir>", file=sys.stderr)
-        return 2
-    sys.stdout.write(canonical(extract(argv[0])))
+    """`gen` with no arguments fingerprints the TRACKED SOURCE SET (`SOURCES`). Explicit paths are
+    for the gate's self-test, which fingerprints throwaway fixture sources."""
+    sys.stdout.write(canonical(extract(argv or SOURCES)))
     return 0
 
 
@@ -535,6 +974,11 @@ def cmd_classify(argv):
 
     findings = classify(baseline, fresh)
     additive = [x for x in findings if x[0] == "ADDITIVE"]
+    # A RELOCATION is not a pass and not a break: the same type in a new module path. It is printed
+    # on its own line every run so a reviewer sees the move and can ask whether it was intended;
+    # what it does NOT do is red the additive-only gate over a change that alters no grammar. See
+    # `relocated_only`.
+    relocated = [x for x in findings if x[0] == "RELOCATED"]
     raw_breaking = [x for x in findings if x[0] == "BREAKING"]
     # A waiver matches ONE exact path. Everything else stays RED.
     waived = [x for x in raw_breaking if x[1] in waivers]
@@ -542,6 +986,8 @@ def cmd_classify(argv):
 
     for _, path, reason in additive:
         print(f"  additive OK   {path}: {reason}")
+    for _, path, reason in relocated:
+        print(f"  RELOCATED     {path}: {reason}")
     for _, path, reason in waived:
         print(f"  WAIVED        {path}: {reason}  <- waived: {waivers[path]}")
     for _, path, reason in breaking:

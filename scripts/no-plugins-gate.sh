@@ -107,9 +107,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR rather than echoing the path: callers used to write `d="$(new_tmpdir)"`, and the
+# command substitution runs the function in a SUBSHELL, so the `TMP_DIRS+=` append was discarded and
+# `cleanup` always iterated an empty array (hundreds of leaked staging dirs, ~220 MB per run).
 new_tmpdir() {
-  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-no-plugins-gate.XXXXXX")"
-  TMP_DIRS+=("$d"); echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-no-plugins-gate.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 # A free TCP port, claimed by binding and releasing — the same trick the rest of the repo's harnesses
@@ -133,7 +136,7 @@ code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 # than "some 200 from somewhere".
 start_mock_upstream() {
   local port="$1" marker="$2" script
-  script="$(new_tmpdir)/mock_upstream.py"
+  new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json
 MARKER = ${marker@Q}
@@ -141,11 +144,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = json.dumps({
-            "id": "msg_no_plugins_gate", "type": "message", "role": "assistant",
+            "id": "chatcmpl-no-plugins-gate", "object": "chat.completion",
             "model": "test-model",
-            "content": [{"type": "text", "text": MARKER}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 11, "output_tokens": 7},
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": MARKER}}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -176,9 +179,25 @@ print(d if d is not None else "")' "$1"; }
 # plugin subsystem is ON and finds nothing, which is the axis-2 premise stated in config.
 write_zero_plugin_config() {
   local work="$1" bin="$2" mock_port="$3" listen_port="$4" admin_port="$5" plugins_dir="$6"
+  # `openai`: the whole LLM PROTOCOL is an extracted plugin crate (`busbar-llm`) as of 1.6.0's
+  # consolidation — a plugin by this very gate's mechanical definition — so the compiled-out axis no
+  # longer speaks any dialect BY DEFAULT (scripts/proto-deletion-gate.sh proves that refusal
+  # separately, for every dialect the plugin carries). This gate's OWN probe methodology (the mock
+  # upstream's wire shape, the `/v1/chat/completions` and `/v2/chat` ingress bodies below) is
+  # written against real LLM dialects, so `build_binaries`/`run_selftest` explicitly keep
+  # `proto-llm` ON for axis 1 (`--features proto-llm`) — axis 1 stays "every OTHER plugin-kind
+  # capability compiled out" rather than "the LLM protocol compiled out", which is a distinct claim
+  # scripts/proto-deletion-gate.sh already makes.
+  #
+  # THE FEATURE NAME CHANGED AND THIS FIXTURE HAD TO CHANGE WITH IT, checked rather than assumed:
+  # the old flag was `proto-openai-chat`, and it covered only the `/v1/chat/completions` probe. The
+  # `/v2/chat` probe below is COHERE's — the deliberate cross-protocol translation leg — and it was
+  # passing only because cohere was still a core built-in. Under one LLM plugin both probes are
+  # covered by the one `proto-llm` flag, which is the first time this axis has actually been
+  # linking everything it exercises.
   cat >"${work}/providers.yaml" <<EOF
 mock:
-  protocol: anthropic
+  protocol: openai
   base_url: "http://127.0.0.1:${mock_port}"
 EOF
   # The `keys` verifier requires an explicit signing key (busbar no longer auto-generates one); mint
@@ -223,7 +242,7 @@ ADMIN_READS="info keys hooks config audit groups auth admin-auth export config/v
 # any failed assertion (and records each one in FAILURES).
 run_axis() {
   local label="$1" bin="$2" plugins_dir="$3" out="$4"
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   local marker="no-plugins-gate-${label}-$$-${RANDOM}"
   local mock_port listen_port admin_port
   mock_port="$(free_port)"; listen_port="$(free_port)"; admin_port="$(free_port)"
@@ -324,13 +343,16 @@ except Exception: print("")')"
     axis_failed=1
   fi
 
-  body="$(curl -s "${D}/main/v1/messages" -H "Authorization: Bearer ${token}" \
+  # Cohere-format ingress (engine-inline) against the openai-protocol pool: A5's pool leg stays a
+  # real CROSS-PROTOCOL translation through the IR, which is what the anthropic-format leg proved
+  # before that dialect became an extracted crate.
+  body="$(curl -s "${D}/v2/chat" -H "Authorization: Bearer ${token}" \
             -H 'Content-Type: application/json' \
-            -d '{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}')"
+            -d '{"model":"main","messages":[{"role":"user","content":"hello"}]}')"
   got="$(printf '%s' "$body" | python3 -c 'import sys,json
-try: print(json.load(sys.stdin)["content"][0]["text"])
+try: print(json.load(sys.stdin)["message"]["content"][0]["text"])
 except Exception: print("")')"
-  printf 'POST data/pool %s\n' "$(code "${D}/main/v1/messages" -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' -d '{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}')" >>"${out}/probe.txt"
+  printf 'POST data/pool %s\n' "$(code "${D}/v2/chat" -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' -d '{"model":"main","messages":[{"role":"user","content":"hello"}]}')" >>"${out}/probe.txt"
   if [ "$got" = "$marker" ]; then
     ok "A5 ${label}: POOL route (hooks: [weighted], the inline SWRR floor) proxied end-to-end"
   else
@@ -406,10 +428,10 @@ UPSTREAM = re.search(r'base_url:\s*"([^"]+)"',
                      open(re.search(r'providers_file:\s*"([^"]+)"', cfg).group(1)).read()).group(1)
 
 def upstream_text():
-    req = urllib.request.Request(UPSTREAM + "/v1/messages", data=b"{}",
+    req = urllib.request.Request(UPSTREAM + "/v1/chat/completions", data=b"{}",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)["content"][0]["text"]
+        return json.load(r)["choices"][0]["message"]["content"]
 
 def reply(h, status, body):
     raw = json.dumps(body).encode()
@@ -429,8 +451,9 @@ class Data(http.server.BaseHTTPRequestHandler):
         if BREAK == "proxy":
             return reply(self, 502, {"error": "no upstream: ranking hook absent"})
         text = upstream_text()
-        if self.path.endswith("/v1/messages"):
-            return reply(self, 200, {"content": [{"type": "text", "text": text}]})
+        if self.path.endswith("/v2/chat"):
+            return reply(self, 200, {"message": {"role": "assistant",
+                                                 "content": [{"type": "text", "text": text}]}})
         reply(self, 200, {"choices": [{"message": {"content": text, "role": "assistant"}}]})
     def log_message(self, *a): pass
 
@@ -474,7 +497,7 @@ run_fixture() {
 }
 
 expect_red() {
-  local what="$1" bin="$2" plugins_dir="$3" out; out="$(new_tmpdir)"
+  local what="$1" bin="$2" plugins_dir="$3" out; new_tmpdir; out="$NEW_TMPDIR"
   run_fixture "$what" "$bin" "$plugins_dir" "$out"
   if [ "$FIXTURE_CAUGHT" -gt 0 ] || [ "$FIXTURE_RC" -ne 0 ]; then
     ok "RED ${what}: the gate CAUGHT it — $(grep -m1 '\[FAIL\]' "${out}/log" | sed 's/^ *//')"
@@ -485,7 +508,7 @@ expect_red() {
 }
 
 expect_green() {
-  local what="$1" bin="$2" plugins_dir="$3" out; out="$(new_tmpdir)"
+  local what="$1" bin="$2" plugins_dir="$3" out; new_tmpdir; out="$NEW_TMPDIR"
   run_fixture "$what" "$bin" "$plugins_dir" "$out"
   if [ "$FIXTURE_CAUGHT" -eq 0 ] && [ "$FIXTURE_RC" -eq 0 ]; then
     ok "GREEN ${what}: the gate stayed SILENT, as it must"
@@ -498,8 +521,8 @@ expect_green() {
 build_binaries() {
   local stage="$1"
   hdr "Building both axes"
-  note "axis 1 — cargo build -p busbar --no-default-features --locked"
-  cargo build -p busbar --no-default-features --locked
+  note "axis 1 — cargo build -p busbar --no-default-features --features proto-llm --locked"
+  cargo build -p busbar --no-default-features --features proto-llm --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
   note "axis 2 — cargo build -p busbar --locked (DEFAULT features)"
   cargo build -p busbar --locked
@@ -509,11 +532,11 @@ build_binaries() {
 
 run_selftest() {
   hdr "no-plugins-gate SELF-TEST (the gate cannot be lied to)"
-  local stage; stage="$(new_tmpdir)"
-  local empty; empty="$(new_tmpdir)"
+  local stage; new_tmpdir; stage="$NEW_TMPDIR"
+  local empty; new_tmpdir; empty="$NEW_TMPDIR"
   local rc=0
 
-  cargo build -p busbar --no-default-features --locked
+  cargo build -p busbar --no-default-features --features proto-llm --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
 
   # ── RED-A / RED-B: the REAL featureless binary, with a REAL core dependency on a compiled-out
@@ -578,12 +601,12 @@ PY
 }
 
 run_check() {
-  local stage; stage="$(new_tmpdir)"
+  local stage; new_tmpdir; stage="$NEW_TMPDIR"
   build_binaries "$stage"
 
   # ONE empty directory, shared by both axes: zero plugin artifacts on disk, everywhere.
-  local empty; empty="$(new_tmpdir)"
-  local out1 out2; out1="$(new_tmpdir)"; out2="$(new_tmpdir)"
+  local empty; new_tmpdir; empty="$NEW_TMPDIR"
+  local out1 out2; new_tmpdir; out1="$NEW_TMPDIR"; new_tmpdir; out2="$NEW_TMPDIR"
 
   run_axis "1-compiled-out"  "${stage}/busbar-no-default-features" "$empty" "$out1" || true
   run_axis "2-not-installed" "${stage}/busbar-default-features"    "$empty" "$out2" || true

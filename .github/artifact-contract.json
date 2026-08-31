@@ -1,0 +1,232 @@
+{
+  "_comment": [
+    "THE ARTIFACT CONTRACT: what must be true of EVERY shipped busbar binary, as DATA.",
+    "",
+    "Owner, 2026-08-08: \"should just be 1 build pipeline that takes what its building: arm, windows,",
+    "mac, but it does the same thing for each no way for 1 to be different\", and \"100% or 0% for",
+    "each build\".",
+    "",
+    "WHY THIS IS A FILE AND NOT A SEQUENCE OF `run:` STEPS. Through 1.5.3 every property a release",
+    "binary was supposed to have was asserted on the INPUT side -- an env var set on a build step --",
+    "and never on the OUTPUT. `BUSBAR_RELEASE_PUBKEY` was set on both build steps, the workflow was",
+    "green, a comment in release.yml stated the key was baked in, and",
+    "busbar-aarch64-unknown-linux-gnu 1.5.3 shipped with no key at all: `option_env!` is a",
+    "COMPILE-time read that fails silently to `None`. Setting an env var says what was intended.",
+    "Only inspecting the shipped bytes says what happened.",
+    "",
+    "Because the rows are data, adding a property is ONE ENTRY here plus its check function in",
+    "scripts/verify-artifact.py, and it then applies to every target automatically -- there is no",
+    "per-target list to forget a platform in, which is how the aarch64 leg went three releases",
+    "without a key. scripts/verify-artifact.py asserts SET EQUALITY between the ids declared here",
+    "and the checks it implements, so a row added here with no implementation is a hard failure",
+    "rather than a silently-skipped property, and an implementation with no row here is too.",
+    "scripts/tests/test_verify_artifact.py additionally requires every row to own BOTH a RED",
+    "fixture it flags and a GREEN twin it passes: a row nobody has watched fail is not a row.",
+    "",
+    "`applies_when` is the ONLY way a row may be conditional, it is matched against the target's",
+    "own declaration in .github/release-targets.json, and a row that applies to a target CANNOT be",
+    "skipped for any other reason -- there is no waiver field and no exception list. Every target",
+    "now builds and verifies on a NATIVE runner, so `exec: true` rows run for every platform,",
+    "Windows included; nothing is statically approximated because a runner could not execute it.",
+    "",
+    "`min_rows` is a floor. A loop over a discovered set with no floor is a check that passes",
+    "without executing: an empty or truncated contract file would otherwise verify every artifact",
+    "against nothing and report green."
+  ],
+  "min_rows": 14,
+  "rows": [
+    {
+      "id": "archive_shape",
+      "title": "the archive contains exactly the declared executable, at a plausible size",
+      "exec": false,
+      "why": [
+        "GitHub creates an asset row the moment an upload starts, so a truncated or empty upload",
+        "lists identically to a good one, and an archive that unpacks to the wrong name (or to a",
+        "directory) breaks install.sh and the documented `tar -xzf && ./busbar` in the same silent",
+        "way a missing asset does. Assert the members, not the presence."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "binary_format",
+      "title": "architecture, object format and linkage are what the target declares",
+      "exec": false,
+      "why": [
+        "An asset named `aarch64` that contains x86_64 bytes is 100% broken for everyone who",
+        "downloads it, and it is invisible to every check that only executes the binary on the",
+        "runner that built it. Parsed straight out of the ELF/Mach-O/PE headers so the check is one",
+        "implementation on all three operating systems rather than `file` here and `ldd` there.",
+        "The linkage half folds in docker.yml's hard failure on a dynamically-linked binary where a",
+        "static one was intended (FROM scratch has no loader): linkage is now a declared property of",
+        "the target and a row that applies to every artifact, not an `ldd | grep` in one workflow."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "release_pubkey",
+      "title": "the release public key is embedded in the shipped bytes",
+      "exec": false,
+      "why": [
+        "THE 1.5.3 DEFECT, ASSERTED ON THE ARTIFACT. busbar-aarch64-unknown-linux-gnu shipped with",
+        "no embedded key in 1.5.1, 1.5.2 and 1.5.3 while the other four assets had one. On ARM Linux",
+        "-- Graviton, Raspberry Pi, ARM containers -- every correctly-signed first-party plugin was",
+        "refused, and the only workaround was `plugins.trust.allow_unsigned: true`, which switches",
+        "the requirement off rather than trusting first-party selectively.",
+        "This row is the cheap static half: the 64-hex public key must appear verbatim in the binary.",
+        "`first_party_plugin` is the half that proves it is the RIGHT key and that it works."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "first_party_plugin",
+      "title": "a real signed first-party plugin verifies as first-party and is ready",
+      "exec": true,
+      "why": [
+        "Functional, not a grep. The plugin is a REAL release of a REAL first-party plugin repo,",
+        "signed by the REAL private half of the release key, downloaded and handed to the SHIPPED",
+        "binary, which must report `SIGNATURE: first-party` and `STATUS: ready` from --list-plugins.",
+        "A grep proves 64 bytes are present; only this proves the embedded key verifies the",
+        "signatures the plugin repos actually produce. Run against the real 1.5.3 aarch64 asset it",
+        "reports, verbatim: `SIGNATURE: unsigned  STATUS: SKIPPED: manifest claims first-party",
+        "publisher 'busbar' but this build embeds no busbar release key`.",
+        "The check also asserts `plugins.enabled: true` and a non-empty inventory in the output,",
+        "because --list-plugins falls back to the DEFAULT plugins block with a mere [warn] when the",
+        "config is unreadable, and a naive check would then read `no plugin tarballs found` and see",
+        "no failure text at all."
+      ],
+      "applies_when": {
+        "kind": "binary",
+        "published": true
+      }
+    },
+    {
+      "id": "version_anchored",
+      "title": "--version reports exactly the version being released",
+      "exec": true,
+      "why": [
+        "ANCHORED on both ends. A substring or prefix match lets `1.5.4` be satisfied by `1.5.40`,",
+        "and lets a stale binary from a previous matrix leg pass while claiming to be this release.",
+        "The bytes must run and identify themselves as this exact version, nothing more."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "quickstart_boots",
+      "title": "the documented quickstart boots this binary and answers on /healthz",
+      "exec": true,
+      "why": [
+        "The minimal config.yaml from docs/getting-started.md, the documented default listen address,",
+        "and the documented `curl localhost:8080/healthz` -> `ok`. A new user's first five minutes,",
+        "run against the artifact they will actually download. This used to be checked for exactly",
+        "ONE platform -- verify-deploy.yml hardcodes busbar-x86_64-unknown-linux-gnu.tar.gz -- which",
+        "is the same shape of gap as the missing key: a property established on one artifact and",
+        "assumed for the rest."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "attestation",
+      "title": "the build-provenance attestation verifies against these exact bytes",
+      "exec": false,
+      "why": [
+        "`gh attestation verify <archive> --repo GetBusbar/busbar` is the command the docs tell users",
+        "to run, so it is the command that must be proven to pass -- on the bytes downloaded from the",
+        "release, not on a local copy of the file the build step happened to still have. An",
+        "attestation that covers a different digest than the asset a user downloads is worse than",
+        "none, because it looks like provenance.",
+        "Gated on `published`: an artifact packaged into an image rather than",
+        "uploaded has no release asset to attest against, and a row that cannot",
+        "run must not be quietly satisfied."
+      ],
+      "applies_when": {
+        "kind": "binary",
+        "published": true
+      }
+    },
+    {
+      "id": "build_evidence",
+      "title": "the build's own evidence is bound to the shipped bytes by digest",
+      "exec": false,
+      "why": [
+        "The build step records the SHA-256 of the archive it produced. This row asserts that digest",
+        "equals the digest of the archive that was actually downloaded from the release. Without it",
+        "every evidence-based row below is unanchored: a build could report a verified PGO profile",
+        "for bytes that never reached the release, which is a certificate for the wrong artifact."
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
+    },
+    {
+      "id": "pgo_applied",
+      "title": "PGO really was applied where the target declares it",
+      "exec": false,
+      "applies_when": {
+        "pgo": true,
+        "kind": "binary"
+      },
+      "why": [
+        "scripts/pgo-build.sh writes its proof marker ONLY after a non-empty merged profile fed a",
+        "successful -Cprofile-use build. This row turns that marker into a contract row rather than",
+        "an assertion living in one workflow step: the marker must exist, be marked verified, name",
+        "THIS target, and record a non-zero merged-profile size and .profraw count -- and it is bound",
+        "to the shipped archive's digest by `build_evidence`, so it certifies these bytes and not",
+        "some other build's.",
+        "`applies_when` is checked against .github/release-targets.json, and that file carries a",
+        "`pgo_floor` scripts/tests/test_release_contract.py enforces, so a target cannot quietly flip `pgo` to false to",
+        "make this row stop applying to it."
+      ]
+    },
+    {
+      "id": "image_boots_documented_quickstart",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "busbar 1.5.3's image did NOT boot under any documented invocation: USER 65532:65532 against a root-owned /etc/busbar, so the overlay backend was unwritable and boot refused. The build was green and nothing ran the image. This row runs it."
+    },
+    {
+      "id": "image_runs_as_nonroot",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "the image ships a non-root UID deliberately; a fix that restores boot by running as root would trade a boot failure for a privilege regression and look identical in CI."
+    },
+    {
+      "id": "image_release_pubkey",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "the same embedded-key property the binaries owe. The image carries its own musl build, so a key present in the tarballs proves nothing about it."
+    },
+    {
+      "id": "image_version_anchored",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "anchored so 1.5.4 cannot be satisfied by 1.5.40, and read from the running image rather than from the tag that labels it."
+    },
+    {
+      "id": "image_matches_packaged_binary",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": [
+        "the binary INSIDE the image must be byte-identical to the musl artifact the single",
+        "build path produced for it. This is what makes the image a PACKAGE rather than a",
+        "second build: without it the image could be assembled from a differently-built",
+        "binary and every other row would still pass \u2014 which is how one artifact came to",
+        "embed the plugin release key while its sibling did not."
+      ]
+    }
+  ]
+}

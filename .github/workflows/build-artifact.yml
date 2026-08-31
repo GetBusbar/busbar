@@ -1,0 +1,148 @@
+# ONE BUILD PIPELINE, PARAMETERISED BY TARGET. It builds ONE artifact and it does the same thing
+# for every target.
+#
+# THE DEFECT THAT MADE THIS NECESSARY. busbar 1.5.3 shipped four unix binaries; three embedded the
+# plugin release public key and busbar-aarch64-unknown-linux-gnu did not. Not a 1.5.3 regression --
+# 1.5.1 and 1.5.2 shipped the same broken leg. On ARM Linux (Graviton, Raspberry Pi, ARM containers)
+# every correctly-signed first-party plugin was refused, and the only workaround was
+# `plugins.trust.allow_unsigned: true`, which switches the requirement off instead of trusting
+# first-party selectively.
+#
+# The cause was structural, not a missing secret: the org variable was set the whole time. The
+# release matrix had TWO build steps -- scripts/pgo-build.sh for host-native targets and
+# upload-rust-binary-action for the cross targets -- and any property established on one of them was
+# unproven on the other, silently and permanently.
+#
+# Owner, 2026-08-08: "should just be 1 build pipeline that takes what its building: arm, windows,
+# mac, but it does the same thing for each no way for 1 to be different", and "100% or 0% for each
+# build".
+#
+# SO: ONE STEP BUILDS, FOR EVERY TARGET. There is no `if:` on any step in this file, no per-target
+# branch, and no second build action. Everything a target needs arrives as an INPUT, derived from
+# .github/release-targets.json by release.yml's `targets` job -- the single source of truth that
+# already produced the asset-name list. The env block that carries BUSBAR_RELEASE_PUBKEY is written
+# once, on the one build step, so "one target missed it" is not a state this workflow can be in.
+#
+# EVERY TARGET IS NATIVE, WHICH IS WHAT MADE ONE PATH POSSIBLE. GitHub now offers a runner for every
+# architecture busbar ships: `ubuntu-24.04-arm` for ARM Linux and `macos-15-intel` for Intel macOS,
+# both confirmed available to this org and green on a probe run before this was written. So the
+# cross-compilation that forced the second path is gone rather than worked around, four of five
+# targets train their own PGO profile on their own architecture, and -- the part that matters for
+# verification -- every artifact can be EXECUTED on a runner of its own platform, so no contract row
+# has to be statically approximated anywhere, Windows included.
+#
+# WHAT IS DELIBERATELY NOT HERE: any assertion that the build worked. This workflow produces an
+# artifact and the evidence about how it was produced; scripts/verify-artifact.py asserts the
+# contract against the bytes downloaded back from the release. Asserting an output property here
+# would be asserting it on the machine that had every opportunity to get it wrong, which is the
+# 1.5.3 shape: the env var was set, the workflow was green, and the artifact had no key.
+name: build one release artifact
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: >-
+          The target id from .github/release-targets.json. THE parameter this pipeline takes; it
+          names the asset (busbar-<target>.<archive>) and selects the manifest row every other
+          per-target fact comes from. For every ordinary target it IS the rust triple.
+        required: true
+        type: string
+      triple:
+        description: >-
+          The rust target triple cargo builds, from the manifest's `triple` field (== `target`
+          for every non-variant entry). Only the toolchain-install step needs it here — the build
+          script re-reads the manifest itself, so this cannot become a second source of truth.
+        required: true
+        type: string
+      runner:
+        description: >-
+          The GitHub-hosted runner label for this target. MUST be native for `target`:
+          .github/release-targets.json declares it and scripts/tests/test_release_contract.py fails the
+          build if a target claims a runner of a different architecture.
+        required: true
+        type: string
+      archive:
+        description: The archive extension this target's asset uses (tar.gz / zip).
+        required: true
+        type: string
+      tag:
+        description: The draft release tag to upload the asset to. There is no git tag yet.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: ${{ inputs.target }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ inputs.triple }}
+
+      # THE BUILD. One step, one script, one env block, five targets.
+      #
+      # BUSBAR_RELEASE_PUBKEY is a repository/org VARIABLE, not a secret -- it is the PUBLIC half of
+      # the release keypair, embedded into the binary at compile time by plugin-sign's
+      # `option_env!`, so a busbar-signed plugin verifies as first-party with zero configuration.
+      # The matching PRIVATE half is the BUSBAR_SIGN_KEY secret each first-party plugin repo signs
+      # its own release with.
+      #
+      # scripts/release-build.sh REFUSES to compile when it is absent or malformed, for every
+      # target, in one place. That refusal is the build-time half of the fix; it cannot see a
+      # compiler that read the variable and dropped it, which is why the contract also asserts the
+      # key on the shipped BYTES afterwards.
+      - name: Build the artifact
+        shell: bash
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+        run: scripts/release-build.sh "${{ inputs.target }}" --evidence-dir build-evidence
+
+      # Upload to the DRAFT by tag. Under this release order there is no git tag yet -- the tag is an
+      # output of a verified run -- so the asset is placed on the draft explicitly rather than by a
+      # tool that resolves the release from the git ref.
+      - name: Upload the artifact to the draft
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          archive="busbar-${{ inputs.target }}.${{ inputs.archive }}"
+          [ -s "$archive" ] || { echo "::error::no archive at $archive; ${{ inputs.target }} would be MISSING from the release." >&2; exit 1; }
+          gh release upload "${{ inputs.tag }}" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
+
+      # Keyless (Sigstore/OIDC) build-provenance binding this archive's DIGEST to this run and
+      # commit, so a swapped artifact on the Release page fails `gh attestation verify`. It binds a
+      # digest, so promoting the draft later changes nothing. The contract's `attestation` row
+      # re-runs that exact user-facing command against the bytes downloaded back from the release.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: busbar-${{ inputs.target }}.${{ inputs.archive }}
+
+      # THE RECEIPT AND THE EVIDENCE, WHICH ARE TWO DIFFERENT JOBS OF THE SAME UPLOAD.
+      #
+      # EVIDENCE: `artifact.sha256` (and, where the target declares PGO, pgo-build.sh's proof
+      # marker) travels to the verify matrix, which binds it to the digest of the archive it
+      # downloads from the release. Without that binding a build could certify a PGO profile for
+      # bytes that never shipped.
+      #
+      # RECEIPT: the artifact's existence is how release.yml's `verify-set-equality` job learns that
+      # THIS target was actually produced. It reads the produced set and the verified set from
+      # receipts rather than from job conclusions, because a job that was skipped -- which is what
+      # `needs:` does to a dependent when an upstream leg fails -- leaves a grey square and no
+      # evidence, and a set derived from grey squares silently shrinks to fit.
+      - name: Upload build evidence and the produced-receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-evidence-${{ inputs.target }}
+          path: build-evidence
+          if-no-files-found: error
+          retention-days: 7

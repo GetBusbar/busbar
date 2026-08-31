@@ -148,6 +148,21 @@ hdr "tracing seam: every #[instrument] carries an explicit level="
 CANDIDATES=()
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' | sort)
 
+# ── SCAN FLOOR — "for each file, assert every #[instrument] has an explicit level=" is VACUOUSLY
+# TRUE over zero files. A workspace restructure that moves crates out from under `crates/` leaves
+# this lint reporting `ok` forever about a tree it never opened. The floor is not `> 0` — one
+# surviving file is as vacuous as none — it tracks the real workspace (160 files when written).
+SCAN_FLOOR=130
+if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
+  hdr "result"
+  note "tracing-lint FAILED — SCAN ROOT EMPTY OR MOVED"
+  note "found ${#CANDIDATES[@]} non-test .rs files under crates/, expected >= ${SCAN_FLOOR}."
+  note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
+  note "If the workspace layout legitimately changed, update the find root above AND this floor together."
+  exit 1
+fi
+note "scan set: ${#CANDIDATES[@]} files under crates/ (floor ${SCAN_FLOOR})"
+
 hits=""
 for f in "${CANDIDATES[@]}"; do
   h=$(scan_rule "$f") || true
