@@ -360,17 +360,25 @@ impl PlaneAuditLog {
         for scope in &scopes {
             let bodies =
                 store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.clone()))?;
-            out.records += bodies.len();
-            // Seed the read-model ring from the neutral bodies too (see `restore_legacy_table`).
-            // An undecodable body is SKIPPED and counted, never allowed to abort the restore — but
-            // the skip is reported LOUDLY at the site with a coded diagnostic (the peer of the
+            // Decode each stored body per-record BEFORE seeding the chain, so a single undecodable
+            // row is COUNTED and SKIPPED rather than faulting the seam seed and `?`-aborting the
+            // WHOLE restore — which would leave the host-side chain position UNSEEDED and fork the
+            // governance chain back at seq 1 on the next append (governance durability loss). A
+            // chain break is already tolerated below; an unreadable row is the same class of
+            // defensive robustness. Only the decodable bodies flow on to `seed_chain`, so one bad
+            // row can never fork the chain. The GOOD-row path is byte-identical: with every body
+            // decodable, `good_bodies` is `bodies` in order and the seed is byte-for-byte unchanged.
+            // The skip is reported LOUDLY at the site with a coded diagnostic (the peer of the
             // chain-break report below), so a silently lost evidence row on this tamper-evidence
             // surface can never be invisible; `unreadable` still carries the count back for the
-            // aggregate. The GOOD-row path is byte-identical: a decodable body is pushed exactly as
-            // before.
-            for body in &bodies {
-                match audit_entry_from_body(scope, body) {
-                    Ok(entry) => self.push_entry(entry),
+            // aggregate. This mirrors the per-call log's already-tolerant restore.
+            let mut good_bodies: Vec<Vec<u8>> = Vec::with_capacity(bodies.len());
+            for body in bodies {
+                match audit_entry_from_body(scope, &body) {
+                    Ok(entry) => {
+                        self.push_entry(entry);
+                        good_bodies.push(body);
+                    }
                     Err(e) => {
                         out.unreadable += 1;
                         crate::diagnostics::diag_error!(
@@ -386,7 +394,8 @@ impl PlaneAuditLog {
                     }
                 }
             }
-            if let Some(brk) = self.seed_chain(host, scope, &bodies)? {
+            out.records += good_bodies.len();
+            if let Some(brk) = self.seed_chain(host, scope, &good_bodies)? {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,

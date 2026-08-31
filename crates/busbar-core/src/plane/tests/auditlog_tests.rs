@@ -505,9 +505,9 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let _g = tracing::subscriber::set_default(subscriber);
-        // The seam's all-or-nothing seed faults on the undecodable body (pre-existing), but the
-        // ring-seeding loop runs FIRST and both seeds the good row and REPORTS the bad one — the
-        // behaviour under test. The restore result itself is not what this test pins.
+        // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
+        // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
+        // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
         let _ = h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()));
     }
 
@@ -530,5 +530,59 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
         "the undecodable admin audit row must emit PLANE_AUDIT_ROW_UNREADABLE (BUSBAR-2047) at ERROR \
          at its ring-seeding skip site — a silent skip on a tamper-evidence surface is the gap being \
          closed; captured: {diags:?}"
+    );
+}
+
+/// GOVERNANCE-CHAIN SEQ-1 FORK CLOSED (F-AUDIT1): an undecodable sibling row must NOT abort the whole
+/// admin-audit restore. Previously the ring-seed loop tolerated the bad row but the SEAM chain seed
+/// was still handed the FULL body set — including the undecodable one — so it faulted and `?`-aborted
+/// `restore_from_store`, leaving the host-side chain position UNSEEDED. The next mutation then minted
+/// seq 1 again, FORKING the governance hash-chain (durability loss). The fix filters the seam seed to
+/// the decodable bodies (mirroring the per-call log), so one bad row can neither abort the restore nor
+/// fork the chain. This test pins BOTH: the restore returns Ok, and the chain resumes at seq 2.
+#[test]
+fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
+    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res, out, pr) = (1_700_001_100u64, "hook:fork", "applied", "admin");
+
+    // Process 1: one GOOD genesis mutation persists a decodable neutral body to plane_records.
+    let h1 = AuditTestHarness::over(store.clone());
+    let (s1, _p1, _h1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
+    assert_eq!(s1, 1, "the good record is genesis");
+
+    // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
+    store
+        .append_plane_record(&busbar_api::PlaneRecord {
+            kind: KIND_AUDIT.to_string(),
+            id: ADMIN_LOG.to_string(),
+            parent: Some(ADMIN_LOG.to_string()),
+            seq: 2,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: b"{ not an audit body".to_vec(),
+        })
+        .unwrap();
+
+    // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must
+    // NOT abort the restore (before the fix this `?`-aborted and returned Err → the chain forked).
+    let h2 = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h2
+        .host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+        .expect(
+            "one undecodable row must NOT abort the whole restore and fork the governance chain",
+        );
+    assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
+    assert_eq!(
+        restored.records, 1,
+        "only the decodable row is a restored record"
+    );
+
+    // The host-side chain position was seeded from the GOOD genesis, so the NEXT mutation continues
+    // the chain at seq 2 — NOT a fork back at seq 1. This is the durability guarantee under test.
+    let (s2, _p2, _h2) = h2.emit_full(ADMIN_LOG, audit_suffix(ts + 1, "hook.next", res, out, pr));
+    assert_eq!(
+        s2, 2,
+        "the chain resumes after the good genesis; an undecodable sibling must not fork it to seq 1"
     );
 }
