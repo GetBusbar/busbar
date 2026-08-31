@@ -180,3 +180,26 @@ fn bedrock_titan_image_carries_size_and_quality() {
     );
     assert_eq!(back.quality.as_deref(), Some("premium"));
 }
+
+// L5: the arrival `bedrock_converse`/`_stream` reject arm (now routed through `finish_rejected` for
+// pre-routing accounting consistency) is DEAD only because `resolve_operation` yields `Some(CHAT)`
+// unconditionally for a converse path — regardless of body. This pins that forcing invariant: if a
+// future change lets converse resolve to `None`, this fails and the (now-consistent) reject arm
+// becomes live and correctly accounted.
+#[test]
+fn converse_resolves_to_chat_unconditionally() {
+    let h = BedrockRequestHandler;
+    for body in [b"".as_slice(), b"{}", b"garbage-not-json", br#"{"query":"x","documents":["y"]}"#]
+    {
+        assert_eq!(
+            h.resolve_operation("/model/anthropic.claude-3/converse", body),
+            Some(Operation::CHAT),
+            "converse must resolve to CHAT regardless of body"
+        );
+        assert_eq!(
+            h.resolve_operation("/model/anthropic.claude-3/converse-stream", body),
+            Some(Operation::CHAT),
+            "converse-stream must resolve to CHAT regardless of body"
+        );
+    }
+}

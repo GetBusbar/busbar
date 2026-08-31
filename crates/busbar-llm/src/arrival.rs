@@ -273,14 +273,29 @@ async fn bedrock_converse(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Pre-routing accounting, mirroring `bedrock_invoke` and the gemini arrival: a pre-charge exit
+    // must flow through `finish_rejected` so it stays visible to Prometheus/the webhook. The reject
+    // arm below is provably unreachable today (bedrock `resolve_operation` returns `Some(CHAT)`
+    // unconditionally for a `/converse` path — see `handler.rs`), but routing it consistently means a
+    // future resolver that CAN yield `None` accounts for the rejection instead of silently
+    // `ingress_error`-ing it, matching every other pre-routing reject in this file.
+    let started = Instant::now();
+    let charged_at = busbar_substrate::store::now();
     let Some(op) = request_handler(PROTO_BEDROCK)
         .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/converse"), &body))
     else {
-        return host.ingress_error(
+        return host.finish_rejected(
+            &ctx,
             PROTO_BEDROCK,
-            StatusCode::NOT_FOUND,
-            host.kind_not_found(),
-            "This endpoint does not support that operation.",
+            POOL_LABEL_UNRESOLVED,
+            started,
+            charged_at,
+            host.ingress_error(
+                PROTO_BEDROCK,
+                StatusCode::NOT_FOUND,
+                host.kind_not_found(),
+                "This endpoint does not support that operation.",
+            ),
         );
     };
     bedrock_ingress(host, ctx, model_id, op, false, headers, body).await
@@ -294,14 +309,26 @@ async fn bedrock_converse_stream(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // See `bedrock_converse`: the reject arm is unreachable today (converse-stream also resolves to
+    // `Some(CHAT)` unconditionally) but is routed through `finish_rejected` for pre-routing accounting
+    // consistency with `bedrock_invoke` and the gemini arrival.
+    let started = Instant::now();
+    let charged_at = busbar_substrate::store::now();
     let Some(op) = request_handler(PROTO_BEDROCK)
         .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/converse-stream"), &body))
     else {
-        return host.ingress_error(
+        return host.finish_rejected(
+            &ctx,
             PROTO_BEDROCK,
-            StatusCode::NOT_FOUND,
-            host.kind_not_found(),
-            "This endpoint does not support that operation.",
+            POOL_LABEL_UNRESOLVED,
+            started,
+            charged_at,
+            host.ingress_error(
+                PROTO_BEDROCK,
+                StatusCode::NOT_FOUND,
+                host.kind_not_found(),
+                "This endpoint does not support that operation.",
+            ),
         );
     };
     bedrock_ingress(host, ctx, model_id, op, true, headers, body).await
