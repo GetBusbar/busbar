@@ -2355,6 +2355,27 @@ pub const PLANE_JOURNAL_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
+pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
+    code: 2047,
+    class: Class::Audit,
+    slug: "plane-audit-row-unreadable",
+    title: "Persisted admin audit record could not be decoded on restore (skipped, not dropped)",
+    severity: Severity::Actionable,
+    summary:
+        "A persisted admin audit record could not be decoded at boot on the neutral `plane_records` \
+              path — a body from a store format no released build wrote, or a corrupt or tampered \
+              row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole \
+              restore, but the skip is reported here so a silently lost evidence row on this \
+              tamper-evidence surface is never invisible. On the admin audit log an undecodable row \
+              may be tamper evidence, not merely a format mismatch.",
+    action:
+        "Treat the durable governance store as suspect: if rows are unreadable on a store a released \
+             build wrote, capture it for forensic review before it is overwritten and restore from a \
+             trusted backup once the cause is understood.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const WEBHOOK_EXPORTER_DISABLED: Diagnostic = Diagnostic {
     code: 7070,
     class: Class::Plane,
@@ -3582,6 +3603,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_AUDITLOG_WRITE_FAILED,
     &PLANE_CALLLOG_ROW_UNREADABLE,
     &PLANE_JOURNAL_ROW_UNREADABLE,
+    &PLANE_AUDIT_ROW_UNREADABLE,
     &WEBHOOK_EXPORTER_DISABLED,
     &WEBHOOK_DELIVERY_NON_2XX,
     &WEBHOOK_DELIVERY_TRANSPORT_ERROR,

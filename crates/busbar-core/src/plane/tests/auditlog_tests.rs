@@ -430,3 +430,105 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     assert_eq!(ring[1].action, "hook.register");
     assert!(ring.iter().all(|e| !e.recorded_here));
 }
+
+/// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
+/// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose. The peer
+/// of the calllog/journal restore tests' capture layer.
+#[derive(Clone, Default)]
+struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S> tracing_subscriber::Layer<S> for DiagCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct V<'a>(&'a mut Option<String>);
+        impl tracing::field::Visit for V<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    *self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut diag = None;
+        event.record(&mut V(&mut diag));
+        if let Some(d) = diag {
+            self.0.lock().unwrap().push(d);
+        }
+    }
+}
+
+/// TAMPER-EVIDENCE SILENT-SKIP CLOSED (mirrors BUSBAR-2045/2046): an UNDECODABLE row in the admin
+/// audit `plane_records` — a corrupt or tampered body no released build wrote — must be reported
+/// LOUDLY at the ring-seeding skip site with a coded diagnostic (`PLANE_AUDIT_ROW_UNREADABLE`,
+/// BUSBAR-2047) at ERROR, not dropped in silence. A silently skipped evidence row on a tamper-evidence
+/// surface is exactly the class of gap this pins. The GOOD row still seeds the read model the
+/// `GET /audit` view serves — one bad sibling does not take the decodable rows down with it.
+#[test]
+fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
+
+    // Process 1: one GOOD mutation through the seam persists a decodable neutral body to plane_records.
+    let h1 = AuditTestHarness::over(store.clone());
+    let (s1, _p1, _hash1) =
+        h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
+    assert_eq!(s1, 1, "the good record is genesis");
+
+    // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
+    // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
+    store
+        .append_plane_record(&busbar_api::PlaneRecord {
+            kind: KIND_AUDIT.to_string(),
+            id: ADMIN_LOG.to_string(),
+            parent: Some(ADMIN_LOG.to_string()),
+            seq: 2,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: b"{ not an audit body".to_vec(),
+        })
+        .unwrap();
+
+    // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
+    // diagnostics-capturing subscriber. The undecodable row must FIRE the coded diagnostic at ERROR.
+    let h2 = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let cap = DiagCapture::default();
+    {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        // The seam's all-or-nothing seed faults on the undecodable body (pre-existing), but the
+        // ring-seeding loop runs FIRST and both seeds the good row and REPORTS the bad one — the
+        // behaviour under test. The restore result itself is not what this test pins.
+        let _ = h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()));
+    }
+
+    // The GOOD row still seeded the read model `GET /audit` serves.
+    let ring = h2
+        .log
+        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(
+        ring.len(),
+        1,
+        "the decodable row still seeds the ring despite an unreadable sibling"
+    );
+    assert_eq!(ring[0].seq, 1);
+    assert_eq!(ring[0].action, "hook.register");
+
+    // The undecodable row was reported LOUDLY, not skipped silently — a coded ERROR diagnostic.
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2047")),
+        "the undecodable admin audit row must emit PLANE_AUDIT_ROW_UNREADABLE (BUSBAR-2047) at ERROR \
+         at its ring-seeding skip site — a silent skip on a tamper-evidence surface is the gap being \
+         closed; captured: {diags:?}"
+    );
+}

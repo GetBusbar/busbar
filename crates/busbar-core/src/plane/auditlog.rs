@@ -249,6 +249,11 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
 pub(crate) struct AuditRestored {
     /// Records read back (the admin log has one scope, so this is the full restored ring bound).
     pub(crate) records: usize,
+    /// Rows the store returned that could NOT be decoded — a body from a store format no released
+    /// build wrote, or a corrupt/tampered row. COUNTED and SKIPPED per-record (never aborting the
+    /// restore), and reported LOUDLY at the skip site with a coded diagnostic. On this
+    /// tamper-evidence surface an unreadable row may be tamper evidence, not a mere format mismatch.
+    pub(crate) unreadable: usize,
     /// Chains that FAILED to verify. Tamper evidence. The records are still restored and the chain
     /// still resumes from the broken tail — refusing would let anyone who can write to the store erase
     /// history by corrupting one record — but the break is reported.
@@ -357,9 +362,28 @@ impl PlaneAuditLog {
                 store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.clone()))?;
             out.records += bodies.len();
             // Seed the read-model ring from the neutral bodies too (see `restore_legacy_table`).
+            // An undecodable body is SKIPPED and counted, never allowed to abort the restore — but
+            // the skip is reported LOUDLY at the site with a coded diagnostic (the peer of the
+            // chain-break report below), so a silently lost evidence row on this tamper-evidence
+            // surface can never be invisible; `unreadable` still carries the count back for the
+            // aggregate. The GOOD-row path is byte-identical: a decodable body is pushed exactly as
+            // before.
             for body in &bodies {
-                if let Ok(entry) = audit_entry_from_body(scope, body) {
-                    self.push_entry(entry);
+                match audit_entry_from_body(scope, body) {
+                    Ok(entry) => self.push_entry(entry),
+                    Err(e) => {
+                        out.unreadable += 1;
+                        crate::diagnostics::diag_error!(
+                            crate::diagnostics::PLANE_AUDIT_ROW_UNREADABLE,
+                            scope = %scope,
+                            error = %e,
+                            "a persisted admin audit record could NOT be decoded on restore; it is \
+                             being SKIPPED and counted rather than aborting the whole restore. The \
+                             evidence in this one row is lost — reported here, never skipped \
+                             silently, because on the admin audit log an undecodable row may be \
+                             tamper evidence."
+                        );
+                    }
                 }
             }
             if let Some(brk) = self.seed_chain(host, scope, &bodies)? {
@@ -538,8 +562,9 @@ pub(crate) fn register_and_migrate(
     let plane_store = PlaneStoreView::narrow(store.clone());
     crate::plane_host::with_dispatch_scope(app, |host, _vt| {
         match AUDIT_LOG.restore_from_store(host, plane_store.as_ref()) {
-            Ok(restored) if restored.records > 0 => tracing::info!(
+            Ok(restored) if restored.records > 0 || restored.unreadable > 0 => tracing::info!(
                 records = restored.records,
+                unreadable = restored.unreadable,
                 chain_breaks = restored.chain_breaks.len(),
                 "admin audit restored from the durable plane_records seam"
             ),

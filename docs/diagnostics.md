@@ -184,6 +184,17 @@ A scoped journal record could not be reframed at boot — a body from a store fo
 
 **What to do:** Note the scope. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the durable governance store for review.
 
+<a id="plane-audit-row-unreadable"></a>
+### BUSBAR-2047 — Persisted admin audit record could not be decoded on restore (skipped, not dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-audit-row-unreadable`
+
+A persisted admin audit record could not be decoded at boot on the neutral `plane_records` path — a body from a store format no released build wrote, or a corrupt or tampered row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole restore, but the skip is reported here so a silently lost evidence row on this tamper-evidence surface is never invisible. On the admin audit log an undecodable row may be tamper evidence, not merely a format mismatch.
+
+**What to do:** Treat the durable governance store as suspect: if rows are unreadable on a store a released build wrote, capture it for forensic review before it is overwritten and restore from a trusted backup once the cause is understood.
+
 ## 3xxx — Config
 
 <a id="config-overlay-not-writable"></a>
