@@ -1,5 +1,4 @@
 use super::translate_request_cross_protocol;
-use crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY;
 use crate::proto::Protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
@@ -212,7 +211,11 @@ fn pristine_same_proto_is_byte_identical_url_model() {
 #[test]
 fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
     // Use a body-model ingress so only #1 fires (the key is stripped on EVERY egress).
-    let body = json!({"model":"gpt-4o","messages":[],GEMINI_JSON_ARRAY_SHIM_KEY:true});
+    // The never-native array shim key, reached through the NEUTRAL registry accessor (it is a
+    // Gemini-declared marker; core names no dialect module to obtain it).
+    let gemini_array_shim_key = crate::proto::array_stream_shim_key_for("gemini")
+        .expect("gemini declares a json-array shim key");
+    let body = json!({"model":"gpt-4o","messages":[],(gemini_array_shim_key):true});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
     let out = shape_same_proto(Protocol::openai(), "openai", "gpt-4o", body);
     assert_ne!(
@@ -221,7 +224,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
     );
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert!(
-        parsed.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none(),
+        parsed.get(gemini_array_shim_key).is_none(),
         "#1: the never-native array shim key must be stripped from the egress body"
     );
 }

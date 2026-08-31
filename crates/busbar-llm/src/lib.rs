@@ -229,3 +229,10 @@ mod leaf_write_dispatch_tests;
 #[cfg(test)]
 #[path = "tests/proto/mod.rs"]
 mod relocated_proto_tests;
+
+/// The bedrock buffered-response → native ConverseStream eventstream synthesis suite, RELOCATED from
+/// `busbar-core`'s `proxy/tests/` (plane-extraction §5, Phase 1): it drives
+/// `bedrock::bedrock_response_to_eventstream`, a witnessed codec fn, so it lives beside that codec.
+#[cfg(test)]
+#[path = "tests/bedrock_eventstream_tests.rs"]
+mod bedrock_eventstream_tests;

@@ -2,9 +2,15 @@ use super::{
     client_fault_kind, extract_error_message, is_streaming_content_type, mid_stream_error_bytes,
     strip_router_shim_keys, strip_same_protocol_model_shim, MID_STREAM_GENERIC_DETAIL,
 };
-use crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY;
 use crate::proto::StatusClass;
 use serde_json::{json, Value};
+
+/// The gemini-declared never-native array shim key, reached through the NEUTRAL registry accessor
+/// (it is a Gemini-declared marker; core names no dialect module to obtain it).
+fn gemini_shim_key() -> &'static str {
+    crate::proto::array_stream_shim_key_for("gemini")
+        .expect("gemini declares a json-array shim key")
+}
 
 /// The gemini JSON-array path (and its SSE/eventstream + pre-first-byte twins):
 /// the client-facing mid-stream transport-error detail MUST be a static, vendor-neutral string —
@@ -53,8 +59,15 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
     }
     // The Gemini JSON-array path: a `google.rpc.Status` element whose message
     // is exactly the generic detail, with no transport/URL markers spliced in.
-    let mut framer = crate::proto::gemini::GeminiJsonArrayFramer::new();
-    let arr = framer.finish_with_error(500, "INTERNAL", MID_STREAM_GENERIC_DETAIL);
+    // The gemini array-stream framer, built through the NEUTRAL codec seam production uses
+    // (`decl_for(name).dialect().make_array_stream_framer()`); `finish_with_server_error` emits the
+    // same `google.rpc.Status` HTTP-500/`INTERNAL` element the concrete `finish_with_error(500,
+    // "INTERNAL", …)` did — core names no gemini type here.
+    let mut framer = crate::proto::decl_for("gemini")
+        .and_then(|d| d.dialect())
+        .and_then(|dc| dc.make_array_stream_framer())
+        .expect("gemini declares an array-stream framer");
+    let arr = framer.finish_with_server_error(MID_STREAM_GENERIC_DETAIL);
     let arr_text = String::from_utf8_lossy(&arr);
     assert!(arr_text.contains(MID_STREAM_GENERIC_DETAIL));
     for marker in ["https://", "reqwest", "hyper", "amazonaws"] {
@@ -277,8 +290,7 @@ fn test_is_streaming_content_type() {
 /// branch only) so a cross-protocol hop keeps the authoritative model `rewrite_model` installs.
 #[test]
 fn test_strip_router_shim_keys() {
-    let mut v =
-        json!({"model": "p", "stream": true, GEMINI_JSON_ARRAY_SHIM_KEY: true, "messages": []});
+    let mut v = json!({"model": "p", "stream": true, (gemini_shim_key()): true, "messages": []});
     strip_router_shim_keys(&mut v, "bedrock");
     assert_eq!(
         v["model"], "p",
@@ -286,19 +298,19 @@ fn test_strip_router_shim_keys() {
     );
     assert!(v.get("stream").is_none(), "bedrock: stream shim stripped");
     assert!(
-        v.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none(),
+        v.get(gemini_shim_key()).is_none(),
         "gemini array shim key stripped on every protocol"
     );
     assert!(v.get("messages").is_some(), "real fields retained");
 
-    let mut v = json!({"stream": true, GEMINI_JSON_ARRAY_SHIM_KEY: true});
+    let mut v = json!({"stream": true, (gemini_shim_key()): true});
     strip_router_shim_keys(&mut v, "gemini");
-    assert!(v.get("stream").is_none() && v.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none());
+    assert!(v.get("stream").is_none() && v.get(gemini_shim_key()).is_none());
 
     // OpenAI is a BODY-MODEL protocol: model/stream are genuine caller fields, never stripped —
     // but the gemini array key is never native to ANY protocol, so a client-smuggled copy is
     // still removed (closes the body-model framing-smuggle leak).
-    let mut v = json!({"model": "gpt-4o", "stream": true, GEMINI_JSON_ARRAY_SHIM_KEY: true});
+    let mut v = json!({"model": "gpt-4o", "stream": true, (gemini_shim_key()): true});
     strip_router_shim_keys(&mut v, "openai");
     assert_eq!(
         v["model"], "gpt-4o",
@@ -306,7 +318,7 @@ fn test_strip_router_shim_keys() {
     );
     assert_eq!(v["stream"], true, "openai stream is genuine, not stripped");
     assert!(
-        v.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none(),
+        v.get(gemini_shim_key()).is_none(),
         "gemini array key stripped even for body-model ingress"
     );
 }
@@ -341,8 +353,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     // installs the lane model → NO same-protocol model strip. Body must carry the egress model AND
     // keep the writer-authored `stream` (openai is a body-model egress, so the backend
     // reads `stream` from the body — stripping it made it answer non-streaming).
-    let mut v =
-        json!({"model": "router-placeholder", "stream": true, GEMINI_JSON_ARRAY_SHIM_KEY: true});
+    let mut v = json!({"model": "router-placeholder", "stream": true, (gemini_shim_key()): true});
     let ingress = "gemini";
     let egress = "openai";
     strip_router_shim_keys(&mut v, egress);
@@ -361,7 +372,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
         "writer-authored `stream` MUST survive for a body-model egress (gated on egress)"
     );
     assert!(
-        v.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none(),
+        v.get(gemini_shim_key()).is_none(),
         "gemini array key stripped cross-protocol"
     );
 

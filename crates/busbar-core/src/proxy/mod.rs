@@ -186,9 +186,9 @@ mod cross_protocol_extra_tests;
 #[path = "tests/response_model_fill_tests.rs"]
 mod response_model_fill_tests;
 
-#[cfg(test)]
-#[path = "tests/bedrock_eventstream_tests.rs"]
-mod bedrock_eventstream_tests;
+// `tests/bedrock_eventstream_tests.rs` RELOCATED to `busbar-llm/src/tests/` (plane-extraction §5,
+// Phase 1): it drives `bedrock::bedrock_response_to_eventstream` — a witnessed codec fn — so it moved
+// to the plugin beside the codec it exercises.
 
 #[cfg(test)]
 #[path = "tests/auth_style_tests.rs"]
