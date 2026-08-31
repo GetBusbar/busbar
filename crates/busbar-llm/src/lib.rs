@@ -227,18 +227,8 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
 /// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses
 /// to keep claiming dialects a build no longer compiles in — is a DIFFERENT fn pointer and fails here.
 #[cfg(test)]
-mod plane_decl_identity_tests {
-    #[test]
-    fn the_llm_plane_reads_the_registry_it_does_not_restate_it() {
-        let field: fn() -> &'static [&'static str] = super::PLANE_DECL.wire_format_names;
-        let reader: fn() -> &'static [&'static str] = busbar_core::proto::known_protocols;
-        assert_eq!(
-            field as usize, reader as usize,
-            "PLANE_DECL.wire_format_names must BE busbar_core::proto::known_protocols (the registry \
-             read), not a restated dialect list"
-        );
-    }
-}
+#[path = "tests/plane_decl_identity_tests.rs"]
+mod plane_decl_identity_tests;
 
 /// THE DETECTION TESTS, relocated here from `busbar-core` because they name dialects: they exercise
 /// the generic detection fold through THIS plugin's registered `claims` / `residual_claims`
