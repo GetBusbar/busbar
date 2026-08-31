@@ -18,6 +18,17 @@
 //! must run synchronously on the same thread as the closure (a `new_current_thread` runtime
 //! driven with `block_on` INSIDE the closure, never a multi-threaded runtime or an HTTP
 //! round-trip), or the capture comes back empty.
+//!
+//! SERIALIZATION (why every `WarnCapture` holds a process-global gate): although `with_default` is
+//! thread-local, `tracing`'s callsite-interest / max-level hint is cached PROCESS-GLOBALLY. When two
+//! `WarnCapture` tests run in PARALLEL (the default `cargo test` harness, and the busbar-llm test
+//! binary is large), a warn callsite first evaluated under a concurrent test's subscriber that does
+//! not want it can be cached "disabled", so a sibling `WarnCapture` intermittently sees an EMPTY
+//! capture — an intermittent flake. Every `WarnCapture` therefore holds a REENTRANT process-global
+//! gate (see [`GateHold`]) from construction until it (and its clones) drop, so at most one test's
+//! captures are live at a time. The gate is reentrant PER THREAD, so a single test may hold several
+//! `WarnCapture`s at once (e.g. a positive + a negative `cap`/`cap2`) without self-deadlocking; a
+//! DIFFERENT thread blocks until the holder fully releases.
 
 #[derive(Clone)]
 pub struct WarnCapture {
@@ -26,6 +37,9 @@ pub struct WarnCapture {
     /// DEBUG-and-above — used by tests of a diagnostic that was reclassified benign and now emits at
     /// `diag_debug!`, so the log-content coverage is preserved rather than deleted.
     max_level: tracing::Level,
+    /// The reentrant process-global serialization hold, released when this capture and all its
+    /// clones drop. See the module docs. `Arc` so a `clone()` shares ONE hold (does not re-acquire).
+    _gate: std::sync::Arc<GateHold>,
 }
 
 impl Default for WarnCapture {
@@ -33,6 +47,7 @@ impl Default for WarnCapture {
         Self {
             messages: std::sync::Arc::default(),
             max_level: tracing::Level::WARN,
+            _gate: GateHold::acquire(),
         }
     }
 }
@@ -44,6 +59,7 @@ impl WarnCapture {
         Self {
             messages: std::sync::Arc::default(),
             max_level: tracing::Level::DEBUG,
+            _gate: GateHold::acquire(),
         }
     }
 
@@ -113,6 +129,68 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         event.record(&mut vis);
         if let Ok(mut msgs) = self.messages.lock() {
             msgs.push(format!("{} {}", vis.message, vis.fields));
+        }
+    }
+}
+
+// ── The process-global reentrant serialization gate (see the module docs). ──────────────────────
+
+/// The gate's shared state: the current OWNER thread and its reentrancy count, or `None` when free.
+/// The mutex is held only for the O(1) acquire/release bookkeeping — NEVER across the code under
+/// test — so a panicking test cannot poison it.
+struct CaptureGate {
+    state: std::sync::Mutex<Option<(std::thread::ThreadId, usize)>>,
+    cv: std::sync::Condvar,
+}
+
+fn capture_gate() -> &'static CaptureGate {
+    static GATE: std::sync::OnceLock<CaptureGate> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| CaptureGate {
+        state: std::sync::Mutex::new(None),
+        cv: std::sync::Condvar::new(),
+    })
+}
+
+/// An RAII hold of the reentrant capture gate: one is minted per `WarnCapture` constructor and
+/// dropped when that capture (and every `clone()` of it) is gone, releasing one reentrant level.
+struct GateHold;
+
+impl GateHold {
+    /// Acquire one reentrant level of the process-global gate, blocking while a DIFFERENT thread
+    /// holds it; a re-acquire by the OWNER thread just bumps the count, so one test may hold several
+    /// captures at once without self-deadlocking.
+    fn acquire() -> std::sync::Arc<Self> {
+        let gate = capture_gate();
+        let me = std::thread::current().id();
+        let mut st = gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            match *st {
+                None => {
+                    *st = Some((me, 1));
+                    break;
+                }
+                Some((owner, n)) if owner == me => {
+                    *st = Some((owner, n + 1));
+                    break;
+                }
+                _ => st = gate.cv.wait(st).unwrap_or_else(|e| e.into_inner()),
+            }
+        }
+        std::sync::Arc::new(GateHold)
+    }
+}
+
+impl Drop for GateHold {
+    fn drop(&mut self) {
+        let gate = capture_gate();
+        let mut st = gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((owner, n)) = *st {
+            if n <= 1 {
+                *st = None;
+                gate.cv.notify_all();
+            } else {
+                *st = Some((owner, n - 1));
+            }
         }
     }
 }
