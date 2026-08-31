@@ -1023,16 +1023,20 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
     {
-        let noun = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
-            .map(|d| d.subject_noun)
-            .unwrap_or("endpoint");
+        // The config KEY and the noun are BOTH registry-supplied at runtime (`PlaneDecl.key` /
+        // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
+        // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
+        // the operator must fix.
+        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let key = decl.map(|d| d.key).unwrap_or("endpoint");
+        let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
-            "an endpoint plane ({noun}) is configured but auth.chain is empty, which serves that \
-             endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by \
-             one, so it runs with WILDCARD grants over every registered subject on that plane. It \
-             also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound \
-             credentials to. Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth \
-             plugin), or remove that endpoint block if this deployment does not serve that plane."
+            "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
+             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
+             runs with WILDCARD grants over every registered subject on that plane. It also leaves \
+             `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. \
+             Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth plugin), or \
+             remove the `{key}:` block if this deployment is not a {noun}."
         ));
     }
 
