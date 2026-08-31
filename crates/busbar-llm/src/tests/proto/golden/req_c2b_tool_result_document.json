@@ -1,0 +1,1 @@
+{"messages":[{"content":[{"text":"q"}],"role":"user"},{"content":[{"toolUse":{"input":{},"name":"s","toolUseId":"t1"}}],"role":"assistant"},{"content":[{"toolResult":{"content":[],"status":"success","toolUseId":"t1"}}],"role":"user"}]}

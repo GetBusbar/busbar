@@ -1,0 +1,1 @@
+{"finish_reason":"COMPLETE","id":"00000000-0000-4000-8000-000000000000","message":{"content":[{"text":"Hello there!","type":"text"}],"role":"assistant"},"model":"claude-sonnet-4","usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}

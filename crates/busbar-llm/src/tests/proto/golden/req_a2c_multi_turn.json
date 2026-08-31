@@ -1,0 +1,1 @@
+{"max_tokens":1024,"messages":[{"content":"You are terse.","role":"system"},{"content":"What is 2+2?","role":"user"},{"content":"4","role":"assistant"},{"content":"And squared?","role":"user"}],"model":"gpt-4o-mini","p":0.9,"stop_sequences":["END","STOP"],"stream":true,"temperature":0.7}

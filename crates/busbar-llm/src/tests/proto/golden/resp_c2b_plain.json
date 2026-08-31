@@ -1,0 +1,1 @@
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"text":"Hello there!"}],"role":"assistant"}},"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}

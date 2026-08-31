@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"city":"Paris"},"name":"get_weather"}}],"role":"model"},"finishReason":"STOP"}],"modelVersion":"gpt-4.1","responseId":"NORMALIZED","usageMetadata":{"candidatesTokenCount":20,"promptTokenCount":50,"totalTokenCount":70}}

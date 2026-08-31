@@ -1,0 +1,1 @@
+{"input":[{"content":[{"text":"transcribe this","type":"input_text"},{"file_data":"data:application/pdf;base64,JVBERi0=","filename":"spec.pdf","type":"input_file"}],"role":"user"}],"model":"gpt-4o-mini","stream":false}

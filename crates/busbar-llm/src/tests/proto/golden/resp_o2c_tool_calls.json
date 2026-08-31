@@ -1,0 +1,1 @@
+{"finish_reason":"TOOL_CALL","id":"00000000-0000-4000-8000-000000000000","message":{"content":[],"role":"assistant","tool_calls":[{"function":{"arguments":"{\"city\":\"Paris\"}","name":"get_weather"},"id":"call_XYZ","type":"function"}]},"model":"gpt-4o-mini","usage":{"tokens":{"input_tokens":50,"output_tokens":20}}}
