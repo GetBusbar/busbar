@@ -582,20 +582,16 @@ impl PlaneCallLog {
             // tolerated per-principal below; an unreadable record is the same class of defensive
             // robustness. The GOOD-record path is unchanged: with every body decodable, `bodies` is
             // `raw` in order, and the seed is byte-identical.
+            // Counted, not logged from here: this file is a coded-diagnostics-only module (a bare
+            // `tracing::error!` is rejected by the migrated-files lint), and the boot RestoredSummary
+            // logger is registry-owned. The count rides back on `Restored.unreadable` — the same
+            // count-here/report-at-the-wrapper split `audit::journal::restore_scoped` uses — so the
+            // skip is surfaced, never truly silent.
             let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(raw.len());
             for body in raw {
                 match reframe_call(principal, &body) {
                     Ok(_) => bodies.push(body),
-                    Err(e) => {
-                        out.unreadable += 1;
-                        tracing::error!(
-                            principal = %principal,
-                            error = %e,
-                            "a persisted per-call record could NOT be decoded on restore; it is being \
-                             skipped and counted rather than aborting the whole rehydrate. The other \
-                             records for this principal are still restored."
-                        );
-                    }
+                    Err(_) => out.unreadable += 1,
                 }
             }
             out.records += bodies.len();
