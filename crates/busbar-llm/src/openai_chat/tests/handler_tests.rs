@@ -695,3 +695,43 @@ fn transcription_vtt_round_trips_text_plain_not_json_wrapped() {
         "the raw WEBVTT body must round-trip verbatim, not be JSON-wrapped"
     );
 }
+
+// M1: the embeddings `user` abuse-tracking signal is read into the IR (`read_embeddings_request`)
+// but the writer formerly never emitted it, so an openai->openai embeddings passthrough silently
+// stripped the caller's `user`. Fails pre-fix: `write_embeddings_request` emitted no `user` key.
+#[test]
+fn embeddings_writer_round_trips_user() {
+    let req = EmbeddingsReq {
+        model: "text-embedding-3-small".into(),
+        input: EmbInput::Text(vec!["hello".into()]),
+        user: Some("abuse-tracker-42".into()),
+        ..Default::default()
+    };
+    let wire = write_embeddings_request(&req);
+    let v: Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(
+        v["user"],
+        json!("abuse-tracker-42"),
+        "user must be emitted on the embeddings wire: {v}"
+    );
+    let back = read_embeddings_request(&wire, "application/json").expect("re-read");
+    assert_eq!(
+        back.user.as_deref(),
+        Some("abuse-tracker-42"),
+        "user must round-trip through write->read"
+    );
+}
+
+#[test]
+fn embeddings_writer_omits_user_when_absent() {
+    let req = EmbeddingsReq {
+        model: "text-embedding-3-small".into(),
+        input: EmbInput::Text(vec!["hello".into()]),
+        ..Default::default()
+    };
+    let v: Value = serde_json::from_slice(&write_embeddings_request(&req)).unwrap();
+    assert!(
+        v.get("user").is_none(),
+        "an unset user must not be fabricated on the wire: {v}"
+    );
+}

@@ -540,6 +540,13 @@ pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     if let Some(d) = r.dimensions {
         body["dimensions"] = json!(d);
     }
+    // Carry the caller's `user` abuse-tracking signal (read into the IR by `read_embeddings_request`)
+    // so an openai->openai embeddings passthrough does not strip it — the writer previously emitted
+    // neither, silently dropping the field on the round trip. Emitted only when present so a request
+    // that never carried it gains no fabricated field.
+    if let Some(u) = &r.user {
+        body["user"] = json!(u);
+    }
     // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
     // it made a cross-protocol base64 embeddings request silently come back as float; the
     // response reader decodes both, so emitting the field completes the round trip.
