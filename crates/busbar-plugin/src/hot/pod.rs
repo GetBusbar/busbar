@@ -1175,7 +1175,9 @@ pub struct ReframeOut {
 
 /// The out-param a `journal_restore` writes (minor-9): the neutral COUNTS a boot rehydrate found —
 /// the [`crate::hot`]-neutral mirror of core's `Restored`. No scope names cross (a plane logs its own
-/// vocabulary from its own rows); only the four counts do.
+/// vocabulary from its own rows); only the counts do. The trailing `unreadable` count was appended
+/// (ABI-additive, size-guarded) so the neutral restore surfaces the same undecodable-row aggregate the
+/// per-row diagnostic already reports — without it the count was computed on the host and dropped.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RestoredHdr {
@@ -1194,6 +1196,11 @@ pub struct RestoredHdr {
     pub empty_scopes: u64,
     /// Chains that FAILED to verify (tamper evidence; still restored from the broken tail).
     pub chain_breaks: u64,
+    /// Rows the store returned that could NOT be decoded on restore — counted and SKIPPED per-record
+    /// (never aborting the rehydrate), reported loudly at the skip site with a coded diagnostic. This
+    /// aggregate rides back so the boot summary can log it too; a non-zero value on a store a released
+    /// build wrote is a corrupt/tampered or forward-format row worth forensic capture.
+    pub unreadable: u64,
 }
 
 /// The out-param a `journal_seed` writes (minor-9): whether the seeded chain verified, and WHERE it

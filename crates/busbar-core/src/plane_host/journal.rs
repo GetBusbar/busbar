@@ -757,6 +757,7 @@ pub(crate) extern "C-unwind" fn journal_restore(
             records: restored.records as u64,
             empty_scopes: restored.empty_scopes.len() as u64,
             chain_breaks: restored.chain_breaks.len() as u64,
+            unreadable: restored.unreadable as u64,
         };
         // SAFETY: non-null `out` is a writable `MaybeUninit<RestoredHdr>`; write only on the Ok path.
         unsafe { (*out).write(hdr) };

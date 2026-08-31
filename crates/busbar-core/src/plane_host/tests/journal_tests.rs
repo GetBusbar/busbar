@@ -210,7 +210,26 @@ extern "C-unwind" fn neutral_reframe(
 ) -> StatusClass {
     // SAFETY: a live borrowed body range for the call (ABI).
     let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-    let nb: NeutralBody = serde_json::from_slice(body).expect("neutral body decodes");
+    let nb: NeutralBody = match serde_json::from_slice(body) {
+        Ok(nb) => nb,
+        Err(_) => {
+            // An undecodable body: fail-closed like the production reframe (reframe_bridge), never
+            // panic. Still initialize `out` (the length-report discipline) so the caller can read it.
+            let o = ReframeOut {
+                size: core::mem::size_of::<ReframeOut>() as u32,
+                version: POD_VERSION,
+                digests_scope: 1,
+                _r: 0,
+                seq: 0,
+                prev_len: 0,
+                hash_len: 0,
+                suffix_len: 0,
+            };
+            // SAFETY: `out` is a live, writable slot (ABI).
+            unsafe { (*out).write(o) };
+            return StatusClass::Fault;
+        }
+    };
     let prev = nb.prev_hash.as_bytes();
     let hash = nb.hash.as_bytes();
     let suffix = &nb.content;
@@ -463,6 +482,71 @@ fn durable_append_two_and_verify(framing: AbiFraming) {
             2,
             "two rows read back"
         );
+    });
+}
+
+/// F5: the neutral `journal_restore` must SURFACE the undecodable-row aggregate, not compute it on the
+/// host and drop it. `restore_scoped` counts each unreadable body into `Restored.unreadable` and fires
+/// the per-row diagnostic, but `RestoredHdr` carried no field for the count, so the aggregate was
+/// write-only dead state on the RAM journal. With the count now on the header, a boot summary can log
+/// it. This registers a stream, persists ONE good record, injects a raw UNDECODABLE sibling body under
+/// the same scope, then asserts `journal_restore` reports `unreadable == 1` (and `records == 1`).
+#[test]
+fn journal_restore_surfaces_the_unreadable_row_count() {
+    use busbar_api::Store as _;
+    let store = Arc::new(GenericPlaneStore::new());
+    let app = durable_app_over(store.clone());
+    let kind_id = fresh_kind_id();
+    let scope = b"principal-x";
+    with_dispatch_scope(&app, |host, vt| {
+        register(host, vt, kind_id, AbiFraming::LengthPrefixed);
+
+        // One GOOD record — persisted to the store as a decodable neutral body.
+        let good = b"|ts1|good";
+        let s1 = (vt.journal_append_scoped.unwrap())(
+            host,
+            kind_id,
+            scope.as_ptr(),
+            scope.len(),
+            good.as_ptr(),
+            good.len(),
+        );
+        assert_eq!(s1, Seq(1), "the good record is genesis");
+
+        // A raw UNDECODABLE body under the SAME (kind, parent) — decodes as neither a neutral body nor
+        // a legacy row. The registered kind is `durable_test_event` (see `register`).
+        store
+            .append_plane_record(&busbar_api::PlaneRecord {
+                kind: "durable_test_event".to_string(),
+                id: String::from_utf8_lossy(scope).to_string(),
+                parent: Some(String::from_utf8_lossy(scope).to_string()),
+                seq: 2,
+                ts: 0,
+                disposition: busbar_api::PlaneDisposition::Active,
+                body: b"{ not a neutral body".to_vec(),
+            })
+            .unwrap();
+
+        let mut rout = MaybeUninit::<RestoredHdr>::uninit();
+        assert_eq!(
+            (vt.journal_restore.unwrap())(
+                host,
+                kind_id,
+                &mut rout as *mut MaybeUninit<RestoredHdr>,
+            ),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok published the slot.
+        let rhdr = unsafe { rout.assume_init() };
+        assert_eq!(
+            rhdr.unreadable, 1,
+            "the undecodable sibling must be surfaced on the restore header, not dropped"
+        );
+        assert_eq!(
+            rhdr.records, 1,
+            "only the decodable row is a restored record"
+        );
+        assert_eq!(rhdr.scopes, 1);
     });
 }
 
