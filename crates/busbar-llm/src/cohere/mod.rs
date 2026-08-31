@@ -5,7 +5,7 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
@@ -33,8 +33,8 @@ pub fn protocol() -> Protocol {
 /// COHERE'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the v2/v1 chat paths
 /// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
 /// 9). Lower strength binds tighter — the shared ladder positions.
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
         return Some(ClaimStrength(8));
     }
@@ -46,9 +46,9 @@ fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::
 
 /// COHERE'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: an
 /// exact `/v2/chat` names Cohere (rung 50).
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path == "/v2/chat" {
-        return Some(busbar_core::proto::ClaimStrength(50));
+        return Some(busbar_substrate::proto::ClaimStrength(50));
     }
     None
 }
@@ -65,12 +65,12 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::CohereRequestHandler),
     verbs: &[
-        busbar_core::operation::Operation::CHAT,
-        busbar_core::operation::Operation::EMBEDDINGS,
-        busbar_core::operation::Operation::RERANK,
+        busbar_api::operation::Operation::CHAT,
+        busbar_api::operation::Operation::EMBEDDINGS,
+        busbar_api::operation::Operation::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
     // reversibility marker itself the only distinguishing signal, which collides with a legitimate
@@ -113,7 +113,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "invalid api token",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,

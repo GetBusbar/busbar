@@ -862,7 +862,7 @@ fn write_error_maps_kind_vocabulary() {
         ("forbidden", ERR_TYPE_PERMISSION),
         ("invalid_request", ERR_TYPE_INVALID_REQUEST),
         (
-            busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
+            busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
             ERR_TYPE_INVALID_REQUEST,
         ),
     ] {
@@ -1414,44 +1414,44 @@ fn image_url_round_trips_through_writer() {
 fn stream_error_uses_enumerated_openai_type() {
     let cases = [
         (
-            busbar_core::breaker::StatusClass::RateLimit,
+            busbar_substrate::breaker::StatusClass::RateLimit,
             ERR_TYPE_RATE_LIMIT,
         ),
         (
-            busbar_core::breaker::StatusClass::Auth,
+            busbar_substrate::breaker::StatusClass::Auth,
             ERR_TYPE_AUTHENTICATION,
         ),
         (
-            busbar_core::breaker::StatusClass::Billing,
+            busbar_substrate::breaker::StatusClass::Billing,
             ERR_TYPE_INSUFFICIENT_QUOTA,
         ),
         (
-            busbar_core::breaker::StatusClass::ClientError,
+            busbar_substrate::breaker::StatusClass::ClientError,
             ERR_TYPE_INVALID_REQUEST,
         ),
         (
-            busbar_core::breaker::StatusClass::ContextLength,
+            busbar_substrate::breaker::StatusClass::ContextLength,
             ERR_TYPE_INVALID_REQUEST,
         ),
         (
-            busbar_core::breaker::StatusClass::ServerError,
+            busbar_substrate::breaker::StatusClass::ServerError,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_core::breaker::StatusClass::Overloaded,
+            busbar_substrate::breaker::StatusClass::Overloaded,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_core::breaker::StatusClass::Timeout,
+            busbar_substrate::breaker::StatusClass::Timeout,
             ERR_TYPE_SERVER_ERROR,
         ),
         (
-            busbar_core::breaker::StatusClass::Network,
+            busbar_substrate::breaker::StatusClass::Network,
             ERR_TYPE_SERVER_ERROR,
         ),
     ];
     for (class, want) in cases {
-        let ev = IrStreamEvent::Error(busbar_core::breaker::CanonicalSignal {
+        let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
             class,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
@@ -2025,8 +2025,8 @@ fn stream_usage_on_finish_chunk_still_captured() {
 fn stream_error_envelope_includes_null_code_and_param() {
     // The in-stream error body must match the native OpenAI shape (and this writer's non-stream
     // `write_error`): error.{message,type,code,param} with code/param JSON null.
-    let ev = IrStreamEvent::Error(busbar_core::breaker::CanonicalSignal {
-        class: busbar_core::breaker::StatusClass::RateLimit,
+    let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
+        class: busbar_substrate::breaker::StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
     });
@@ -2051,8 +2051,8 @@ fn stream_error_envelope_includes_null_code_and_param() {
 fn stream_error_shape_matches_write_error_shape() {
     // The set of keys in the in-stream error object must equal the non-stream `write_error`
     // envelope's key set — a divergence is itself a detectable proxy tell.
-    let ev = IrStreamEvent::Error(busbar_core::breaker::CanonicalSignal {
-        class: busbar_core::breaker::StatusClass::Auth,
+    let ev = IrStreamEvent::Error(busbar_substrate::breaker::CanonicalSignal {
+        class: busbar_substrate::breaker::StatusClass::Auth,
         provider_signal: Some("nope".to_string()),
         retry_after: None,
     });
@@ -2810,7 +2810,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
 fn stream_error_auth_event_carries_invalid_api_key_code() {
     let w = OpenAiWriter;
     let ev = IrStreamEvent::Error(IrError {
-        class: busbar_core::breaker::StatusClass::Auth,
+        class: busbar_substrate::breaker::StatusClass::Auth,
         provider_signal: Some("bad key".to_string()),
         retry_after: None,
     });
@@ -2830,7 +2830,7 @@ fn stream_error_auth_event_carries_invalid_api_key_code() {
 fn stream_error_billing_event_maps_to_insufficient_quota() {
     let w = OpenAiWriter;
     let ev = IrStreamEvent::Error(IrError {
-        class: busbar_core::breaker::StatusClass::Billing,
+        class: busbar_substrate::breaker::StatusClass::Billing,
         provider_signal: Some("over quota".to_string()),
         retry_after: None,
     });
@@ -3896,7 +3896,7 @@ fn test_remap_tool_call_index_is_0_based_per_call() {
 /// end-to-end there (the response is not funneled through the IR).
 #[test]
 fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
-    use busbar_core::ir::egress_prep::EgressPrep;
+    use busbar_substrate::ir::egress_prep::EgressPrep;
 
     fn prep() -> EgressPrep<'static> {
         EgressPrep {

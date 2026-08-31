@@ -14,12 +14,12 @@ use crate::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use crate::ir::image::{ImageReq, ImageResp};
 use crate::ir::moderation::{ModerationReq, ModerationResp};
 use crate::ir::rerank::{RerankReq, RerankResp};
-use busbar_core::billing::Billing;
-use busbar_core::handlers::{EgressWire, TranslatedResponse};
-use busbar_core::ir::facts::IrFacts;
-use busbar_core::ir::handle::sealed::Sealed;
-use busbar_core::ir::handle::IrHandle;
-use busbar_core::operation::Operation;
+use busbar_substrate::billing::Billing;
+use busbar_substrate::wire::{EgressWire, TranslatedResponse};
+use busbar_substrate::ir::facts::IrFacts;
+use busbar_substrate::ir::handle::sealed::Sealed;
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::Value;
 

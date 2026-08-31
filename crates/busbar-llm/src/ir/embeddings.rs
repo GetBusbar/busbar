@@ -9,7 +9,7 @@
 //! vectors AT ONCE (Cohere/Titan return float AND int8/binary), so vectors are keyed BY ENCODING in
 //! [`EmbeddingItem::vectors`] — a flat `Vec<f32>` would silently drop the others.
 
-use busbar_core::billing::{Billing, TokenUsage};
+use busbar_substrate::billing::{Billing, TokenUsage};
 use busbar_core::lossless::SourceScopedExtra;
 use std::collections::BTreeMap;
 
@@ -72,22 +72,22 @@ pub struct EmbeddingsReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE EMBEDDINGS FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`], the
+/// THE EMBEDDINGS FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`], the
 /// family-blind seam the shared pipeline (hook/gate/tap) reads a request through. It lives HERE, in
-/// the module that owns the IR, for the reason [`busbar_core::ir::invoke`]'s header states: one IR, one
+/// the module that owns the IR, for the reason [`busbar_substrate::ir::invoke`]'s header states: one IR, one
 /// walk, one file — never folded into `facts.rs`, which carries the CHAT family's walk and would
 /// become a cross-family superset if a second family joined it.
 ///
-/// Every CALLER-AUTHORED text field is projected to [`busbar_core::ir::facts::ContentItem::Text`] so a
+/// Every CALLER-AUTHORED text field is projected to [`busbar_substrate::ir::facts::ContentItem::Text`] so a
 /// `prompt: ro` screening gate sees it (the whole point of this change — an embeddings request was
 /// gate-blind before): each `input` string, and the Gemini retrieval `title` when present. Inputs
 /// that are present but UNSCREENABLE — a pre-tokenized token array, or an image reference — project
-/// [`busbar_core::ir::facts::ContentItem::Opaque`] (present-but-unscreenable), never silently nothing.
+/// [`busbar_substrate::ir::facts::ContentItem::Opaque`] (present-but-unscreenable), never silently nothing.
 /// `input_type`/`task_type`/`truncate`/`dimensions` are enum/numeric ROLES, not caller free-text,
 /// and stay out.
-impl busbar_core::ir::facts::IrFacts for EmbeddingsReq {
-    fn verb(&self) -> busbar_core::operation::Operation {
-        busbar_core::operation::Operation::EMBEDDINGS
+impl busbar_substrate::ir::facts::IrFacts for EmbeddingsReq {
+    fn verb(&self) -> busbar_api::operation::Operation {
+        busbar_api::operation::Operation::EMBEDDINGS
     }
 
     fn wants_stream(&self) -> bool {
@@ -98,10 +98,10 @@ impl busbar_core::ir::facts::IrFacts for EmbeddingsReq {
         self.user.as_deref()
     }
 
-    fn shape(&self) -> busbar_core::ir::facts::Shape {
-        let items = busbar_core::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
-        busbar_core::ir::facts::Shape {
+    fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+        let items = busbar_substrate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_substrate::ir::facts::Shape::counts_over(&items);
+        busbar_substrate::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -111,8 +111,8 @@ impl busbar_core::ir::facts::IrFacts for EmbeddingsReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
-        use busbar_core::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
+        use busbar_substrate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         let mut out = Vec::new();
         match &self.input {

@@ -5,7 +5,7 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
@@ -55,8 +55,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// tighter than the shared path suffixes), then the `:{action}` path verbs (rung 5), then the
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
-fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if h.contains_key("x-goog-api-key") {
         return Some(ClaimStrength(3));
     }
@@ -92,8 +92,8 @@ const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
 /// whole `/v1beta/models…` surface is Gemini-only (rung 10), and a `/v1/models/{id}` whose last
 /// segment carries a genuine Gemini action suffix is Gemini (rung 20, tighter than the OpenAI
 /// `/v1/models/` catch at rung 25).
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if path.starts_with("/v1beta/models") {
         return Some(ClaimStrength(10));
     }
@@ -123,14 +123,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::GeminiRequestHandler),
     verbs: &[
-        busbar_core::operation::Operation::CHAT,
-        busbar_core::operation::Operation::EMBEDDINGS,
-        busbar_core::operation::Operation::IMAGE,
-        busbar_core::operation::Operation::TRANSCRIPTION,
-        busbar_core::operation::Operation::SPEECH,
+        busbar_api::operation::Operation::CHAT,
+        busbar_api::operation::Operation::EMBEDDINGS,
+        busbar_api::operation::Operation::IMAGE,
+        busbar_api::operation::Operation::TRANSCRIPTION,
+        busbar_api::operation::Operation::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
@@ -171,7 +171,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -1847,7 +1847,7 @@ impl GeminiJsonArrayFramer {
     }
 }
 
-impl busbar_core::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
+impl busbar_substrate::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         GeminiJsonArrayFramer::feed(self, chunk)
     }

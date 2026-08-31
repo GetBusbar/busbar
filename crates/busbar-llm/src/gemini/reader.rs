@@ -1,7 +1,7 @@
 use super::*;
 
 impl ProtocolReader for GeminiReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         let cached = v.get("cachedContentTokenCount").and_then(|x| x.as_u64());
         // THINKING TOKENS ARE OUTPUT TOKENS — mirror `gemini_usage` exactly. `candidatesTokenCount`
@@ -42,7 +42,7 @@ impl ProtocolReader for GeminiReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError {
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the body once; both `provider_code` and `structured_type` are derived from the
         // same parsed value to avoid deserializing the JSON twice on every error response.
         let json = busbar_core::json::parse::<serde_json::Value>(body).ok();
@@ -111,7 +111,7 @@ impl ProtocolReader for GeminiReader {
                     || (lower.contains("exceeds the maximum")
                         && (lower.contains("token") || lower.contains("context")))
                 {
-                    Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                    Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
                 } else {
                     provider_code
                 }
@@ -182,7 +182,7 @@ impl ProtocolReader for GeminiReader {
             }
         };
 
-        busbar_core::breaker::RawUpstreamError {
+        busbar_substrate::breaker::RawUpstreamError {
             http_status,
             provider_code,
             structured_type,
@@ -201,7 +201,7 @@ impl ProtocolReader for GeminiReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }

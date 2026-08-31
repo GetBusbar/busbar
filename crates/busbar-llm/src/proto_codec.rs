@@ -22,7 +22,7 @@ use busbar_core::proto::{
 
 use crate::ir::IrStreamEvent;
 #[cfg(any(test, feature = "test-support"))]
-use busbar_core::breaker::CanonicalSignal;
+use busbar_substrate::breaker::CanonicalSignal;
 
 /// THE TOP-LEVEL body keys the six LLM chat dialects point-read on the pre-materialized path: `model`
 /// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
@@ -56,7 +56,7 @@ pub trait ProtocolReader: Send + Sync {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError;
+    ) -> busbar_substrate::breaker::RawUpstreamError;
 
     /// Classify a response into a canonical signal in one call (convenience over
     /// `extract_error` + `normalize_raw_error`). The release path runs those two stages explicitly
@@ -71,7 +71,7 @@ pub trait ProtocolReader: Send + Sync {
     /// unified on.
     #[cfg(any(test, feature = "test-support"))]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        busbar_core::breaker::normalize_raw_error(
+        busbar_substrate::breaker::normalize_raw_error(
             &self.extract_error(status, body),
             &std::collections::HashMap::new(),
         )
@@ -84,10 +84,10 @@ pub trait ProtocolReader: Send + Sync {
     /// slice is NOT a well-formed document (its opening structure — or a string it cut through — is
     /// gone), so the normal full-document parse reliably fails on it; instead isolate the
     /// self-contained trailing `usage` object and map THIS dialect's fields onto the neutral
-    /// [`busbar_core::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
+    /// [`busbar_substrate::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
     /// object (the caller treats that as "bill zero, counted+warned"). Defaulted to `None` so a
     /// non-LLM dialect need not implement it.
-    fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         None
     }
 
@@ -864,7 +864,7 @@ impl DialectCodec for DialectRef {
             })
             .unwrap_or(false)
     }
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         protocol_for(self.0).and_then(|p| p.reader().recover_truncated_usage(tail))
     }
     fn ingress_response_request_id(
@@ -909,13 +909,13 @@ impl DialectCodec for DialectRef {
                 .attach_error_response_headers(headers, kind, envelope);
         }
     }
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         match protocol_for(self.0) {
             Some(p) => p.reader().extract_error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 body,
             ),
-            None => busbar_core::breaker::RawUpstreamError::from_status(status),
+            None => busbar_substrate::breaker::RawUpstreamError::from_status(status),
         }
     }
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {

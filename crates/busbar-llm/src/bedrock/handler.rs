@@ -6,11 +6,10 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_core::handlers::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
-};
-use busbar_core::ir::handle::IrHandle;
-use busbar_core::operation::Operation;
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::wire::{EgressCtx, WireBody};
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -25,7 +24,7 @@ static RERANK: BedrockRerank = BedrockRerank;
 
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
-static CELLS: &[busbar_core::handlers::Cell] = &[
+static CELLS: &[busbar_substrate::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::IMAGE, &IMG),
@@ -37,7 +36,7 @@ impl RequestHandler for BedrockRequestHandler {
         "bedrock"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_core::handlers::cell_of(CELLS, op)
+        busbar_substrate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
@@ -96,7 +95,7 @@ struct BedrockImage;
 impl OperationHandler for BedrockImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
@@ -175,7 +174,7 @@ struct BedrockEmbeddings;
 impl OperationHandler for BedrockEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -270,7 +269,7 @@ struct BedrockRerank;
 impl OperationHandler for BedrockRerank {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     fn read_request(
@@ -472,7 +471,7 @@ pub(crate) fn read_embeddings_response(
     let usage = v
         .get("inputTextTokenCount")
         .and_then(Value::as_u64)
-        .map(|n| busbar_core::billing::TokenUsage {
+        .map(|n| busbar_substrate::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

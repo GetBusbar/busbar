@@ -1,7 +1,7 @@
 use super::*;
 
 impl ProtocolReader for OpenAiReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         let cached = v
@@ -26,7 +26,7 @@ impl ProtocolReader for OpenAiReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError {
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the error body exactly once and derive both fields from the single tree, mirroring
         // the single-parse pattern in AnthropicReader::extract_error. The previous code parsed the
         // same bytes twice (once per field), doubling alloc/CPU on every non-2xx response.
@@ -74,13 +74,13 @@ impl ProtocolReader for OpenAiReader {
                 .unwrap_or("")
                 .to_lowercase();
             if openai_context_length_prose_scan(&message) {
-                Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }
         });
 
-        busbar_core::breaker::RawUpstreamError {
+        busbar_substrate::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,

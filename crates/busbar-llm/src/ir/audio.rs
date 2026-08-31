@@ -11,7 +11,7 @@
 //! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
 
-use busbar_core::billing::Billing;
+use busbar_substrate::billing::Billing;
 use busbar_core::lossless::SourceScopedExtra;
 use busbar_core::media::MediaBlob;
 
@@ -67,15 +67,15 @@ pub struct TranscriptionReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE TRANSCRIPTION FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. The audio
-/// blob is BINARY and unscreenable → one [`busbar_core::ir::facts::ContentItem::Opaque`]
+/// THE TRANSCRIPTION FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`]. The audio
+/// blob is BINARY and unscreenable → one [`busbar_substrate::ir::facts::ContentItem::Opaque`]
 /// (present-but-unscreenable, never silently empty). The `prompt` is caller free-text forwarded
 /// upstream — reachable ONLY through the byte-aware hook seam (a multipart body never reaches the
-/// `&Value` path; FATAL-1) → [`busbar_core::ir::facts::ContentItem::Text`]. `source_language`/
+/// `&Value` path; FATAL-1) → [`busbar_substrate::ir::facts::ContentItem::Text`]. `source_language`/
 /// `target_language`/`response_format` are enum roles, not content.
-impl busbar_core::ir::facts::IrFacts for TranscriptionReq {
-    fn verb(&self) -> busbar_core::operation::Operation {
-        busbar_core::operation::Operation::TRANSCRIPTION
+impl busbar_substrate::ir::facts::IrFacts for TranscriptionReq {
+    fn verb(&self) -> busbar_api::operation::Operation {
+        busbar_api::operation::Operation::TRANSCRIPTION
     }
 
     fn wants_stream(&self) -> bool {
@@ -86,10 +86,10 @@ impl busbar_core::ir::facts::IrFacts for TranscriptionReq {
         None
     }
 
-    fn shape(&self) -> busbar_core::ir::facts::Shape {
-        let items = busbar_core::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
-        busbar_core::ir::facts::Shape {
+    fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+        let items = busbar_substrate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_substrate::ir::facts::Shape::counts_over(&items);
+        busbar_substrate::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -99,8 +99,8 @@ impl busbar_core::ir::facts::IrFacts for TranscriptionReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
-        use busbar_core::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
+        use busbar_substrate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         let mut out = Vec::new();
         if self.audio.is_some() {
@@ -162,14 +162,14 @@ pub struct SpeechReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. Every caller
-/// free-text field is projected to [`busbar_core::ir::facts::ContentItem::Text`]: the `input` to
+/// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`]. Every caller
+/// free-text field is projected to [`busbar_substrate::ir::facts::ContentItem::Text`]: the `input` to
 /// synthesize, the `instructions` style prompt when present (FATAL-2 — forwarded verbatim by both
 /// writers), and each multi-speaker NAME. The speaker VOICE and `response_format`/`speed` are
 /// provider knobs (voice ids, format enums), not caller free-text, and stay out.
-impl busbar_core::ir::facts::IrFacts for SpeechReq {
-    fn verb(&self) -> busbar_core::operation::Operation {
-        busbar_core::operation::Operation::SPEECH
+impl busbar_substrate::ir::facts::IrFacts for SpeechReq {
+    fn verb(&self) -> busbar_api::operation::Operation {
+        busbar_api::operation::Operation::SPEECH
     }
 
     fn wants_stream(&self) -> bool {
@@ -180,10 +180,10 @@ impl busbar_core::ir::facts::IrFacts for SpeechReq {
         None
     }
 
-    fn shape(&self) -> busbar_core::ir::facts::Shape {
-        let items = busbar_core::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
-        busbar_core::ir::facts::Shape {
+    fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+        let items = busbar_substrate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_substrate::ir::facts::Shape::counts_over(&items);
+        busbar_substrate::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -193,8 +193,8 @@ impl busbar_core::ir::facts::IrFacts for SpeechReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
-        use busbar_core::ir::facts::{ContentItem, Slot};
+    fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
+        use busbar_substrate::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let mut out = Vec::new();
         out.push(ContentItem::Text {

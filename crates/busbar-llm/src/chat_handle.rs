@@ -10,15 +10,14 @@
 //! warn strings and their order are unchanged.
 
 use crate::ir::{IrRequest, IrResponse};
-use busbar_core::billing::{Billing, TokenUsage};
-use busbar_core::handlers::{
-    CodecError, EgressWire, IngressReject, OperationHandler, TranslatedResponse,
-};
-use busbar_core::ir::egress_prep::EgressPrep;
-use busbar_core::ir::facts::IrFacts;
-use busbar_core::ir::handle::sealed::Sealed;
-use busbar_core::ir::handle::IrHandle;
-use busbar_core::operation::Operation;
+use busbar_substrate::billing::{Billing, TokenUsage};
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
+use busbar_substrate::wire::{EgressWire, TranslatedResponse};
+use busbar_substrate::ir::egress_prep::EgressPrep;
+use busbar_substrate::ir::facts::IrFacts;
+use busbar_substrate::ir::handle::sealed::Sealed;
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -421,7 +420,7 @@ impl ChatOperation {
 }
 
 impl OperationHandler for ChatOperation {
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error(self.0, status, body)
     }
 
@@ -445,10 +444,10 @@ impl OperationHandler for ChatOperation {
         &self,
         ingress_protocol: &str,
         body: &[u8],
-    ) -> Option<busbar_core::billing::TokenUsage> {
+    ) -> Option<busbar_substrate::billing::TokenUsage> {
         // Same-protocol usage tap (verbatim from the former `ChatOperation`; `crate::` re-pathed).
         let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
-            if busbar_core::handlers::usage_tap_decode_fail_should_warn(
+            if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
                 ingress_protocol,
                 "unknown_protocol",
             ) {
@@ -469,7 +468,7 @@ impl OperationHandler for ChatOperation {
         let v = match busbar_core::json::parse::<Value>(body) {
             Ok(v) => v,
             Err(_e) => {
-                if busbar_core::handlers::usage_tap_decode_fail_should_warn(
+                if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
                     ingress_protocol,
                     "bad_json",
                 ) {
@@ -493,7 +492,7 @@ impl OperationHandler for ChatOperation {
         match p.reader().read_response(&v) {
             Ok(ir) => Some(ir.usage.to_token_usage()),
             Err(e) => {
-                if busbar_core::handlers::usage_tap_decode_fail_should_warn(
+                if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
                     ingress_protocol,
                     "decode",
                 ) {

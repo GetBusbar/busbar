@@ -3,13 +3,13 @@
 
 //! `impl IrFacts for IrRequest` + its `project` helper — the chat IR's projection, relocated to
 //! busbar-llm with the concrete IR (G6 A4b). The neutral `IrFacts` trait + `Shape`/`ContentItem`/
-//! `Slot` stay in `busbar_core::ir::facts`; this impl is for the moved `crate::ir::IrRequest`.
+//! `Slot` stay in `busbar_substrate::ir::facts`; this impl is for the moved `crate::ir::IrRequest`.
 
 use super::{IrBlock, IrRequest, IrRole};
-use busbar_core::ir::facts::{
+use busbar_substrate::ir::facts::{
     ContentItem, IrFacts, Shape, Slot, LABEL_JSON, LABEL_REASONING, OPAQUE_CONTENT_MARKER,
 };
-use busbar_core::operation::Operation;
+use busbar_api::operation::Operation;
 use std::borrow::Cow;
 
 impl IrFacts for IrRequest {

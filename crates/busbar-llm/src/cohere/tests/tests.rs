@@ -1340,7 +1340,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
 
     // Generic infrastructure error -> ERROR.
     let infra = IrStreamEvent::Error(busbar_core::proto::IrError {
-        class: busbar_core::breaker::StatusClass::ServerError,
+        class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: Some("internal_server_error".to_string()),
         retry_after: None,
     });
@@ -1416,7 +1416,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
 
     // Content-moderation signal -> ERROR_TOXIC.
     let toxic = IrStreamEvent::Error(busbar_core::proto::IrError {
-        class: busbar_core::breaker::StatusClass::ClientError,
+        class: busbar_substrate::breaker::StatusClass::ClientError,
         provider_signal: Some("content_filter_safety".to_string()),
         retry_after: None,
     });
@@ -1438,7 +1438,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
 
     // An absent provider_signal still produces a native ERROR termination (never `type: error`).
     let bare = IrStreamEvent::Error(busbar_core::proto::IrError {
-        class: busbar_core::breaker::StatusClass::ServerError,
+        class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
     });
@@ -2145,10 +2145,10 @@ fn test_extract_error_synthesizes_context_length_in_production() {
 
         // The breaker must then route the canonical code to ContextLength (fail over, no penalty)
         // rather than treating the 400 as a plain ClientError.
-        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
+        let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
         assert_eq!(
             signal.class,
-            busbar_core::breaker::StatusClass::ContextLength,
+            busbar_substrate::breaker::StatusClass::ContextLength,
             "breaker must map the synthesized code to ContextLength for body {}",
             String::from_utf8_lossy(body)
         );
@@ -2168,10 +2168,10 @@ fn test_extract_error_non_context_length_message_preserved() {
         Some("invalid api key"),
         "a non-context-length message must be carried verbatim"
     );
-    let signal = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_ne!(
         signal.class,
-        busbar_core::breaker::StatusClass::ContextLength,
+        busbar_substrate::breaker::StatusClass::ContextLength,
         "a non-context-length error must not be classified as ContextLength"
     );
 }
@@ -2202,10 +2202,10 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a generic 'too long' message must not synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty);
+        let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &empty);
         assert_ne!(
             signal.class,
-            busbar_core::breaker::StatusClass::ContextLength,
+            busbar_substrate::breaker::StatusClass::ContextLength,
             "a generic 'too long' message must not classify as ContextLength: {}",
             String::from_utf8_lossy(body)
         );
@@ -2226,10 +2226,10 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a qualified 'too long' (context) message must synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty);
+        let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &empty);
         assert_eq!(
             signal.class,
-            busbar_core::breaker::StatusClass::ContextLength,
+            busbar_substrate::breaker::StatusClass::ContextLength,
             "a qualified 'too long' (context) message must classify as ContextLength: {}",
             String::from_utf8_lossy(body)
         );
@@ -4174,7 +4174,7 @@ fn test_rate_limit_body_mentioning_tokens_is_not_context_length() {
     );
 
     // End-to-end through the breaker: the canonical class is RateLimit, not ContextLength.
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(
             sig.class,
             StatusClass::RateLimit,
@@ -4199,7 +4199,7 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
         Some("context_length_exceeded"),
         "a 400 oversized-request body must still override to the canonical code"
     );
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(sig.class, StatusClass::ContextLength);
 
     let signal = reader.classify(StatusCode::BAD_REQUEST, body);

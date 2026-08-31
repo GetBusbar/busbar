@@ -124,7 +124,7 @@ fn transcription_read_response_captures_input_and_output_token_counts() {
         .expect("valid response");
     let r = ir;
     assert_eq!(r.text, "hello");
-    let Some(busbar_core::billing::Billing::Tokens(usage)) = r.usage else {
+    let Some(busbar_substrate::billing::Billing::Tokens(usage)) = r.usage else {
         panic!("expected token usage");
     };
     assert_eq!(usage.input, 11);
@@ -320,7 +320,7 @@ fn image_response_with_usage_metadata_bills_tokens() {
     .unwrap();
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
-        Some(busbar_core::billing::Billing::Tokens(t)) => {
+        Some(busbar_substrate::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 20);
             assert_eq!(t.output, 10);
         }
@@ -341,7 +341,7 @@ fn image_response_without_usage_bills_per_image() {
     .unwrap();
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
-        Some(busbar_core::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        Some(busbar_substrate::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
         other => panic!("per-image Imagen response must bill Images, got {other:?}"),
     }
 }
@@ -566,7 +566,7 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
     let ir = TranscriptionResp {
         text: "hi".into(),
-        usage: Some(busbar_core::billing::Billing::Duration { seconds: 12.5 }),
+        usage: Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
         ..Default::default()
     };
     let out = super::write_transcription_response(&ir).bytes;

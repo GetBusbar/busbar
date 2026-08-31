@@ -26,14 +26,14 @@ pub struct ModerationReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE MODERATION FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. Moderation
+/// THE MODERATION FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`]. Moderation
 /// input is EXACTLY the content to classify, so it is exactly what a screening gate must see: a
-/// `ModerationInput::Text` is caller free-text → [`busbar_core::ir::facts::ContentItem::Text`]; a
+/// `ModerationInput::Text` is caller free-text → [`busbar_substrate::ir::facts::ContentItem::Text`]; a
 /// `ModerationInput::ImageUrl` is an image reference busbar does not fetch or render →
-/// [`busbar_core::ir::facts::ContentItem::Opaque`] (MAJOR-5; chat-parity, present-but-unscreenable).
-impl busbar_core::ir::facts::IrFacts for ModerationReq {
-    fn verb(&self) -> busbar_core::operation::Operation {
-        busbar_core::operation::Operation::MODERATION
+/// [`busbar_substrate::ir::facts::ContentItem::Opaque`] (MAJOR-5; chat-parity, present-but-unscreenable).
+impl busbar_substrate::ir::facts::IrFacts for ModerationReq {
+    fn verb(&self) -> busbar_api::operation::Operation {
+        busbar_api::operation::Operation::MODERATION
     }
 
     fn wants_stream(&self) -> bool {
@@ -44,10 +44,10 @@ impl busbar_core::ir::facts::IrFacts for ModerationReq {
         None
     }
 
-    fn shape(&self) -> busbar_core::ir::facts::Shape {
-        let items = busbar_core::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
-        busbar_core::ir::facts::Shape {
+    fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+        let items = busbar_substrate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_substrate::ir::facts::Shape::counts_over(&items);
+        busbar_substrate::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -57,8 +57,8 @@ impl busbar_core::ir::facts::IrFacts for ModerationReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
-        use busbar_core::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
+        use busbar_substrate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         self.input
             .iter()

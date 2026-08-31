@@ -5,7 +5,7 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     bearer_error_code, openai_context_length_prose_scan, ERR_TYPE_AUTHENTICATION,
     ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED,
@@ -58,8 +58,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// OPENAI'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: `/v1/chat/completions`
 /// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
 /// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if path.ends_with("/v1/chat/completions") {
         return Some(ClaimStrength(7));
     }
@@ -78,8 +78,8 @@ fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::
 /// (rung 25, LOOSER than Gemini's `/v1/models/{id}:{action}` at rung 20, so a genuine Gemini action
 /// wins and only a colon-less or non-action id falls here) and an exact `/v1/chat/completions` (rung
 /// 55). The broad `/v1/models/` catch is what makes a colon-bearing OpenAI fine-tune id stay OpenAI.
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if path.starts_with("/v1/models/") {
         return Some(ClaimStrength(25));
     }
@@ -101,15 +101,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
-        busbar_core::operation::Operation::CHAT,
-        busbar_core::operation::Operation::EMBEDDINGS,
-        busbar_core::operation::Operation::MODERATION,
-        busbar_core::operation::Operation::IMAGE,
-        busbar_core::operation::Operation::TRANSCRIPTION,
-        busbar_core::operation::Operation::SPEECH,
+        busbar_api::operation::Operation::CHAT,
+        busbar_api::operation::Operation::EMBEDDINGS,
+        busbar_api::operation::Operation::MODERATION,
+        busbar_api::operation::Operation::IMAGE,
+        busbar_api::operation::Operation::TRANSCRIPTION,
+        busbar_api::operation::Operation::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
     native_tool_id_prefix: Some("call_"),
@@ -144,7 +144,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),

@@ -1858,7 +1858,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
         StatusClass::RateLimit
     );
     assert_eq!(
-        class_for_response_failed(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
+        class_for_response_failed(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
         StatusClass::ContextLength
     );
     assert_eq!(
@@ -1892,7 +1892,7 @@ fn test_read_response_failed_body_classifies_by_signal() {
             .read_response(&serde_json::json!({
                 "status": STATUS_FAILED,
                 "output": [],
-                "error": {"code": busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
+                "error": {"code": busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
             }))
             .expect_err("failed body must surface an IrError");
     assert_eq!(
@@ -4539,7 +4539,7 @@ fn test_write_error_maps_forward_transient_kinds() {
         assert!(v["error"]["code"].is_null(), "server_error code is null");
     }
     for kind in [
-        busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
+        busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
         "bad_request",
     ] {
         let v = writer.write_error(400, kind, "bad request");
@@ -6387,7 +6387,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     let mut req = ir;
     super::super::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_core::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai-responses",
             egress_requires_max_tokens: false,

@@ -934,7 +934,7 @@ fn responses_stream_failed_event_emitted() {
     let names = event_names(
         &w,
         crate::ir::IrStreamEvent::Error(busbar_core::proto::IrError {
-            class: busbar_core::breaker::StatusClass::ServerError,
+            class: busbar_substrate::breaker::StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
         }),

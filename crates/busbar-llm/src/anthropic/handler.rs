@@ -5,8 +5,9 @@
 //! its non-chat operations stay `None` = no-handler 404. Chat dispatches through the same registry as
 //! every other operation.
 
-use busbar_core::handlers::{EgressCtx, OperationHandler, RequestHandler};
-use busbar_core::operation::Operation;
+use busbar_substrate::handlers::{OperationHandler, RequestHandler};
+use busbar_substrate::wire::EgressCtx;
+use busbar_api::operation::Operation;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.
@@ -22,14 +23,14 @@ static CHAT: super::super::chat_handle::ChatOperation =
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
 /// verbs that are MCP's and A2A's rather than a special case: a protocol that does not speak a verb
 /// has no cell, so the pair is unrepresentable rather than refused at runtime.
-static CELLS: &[busbar_core::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_substrate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "anthropic"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_core::handlers::cell_of(CELLS, op)
+        busbar_substrate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.path_base {

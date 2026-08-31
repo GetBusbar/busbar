@@ -5,7 +5,7 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     bearer_error_code, CODE_INVALID_API_KEY, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
     ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
@@ -37,18 +37,18 @@ pub fn protocol() -> Protocol {
 
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path.ends_with("/v1/responses") {
-        return Some(busbar_core::proto::ClaimStrength(10));
+        return Some(busbar_substrate::proto::ClaimStrength(10));
     }
     None
 }
 
 /// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
 /// an exact `/v1/responses` (rung 60).
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path == "/v1/responses" {
-        return Some(busbar_core::proto::ClaimStrength(60));
+        return Some(busbar_substrate::proto::ClaimStrength(60));
     }
     None
 }
@@ -65,9 +65,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         Some(&CODEC)
     },
     handler: Some(&handler::ResponsesRequestHandler),
-    verbs: &[busbar_core::operation::Operation::CHAT],
+    verbs: &[busbar_api::operation::Operation::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
@@ -101,7 +101,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
     // resolves to the OpenAI Chat envelope.
     models_list_envelope: None,
@@ -513,7 +513,7 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+        busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
             StatusClass::ContextLength
         }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,

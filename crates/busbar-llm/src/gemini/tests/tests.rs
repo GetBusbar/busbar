@@ -1201,7 +1201,7 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
     );
     // Normalize against an EMPTY error_map → must still land on Auth → HardDown.
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::Auth),
         "bad Gemini key must classify as Auth, got {:?}",
@@ -1209,8 +1209,8 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
     );
     assert!(
         matches!(
-            busbar_core::breaker::classify(&sig),
-            busbar_core::breaker::Disposition::HardDown
+            busbar_substrate::breaker::classify(&sig),
+            busbar_substrate::breaker::Disposition::HardDown
         ),
         "a dead credential must HardDown the lane so it parks and fails over"
     );
@@ -1226,7 +1226,7 @@ fn test_extract_error_bad_api_key_permission_denied_is_auth() {
     assert_eq!(raw.http_status, 401);
     assert_eq!(raw.provider_code.as_deref(), Some("auth"));
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(matches!(sig.class, StatusClass::Auth));
 }
 
@@ -1250,7 +1250,7 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
         "a generic INVALID_ARGUMENT must keep its bare status code, not become auth"
     );
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "a generic validation 400 must stay ClientError, got {:?}",
@@ -1258,8 +1258,8 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_core::breaker::classify(&sig),
-            busbar_core::breaker::Disposition::ClientFault
+            busbar_substrate::breaker::classify(&sig),
+            busbar_substrate::breaker::Disposition::ClientFault
         ),
         "a generic validation 400 must stay a no-penalty ClientFault"
     );
@@ -1713,7 +1713,7 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
         "the bare status code must be preserved, not synthesized to auth"
     );
     let empty_map = std::collections::HashMap::new();
-    let sig = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &empty_map);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "must stay ClientError, got {:?}",
@@ -1721,8 +1721,8 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_core::breaker::classify(&sig),
-            busbar_core::breaker::Disposition::ClientFault
+            busbar_substrate::breaker::classify(&sig),
+            busbar_substrate::breaker::Disposition::ClientFault
         ),
         "must stay a no-penalty ClientFault"
     );
@@ -6204,7 +6204,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_core::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "openai",
             egress_requires_max_tokens: false,
@@ -6279,7 +6279,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_core::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "gemini",
             egress_requires_max_tokens: false,
@@ -6345,7 +6345,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_core::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai",
             egress_requires_max_tokens: false,
@@ -6418,7 +6418,7 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
     };
     super::super::chat_handle::chat_prepare_for_egress(
         &mut ir_req,
-        &busbar_core::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: true,
             ingress_protocol: "gemini",
             egress_requires_max_tokens: false,

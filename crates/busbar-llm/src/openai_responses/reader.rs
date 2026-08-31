@@ -1,7 +1,7 @@
 use super::*;
 
 impl ProtocolReader for ResponsesReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         let cached = v
@@ -26,7 +26,7 @@ impl ProtocolReader for ResponsesReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError {
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the error body ONCE and pull both fields from the single JSON tree, rather than
         // re-parsing the same bytes per field (matches the anthropic.rs pattern; error paths are
         // already degraded — avoid the extra parse+alloc on every non-2xx response).
@@ -70,13 +70,13 @@ impl ProtocolReader for ResponsesReader {
             }
             let lower = String::from_utf8_lossy(body).to_lowercase();
             if super::openai_family::openai_context_length_prose_scan(&lower) {
-                Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }
         });
 
-        busbar_core::breaker::RawUpstreamError {
+        busbar_substrate::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,

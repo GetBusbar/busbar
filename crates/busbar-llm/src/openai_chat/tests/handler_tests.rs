@@ -70,7 +70,7 @@ fn transcription_usage_tokens_round_trips() {
     // A cross-protocol transcript whose usage arrived as tokens (e.g. Gemini) → OpenAI token shape.
     let ir = crate::ir::audio::TranscriptionResp {
         text: "hi".into(),
-        usage: Some(Billing::Tokens(busbar_core::billing::TokenUsage {
+        usage: Some(Billing::Tokens(busbar_substrate::billing::TokenUsage {
             input: 11,
             output: 3,
             ..Default::default()
@@ -188,7 +188,7 @@ fn mime_type_sanitizer_strips_header_injection() {
 fn total_tokens_saturate_on_upstream_overflow() {
     // The three egress token sums must saturate (operands are upstream-controlled), matching
     // the billing.rs invariant — bare `+` would panic in debug / wrap to 0 in release.
-    use busbar_core::billing::{Billing, TokenUsage};
+    use busbar_substrate::billing::{Billing, TokenUsage};
     let huge = TokenUsage {
         input: u64::MAX,
         output: 5,
@@ -528,7 +528,7 @@ fn image_response_with_usage_object_bills_tokens() {
     });
     let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
     match resp.billing() {
-        Some(busbar_core::billing::Billing::Tokens(t)) => {
+        Some(busbar_substrate::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 20);
             assert_eq!(t.output, 10);
         }
@@ -546,7 +546,7 @@ fn image_response_without_usage_bills_per_image() {
     });
     let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
     match resp.billing() {
-        Some(busbar_core::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        Some(busbar_substrate::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
         other => panic!("per-image response must bill Images, got {other:?}"),
     }
 }

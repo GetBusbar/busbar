@@ -1006,14 +1006,14 @@ impl IrUsage {
     }
 
     /// Project the four normalized token totals into the neutral, core-resident
-    /// [`busbar_core::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
+    /// [`busbar_substrate::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
     /// need not name this concrete IR type (G6 inversion). The per-modality/attribution buckets are
     /// deliberately not carried: the ledger and metering sinks read only these four totals, so the
     /// projection is billing-lossless (byte-identical to the previous `&IrUsage` consumers). Lives
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
-    /// `impl From<&IrUsage> for busbar_core::billing::TokenUsage`.
-    pub fn to_token_usage(&self) -> busbar_core::billing::TokenUsage {
-        busbar_core::billing::TokenUsage {
+    /// `impl From<&IrUsage> for busbar_substrate::billing::TokenUsage`.
+    pub fn to_token_usage(&self) -> busbar_substrate::billing::TokenUsage {
+        busbar_substrate::billing::TokenUsage {
             input: self.input_tokens,
             output: self.output_tokens,
             cache_read: self.cache_read_input_tokens,

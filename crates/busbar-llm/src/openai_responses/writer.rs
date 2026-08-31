@@ -1454,7 +1454,7 @@ impl ProtocolWriter for ResponsesWriter {
             // A context-length overflow is surfaced by proxy engine as `context_length_exceeded`; the
             // Responses vocabulary has no dedicated type for it (as openai_chat.rs also maps it), so it
             // folds into `invalid_request_error`. `bad_request` is the same client-error class.
-            busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => {
+            busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => {
                 ERR_TYPE_INVALID_REQUEST
             }
             "billing" | ERR_TYPE_INSUFFICIENT_QUOTA => ERR_TYPE_INSUFFICIENT_QUOTA,

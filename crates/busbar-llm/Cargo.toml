@@ -44,9 +44,21 @@ test-support = ["busbar-core/test-support"]
 openapi-schema = ["busbar-core/openapi-schema"]
 
 [dependencies]
-# The engine's public surface — the ONLY busbar crate this plugin may name. `default-features =
-# false` for the same reason the binary does it: the feature decisions are the composition root's.
+# The engine's public surface. `default-features = false` for the same reason the binary does it: the
+# feature decisions are the composition root's. Historically this was "the ONLY busbar crate this
+# plugin may name", but the plane-extraction (docs/design/plane-extraction-design.md §2.1/§6.2) makes
+# the NEUTRAL ABI — busbar-substrate / busbar-api — the surface a plane names; a plane MUST NOT reach
+# back into `busbar_core::` implementation. So the neutral utilities this plugin consumes (breaker
+# signals, the IR facts/handle types, the codec-cell matrix, wire body types, the billing usage type,
+# the operation enum, …) are now named at their canonical `busbar_substrate::` / `busbar_api::` home,
+# and `busbar-core` remains only for the residual engine items not yet relocated to the ABI.
 busbar-core = { path = "../busbar-core", default-features = false }
+# The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY and names them
+# instead of reaching through `busbar_core::` (the reverse-edge rule, plane-extraction §6.2). `busbar-
+# core` re-exports these same items, so a repoint from `busbar_core::X` to `busbar_substrate::X` /
+# `busbar_api::X` is by-identity (the very same type/const), i.e. byte-identical behaviour.
+busbar-substrate = { path = "../busbar-substrate", default-features = false }
+busbar-api = { path = "../api" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
 # reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
 # `--features busbar-timing/timing`.

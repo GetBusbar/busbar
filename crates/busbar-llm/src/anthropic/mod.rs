@@ -30,8 +30,8 @@ mod writer;
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
 #[cfg(test)]
-use busbar_core::breaker::CanonicalSignal;
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::CanonicalSignal;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
@@ -100,8 +100,8 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `anthropic-version`/`anthropic-beta` headers (rung 2), the `x-api-key` credential header that is
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
     }
@@ -116,9 +116,9 @@ fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::C
 
 /// ANTHROPIC'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/v1/messages` path (exact or model-prefixed) names Anthropic (rung 40).
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path == "/v1/messages" || path.ends_with("/v1/messages") {
-        return Some(busbar_core::proto::ClaimStrength(40));
+        return Some(busbar_substrate::proto::ClaimStrength(40));
     }
     None
 }
@@ -133,9 +133,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         Some(&CODEC)
     },
     handler: Some(&handler::AnthropicRequestHandler),
-    verbs: &[busbar_core::operation::Operation::CHAT],
+    verbs: &[busbar_api::operation::Operation::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_substrate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `toolu_…` is Anthropic's documented native tool-call id shape.
     native_tool_id_prefix: Some("toolu_"),
@@ -173,7 +173,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),

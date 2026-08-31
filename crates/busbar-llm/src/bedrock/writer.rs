@@ -6,7 +6,7 @@ use super::*;
 /// un-encodable byte yields an empty header set (AWS 403, surfaced as auth) rather than panicking.
 pub fn sigv4_sign_headers(
     key: &str,
-    ctx: &busbar_core::proto::SigningContext,
+    ctx: &busbar_substrate::proto::SigningContext,
 ) -> Vec<(HeaderName, HeaderValue)> {
     let mut parts = key.splitn(3, ':');
     let (access, secret, token) = match (parts.next(), parts.next(), parts.next()) {
@@ -36,7 +36,7 @@ pub fn sigv4_sign_headers(
     let mut signed = vec![
         (
             "content-type".to_string(),
-            busbar_core::proxy::APPLICATION_JSON.to_string(),
+            busbar_substrate::proxy::APPLICATION_JSON.to_string(),
         ),
         ("host".to_string(), ctx.host.to_string()),
         (

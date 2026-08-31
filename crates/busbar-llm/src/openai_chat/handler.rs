@@ -5,11 +5,10 @@
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
 use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
-use busbar_core::handlers::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
-};
-use busbar_core::ir::handle::IrHandle;
-use busbar_core::operation::Operation;
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::wire::{EgressCtx, WireBody};
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -41,7 +40,7 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// this table is the standard no-handler 404, which is what the enumerated `None` arm used to say:
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
-static CELLS: &[busbar_core::handlers::Cell] = &[
+static CELLS: &[busbar_substrate::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::MODERATION, &MODERATION),
     (Operation::EMBEDDINGS, &EMBEDDINGS),
@@ -66,12 +65,12 @@ impl RequestHandler for OpenAiRequestHandler {
         "openai"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_core::handlers::cell_of(CELLS, op)
+        busbar_substrate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // The fallback is unreachable in practice: a verb with no cell above never reaches egress
         // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.
-        busbar_core::handlers::path_of(PATHS, ctx.operation)
+        busbar_substrate::handlers::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_RERANK)
             .into()
     }
@@ -100,7 +99,7 @@ impl RequestHandler for OpenAiRequestHandler {
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
 use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use busbar_core::billing::Billing;
+use busbar_substrate::billing::Billing;
 use busbar_core::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
@@ -246,7 +245,7 @@ struct OpenAiTranscription;
 impl OperationHandler for OpenAiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
@@ -405,7 +404,7 @@ fn parse_transcription_usage(u: &Value) -> Option<Billing> {
             .and_then(Value::as_f64)
             .map(|seconds| Billing::Duration { seconds }),
         _ => u.get("input_tokens").and_then(Value::as_u64).map(|input| {
-            Billing::Tokens(busbar_core::billing::TokenUsage {
+            Billing::Tokens(busbar_substrate::billing::TokenUsage {
                 input,
                 output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
                 ..Default::default()
@@ -420,7 +419,7 @@ struct OpenAiSpeech;
 impl OperationHandler for OpenAiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -482,7 +481,7 @@ struct OpenAiEmbeddings;
 impl OperationHandler for OpenAiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -577,7 +576,7 @@ struct OpenAiImage;
 impl OperationHandler for OpenAiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
@@ -698,7 +697,7 @@ struct OpenAiModeration;
 impl OperationHandler for OpenAiModeration {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -1162,7 +1161,7 @@ pub(crate) fn read_embeddings_response(
                 .collect()
         })
         .unwrap_or_default();
-    let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
+    let usage = v.get("usage").map(|u| busbar_substrate::billing::TokenUsage {
         input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
         ..Default::default()
     });
@@ -1289,7 +1288,7 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
     // per-image models (dall-e, etc.) return no usage body at all. Without this the response was
     // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
     // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
-    let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
+    let usage = v.get("usage").map(|u| busbar_substrate::billing::TokenUsage {
         input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
         output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
         ..Default::default()

@@ -5,7 +5,7 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::{HeaderName, HeaderValue, StatusCode};
-use busbar_core::breaker::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
@@ -36,8 +36,8 @@ pub fn protocol() -> Protocol {
 /// `Authorization: AWS4-HMAC-SHA256…` signature is the TIGHTEST claim of any dialect (rung 1,
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
-fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
-    use busbar_core::proto::ClaimStrength;
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+    use busbar_substrate::proto::ClaimStrength;
     if h.get("authorization")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
@@ -56,11 +56,11 @@ fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::C
 /// BEDROCK'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/model/{id}/converse[-stream]` path names Bedrock (rung 30). The `/converse`-suffix requirement
 /// is load-bearing: a non-Converse `/model/…` path must NOT wear a Bedrock envelope.
-fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path.starts_with("/model/")
         && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
     {
-        return Some(busbar_core::proto::ClaimStrength(30));
+        return Some(busbar_substrate::proto::ClaimStrength(30));
     }
     None
 }
@@ -89,10 +89,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
-        busbar_core::operation::Operation::CHAT,
-        busbar_core::operation::Operation::EMBEDDINGS,
-        busbar_core::operation::Operation::IMAGE,
-        busbar_core::operation::Operation::RERANK,
+        busbar_api::operation::Operation::CHAT,
+        busbar_api::operation::Operation::EMBEDDINGS,
+        busbar_api::operation::Operation::IMAGE,
+        busbar_api::operation::Operation::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.

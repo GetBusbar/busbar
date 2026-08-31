@@ -999,7 +999,7 @@ impl StreamTranslate {
             // `emit_ir_event` exactly as every other event on this stream). `emit_ir_event` takes the
             // non-eventstream branch here (`ingress_eventstream` is false), so this stays SSE text.
             let err = IrError {
-                class: busbar_core::breaker::StatusClass::ServerError,
+                class: busbar_substrate::breaker::StatusClass::ServerError,
                 provider_signal: Some(ABORT_DETAIL.to_string()),
                 retry_after: None,
             };
@@ -1077,7 +1077,7 @@ impl StreamTranslator for StreamTranslate {
     fn finish(&mut self) -> Vec<u8> {
         self.finish()
     }
-    fn usage(&self) -> Option<busbar_core::billing::TokenUsage> {
+    fn usage(&self) -> Option<busbar_substrate::billing::TokenUsage> {
         self.usage().map(|u| u.to_token_usage())
     }
     fn terminal_error(&self) -> Option<&str> {

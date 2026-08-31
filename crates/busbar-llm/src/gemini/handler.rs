@@ -7,12 +7,11 @@ use crate::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_core::handlers::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
-};
-use busbar_core::ir::handle::IrHandle;
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::wire::{EgressCtx, WireBody};
+use busbar_substrate::ir::handle::IrHandle;
 use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
-use busbar_core::operation::Operation;
+use busbar_api::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -28,7 +27,7 @@ static SPEECH: GeminiSpeech = GeminiSpeech;
 
 /// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
-static CELLS: &[busbar_core::handlers::Cell] = &[
+static CELLS: &[busbar_substrate::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::IMAGE, &IMG),
@@ -49,7 +48,7 @@ impl RequestHandler for GeminiRequestHandler {
         "gemini"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_core::handlers::cell_of(CELLS, op)
+        busbar_substrate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         let m = ctx.model;
@@ -57,7 +56,7 @@ impl RequestHandler for GeminiRequestHandler {
         // override it via `path_base` (e.g. Vertex AI's `/v1/projects/{p}/locations/{l}/publishers/
         // google/models`). The `:verb` suffix and streaming selection are unchanged.
         let base = ctx.path_base.unwrap_or("/v1beta/models");
-        if let Some(action) = busbar_core::handlers::path_of(ACTIONS, ctx.operation) {
+        if let Some(action) = busbar_substrate::handlers::path_of(ACTIONS, ctx.operation) {
             return format!("{base}/{m}:{action}");
         }
         // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
@@ -144,7 +143,7 @@ struct GeminiTranscription;
 impl OperationHandler for GeminiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
@@ -224,7 +223,7 @@ pub(crate) fn write_transcription_response(r: &crate::ir::audio::TranscriptionRe
         }],
     });
     match &r.usage {
-        Some(busbar_core::billing::Billing::Tokens(t)) => {
+        Some(busbar_substrate::billing::Billing::Tokens(t)) => {
             body["usageMetadata"] = json!({
                 "promptTokenCount": t.input,
                 "candidatesTokenCount": t.output,
@@ -236,7 +235,7 @@ pub(crate) fn write_transcription_response(r: &crate::ir::audio::TranscriptionRe
         // would fabricate tokens and corrupt downstream token pricing. Instead carry the exact
         // seconds through under an explicit duration field so the billable quantity is not dropped
         // on an openai->gemini transcription hop (the closest faithful representation).
-        Some(busbar_core::billing::Billing::Duration { seconds }) => {
+        Some(busbar_substrate::billing::Billing::Duration { seconds }) => {
             body["usageMetadata"] = json!({ "audioDurationSeconds": seconds });
         }
         _ => {}
@@ -251,7 +250,7 @@ struct GeminiSpeech;
 impl OperationHandler for GeminiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
@@ -336,7 +335,7 @@ struct GeminiImage;
 impl OperationHandler for GeminiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
@@ -424,7 +423,7 @@ struct GeminiEmbeddings;
 impl OperationHandler for GeminiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -602,7 +601,7 @@ pub(crate) fn read_transcription_response(
         })
         .unwrap_or_default();
     let usage = v.get("usageMetadata").map(|u| {
-        busbar_core::billing::Billing::Tokens(busbar_core::billing::TokenUsage {
+        busbar_substrate::billing::Billing::Tokens(busbar_substrate::billing::TokenUsage {
             input: u
                 .get("promptTokenCount")
                 .and_then(Value::as_u64)
@@ -717,7 +716,7 @@ pub(crate) fn read_speech_response(
                     pcm,
                 }),
                 // Mark the synthesis billable so `billing()` is not `None` (see the raw-body arm).
-                usage: Some(busbar_core::billing::Billing::Flat),
+                usage: Some(busbar_substrate::billing::Billing::Flat),
                 ..Default::default()
             });
         }
@@ -731,7 +730,7 @@ pub(crate) fn read_speech_response(
         // TTS carries no usage object in its audio body; without a marker `billing()` returned
         // `None` and the request was billed nothing. Record a `Flat` marker so the request is at
         // least counted (the per-character/token quantity would need the request `input`).
-        usage: Some(busbar_core::billing::Billing::Flat),
+        usage: Some(busbar_substrate::billing::Billing::Flat),
         ..Default::default()
     })
 }
@@ -813,7 +812,7 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
     // as the Gemini transcription/embeddings usage readers).
     let usage = v
         .get("usageMetadata")
-        .map(|u| busbar_core::billing::TokenUsage {
+        .map(|u| busbar_substrate::billing::TokenUsage {
             input: u
                 .get("promptTokenCount")
                 .and_then(Value::as_u64)
@@ -917,7 +916,7 @@ pub(crate) fn read_embeddings_response(
         .get("usageMetadata")
         .and_then(|u| u.get("promptTokenCount"))
         .and_then(Value::as_u64)
-        .map(|n| busbar_core::billing::TokenUsage {
+        .map(|n| busbar_substrate::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

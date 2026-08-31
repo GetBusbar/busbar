@@ -1,7 +1,7 @@
 use super::*;
 
 impl ProtocolReader for CohereReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let tokens = v.get("tokens");
         Some(
@@ -26,7 +26,7 @@ impl ProtocolReader for CohereReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError {
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the body exactly once and derive both fields from the single binding — the Gemini
         // and Bedrock readers do the same, preserving the "parse once" invariant. Parsing twice
         // paid a pointless 2x CPU cost on every error response.
@@ -66,12 +66,12 @@ impl ProtocolReader for CohereReader {
             || status == StatusCode::PAYLOAD_TOO_LARGE)
             && Self::body_signals_context_length(body)
         {
-            Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
         } else {
             provider_code
         };
 
-        busbar_core::breaker::RawUpstreamError {
+        busbar_substrate::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -118,7 +118,7 @@ impl ProtocolReader for CohereReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }

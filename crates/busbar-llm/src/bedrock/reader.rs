@@ -1,7 +1,7 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         Some(
@@ -20,7 +20,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_core::breaker::RawUpstreamError {
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the body once. Bedrock error responses carry the human-readable
         // text in `message` and the machine-readable error type in `__type`
         // (e.g. `ValidationException`, `ThrottlingException`). The structured
@@ -70,7 +70,7 @@ impl ProtocolReader for BedrockReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains("token") || lower.contains("context")))
             {
-                Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 provider_code
             }
@@ -78,7 +78,7 @@ impl ProtocolReader for BedrockReader {
             provider_code
         };
 
-        busbar_core::breaker::RawUpstreamError {
+        busbar_substrate::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -107,7 +107,7 @@ impl ProtocolReader for BedrockReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
