@@ -14,19 +14,21 @@
 //! only.
 
 use axum::http::StatusCode;
-use busbar_core::proto::registry;
+// The protocol registry runtime relocated DOWN to `busbar_substrate::proto` (plane-extraction §6.2):
+// this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
+use busbar_substrate::proto as registry;
 use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec, IrError};
 
 // The six dialect NAMES, plane-local (no longer `busbar_core::proto::PROTO_*` — that was a backwards
 // reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
 // compile shapes (this plugin standalone, and `#[path]`-netted into `core::proto`), and reads as a
 // const pattern in the `protocol_for` match below. The values are the interned dialect names.
-const PROTO_ANTHROPIC: &str = "anthropic";
-const PROTO_OPENAI: &str = "openai";
-const PROTO_GEMINI: &str = "gemini";
-const PROTO_BEDROCK: &str = "bedrock";
-const PROTO_COHERE: &str = "cohere";
-const PROTO_RESPONSES: &str = "responses";
+pub(crate) const PROTO_ANTHROPIC: &str = "anthropic";
+pub(crate) const PROTO_OPENAI: &str = "openai";
+pub(crate) const PROTO_GEMINI: &str = "gemini";
+pub(crate) const PROTO_BEDROCK: &str = "bedrock";
+pub(crate) const PROTO_COHERE: &str = "cohere";
+pub(crate) const PROTO_RESPONSES: &str = "responses";
 
 use crate::ir::IrStreamEvent;
 #[cfg(any(test, feature = "test-support"))]
@@ -739,7 +741,7 @@ impl Protocol {
     /// protocol (every `Protocol` resolves from a declaration); the `Option` mirrors [`decl_for`]'s
     /// signature so a caller holding a `Protocol` reads a fact exactly as a by-name caller does.
     pub(crate) fn decl(&self) -> Option<&'static registry::ProtocolDecl> {
-        registry::decl_for(self.name)
+        registry::registry().decl(self.name)
     }
 
     /// Returns the reader for this protocol.
@@ -1000,7 +1002,9 @@ pub(crate) fn native_tool_id_prefix(protocol_name: &str) -> Option<&'static str>
     // the prefix (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
     #[cfg(any(test, feature = "test-support"))]
     crate::ensure_test_protocols_registered();
-    registry::decl_for(protocol_name).and_then(|d| d.native_tool_id_prefix)
+    registry::registry()
+        .decl(protocol_name)
+        .and_then(|d| d.native_tool_id_prefix)
 }
 
 /// Marker segment embedded in a busbar-minted tool id so the reverse (request) translation can tell a

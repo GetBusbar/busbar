@@ -148,7 +148,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // `NamedMapSection`), so `singular` is never routed here; carried for completeness.
         admin_noun: "pool",
         audit_kind: "pool",
-        wire_format_names: busbar_core::proto::known_protocols,
+        wire_format_names: busbar_substrate::proto::known_protocols,
         // THE RESIDUAL MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
         // claims no path and binds no audience.
         claims: |_| Vec::new(),
@@ -202,11 +202,11 @@ pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
 /// (`busbar_core::ingress::{gemini_arrival, bedrock_arrival}`); this only states the NAME→fn pairing.
 pub static PATH_INGRESS: &[(&str, busbar_core::ingress::PathIngress)] = &[
     (
-        busbar_core::proto::PROTO_GEMINI,
+        crate::proto_codec::PROTO_GEMINI,
         busbar_core::ingress::gemini_arrival,
     ),
     (
-        busbar_core::proto::PROTO_BEDROCK,
+        crate::proto_codec::PROTO_BEDROCK,
         busbar_core::ingress::bedrock_arrival,
     ),
 ];

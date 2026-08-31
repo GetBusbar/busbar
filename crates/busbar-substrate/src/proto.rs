@@ -1151,3 +1151,351 @@ pub fn test_registered_protocols_len() -> usize {
         .unwrap_or_else(|e| e.into_inner())
         .len()
 }
+
+// ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_core::proto::registry` ───────────
+// The declarations, the boot-time aggregates, and the process singleton, moved onto the neutral
+// substrate so an extracted protocol crate (`busbar-llm`) resolves `decl_for` / `known_protocols`
+// through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the reverse-edge
+// rule, plane-extraction §6.2). `busbar-core` re-exports every item below at its historical
+// `busbar_core::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
+// values are byte-identical. The one item that could NOT travel is the built-in table: production
+// carries none (every protocol is a plugin the composition root installs through `install_protocols`),
+// and core's OWN test binary names its shipped set in a `tests/` file the neutral-purity lint excludes,
+// which reaches this singleton through the [`set_test_builtins`] hook below — so the neutral source here
+// spells no protocol crate. `install_protocols_with_path_ingress` (which names the core-only `Arrival`)
+// stays in `busbar-core`.
+
+/// THE REGISTRY: the declarations, plus the aggregates that used to be three separate `OnceLock`
+/// sweeps. Built once; every field is derived from the declarations and from nothing else, so there
+/// is no second place a protocol fact can be stated.
+pub struct Registry {
+    decls: Vec<&'static ProtocolDecl>,
+    /// Absorbed `proxy::lazy_body::captured_head_keys()`: every declared head key, plus every
+    /// declared shim key (the shim marker is point-read on the pre-materialized path exactly like a
+    /// head key), sorted and deduped so the interning scan is stable.
+    head_keys: &'static [&'static str],
+    /// Absorbed `proto::streaming_content_types()`.
+    streaming_content_types: &'static [&'static str],
+    /// Absorbed `proto::array_stream_shim_keys()`.
+    array_stream_shim_keys: &'static [&'static str],
+    /// The names of the protocols that ship a wire CODEC — the set a provider lane's `protocol:`
+    /// may name, and what `KNOWN_PROTOCOLS` used to state as a hand-maintained second list beside
+    /// the constructors it had to agree with.
+    codec_protocols: &'static [&'static str],
+    /// EVERY VERB ANY DECLARED PROTOCOL SERVES, in declaration order, deduped. The half of the
+    /// operation vocabulary that is DECLARED rather than owned by the core: `Operation::ALL` holds
+    /// the six shape verbs core itself defines, and this holds whatever the registered protocols
+    /// brought with them (the seven LLM words today). Deleting a protocol deletes its verbs from
+    /// this list with it.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    declared_verbs: &'static [busbar_api::operation::Operation],
+}
+
+impl Registry {
+    /// Build a registry from declarations. Production hands it the built-ins plus anything loaded;
+    /// a test hands it the built-ins plus a protocol nobody wrote. THE CONSTRUCTOR IS THE SAME ONE,
+    /// which is the property being claimed: joining costs a declaration and nothing else.
+    pub fn new(decls: impl IntoIterator<Item = &'static ProtocolDecl>) -> Self {
+        let decls: Vec<&'static ProtocolDecl> = decls.into_iter().collect();
+        let mut head_keys: Vec<&'static str> = Vec::new();
+        let mut streaming_content_types: Vec<&'static str> = Vec::new();
+        let mut array_stream_shim_keys: Vec<&'static str> = Vec::new();
+        let mut codec_protocols: Vec<&'static str> = Vec::new();
+        // Declaration order, deduped BY VALUE (not sorted): the verb vocabulary is operator-visible
+        // the same way the protocol list is, so it keeps the deterministic order the declarations
+        // state rather than an alphabetical one nobody declared.
+        let mut declared_verbs: Vec<busbar_api::operation::Operation> = Vec::new();
+        for d in &decls {
+            head_keys.extend_from_slice(d.head_keys);
+            head_keys.extend(d.array_stream_shim_key);
+            streaming_content_types.extend(d.streaming_content_type);
+            array_stream_shim_keys.extend(d.array_stream_shim_key);
+            if d.codec.is_some() {
+                codec_protocols.push(d.name);
+            }
+            for v in d.verbs {
+                if !declared_verbs.contains(v) {
+                    declared_verbs.push(*v);
+                }
+            }
+        }
+        for v in [
+            &mut head_keys,
+            &mut streaming_content_types,
+            &mut array_stream_shim_keys,
+        ] {
+            v.sort_unstable();
+            v.dedup();
+        }
+        assert!(
+            {
+                let mut names: Vec<&str> = decls.iter().map(|d| d.name).collect();
+                names.sort_unstable();
+                let before = names.len();
+                names.dedup();
+                names.len() == before
+            },
+            "two protocol declarations claim the same name: one of them would be unroutable"
+        );
+        // `Vec::leak` rather than a stored `Vec` + a lifetime cast: the registry is a process
+        // singleton built once, so the "leak" is the same allocation a `static` would have held,
+        // and it lets every accessor hand out the `&'static [&'static str]` its callers already
+        // expect with no `unsafe` anywhere.
+        Self {
+            decls,
+            head_keys: head_keys.leak(),
+            streaming_content_types: streaming_content_types.leak(),
+            array_stream_shim_keys: array_stream_shim_keys.leak(),
+            codec_protocols: codec_protocols.leak(),
+            declared_verbs: declared_verbs.leak(),
+        }
+    }
+
+    /// Resolve a declaration by name. A linear scan over a handful of interned `&'static str`s —
+    /// the same comparison chain the `match` compiled to, with the arms as data.
+    pub fn decl(&self, name: &str) -> Option<&'static ProtocolDecl> {
+        // Interned-name fast path: hot callers hold the registry's own `&'static` name, so pointer
+        // identity settles the row without a byte compare; a foreign string falls through to the
+        // equality arm of the same pass. Same result either way.
+        self.decls
+            .iter()
+            .copied()
+            .find(|d| d.name.as_ptr() == name.as_ptr() || d.name == name)
+    }
+
+    /// Every declaration, in declaration order.
+    #[allow(dead_code)] // used by the netted dialect test crates; unused in the core target
+    pub fn decls(&self) -> &[&'static ProtocolDecl] {
+        &self.decls
+    }
+
+    /// The complete set of top-level body keys the head projection captures.
+    pub fn head_keys(&self) -> &'static [&'static str] {
+        self.head_keys
+    }
+
+    /// The streaming `Content-Type` set across every declared protocol.
+    pub fn streaming_content_types(&self) -> &'static [&'static str] {
+        self.streaming_content_types
+    }
+
+    /// The array-stream shim keys across every declared protocol.
+    pub fn array_stream_shim_keys(&self) -> &'static [&'static str] {
+        self.array_stream_shim_keys
+    }
+
+    /// The names of every protocol that ships a wire codec.
+    pub fn codec_protocols(&self) -> &'static [&'static str] {
+        self.codec_protocols
+    }
+
+    /// Every verb any declared protocol serves, in declaration order, deduped. See the field doc.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    pub fn declared_verbs(&self) -> &'static [busbar_api::operation::Operation] {
+        self.declared_verbs
+    }
+}
+
+/// THE VERBS THE REGISTERED PROTOCOLS DECLARE — the declared half of the operation vocabulary
+/// (`Operation::ALL`, the six shape verbs, is the core-owned half).
+#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+pub fn declared_verbs() -> &'static [busbar_api::operation::Operation] {
+    registry().declared_verbs()
+}
+
+/// The process registry, built on first read from the built-ins plus anything installed. Production
+/// only: under the test-support surface [`registry`] re-folds on every read, so there is no frozen
+/// memo there — the FIRST-READ witness [`install_protocols`] asserts on is [`TEST_REGISTRY_MEMO`].
+#[cfg(not(any(test, feature = "test-support")))]
+static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+
+/// Declarations the COMPOSITION ROOT installed before the registry was first read — the protocol
+/// crates' entry point. Set once by [`install_protocols`]; folded ahead of the built-ins by
+/// [`registry`]'s initializer.
+static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
+
+/// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and the
+/// seam an extracted protocol crate registers through. The `busbar` binary calls this from `main`,
+/// before any config read, with the `&DECL` of every protocol crate it links.
+///
+/// ORDER: installed declarations are folded AHEAD of the built-ins, and the caller's own order is
+/// preserved within them.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+/// - if called after the registry was first read.
+#[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
+pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
+    assert!(
+        INSTALLED.set(decls).is_ok(),
+        "install_protocols called twice: there is one composition root, and it registers once"
+    );
+    // The "install before first read" invariant is enforced by the production memo.
+    #[cfg(not(any(test, feature = "test-support")))]
+    assert!(
+        REGISTRY.get().is_none(),
+        "install_protocols called after the protocol registry was first read; register in main \
+         before any config load or validation touches a protocol"
+    );
+    #[cfg(any(test, feature = "test-support"))]
+    assert!(
+        TEST_REGISTRY_MEMO
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none(),
+        "install_protocols called after the protocol registry was first read; register in main \
+         before any config load or validation touches a protocol"
+    );
+}
+
+/// THE BOOT PARITY RULE, as a pure function so a test can drive it without touching the process
+/// singletons: the NAME of the first declaration whose model is in the URL (`has_model_in_url`) that
+/// has NO arrival among `path_ingress_names`, or `None` when every URL-model protocol has one.
+pub fn first_path_model_without_arrival(
+    decls: &[&'static ProtocolDecl],
+    path_ingress_names: &[&str],
+) -> Option<&'static str> {
+    decls
+        .iter()
+        .find(|d| d.has_model_in_url && !path_ingress_names.contains(&d.name))
+        .map(|d| d.name)
+}
+
+/// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per NAME, later same-name
+/// registrations skipped audibly. Split from [`registry`]'s `OnceLock` so its order and skip
+/// semantics are a function a test can drive.
+pub fn merged_boot_decls(
+    installed: &[&'static ProtocolDecl],
+    builtins: &[&'static ProtocolDecl],
+) -> Vec<&'static ProtocolDecl> {
+    let mut decls: Vec<&'static ProtocolDecl> = Vec::new();
+    for d in installed.iter().chain(builtins) {
+        if decls.iter().any(|p| p.name == d.name) {
+            tracing::info!(
+                protocol = d.name,
+                "skipping a later registration of an already-declared protocol \
+                 (composition-root copy and built-in copy of one dialect)"
+            );
+            continue;
+        }
+        decls.push(d);
+    }
+    decls
+}
+
+/// The process registry. One acquire-load once initialized. Production carries no built-in rows.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn registry() -> &'static Registry {
+    REGISTRY.get_or_init(|| {
+        let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
+        Registry::new(merged_boot_decls(installed, &[]))
+    })
+}
+
+// ── TEST-SUPPORT PROCESS REGISTRY ─────────────────────────────────────────────────────────────────
+// Under the test-support surface `registry` re-folds the registered set (and any `install_protocols`
+// set) ahead of the built-ins on every read, recomputing (and leaking once) only when the set GROWS —
+// so a protocol registered by any test before it reads the registry is visible regardless of test
+// order, and the `&'static` contract holds. Bounded: at most one leak per distinct registered-set size.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTRY_MEMO: std::sync::Mutex<Option<(usize, &'static Registry)>> =
+    std::sync::Mutex::new(None);
+
+/// CORE'S OWN-TEST-BINARY BUILT-IN HOOK. Core's `cfg(test)` build names its shipped protocol set
+/// (`busbar_llm::DECLS` + the MCP protocol) in a `tests/` file the neutral-purity lint excludes, and
+/// installs it here as the stable TAIL of the boot fold — exactly as the pre-relocation core registry
+/// folded `builtin_decls()`. The neutral substrate spells no protocol crate; it only holds the fn
+/// pointer core hands it. Unset in every other build (busbar-llm's own test binary registers its
+/// dialects through [`register_test_protocol`] and needs no core tail).
+#[cfg(any(test, feature = "test-support"))]
+static TEST_BUILTINS_HOOK: std::sync::OnceLock<fn() -> &'static [&'static ProtocolDecl]> =
+    std::sync::OnceLock::new();
+
+/// Install the core-test built-in provider (idempotent). Called by `busbar-core`'s `cfg(test)`
+/// registry accessors so the shipped protocol set (and its operator-visible ORDER) is folded as the
+/// boot-fold tail. Setting it GROWS the memo's target size, so a registry already folded without the
+/// tail re-folds WITH it on the next read — the read is self-healing regardless of call order.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_builtins(f: fn() -> &'static [&'static ProtocolDecl]) {
+    let _ = TEST_BUILTINS_HOOK.set(f);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn test_builtins() -> &'static [&'static ProtocolDecl] {
+    TEST_BUILTINS_HOOK.get().map(|f| f()).unwrap_or(&[])
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn registry() -> &'static Registry {
+    // THE MEMOIZED FAST PATH IS ALLOCATION-FREE: the registered-set SIZE (plus the installed set and
+    // the core-test built-in tail) is read without cloning any list, and a set that has not grown
+    // returns the memoized `&'static Registry` with no fold and no allocation.
+    let want = test_registered_protocols_len()
+        + INSTALLED.get().map(Vec::len).unwrap_or(0)
+        + test_builtins().len();
+    let mut memo = TEST_REGISTRY_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((n, reg)) = *memo {
+        if n == want {
+            return reg;
+        }
+    }
+    // SLOW PATH (the set GREW): fold explicit `install_protocols` registrations AND
+    // `register_test_protocol` registrations ahead of the built-in tail, then leak ONCE for this
+    // grown set — the same `Vec::leak`-shaped process-singleton allocation `Registry::new` relies on.
+    let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
+    let mut all: Vec<&'static ProtocolDecl> = installed.to_vec();
+    all.extend(test_registered_protocols().iter().copied());
+    let reg: &'static Registry = Box::leak(Box::new(Registry::new(merged_boot_decls(
+        &all,
+        test_builtins(),
+    ))));
+    *memo = Some((want, reg));
+    reg
+}
+
+// RESOLVE A PROTOCOL BY NAME is [`Registry::decl`] (above). The single free-fn wrapper `decl_for` —
+// the ONE by-name resolution the `structure-lint` census pins — stays in `busbar-core`
+// (`proto::registry::decl_for`) so it can seed core's OWN-test built-in tail before it reads; every
+// other crate (`busbar-llm`) resolves through `registry().decl(name)` directly on this neutral ABI.
+
+/// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
+/// speaks, or `None` for a path that names none. Folds every registered protocol's
+/// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
+/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder.
+pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .filter_map(|d| d.claims.and_then(|c| c(headers, path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
+/// THE GENERIC RESIDUAL DETECTION FOLD — which registered protocol a path names FROM ITS SHAPE ALONE
+/// (no headers), the arm the mount table falls through to. Byte-identical to the old ladder.
+pub fn residual_protocol_for_path(path: &str) -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
+/// THE REGISTRY-SUPPLIED RESIDUAL DEFAULT — the ONE protocol name core falls back to when no dialect
+/// claimed a request yet a dialect must still be named. Reads [`ProtocolDecl::residual_default`], so
+/// the literal default dialect name leaves core entirely; `None` when no residual-default protocol is
+/// installed (the all-planes-off deletion configuration).
+pub fn residual_default_protocol() -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .find(|d| d.residual_default)
+        .map(|d| d.name)
+}
+
+/// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name.
+/// DERIVED from the declarations (`ProtocolDecl::codec`), not maintained beside them.
+pub fn known_protocols() -> &'static [&'static str] {
+    registry().codec_protocols()
+}

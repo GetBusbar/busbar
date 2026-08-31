@@ -333,14 +333,14 @@ pub const PROTO_RESPONSES: &str = "responses";
 /// operator config on it names that cause once rather than refusing every provider with an empty
 /// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
 /// half.
-// `pub` (not `pub(crate)`): the LLM `PLANE_DECL` — which relocated to the `busbar-llm` plugin with
-// the rest of the plane's vocabulary — declares `wire_format_names: busbar_core::proto::known_protocols`
-// (the model plane's wire formats ARE the registered codec protocols). The plane crate names this fn
-// cross-crate to point the field at it, so it must be reachable outside core. Still a pure read of the
-// registry aggregate; no protocol vocabulary crosses here, only the neutral derived list.
-pub fn known_protocols() -> &'static [&'static str] {
-    registry::registry().codec_protocols()
-}
+// RELOCATED DOWN to `busbar_substrate::proto::known_protocols` with the registry runtime (the LLM
+// `PLANE_DECL.wire_format_names` now names the substrate fn directly, so the plane crate reaches the
+// registry aggregate through the neutral ABI, not back into `busbar-core`). Re-exported here at its
+// historical `busbar_core::proto::known_protocols` path — as the SAME fn pointer, which is what the
+// plane-decl identity pin (`busbar-llm`'s `the_llm_plane_reads_the_registry_it_does_not_restate_it`)
+// asserts — so every in-core caller is unchanged. Still a pure read of the registry aggregate; no
+// protocol vocabulary crosses here, only the neutral derived list.
+pub use busbar_substrate::proto::known_protocols;
 
 // THE LLM PLANE'S VOCABULARY DECLARATION RELOCATED to the `busbar-llm` plugin (`busbar_llm::PLANE_DECL`)
 // — it is the LLM plane's statement about ITSELF, so it leaves core with the plane exactly as the MCP
