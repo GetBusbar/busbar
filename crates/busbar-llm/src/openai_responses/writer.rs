@@ -225,9 +225,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 // Emit a raw `Value::String` (unparseable/streaming-partial args) verbatim
                                 // rather than JSON-encoding it a second time — same as the Chat writer.
                                 let args_str =
-                                    busbar_core::proto::openai_family::tool_arguments_to_string(
-                                        input,
-                                    );
+                                    busbar_substrate::proto::tool_arguments_to_string(input);
                                 tool_items.push(serde_json::json!({
                                     "type": ITEM_TYPE_FUNCTION_CALL,
                                     "call_id": id,
@@ -1279,8 +1277,7 @@ impl ProtocolWriter for ResponsesWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw `Value::String` (avoid double-encoding), same as the Chat writer.
-                    let args_str =
-                        busbar_core::proto::openai_family::tool_arguments_to_string(input);
+                    let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
                     output_arr.push(serde_json::json!({
                         "type": ITEM_TYPE_FUNCTION_CALL,
                         // Native function_call items carry an item-level opaque `id` (`fc_…`) DISTINCT

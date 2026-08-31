@@ -184,8 +184,7 @@ impl ProtocolWriter for OpenAiWriter {
                     } = block
                     {
                         // Serialize input to JSON string
-                        let args_str =
-                            busbar_core::proto::openai_family::tool_arguments_to_string(input);
+                        let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
                         // Preserve the original tool_call id verbatim — it must round-trip so the
                         // assistant tool_call correlates with the tool-result `tool_call_id`.
                         tool_calls_arr.push(serde_json::json!({
@@ -952,7 +951,7 @@ impl ProtocolWriter for OpenAiWriter {
             } = block
             {
                 // Serialize input to JSON string
-                let args_str = busbar_core::proto::openai_family::tool_arguments_to_string(input);
+                let args_str = busbar_substrate::proto::tool_arguments_to_string(input);
                 tool_calls_arr.push(serde_json::json!({
                     "type": TOOL_TYPE_FUNCTION,
                     "id": id,

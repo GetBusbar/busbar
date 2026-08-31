@@ -199,20 +199,11 @@ pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 // helper that legitimately lives in core. (The url-citation projection that used to sit here HAS
 // moved to `busbar-llm/src/openai_annotations.rs` — it names `IrCitation`, so it belongs beside the
 // openai codecs that own it, reached through the reader/writer vtable.)
-/// Render an IR ToolUse `input` value as the OpenAI `function.arguments` string.
-///
-/// OpenAI carries tool-call arguments as a *string* of JSON. The reader stores well-formed
-/// arguments as a parsed `Value`, but falls back to `Value::String(raw)` when the upstream sent
-/// arguments that are not valid JSON (a streaming-partial or malformed tool call). Re-serializing
-/// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
-/// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
-/// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
-pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
-    match input {
-        serde_json::Value::String(s) => s.clone(),
-        other => crate::json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
-    }
-}
+// `tool_arguments_to_string` RELOCATED DOWN to `busbar_substrate::proto` (it carries no dialect
+// knowledge — only the `Value::String` passthrough rule — so the dialect writers name it there
+// without reaching into `busbar-core`); re-exported here at its historical
+// `busbar_core::proto::openai_family::tool_arguments_to_string` path so any in-core caller is unchanged.
+pub use busbar_substrate::proto::tool_arguments_to_string;
 
 #[cfg(test)]
 #[path = "tests/openai_family_tests.rs"]

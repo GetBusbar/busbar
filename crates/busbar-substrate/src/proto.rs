@@ -145,6 +145,19 @@ pub fn sse_event_type(frame: &[u8]) -> &str {
     name
 }
 
+/// Render an IR ToolUse `input` value as a wire tool-call `arguments` string. Neutral JSON
+/// projection: a `Value::String` is emitted VERBATIM (the reader stores not-valid-JSON upstream
+/// arguments as `Value::String(raw)`, and re-`to_string`-ing that would double-encode it into an
+/// escaped quoted blob); any other `Value` is serialized normally via the sonic `crate::json` seam.
+/// Relocated DOWN here so the OpenAI-family and Cohere dialect writers name it without reaching into
+/// `busbar-core`; it carries no dialect knowledge, only the string-passthrough rule.
+pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
+    match input {
+        serde_json::Value::String(s) => s.clone(),
+        other => crate::json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
+    }
+}
+
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
 /// translate step failed after first byte). Relocated DOWN here so BOTH `busbar-core`'s proxy
 /// engine (SSE/forward abort path) and the `busbar-llm` Bedrock-eventstream reassembler emit it
