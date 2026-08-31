@@ -148,7 +148,7 @@ impl OperationHandler for GeminiTranscription {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("gemini", status, body)
+        super::super::proto_codec::protocol_error("gemini", status, body)
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
     /// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
@@ -259,7 +259,7 @@ impl OperationHandler for GeminiSpeech {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("gemini", status, body)
+        super::super::proto_codec::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
     fn read_request(
@@ -348,7 +348,7 @@ impl OperationHandler for GeminiImage {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("gemini", status, body)
+        super::super::proto_codec::protocol_error("gemini", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
     // response's usage and bill the virtual key's TPM/spend. Token-metered image models expose a
@@ -440,7 +440,7 @@ impl OperationHandler for GeminiEmbeddings {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("gemini", status, body)
+        super::super::proto_codec::protocol_error("gemini", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend

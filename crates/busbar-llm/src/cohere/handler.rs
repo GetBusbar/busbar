@@ -118,7 +118,7 @@ impl OperationHandler for CohereEmbeddings {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("cohere", status, body)
+        super::super::proto_codec::protocol_error("cohere", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -264,7 +264,7 @@ impl OperationHandler for CohereRerank {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("cohere", status, body)
+        super::super::proto_codec::protocol_error("cohere", status, body)
     }
     fn read_request(
         &self,

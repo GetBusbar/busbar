@@ -250,7 +250,7 @@ impl OperationHandler for OpenAiTranscription {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("openai", status, body)
+        super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
         // write_request rebuilds the multipart form with this FIXED boundary.
@@ -428,7 +428,7 @@ impl OperationHandler for OpenAiSpeech {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("openai", status, body)
+        super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
         &self,
@@ -494,7 +494,7 @@ impl OperationHandler for OpenAiEmbeddings {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("openai", status, body)
+        super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -593,7 +593,7 @@ impl OperationHandler for OpenAiImage {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("openai", status, body)
+        super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend. The
@@ -718,7 +718,7 @@ impl OperationHandler for OpenAiModeration {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("openai", status, body)
+        super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
         &self,

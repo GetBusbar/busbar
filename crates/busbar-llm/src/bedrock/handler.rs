@@ -100,7 +100,7 @@ impl OperationHandler for BedrockImage {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("bedrock", status, body)
+        super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
     // reader and bills once. Titan/SDXL are per-image with no token usage object, so the tap bills 0
@@ -183,7 +183,7 @@ impl OperationHandler for BedrockEmbeddings {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("bedrock", status, body)
+        super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -282,7 +282,7 @@ impl OperationHandler for BedrockRerank {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error("bedrock", status, body)
+        super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     fn read_request(
         &self,

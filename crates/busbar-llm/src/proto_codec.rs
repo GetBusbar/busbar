@@ -837,6 +837,28 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// `ProtocolReader`/`ProtocolWriter`, so the driver's `decl_for(name).dialect().X()` calls are stable
 /// across the move. Constructed only via [`ProtocolDecl::dialect`], so `protocol_for(self.0)` is
 /// always `Some`.
+/// This protocol's shared upstream-error-envelope extractor, BY NAME — the plane-local equivalent of
+/// the former core `handlers::protocol_error` round-trip, which resolved this same dialect through
+/// core's registry only to land back in [`DialectRef::extract_error`] (i.e. right here). Every
+/// operation cell of a dialect answers [`OperationHandler::extract_error`] through this so the
+/// upstream error vocabulary is stated ONCE, in the protocol's reader. Byte-identical to the old core
+/// delegation (same `protocol_for(name).reader().extract_error` path, same status-only fallback) — it
+/// just no longer reaches back into the neutral crate to get there (reverse-edge rule,
+/// plane-extraction §6.2).
+pub(crate) fn protocol_error(
+    name: &str,
+    status: u16,
+    body: &[u8],
+) -> busbar_substrate::breaker::RawUpstreamError {
+    match protocol_for(name) {
+        Some(p) => p.reader().extract_error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            body,
+        ),
+        None => busbar_substrate::breaker::RawUpstreamError::from_status(status),
+    }
+}
+
 pub(crate) struct DialectRef(&'static str);
 
 /// Construct the neutral [`DialectCodec`] facade for a named dialect, `const` so each dialect's

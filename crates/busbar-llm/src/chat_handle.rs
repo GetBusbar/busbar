@@ -425,7 +425,7 @@ impl OperationHandler for ChatOperation {
         status: u16,
         body: &[u8],
     ) -> busbar_substrate::breaker::RawUpstreamError {
-        busbar_core::handlers::protocol_error(self.0, status, body)
+        super::proto_codec::protocol_error(self.0, status, body)
     }
 
     fn streaming(&self) -> bool {
