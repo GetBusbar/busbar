@@ -100,6 +100,68 @@ pub enum StatusClass {
     Fault = 4,
 }
 
+impl TryFrom<u8> for StatusClass {
+    /// The offending out-of-range byte, so a caller can log WHAT it refused.
+    type Error = u8;
+
+    /// Decode a raw discriminant to a [`StatusClass`], REJECTING any value outside the valid `0..=4`
+    /// range. This is the checked seam that keeps a hostile/buggy plugin from materializing an enum
+    /// with an invalid discriminant (instant UB the moment core `match`es it): a slot that returns a
+    /// by-value status crosses as a [`RawStatus`] u8 and is decoded HERE, never transmuted.
+    #[inline]
+    fn try_from(v: u8) -> Result<Self, u8> {
+        match v {
+            0 => Ok(StatusClass::Ok),
+            1 => Ok(StatusClass::Refused),
+            2 => Ok(StatusClass::Gone),
+            3 => Ok(StatusClass::Unsupported),
+            4 => Ok(StatusClass::Fault),
+            other => Err(other),
+        }
+    }
+}
+
+impl From<StatusClass> for RawStatus {
+    #[inline]
+    fn from(c: StatusClass) -> Self {
+        RawStatus(c as u8)
+    }
+}
+
+/// The RAW, unvalidated one-byte status a plugin-implemented slot returns BY VALUE across the
+/// `extern "C-unwind"` seam (see the core→plane fn-pointer slots in [`decl`](super::decl)). Returning
+/// the [`StatusClass`] enum itself by value is UNSOUND: a signed-but-buggy (or hostile) cdylib can
+/// return any byte, and a byte outside `0..=4` materializes an enum with an INVALID DISCRIMINANT — UB
+/// the instant core touches it, BEFORE any `match`. This `#[repr(transparent)]` u8 is the safe
+/// carrier: every bit pattern is a valid `RawStatus`, and core converts to the enum through the
+/// checked [`RawStatus::class`] (out-of-range → the safe [`StatusClass::Fault`]), never by transmute.
+///
+/// It mirrors the host-WRITTEN out-param discipline already in this ABI (`GuardVerdict.verdict`,
+/// `Key.drift_state` cross as raw `u8`): only the by-value RETURN direction had been left as the
+/// enum, and this closes it.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawStatus(pub u8);
+
+impl RawStatus {
+    /// The raw byte for a [`StatusClass`] — the TRUSTED (core-produced) encode direction, e.g. a
+    /// core-side stub or a host shim that must hand a plane a valid status.
+    #[inline]
+    #[must_use]
+    pub const fn of(class: StatusClass) -> Self {
+        RawStatus(class as u8)
+    }
+
+    /// Decode this raw status into a [`StatusClass`], mapping ANY out-of-range discriminant to the
+    /// safe [`StatusClass::Fault`] error class. This is THE conversion core performs on a status a
+    /// plugin returned by value; it can never produce an invalid enum, so it can never be UB.
+    #[inline]
+    #[must_use]
+    pub fn class(self) -> StatusClass {
+        StatusClass::try_from(self.0).unwrap_or(StatusClass::Fault)
+    }
+}
+
 /// The governance admit decision, returned BY VALUE.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

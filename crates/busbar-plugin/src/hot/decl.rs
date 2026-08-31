@@ -12,7 +12,7 @@
 //! plus a `free` fn — that core stores and NEVER downcasts.
 
 use super::host::HostCtx;
-use super::pod::StatusClass;
+use super::pod::RawStatus;
 use super::PlaneHostVtable;
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -89,16 +89,16 @@ pub type ConfigValidateFn = extern "C-unwind" fn(
     raw_ptr: *const u8,
     raw_len: usize,
     out_parsed: *mut MaybeUninit<OpaqueHandle>,
-) -> StatusClass;
+) -> RawStatus;
 /// Build the plane from a [`BuildCtx`] (secrets pre-resolved), producing the opaque plane handle.
 pub type BuildFn = extern "C-unwind" fn(
     ctx: *const BuildCtx,
     out_handle: *mut MaybeUninit<OpaqueHandle>,
-) -> StatusClass;
+) -> RawStatus;
 /// Hydrate persisted state into a built plane (idempotent).
-pub type HydrateFn = extern "C-unwind" fn(state: *mut c_void) -> StatusClass;
+pub type HydrateFn = extern "C-unwind" fn(state: *mut c_void) -> RawStatus;
 /// Start the plane's ingress (begin accepting work).
-pub type StartFn = extern "C-unwind" fn(state: *mut c_void) -> StatusClass;
+pub type StartFn = extern "C-unwind" fn(state: *mut c_void) -> RawStatus;
 /// Serialize the plane's admin-route contribution into a caller buffer; sets `out_written`. MUST be
 /// NON-VACUOUS if the plane declares any admin surface (the non-vacuity invariant).
 pub type AdminRoutesFn = extern "C-unwind" fn(
@@ -106,7 +106,7 @@ pub type AdminRoutesFn = extern "C-unwind" fn(
     buf: *mut u8,
     buf_cap: usize,
     out_written: *mut usize,
-) -> StatusClass;
+) -> RawStatus;
 /// Serialize the plane's OpenAPI contribution into a caller buffer; sets `out_written`. Subject to
 /// the same non-vacuity invariant as [`AdminRoutesFn`].
 pub type OpenApiFn = extern "C-unwind" fn(
@@ -114,11 +114,11 @@ pub type OpenApiFn = extern "C-unwind" fn(
     buf: *mut u8,
     buf_cap: usize,
     out_written: *mut usize,
-) -> StatusClass;
+) -> RawStatus;
 /// Drive one [`WorkItem`](crate::hot::WorkItem) through the plane's dispatch. THE ingress entry point:
 /// one signature carries every carrier shape via the work item's kind-tagged inbound/emit handles.
 pub type DispatchFn =
-    extern "C-unwind" fn(state: *mut c_void, work: *const crate::hot::WorkItem) -> StatusClass;
+    extern "C-unwind" fn(state: *mut c_void, work: *const crate::hot::WorkItem) -> RawStatus;
 
 /// The `#[repr(C)]` surface a plane exports for core to drive. Leads with the FROZEN [`AbiPreamble`]
 /// and a sized/versioned header; carries the plane's vocabulary (borrowed name/section-key/scope/
@@ -235,22 +235,22 @@ pub mod stub {
         _raw_ptr: *const u8,
         _raw_len: usize,
         _out_parsed: *mut MaybeUninit<OpaqueHandle>,
-    ) -> StatusClass {
+    ) -> RawStatus {
         unimplemented!("PlaneDecl::config_validate — stub; wired in a later phase")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn build(
         _ctx: *const BuildCtx,
         _out_handle: *mut MaybeUninit<OpaqueHandle>,
-    ) -> StatusClass {
+    ) -> RawStatus {
         unimplemented!("PlaneDecl::build — stub")
     }
     /// Stub: see module docs.
-    pub extern "C-unwind" fn hydrate(_state: *mut c_void) -> StatusClass {
+    pub extern "C-unwind" fn hydrate(_state: *mut c_void) -> RawStatus {
         unimplemented!("PlaneDecl::hydrate — stub")
     }
     /// Stub: see module docs.
-    pub extern "C-unwind" fn start(_state: *mut c_void) -> StatusClass {
+    pub extern "C-unwind" fn start(_state: *mut c_void) -> RawStatus {
         unimplemented!("PlaneDecl::start — stub")
     }
     /// Stub: see module docs.
@@ -259,7 +259,7 @@ pub mod stub {
         _buf: *mut u8,
         _buf_cap: usize,
         _out_written: *mut usize,
-    ) -> StatusClass {
+    ) -> RawStatus {
         unimplemented!("PlaneDecl::admin_routes — stub")
     }
     /// Stub: see module docs.
@@ -268,14 +268,14 @@ pub mod stub {
         _buf: *mut u8,
         _buf_cap: usize,
         _out_written: *mut usize,
-    ) -> StatusClass {
+    ) -> RawStatus {
         unimplemented!("PlaneDecl::openapi — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn dispatch(
         _state: *mut c_void,
         _work: *const crate::hot::WorkItem,
-    ) -> StatusClass {
+    ) -> RawStatus {
         unimplemented!("PlaneDecl::dispatch — stub")
     }
 }
