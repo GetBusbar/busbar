@@ -182,6 +182,9 @@ fn list_models_dialect(
     gemini_path: bool,
 ) -> Response {
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
+    // The LLM routing tables through the ONE seam (R3/R4 sub-phase A). Byte-identical to reading the
+    // `app` fields directly today; the seam a later sub-phase re-sources from the plane slot.
+    let tables = app.engine_tables();
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -192,16 +195,16 @@ fn list_models_dialect(
 
     // Stable order: pools first, then direct models, each sorted — SDK consumers and UIs
     // render this list directly, and a deterministic order diffs cleanly in tests and docs.
-    let mut names: Vec<&str> = app
-        .pools
+    let mut names: Vec<&str> = tables
+        .pools()
         .keys()
         .filter(|n| visible_pool(n))
         .map(String::as_str)
         .collect();
     names.sort_unstable();
 
-    let mut models: Vec<&str> = app
-        .by_model
+    let mut models: Vec<&str> = tables
+        .by_model()
         .keys()
         .filter(|m| {
             if !restricted {
@@ -209,10 +212,11 @@ fn list_models_dialect(
             }
             // A restricted key sees a direct model only if a visible pool routes to its lane
             // (mirrors the /stats lane rule; pool-less lanes stay hidden from restricted keys).
-            let Some(&idx) = app.by_model.get(*m) else {
+            let Some(&idx) = tables.by_model().get(*m) else {
                 return false;
             };
-            app.pools
+            tables
+                .pools()
                 .iter()
                 .filter(|(n, _)| visible_pool(n))
                 .any(|(_, wls)| wls.iter().any(|wl| wl.idx == idx))

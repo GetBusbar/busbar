@@ -866,6 +866,39 @@ pub struct App {
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
+/// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface (R3/R4 sub-phase A, LOCKED §7
+/// "wire the seam in place"). Today it borrows the tables straight off [`App`]'s fields (a zero-cost
+/// newtype over `&App`), so every read through it is byte-identical to reading the field directly.
+/// It exists so the engine and the model-plane readers reach the pool/lane/failover tables through
+/// ONE named seam instead of a dozen `app.<field>` reachings — the seam whose SOURCE a later
+/// sub-phase flips from these `App` fields to the LLM plane's `plane_slot`, WITHOUT touching a single
+/// reader. Neutral: it names no dialect and adds no LLM type to core (the freeze witness stays 0).
+#[derive(Clone, Copy)]
+pub(crate) struct EngineTables<'a> {
+    app: &'a App,
+}
+
+impl<'a> EngineTables<'a> {
+    /// The pool table — each pool name to its weighted lane members.
+    pub(crate) fn pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
+        &self.app.pools
+    }
+
+    /// The direct-model index — a model name to its lane position.
+    pub(crate) fn by_model(&self) -> &'a HashMap<String, usize> {
+        &self.app.by_model
+    }
+}
+
+impl App {
+    /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam. A
+    /// zero-cost newtype over `&self` today; the seam a later sub-phase re-sources from the LLM
+    /// plane's runtime slot.
+    pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
+        EngineTables { app: self }
+    }
+}
+
 impl App {
     /// The ALL-POOLS UPSTREAM-credential DEFAULT — whether the egress path signs with busbar's
     /// configured lane key (`Own`) or forwards the caller's credential (`Passthrough`). Resolved once
