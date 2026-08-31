@@ -809,3 +809,43 @@ fn null_pods_fail_closed() {
         assert_eq!(s, StatusClass::Refused);
     });
 }
+
+/// ALLOC-BOMB CLOSED (F-AVAIL1 / PH1): `unpack_bodies` reads a `u32` count from the packed header and
+/// pre-sizes its Vec from it. A hostile/corrupt header can claim up to `u32::MAX` records; pre-sizing
+/// from that raw count reserves gigabytes from a few-byte buffer BEFORE any per-record bounds check.
+/// The pre-allocation must be BOUNDED against the remaining input length: at least 4 bytes per record,
+/// so a `remaining`-byte blob can hold at most `remaining / 4` records, and the count is clamped to it.
+#[test]
+fn seed_capacity_bounds_preallocation_against_remaining_len() {
+    // A hostile count in a tiny buffer is clamped to what the remaining bytes could possibly hold —
+    // NOT the raw billions the header claimed (before the fix this pre-allocated from `u32::MAX`).
+    assert_eq!(seed_capacity(u32::MAX as usize, 8), 2);
+    assert_eq!(seed_capacity(u32::MAX as usize, 3), 0);
+    assert_eq!(seed_capacity(u32::MAX as usize, 0), 0);
+    // A well-formed count already within budget is preserved EXACTLY — no behaviour change on good
+    // input, so a real seed still reserves precisely what it needs.
+    assert_eq!(seed_capacity(3, 4096), 3);
+    assert_eq!(seed_capacity(0, 4096), 0);
+}
+
+/// The full `unpack_bodies` path stays fail-closed on the same hostile header: an oversized count with
+/// a truncated body returns `None` (never a partial or a panic), and it does so without pre-allocating
+/// from the raw count — the bound above is what makes that safe rather than an allocation bomb.
+#[test]
+fn unpack_bodies_fails_closed_on_oversized_count() {
+    // count = u32::MAX, then only 8 bytes of payload: wildly short of the claimed records.
+    let mut packed = (u32::MAX).to_le_bytes().to_vec();
+    packed.extend_from_slice(&[0u8; 8]);
+    assert_eq!(unpack_bodies(&packed), None);
+
+    // A well-formed blob still round-trips: count = 2, two 3-byte bodies.
+    let mut good = 2u32.to_le_bytes().to_vec();
+    for body in [b"abc", b"xyz"] {
+        good.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        good.extend_from_slice(body);
+    }
+    assert_eq!(
+        unpack_bodies(&good),
+        Some(vec![b"abc".to_vec(), b"xyz".to_vec()])
+    );
+}

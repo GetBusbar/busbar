@@ -941,15 +941,32 @@ pub(crate) extern "C-unwind" fn journal_verify_scoped(
     .unwrap_or(StatusClass::Fault)
 }
 
+/// Every packed record costs at least its own `u32` length prefix (4 bytes), even with an empty body,
+/// so a blob of `remaining` bytes after the count header can hold at most `remaining / 4` records. Used
+/// to BOUND the pre-allocation in [`unpack_bodies`] against the actual input length.
+const MIN_PACKED_RECORD_BYTES: usize = 4;
+
+/// The pre-allocation ceiling for [`unpack_bodies`]: never reserve for more records than the remaining
+/// bytes could possibly encode. A hostile/corrupt count word (up to `u32::MAX`) would otherwise drive
+/// `Vec::with_capacity` to billions of elements — gigabytes — from a few-byte header, an allocation
+/// bomb, BEFORE any per-record validation runs. Clamping to `remaining / 4` costs a well-formed blob
+/// nothing (its count is already within budget) while capping a hostile one to what the buffer holds;
+/// the Vec still grows if the validated data genuinely needs it.
+fn seed_capacity(count: usize, remaining: usize) -> usize {
+    count.min(remaining / MIN_PACKED_RECORD_BYTES)
+}
+
 /// Unpack the packed body set a [`journal_seed`] carries: `u32` count LE, then per body a `u32` length
-/// LE + that many bytes. Returns `None` on a truncated/oversized blob (fail-closed).
+/// LE + that many bytes. Returns `None` on a truncated/oversized blob (fail-closed). The pre-allocation
+/// is BOUNDED against the remaining input length ([`seed_capacity`]) so a hostile count cannot
+/// pre-allocate gigabytes before the per-record bounds checks run.
 fn unpack_bodies(packed: &[u8]) -> Option<Vec<Vec<u8>>> {
     if packed.len() < 4 {
         return Some(Vec::new());
     }
     let count = u32::from_le_bytes(packed[0..4].try_into().ok()?) as usize;
     let mut off = 4;
-    let mut out = Vec::with_capacity(count);
+    let mut out = Vec::with_capacity(seed_capacity(count, packed.len() - 4));
     for _ in 0..count {
         if off + 4 > packed.len() {
             return None;
