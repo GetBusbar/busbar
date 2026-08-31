@@ -106,6 +106,77 @@ pub struct HostCompletion {
     pub body: bytes::Bytes,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE GAUNTLET SEAM — one shared request sequence every protocol plane rides (design §10, M3).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The neutral per-request facts of ONE gauntlet traversal that the SHARED sequence
+/// ([`run_gauntlet`]) reads and threads — the resolved identity, the destination the pre-admission
+/// verify judges, and the correlation/timing a plane's stage-6 record joins on. Everything protocol-
+/// or dialect-specific (the parsed body, the dialect handler, the wire framing, the plane's engine)
+/// lives in the plane's own [`GauntletPlane`] value, NEVER here — so this names no plane type.
+pub struct GauntletRequest<'a> {
+    /// Stage 1 — the resolved caller identity/scope, threaded from the auth layer that ran upstream.
+    pub gov: &'a busbar_api::PlaneRequestCtx,
+    /// The destination key the pre-admission `verify_destination` judges — a model for the LLM plane,
+    /// a tool/server for the MCP plane. Opaque to the shared sequence; each plane spells its meaning.
+    pub destination: &'a str,
+    /// The per-request correlation id the plane's stage-6 audit record joins on (single-accounting).
+    pub correlation_id: u64,
+    /// The header-arrival epoch (whole seconds) the request was admitted at — the metering window base.
+    pub charged_at: u64,
+    /// The monotonic start instant for the request-duration metric.
+    pub started: std::time::Instant,
+}
+
+/// The outcome of the pre-admission destination verification (stage 2).
+pub enum VerifyOutcome {
+    /// The destination is permitted; the sequence proceeds to the plane's `drive`.
+    Proceed,
+    /// The destination is refused. The plane returns its OWN already-finished, protocol-native
+    /// response (metrics/webhook already emitted plane-side); [`run_gauntlet`] returns it verbatim,
+    /// so refusal shaping stays byte-identical to the plane's in-place rejection.
+    Refuse(axum::response::Response),
+}
+
+/// A protocol plane's contribution to the shared gauntlet: the pre-admission destination check
+/// (stage 2, sync) and the byte-identical engine that admits, routes, meters and finishes the
+/// request (stages 4+5, async). The SHARED sequence ([`run_gauntlet`]) owns only stage 1 (identity,
+/// already resolved and threaded via `req.gov`) and the stage-2→drive ORDER — verify strictly before
+/// any charge, so nothing can reject an already-charged request. The sequence pulls NOTHING out of
+/// `drive`: the plane's admission/route/metering/finish stay inside it, byte-identical. Names are
+/// neutral; a plane implements this in its own crate (`busbar-mcp`/`busbar-a2a`) or in core (the LLM
+/// native plane) identically — they are siblings on this one seam.
+#[async_trait::async_trait]
+pub trait GauntletPlane: Send + Sync {
+    /// STAGE 2 — pre-admission destination verification. Sync; runs BEFORE `drive`. `Proceed` clears
+    /// the request to admission; `Refuse` carries the plane's OWN finished, protocol-native rejection.
+    fn verify_destination(&self, req: &GauntletRequest<'_>) -> VerifyOutcome;
+
+    /// STAGES 4+5 — the plane's OWN engine: budget-admission, route/failover, egress, and the plane's
+    /// own metering, returning the (possibly streaming) response. Byte-identical to the plane's
+    /// in-place dispatch. Takes `self: Box<Self>` so the plane moves its owned per-request payload
+    /// (body/parsed form/grant) into the engine; object-safe, so `run_gauntlet` drives it as `dyn`.
+    async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
+}
+
+/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. Stage 1 identity
+/// is already resolved (threaded via `req.gov`); this calls the plane's `verify_destination` (stage
+/// 2) in the correct PRE-ADMISSION position and, only if it proceeds, the plane's `drive` (stages
+/// 4+5, its own byte-identical engine + metering). Returns the plane's (possibly streaming) response
+/// verbatim. The plane owns admission/route/metering/finish; the sequence owns solely the
+/// verify-before-admit order (nothing may reject after a charge) — so all planes enforce that
+/// invariant in ONE place rather than each re-implementing it.
+pub async fn run_gauntlet(
+    req: GauntletRequest<'_>,
+    plane: Box<dyn GauntletPlane + '_>,
+) -> axum::response::Response {
+    match plane.verify_destination(&req) {
+        VerifyOutcome::Refuse(resp) => resp,
+        VerifyOutcome::Proceed => plane.drive(req).await,
+    }
+}
+
 /// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object
 /// is carried — DERIVED from the plane's own decl `key` by the neutral `"<key>:runtime"` convention,
 /// so core spells no plane token. It is deliberately distinct from the plane's config-conditional
@@ -400,6 +471,18 @@ pub trait EngineHost: Send + Sync {
         body: bytes::Bytes,
         max_body_bytes: usize,
     ) -> Result<HostCompletion, String>;
+
+    /// Run one request through THE shared gauntlet sequence ([`run_gauntlet`]) — the ergonomic entry
+    /// for a plane that already holds an `Arc<dyn EngineHost>`. A PROVIDED method: it delegates to the
+    /// free [`run_gauntlet`] (which needs no host — the sequence is verify→drive over the plane), so
+    /// every host impl shares one body and core's own callers can use the free fn directly.
+    async fn run_gauntlet<'a>(
+        &self,
+        req: GauntletRequest<'a>,
+        plane: Box<dyn GauntletPlane + 'a>,
+    ) -> axum::response::Response {
+        run_gauntlet(req, plane).await
+    }
 }
 
 /// THE NEUTRAL TYPE-ERASED SLOT-READ SEAM the core-owned `PlaneDecl` callbacks that today force a
