@@ -308,8 +308,9 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
 /// neutral seam the MCP plane's `McpCfg` deserializes through. Absent/null ⇒ `None` (not an MCP
 /// server), byte-identical to the pre-seam `Option<McpCfg>::default()`.
 #[derive(Debug, Default)]
-pub(crate) struct McpEndpointSection(pub(crate) Option<Box<dyn PlaneEndpointCfg>>);
+pub(crate) struct McpEndpointSection(pub(crate) Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire McpEndpointSection is recorded verbatim in config-schema.snapshot.json as the mcp: field type
 
+// plane-purity: frozen-wire the impl below is for McpEndpointSection, the snapshot-recorded mcp: field type
 impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -318,7 +319,7 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
         // The endpoint door is owned by the `tools:` plane, so it is keyed by that CONFIG SECTION —
         // no plane key is named here.
         deserialize_plane_endpoint(NamedMapSection::Tools.key(), deserializer)
-            .map(McpEndpointSection)
+            .map(McpEndpointSection) // plane-purity: frozen-wire the snapshot-recorded mcp: field type
     }
 }
 

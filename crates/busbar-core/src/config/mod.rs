@@ -29,7 +29,7 @@ pub(crate) use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, ToolsSection};
+use crate::plane::config::{AgentsSection, McpEndpointSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 use crate::proto::PROTO_ANTHROPIC;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -2952,7 +2952,7 @@ pub struct DeployCfg {
     // `crate::mcp` endpoint type. The plane compiled out captures it raw and refuses a present block
     // at `resolve` (the deletion-gate leg).
     #[serde(default)]
-    pub(crate) mcp: McpEndpointSection,
+    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -4994,6 +4994,7 @@ pub fn resolve(
     // `lower_endpoint` hook returns the SAME `McpCfgError` `Display` string boot produced, collected
     // verbatim. With the MCP plane compiled out there is no hook: a PRESENT `mcp:` block names a plane
     // this build does not carry, so it is refused (the config deletion-gate leg) with the same wording.
+    // plane-purity: frozen-wire the match below reads deploy.mcp, the frozen mcp: wire field on DeployCfg
     let mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = match deploy.mcp.0.as_ref() {
         None => None,
         Some(ep) => {

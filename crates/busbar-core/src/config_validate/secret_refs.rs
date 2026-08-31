@@ -94,7 +94,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // This arm exists because B1 made omission impossible: adding `mcp:` to `RootCfg` FAILED TO
         // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
         // Give `McpCfg` a `SecretRef`-typed field later and this breaks again, which is correct.
-        mcp: _,
+        mcp: _, // plane-purity: frozen-wire exhaustive destructure of DeployCfg's frozen mcp: wire field
         // `oauth_as:` DOES carry a `SecretRef` — the ES256 signing key — and it is walked below
         // rather than declined here. It is the one secret on that plane, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.

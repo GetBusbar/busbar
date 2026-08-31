@@ -1015,6 +1015,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // for as long as nothing ever grants by default, and the day a default grant is introduced —
     // for any reason, anywhere else — an anonymous caller silently inherits it. The refusal is
     // about the CONFIGURATION being unstatable, which does not decay.
+    // plane-purity: frozen-wire the `if` below reads cfg.mcp, the frozen mcp: wire field on DeployCfg
     if cfg.mcp.is_some() && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty()) {
         errors.push(
             "mcp: is configured but auth.chain is empty, which serves the MCP endpoint to \
