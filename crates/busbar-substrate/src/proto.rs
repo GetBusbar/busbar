@@ -278,6 +278,32 @@ pub fn bearer_auth_headers(
     }
 }
 
+/// Build the static custom-header egress credential (`api-key` / `x-goog-api-key`) carrying the raw
+/// key. An un-encodable key (an ASCII control byte a config system may have injected) yields NO header
+/// (empty Vec — the upstream then 401s) plus one coded diagnostic naming the header; the key bytes are
+/// NEVER logged. Shared so the warn+OMIT policy lives in ONE place.
+///
+/// RELOCATED DOWN here so the Gemini dialect crate (`x-goog-api-key` scheme) names it WITHOUT reaching
+/// into `busbar-core`; `busbar-core`'s `egress_auth::api_key_headers` (the config-`api-key` override
+/// path) delegates here so both share one implementation and cannot drift.
+pub fn api_key_auth_headers(
+    header: &'static str,
+    key: &str,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    match axum::http::HeaderValue::from_str(key) {
+        Ok(v) => vec![(axum::http::HeaderName::from_static(header), v)],
+        Err(_) => {
+            crate::diag_warn!(
+                crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
+                header,
+                "egress credential contains invalid header bytes (ASCII control character); \
+                 omitting auth header — upstream will reject with 401"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// Project each message's `(role, content)` into a `(String, String)` pair when BOTH are plain
 /// strings, or `None` if any message is missing a string role/content. A neutral serde_json projection
 /// with no protocol knowledge.

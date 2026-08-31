@@ -58,6 +58,16 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
     None
 }
 
+/// The [`ProtocolDecl::egress_auth_headers`] builder: Cohere's native credential scheme is a plain
+/// `Authorization: Bearer <key>` header (no signing context needed). Retires the
+/// `"cohere" => StaticBearer{ proto: "cohere" }` arm that used to live in core's `egress_auth::resolve`.
+fn egress_auth_headers(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    busbar_substrate::proto::bearer_auth_headers("cohere", key)
+}
+
 /// COHERE'S DECLARATION.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: "cohere",
@@ -82,10 +92,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // Cohere ids pass through verbatim and there is nothing to mis-decode on the echo.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
-    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
-    // dialect is extracted; see the field doc.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
+    // Cohere's plain-Bearer scheme is declared here — the field that retired the `"cohere"` arm in
+    // core's `egress_auth::resolve`. A pure function of the key, so it is lane-constant and prebuilt.
+    egress_auth_headers: Some(egress_auth_headers),
+    egress_auth_lane_constant: true,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `CohereWriter` methods returned.
     requires_max_tokens: false,

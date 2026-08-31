@@ -17,7 +17,6 @@
 //! This module owns the *dispatch*. Those same free functions
 //! are what the byte-pinning auth tests call, so a credential and its test can never diverge.
 
-use crate::diagnostics::{diag_warn, EGRESS_APIKEY_INVALID_BYTES};
 use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
 use std::sync::Arc;
@@ -227,20 +226,13 @@ pub(crate) fn resolve(
             });
         }
     }
-    match protocol_name {
-        "gemini" => Arc::new(ApiKeyHeader {
-            header: "x-goog-api-key",
-        }),
-        // cohere / responses and any other bearer-native protocol not yet extracted.
-        "cohere" => Arc::new(StaticBearer { proto: "cohere" }),
-        "responses" => Arc::new(StaticBearer { proto: "responses" }),
-        // Every dialect that reaches this match is named explicitly above, OR (anthropic, openai
-        // chat) supplies its own scheme via `ProtocolDecl::egress_auth_headers`, resolved and
-        // returned BEFORE this match runs. Config validation refuses an unknown protocol name
-        // before a lane ever reaches this resolver, so `_` is a defensive, fail-closed fallback —
-        // not a live scheme for any protocol this build actually serves.
-        _ => Arc::new(NoCredential),
-    }
+    // Every protocol this build serves declares its native egress scheme on its `ProtocolDecl`
+    // (`egress_auth_headers`), resolved and returned BEFORE this point — anthropic and openai chat
+    // (bearer), gemini (`x-goog-api-key`), cohere / responses (bearer), bedrock (SigV4). No dialect
+    // literal remains in this neutral resolver. Config validation refuses an unknown protocol name
+    // before a lane ever reaches here, so this is a defensive, fail-closed fallback that emits no
+    // auth header (upstream 401) — not a live scheme for any protocol this build actually serves.
+    Arc::new(NoCredential)
 }
 
 /// Fail-closed credential: emits no auth header. Used only as a defensive fallback if an
@@ -256,34 +248,12 @@ impl CredentialProvider for NoCredential {
     }
 }
 
-/// `Authorization: Bearer <key>` — openai / cohere / responses. Drops the header on a control-char key.
-struct StaticBearer {
-    proto: &'static str,
-}
-impl CredentialProvider for StaticBearer {
-    fn headers_for(&self, key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        crate::proto::bearer_auth_headers(self.proto, key)
-    }
-    fn is_lane_constant(&self) -> bool {
-        true // pure function of the key
-    }
-}
-
 /// Static custom header carrying the raw key (`api-key` or `x-goog-api-key`). An un-encodable key
 /// yields no header (upstream 401s). Free function so auth tests exercise the exact same code.
+/// Delegates to the neutral `busbar_substrate::proto::api_key_auth_headers` so the config-`api-key`
+/// override path here and the Gemini dialect's `x-goog-api-key` scheme share ONE implementation.
 pub fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
-    match HeaderValue::from_str(key) {
-        Ok(v) => vec![(HeaderName::from_static(header), v)],
-        Err(_) => {
-            diag_warn!(
-                EGRESS_APIKEY_INVALID_BYTES,
-                header,
-                "egress credential contains invalid header bytes (ASCII control character); \
-                 omitting auth header — upstream will reject with 401"
-            );
-            Vec::new()
-        }
-    }
+    busbar_substrate::proto::api_key_auth_headers(header, key)
 }
 
 struct ApiKeyHeader {

@@ -111,6 +111,17 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
     None
 }
 
+/// The [`ProtocolDecl::egress_auth_headers`] builder: Gemini's native credential is the raw key in a
+/// custom `x-goog-api-key` header (no Bearer, no signing context needed). Retires the
+/// `"gemini" => ApiKeyHeader{ header: "x-goog-api-key" }` arm that used to live in core's
+/// `egress_auth::resolve`.
+fn egress_auth_headers(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    busbar_substrate::proto::api_key_auth_headers("x-goog-api-key", key)
+}
+
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
@@ -137,10 +148,11 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
-    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
-    // dialect is extracted; see the field doc.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
+    // Gemini's `x-goog-api-key` scheme is THIS dialect's own, so the builder is declared here — the
+    // field that retired the `"gemini"` arm in core's `egress_auth::resolve`. A pure function of the
+    // key (no signing context), so it is lane-constant and the boot path prebuilds it.
+    egress_auth_headers: Some(egress_auth_headers),
+    egress_auth_lane_constant: true,
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_core::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot

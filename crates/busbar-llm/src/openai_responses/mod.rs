@@ -63,6 +63,17 @@ fn residual_claims(path: &str) -> Option<busbar_substrate::proto::ClaimStrength>
     None
 }
 
+/// The [`ProtocolDecl::egress_auth_headers`] builder: `/v1/responses` shares OpenAI's plain
+/// `Authorization: Bearer <key>` scheme (no signing context needed). Retires the
+/// `"responses" => StaticBearer{ proto: "responses" }` arm that used to live in core's
+/// `egress_auth::resolve`.
+fn egress_auth_headers(
+    key: &str,
+    _ctx: &SigningContext,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    busbar_substrate::proto::bearer_auth_headers("responses", key)
+}
+
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
@@ -80,10 +91,11 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
-    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
-    // dialect is extracted; see the field doc.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
+    // The `/v1/responses` plain-Bearer scheme is declared here — the field that retired the
+    // `"responses"` arm in core's `egress_auth::resolve`. A pure function of the key, so it is
+    // lane-constant and the boot path prebuilds it.
+    egress_auth_headers: Some(egress_auth_headers),
+    egress_auth_lane_constant: true,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `ResponsesWriter` methods returned.
     requires_max_tokens: false,
