@@ -26,7 +26,7 @@ const SCRATCH_KEY: &str = "a2a";
 /// more (both were deleted with the relocation).
 pub fn install_test_seams() {
     busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+        busbar_substrate::plane::config::default_plane_sections,
     );
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
         &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,

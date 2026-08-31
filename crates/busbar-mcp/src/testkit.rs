@@ -31,7 +31,7 @@ const SCRATCH_KEY: &str = "mcp";
 pub fn install_test_seams() {
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+        busbar_substrate::plane::config::default_plane_sections,
     );
 }
 
