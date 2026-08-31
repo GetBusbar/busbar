@@ -40,7 +40,16 @@
 //! failing is the tripwire working.
 
 use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
-use busbar_api::{AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_api::{AuditRecord, PlaneRecord, PlaneSelector, StoreResult};
+
+/// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
+/// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane
+/// record type: the frozen bytes are opaque persisted evidence, and all the golden asserts of them is
+/// that the digest the past build sealed is still the one they carry.
+#[derive(serde::Deserialize)]
+struct FrozenTailDigest {
+    hash: String,
+}
 
 // ── THE FROZEN PERSISTED BYTES — captured from the pre-cleave build, opaque on purpose ──────────
 //
@@ -163,7 +172,7 @@ fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(restored.empty_chains, 0);
 
     // And the tail hash the pre-cleave build wrote is exactly what the frozen bytes still carry.
-    let tail: McpCallRecord = decode(MCP_2).unwrap();
+    let tail: FrozenTailDigest = decode(MCP_2).unwrap();
     assert_eq!(tail.hash, MCP_TAIL_HASH);
 }
 

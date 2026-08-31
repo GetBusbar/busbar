@@ -518,6 +518,25 @@ const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resou
 const G_MCP_TAIL: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
 const G_AD_TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
+/// The NEUTRAL local shape a frozen `call`-stream body decodes into for this seam test — its fields
+/// match the on-disk names one-for-one, so this core test names no plane record type. The reframe
+/// below reads its suffix fields; the restore assertion reads only `hash`. The frozen bytes are opaque
+/// persisted evidence: all the golden proves of them is that the digest the past build sealed still
+/// recomputes from these fields.
+#[derive(serde::Deserialize)]
+struct FrozenCallBody {
+    seq: u64,
+    ts: u64,
+    server: String,
+    tool: String,
+    outcome: String,
+    reason: String,
+    tool_digest: String,
+    pin_generation: u64,
+    prev_hash: String,
+    hash: String,
+}
+
 // Mirrors the FFI `JournalReframeFn` buffer-out signature verbatim, so the arg count is fixed by the ABI.
 #[allow(clippy::too_many_arguments)]
 fn write_reframe(
@@ -558,9 +577,9 @@ fn write_reframe(
     StatusClass::Ok
 }
 
-/// MCP plane reframe: decode the legacy `McpCallRecord` and emit the LengthPrefixed suffix
+/// A plane's `call`-stream reframe: decode the frozen per-call body and emit the LengthPrefixed suffix
 /// (every field self-delimits: `u64` big-endian length + bytes; a num is its 8-byte big-endian
-/// form). `frame_prelude(prev_hash, principal, seq) ⧺ suffix` == `McpCallRecord::digest_fields`.
+/// form). `frame_prelude(prev_hash, principal, seq) ⧺ suffix` == the record's sealed digest fields.
 extern "C-unwind" fn mcp_reframe(
     _host: HostCtx,
     _kind_id: u32,
@@ -576,7 +595,7 @@ extern "C-unwind" fn mcp_reframe(
 ) -> StatusClass {
     // SAFETY: live borrowed body range (ABI).
     let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-    let r: busbar_api::McpCallRecord = serde_json::from_slice(body).expect("McpCallRecord decodes");
+    let r: FrozenCallBody = serde_json::from_slice(body).expect("frozen call body decodes");
     let mut suffix = Vec::new();
     let lp = |buf: &mut Vec<u8>, b: &[u8]| {
         buf.extend_from_slice(&(b.len() as u64).to_be_bytes());
@@ -762,7 +781,7 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
             admin_reframe,
         );
 
-        let mcp_tail: busbar_api::McpCallRecord = serde_json::from_slice(G_MCP_2).unwrap();
+        let mcp_tail: FrozenCallBody = serde_json::from_slice(G_MCP_2).unwrap();
         let ad_tail: crate::admin::audit::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
 
         restore_and_verify(host, vt, mcp_id, b"vk_alice", &mcp_tail.hash, G_MCP_TAIL);
