@@ -14,6 +14,12 @@
 //! Unix-only: SO_REUSEPORT (and the SIGTERM-driven drain) are unix facilities; non-unix builds serve
 //! on the classic single runtime (a compile-time platform shape with no knob).
 #![cfg(unix)]
+// The fixture boots a REAL busbar with an LLM provider (`protocol: anthropic`); a `--no-default-features`
+// build has no wire codec compiled in and fail-closes at boot (BUSBAR-9007), which is correct product
+// behavior, not a regression. The thread-per-core serve seam under test is plane-independent, but this
+// proof of it requires a bootable, serving server, so it is gated on the LLM plane. Full-feature builds
+// still run it.
+#![cfg(feature = "proto-llm")]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
