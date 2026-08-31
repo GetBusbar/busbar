@@ -408,7 +408,11 @@ pub(super) async fn refresh_listed_tasks(
         // holds, or one the table forbids — and is not an error to raise at a caller who asked for
         // a list.
         match crate::taskstore::TASKS
-            .transition(busbar_id, busbar_id, super::task::plan_transition(state, now))
+            .transition(
+                busbar_id,
+                busbar_id,
+                super::task::plan_transition(state, now),
+            )
             .map_err(|e| e.to_string())
             .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
         {

@@ -709,13 +709,9 @@ async fn a_task_in_the_registry(
 }
 
 /// The kinds on a task's chain, oldest first, read back out of the store.
-fn kinds_of(
-    ledger: &crate::taskstore::event_ledger::EventLedger,
-    task_id: &str,
-) -> Vec<String> {
+fn kinds_of(ledger: &crate::taskstore::event_ledger::EventLedger, task_id: &str) -> Vec<String> {
     let events = ledger.events_for(task_id);
-    crate::taskstore::verify_chain(&events)
-        .expect("the per-task chain verifies after a delivery");
+    crate::taskstore::verify_chain(&events).expect("the per-task chain verifies after a delivery");
     events.into_iter().map(|e| e.kind).collect()
 }
 

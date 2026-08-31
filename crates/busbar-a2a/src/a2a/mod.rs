@@ -342,7 +342,8 @@ pub(crate) fn a2a_hydrate(
     crate::taskstore::TASKS.set_sink(store.clone());
     // The readability predicate is the plane's own `Task::from_row` (a known state/direction token, a
     // present identity); the chain verification is computed plane-side over the plane's `TaskEventRow`.
-    match crate::taskstore::TASKS.restore_from_store(store.as_ref(), crate::a2a::task::readable_row) {
+    match crate::taskstore::TASKS.restore_from_store(store.as_ref(), crate::a2a::task::readable_row)
+    {
         Ok(s) if s == crate::taskstore::Rehydrated::default() => {}
         Ok(s) => {
             tracing::info!(

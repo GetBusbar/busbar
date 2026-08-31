@@ -2292,7 +2292,11 @@ async fn stream_hop(
                 // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
                 // order also means the receiver sees the states in the order they happened.
                 match crate::taskstore::TASKS
-                    .transition(&task_id, &request_id, super::task::plan_transition(state, now))
+                    .transition(
+                        &task_id,
+                        &request_id,
+                        super::task::plan_transition(state, now),
+                    )
                     .map_err(|e| e.to_string())
                     .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
                 {
@@ -2961,7 +2965,7 @@ fn addressed_task(
         // Through the neutral seam: `task_get_scoped` collapses "not this caller's" and "no such
         // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the scoped oracle is
         // unchanged; a row that does not parse back is treated as unaddressed for the same reason.
-        if let Some(row) = crate::taskstore::TASKS.get_scoped(principal, named).ok() {
+        if let Ok(row) = crate::taskstore::TASKS.get_scoped(principal, named) {
             if let Ok(task) = super::task::Task::from_row(&row) {
                 return Some(task);
             }

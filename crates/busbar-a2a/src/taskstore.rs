@@ -49,6 +49,7 @@ use busbar_substrate::plane::store::PlaneStore;
 /// which the former core host-side journal produced verbatim — so a chain written before the
 /// relocation verifies byte-identically. `request_id` is deliberately excluded (a join key, absent on
 /// the boot/sweep paths, must not be able to break an intact chain).
+#[allow(clippy::too_many_arguments)]
 fn digest_event(
     prev_hash: &str,
     task_id: &str,
@@ -60,8 +61,9 @@ fn digest_event(
     agent_id: &str,
     state: &str,
 ) -> String {
-    let input =
-        format!("{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}");
+    let input = format!(
+        "{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}"
+    );
     busbar_api::sha256_hex(input.as_bytes())
 }
 
@@ -456,7 +458,13 @@ impl TaskRegistry {
                 out.chain_breaks.push(brk);
             }
             let pos = Position::from_events(&events);
-            tasks.insert(row.task_id.clone(), Entry { row: row.clone(), pos });
+            tasks.insert(
+                row.task_id.clone(),
+                Entry {
+                    row: row.clone(),
+                    pos,
+                },
+            );
             out.active += 1;
         }
         Ok(out)
@@ -860,7 +868,9 @@ impl TaskTestHarness {
     /// Fresh isolated harness over `store` (the durable sink).
     pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
         let reg = TaskRegistry::new();
-        reg.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(store));
+        reg.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+            store,
+        ));
         Self { reg }
     }
 
@@ -956,7 +966,10 @@ mod chain_golden {
         let e2 = TaskEventRow::from_body(A2A_2).unwrap();
         // The digest recomputes to the frozen genesis hash — the byte layout is pinned.
         assert_eq!(digest_of(&e1), e1.hash, "genesis digest drifted");
-        assert_eq!(e1.hash, "1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1");
+        assert_eq!(
+            e1.hash,
+            "1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"
+        );
         assert_eq!(digest_of(&e2), e2.hash, "tail digest drifted");
         assert_eq!(e2.hash, A2A_TAIL_HASH);
         verify_chain(&[e1, e2]).expect("the frozen chain must verify");

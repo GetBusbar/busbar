@@ -351,9 +351,7 @@ fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
 /// map's lifetime a consequence of the store's rather than a second policy that can disagree.
 fn prune() {
     if let Ok(mut map) = configs().lock() {
-        map.retain(|task_id, _| {
-            crate::taskstore::TASKS.get_unscoped(task_id).is_some()
-        });
+        map.retain(|task_id, _| crate::taskstore::TASKS.get_unscoped(task_id).is_some());
     }
 }
 
@@ -496,7 +494,7 @@ fn addressed(
             // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the existence
             // oracle is unchanged. A row that does not parse back is treated as absent for the same
             // reason — a task this verb cannot reconstruct is one it cannot address.
-            if let Some(row) = crate::taskstore::TASKS.get_scoped(principal, id).ok() {
+            if let Ok(row) = crate::taskstore::TASKS.get_scoped(principal, id) {
                 if let Ok(task) = Task::from_row(&row) {
                     return Some(task);
                 }
@@ -786,16 +784,16 @@ pub(crate) fn subscribe_refusal(
     let named = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(serde_json::Value::as_str))?;
-    match crate::taskstore::TASKS.get_scoped(principal, named).ok() {
+    match crate::taskstore::TASKS.get_scoped(principal, named) {
         // NOT BUSBAR'S, OR NOT THIS CALLER'S — one answer for both, because "there is no such task"
-        // and "there is such a task and it is not yours" must not be distinguishable. The neutral
-        // seam collapses both to `None` exactly as the old `get_scoped` `Err(Denied)` did.
-        None => Some(err(
+        // and "there is such a task and it is not yours" must not be distinguishable. The scoped read
+        // collapses both to `Err(Denied)` deliberately.
+        Err(_) => Some(err(
             rpc_id,
             A2aError::TaskNotFound,
             "no task with that id is open for this caller",
         )),
-        Some(row) => match Task::from_row(&row) {
+        Ok(row) => match Task::from_row(&row) {
             Ok(task) if task.state.is_terminal() => Some(err(
                 rpc_id,
                 A2aError::UnsupportedOperation,

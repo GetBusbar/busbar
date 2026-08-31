@@ -39,12 +39,8 @@
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use crate::plane::store::{
-    decode, PlaneStore, KIND_AUDIT, KIND_CALL,
-};
-use busbar_api::{
-    AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult,
-};
+use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
+use busbar_api::{AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult};
 
 // ── THE FROZEN PERSISTED BYTES — captured from the pre-cleave build, opaque on purpose ──────────
 //

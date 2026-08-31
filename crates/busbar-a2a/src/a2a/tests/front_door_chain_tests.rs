@@ -133,8 +133,7 @@ async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
         !events.is_empty(),
         "no events were persisted, so there is nothing to tamper with — see the sibling test"
     );
-    crate::taskstore::verify_chain(&events)
-        .expect("the untampered rows verify first");
+    crate::taskstore::verify_chain(&events).expect("the untampered rows verify first");
 
     // The agent a task was delegated to is the fact a delegation record exists to carry, and
     // therefore the one worth rewriting after the fact.
