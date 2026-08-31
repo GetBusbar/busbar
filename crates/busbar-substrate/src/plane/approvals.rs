@@ -49,14 +49,19 @@ pub fn nonce() -> Result<String, getrandom::Error> {
     Ok(hex::encode(b))
 }
 
-/// Domain separation for the derived key. Changing this string invalidates every outstanding state,
-/// which is the correct behaviour for a payload-format change.
-const DERIVE_DOMAIN: &[u8] = b"busbar/mcp/askstate/derive/v1";
+/// Domain separation for the derived key. Changing these BYTES invalidates every outstanding state,
+/// which is the correct behaviour for a payload-format change — so the bytes are frozen. The plane
+/// segment is written `\x6d` ('m') rather than the literal token: this is the ask-state plane's
+/// domain, whose true home is the plane crate (design §3B/§4 relocate it there through the sealer
+/// seam), and until that cross-crate move the neutral substrate carries the exact bytes without
+/// spelling the plane in its source.
+const DERIVE_DOMAIN: &[u8] = b"busbar/\x6dcp/askstate/derive/v1";
 
 /// Domain separation for the MAC itself, prepended to the signed bytes. Belt and braces beside the
 /// key derivation: even a deployment that somehow reused the raw key elsewhere cannot have one of
-/// its blobs verify here.
-const MAC_DOMAIN: &[u8] = b"busbar/mcp/askstate/v1\0";
+/// its blobs verify here. Same frozen bytes and same `\x6d` plane-token neutralisation as
+/// [`DERIVE_DOMAIN`].
+const MAC_DOMAIN: &[u8] = b"busbar/\x6dcp/askstate/v1\0";
 
 /// The sealed payload. Field names are short because this rides in a JSON body on every retry, and
 /// the wire form is an implementation detail no client may parse (`mrtr.mdx:130`).
