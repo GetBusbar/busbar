@@ -145,9 +145,9 @@ pub(crate) fn ensure_test_protocols_registered() {
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "llm",
-        // THE RESIDUAL CATCH-ALL — every unclaimed path falls through to the LLM plane, so core reads
-        // the residual key off this flag rather than a hard-coded `"llm"` literal.
-        residual: true,
+        // THE FALLBACK CATCH-ALL — every unclaimed path falls through to the LLM plane, so core reads
+        // the fallback key off this flag rather than a hard-coded `"llm"` literal.
+        fallback: true,
         config_section: "pools",
         scope_kinds: &["pool"],
         subject_noun: "pool",
@@ -156,7 +156,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         admin_noun: "pool",
         audit_kind: "pool",
         wire_format_names: busbar_substrate::proto::known_protocols,
-        // THE RESIDUAL MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
+        // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
         // claims no path and binds no audience.
         claims: |_| Vec::new(),
         admission: |_| None,

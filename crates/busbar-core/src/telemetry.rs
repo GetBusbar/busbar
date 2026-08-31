@@ -759,7 +759,7 @@ pub(crate) fn request_finished(
     // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
-    if !crate::plane::is_residual(plane) {
+    if !crate::plane::is_fallback(plane) {
         crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;

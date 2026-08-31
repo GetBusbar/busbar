@@ -34,7 +34,7 @@
 //! headline claim is lossless translation.
 //!
 //! So [`has_superset_ir`] is derived from [`wire_formats`] rather than written as
-//! `matches!(key, RESIDUAL_KEY)`. That makes it a RULE rather than a fact about today's planes: the
+//! `matches!(key, FALLBACK_KEY)`. That makes it a RULE rather than a fact about today's planes: the
 //! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
 //! LLM count is read off the real protocol registry, so a seventh dialect does not depend on
 //! anyone remembering to bump a literal here.
@@ -130,46 +130,47 @@ pub mod store;
 //                    advertises — so the card cannot claim a binding the plane does not list.
 pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
-/// The residual plane's registry key — DERIVED from the plane registry rather than a hard-coded
-/// `"llm"` literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::residual`]
-/// (the LLM plane). Read by the residual guard (`PlaneDispatch::mount`/`admit` no-op) and the
+/// The FALLBACK plane's registry key — DERIVED from the plane registry rather than a hard-coded
+/// `"llm"` literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]
+/// (the LLM plane). Read by the fallback guard (`PlaneDispatch::mount`/`admit` no-op) and the
 /// model-plane telemetry branch so core names no dialect. The composition root (`register_planes`)
 /// installs the LLM plane before any reader runs, and core's own test binary carries it in
-/// `registry::builtin_plane_decls`, so exactly one residual is always present.
-pub(crate) fn residual_key() -> &'static str {
+/// `registry::builtin_plane_decls`, so exactly one fallback is always present. Core expresses "which
+/// plane handles unmatched routes" by ASKING the declared fallback plane, never by naming the LLM.
+pub(crate) fn fallback_key() -> &'static str {
     let decls = registry::plane_decls();
-    // The residual is FIRST-WINS: with two residual decls the `find` below would silently pick one
-    // and the other's paths would fall through nowhere. At most one plane may flag itself residual.
+    // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
+    // and the other's paths would fall through nowhere. At most one plane may flag itself fallback.
     debug_assert!(
-        decls.iter().filter(|d| d.residual).count() <= 1,
-        "more than one registered plane declares itself residual — the residual catch-all must be \
-         unique or `residual_key`/`is_residual` first-win nondeterministically"
+        decls.iter().filter(|d| d.fallback).count() <= 1,
+        "more than one registered plane declares itself the fallback catch-all — it must be \
+         unique or `fallback_key`/`is_fallback` first-win nondeterministically"
     );
-    // Prefer the plane that DECLARES itself residual (the LLM plane, always present in a production
-    // or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane for the one
-    // build where no residual is flagged: the `test-support`-only dependency-copy of core the plane
-    // crates link, whose built-in plane rows are empty and which registers only the plane under test
-    // (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty telemetry
-    // bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
+    // Prefer the plane that DECLARES itself the fallback (the LLM plane, always present in a
+    // production or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane
+    // for the one build where no fallback is flagged: the `test-support`-only dependency-copy of core
+    // the plane crates link, whose built-in plane rows are empty and which registers only the plane
+    // under test (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty
+    // telemetry bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
     decls
         .iter()
-        .find(|d| d.residual)
+        .find(|d| d.fallback)
         .or_else(|| decls.first())
         .map(|d| d.key)
         .unwrap_or("")
 }
 
-/// Whether `key` names THE RESIDUAL plane — the non-panicking predicate the residual GUARDS read
+/// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
 /// (`PlaneDispatch::mount`/`admit` no-op; the model-plane telemetry branch). Distinct from
-/// [`residual_key`]: it answers "is THIS key the residual" WITHOUT requiring a residual to be
-/// registered, so it is safe in a build where the residual (LLM) plane's decl is absent — the
+/// [`fallback_key`]: it answers "is THIS key the fallback" WITHOUT requiring a fallback to be
+/// registered, so it is safe in a build where the fallback (LLM) plane's decl is absent — the
 /// dependency-copy of core the plane crates link, whose built-in plane rows are empty and which only
-/// ever asks this about a mounted plane's OWN key (never the LLM key). `residual_key`, by contrast,
-/// is read only on paths (App build, request telemetry family) where the residual is always present.
-pub(crate) fn is_residual(key: &str) -> bool {
+/// ever asks this about a mounted plane's OWN key (never the LLM key). `fallback_key`, by contrast,
+/// is read only on paths (App build, request telemetry family) where the fallback is always present.
+pub(crate) fn is_fallback(key: &str) -> bool {
     registry::plane_decls()
         .iter()
-        .any(|d| d.key == key && d.residual)
+        .any(|d| d.key == key && d.fallback)
 }
 
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
@@ -258,7 +259,7 @@ pub(crate) fn superset_of(wire_formats: usize) -> bool {
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
 ///
-/// The LLM plane is the RESIDUAL and is never mounted. That mirrors the router, where the protocol
+/// The LLM plane is the FALLBACK and is never mounted. That mirrors the router, where the protocol
 /// catch-all claims every unclaimed path by construction, and it means there is exactly one door
 /// per plane rather than a precedence question with no good answer.
 ///
@@ -349,14 +350,14 @@ impl PlaneDispatch {
     /// in either order, but WITHOUT a mount this is inert: [`Self::admission_for`] resolves a path
     /// through the mount first, so admission facts alone never claim a path.
     ///
-    /// The residual LLM plane takes none. It is not an audience-bound resource: a plain data-plane
+    /// The fallback LLM plane takes none. It is not an audience-bound resource: a plain data-plane
     /// busbar key carries no audience at all, and the verifier rejects any token that does
-    /// (`governance::signing`, the 1.6.0 plane boundary). Handing the residual an audience here
+    /// (`governance::signing`, the 1.6.0 plane boundary). Handing the fallback an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
     pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
-        // The residual takes none — see the doc: an audience on an unmounted plane is inert, and one
+        // The fallback takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the LLM plane would quietly make every unclaimed path an OAuth resource server.
-        if is_residual(key) {
+        if is_fallback(key) {
             return self;
         }
         self.admit_key(key, admission)
@@ -364,7 +365,7 @@ impl PlaneDispatch {
 
     /// [`Self::admit`], keyed by plane key rather than by [`Plane`]. The seam the registry-driven
     /// [`registry::build_dispatch`] folds an admission in through, so a plane with no enum variant
-    /// binds its audience the same way a built-in does. The residual guard lives on [`Self::admit`]:
+    /// binds its audience the same way a built-in does. The fallback guard lives on [`Self::admit`]:
     /// a decl that returns `None` for its admission simply never reaches here.
     pub(crate) fn admit_key(mut self, key: &'static str, admission: PlaneAdmission) -> Self {
         self.admissions.insert(key, admission);
@@ -372,18 +373,18 @@ impl PlaneDispatch {
     }
 
     /// The admission facts governing `path`, or `None` when `path` is not under an audience-bound
-    /// mount — which includes every path on the residual LLM plane.
+    /// mount — which includes every path on the fallback LLM plane.
     ///
     /// Resolved through [`Self::mounted_plane_of`], so it inherits the segment-boundary match:
     /// `/mcpx` is NOT under a `/mcp` mount and therefore is not audience-checked. That is
     /// deliberate in both directions — a sibling path must neither inherit the plane's grants nor
     /// its refusals.
     pub fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
-        // Resolve the plane by MOUNT first — the residual is never mounted, so it never claims a
+        // Resolve the plane by MOUNT first — the fallback is never mounted, so it never claims a
         // path and never reaches the admission map — then read that plane's bound audience by key.
         self.admissions.get(self.mounted_plane_of(path)?)
     }
-    /// Mount `plane` at `path`. Mounting the residual LLM plane ([`residual_key`]) is a no-op.
+    /// Mount `plane` at `path`. Mounting the fallback LLM plane ([`fallback_key`]) is a no-op.
     ///
     /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
     /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
@@ -396,9 +397,9 @@ impl PlaneDispatch {
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
     pub(crate) fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
-        // Mounting the residual is a no-op: it IS the catch-all, so a second door to it is a
+        // Mounting the fallback is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
-        if is_residual(key) {
+        if is_fallback(key) {
             return self;
         }
         self.mount_key(key, path, wire)
@@ -406,8 +407,8 @@ impl PlaneDispatch {
 
     /// [`Self::mount`], keyed by plane key rather than by [`Plane`]. The seam
     /// [`registry::build_dispatch`] folds each plane's declared claims in through, so a registered
-    /// plane claims a path the same way a built-in does. The residual guard lives on [`Self::mount`];
-    /// a plane's decl claims no path for the residual, so it never reaches here for the LLM plane.
+    /// plane claims a path the same way a built-in does. The fallback guard lives on [`Self::mount`];
+    /// a plane's decl claims no path for the fallback, so it never reaches here for the LLM plane.
     pub(crate) fn mount_key(mut self, key: &'static str, path: &str, wire: &'static str) -> Self {
         let normalised = normalise_mount(path);
         if normalised.is_empty() {
@@ -424,7 +425,7 @@ impl PlaneDispatch {
     }
 
     /// This plane's CANONICAL mount, or `None` when it is not mounted (always `None` for the
-    /// residual LLM plane). Read by the router to mount the right handler, and by an inbound
+    /// fallback LLM plane). Read by the router to mount the right handler, and by an inbound
     /// audience check that needs to know its own canonical path.
     ///
     /// The canonical mount is the FIRST claimed, never "the one that matched": a plane's identity —
@@ -455,7 +456,7 @@ impl PlaneDispatch {
     /// matters is "which plane claims this path" ([`Self::mounted_plane_of`]) and "what is this
     /// plane's own path" ([`Self::mount_of`]), and handing out the list would invite a third reading.
     fn claims_of(&self, key: &str) -> &[Claim] {
-        // The residual is never mounted, so its key is never present and this is the empty slice —
+        // The fallback is never mounted, so its key is never present and this is the empty slice —
         // the same answer the old per-plane `Plane::Llm => &[]` arm gave, now by construction.
         self.claims.get(key).map_or(&[], Vec::as_slice)
     }
@@ -496,31 +497,31 @@ impl PlaneDispatch {
     ///
     /// ## A plane claims a path only when the operator MOUNTED it
     ///
-    /// The residual is reached by falling THROUGH the mount table, never by naming it, so a
+    /// The fallback is reached by falling THROUGH the mount table, never by naming it, so a
     /// deployment that never enabled MCP has no MCP plane and `/mcp` is an ordinary unclaimed path.
     /// Nothing here lets a plane claim a path by URL shape.
     pub(crate) fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
-            // THE RESIDUAL ARM, and the only place a path SHAPE decides anything. It answers
+            // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
             // `None` for a path that names no dialect — an honest answer the old classifier could
             // not give, because it spent that case on `openai`.
-            None => Ingress::Residual(crate::proto::residual_dialect_for_path(path)),
+            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
         }
     }
 
-    /// The plane that CLAIMS `path` BY MOUNT, or `None` when `path` falls through to the residual.
+    /// The plane that CLAIMS `path` BY MOUNT, or `None` when `path` falls through to the fallback.
     ///
     /// The same walk [`Self::plane_of`] does — it is written once, here, and `plane_of` is merely
-    /// the arm that names the residual — but it keeps the residual DISTINGUISHABLE, which
+    /// the arm that names the fallback — but it keeps the fallback DISTINGUISHABLE, which
     /// `plane_of` deliberately does not. [`super::observe`] needs that distinction and does not
     /// want a plane comparison to get it: the plane ingress boundary emits a request's metrics only
-    /// for a plane that has a DOOR of its own, because the residual labels its own requests from
+    /// for a plane that has a DOOR of its own, because the fallback labels its own requests from
     /// inside its handler, where the dialect it spoke is known. Written as `if plane == Plane::Llm`
     /// that would be a plane branch standing in for a property the mount table already knows — and
-    /// it would be wrong the day a fourth plane is added as a residual sibling.
+    /// it would be wrong the day a fourth plane is added as a fallback sibling.
     ///
-    /// The walk covers every claimed key rather than a hand-listed `[Mcp, A2a]`: the residual has no
+    /// The walk covers every claimed key rather than a hand-listed `[Mcp, A2a]`: the fallback has no
     /// mount, so it is skipped by construction rather than by being left off a list a new plane
     /// would have to remember to join.
     pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
@@ -549,19 +550,19 @@ impl PlaneDispatch {
 /// every site that must shape a reply from a path alone reads.
 ///
 /// Two variants, and the split is the mount table's: a path is CLAIMED by a plane the operator
-/// mounted, or it is not and belongs to the residual. There is deliberately no third variant for
-/// "unknown": an unrecognised path is not a fourth kind of thing, it is a residual path whose
-/// dialect is not legible, which is what `Residual(None)` says.
+/// mounted, or it is not and belongs to the fallback. There is deliberately no third variant for
+/// "unknown": an unrecognised path is not a fourth kind of thing, it is a fallback path whose
+/// dialect is not legible, which is what `Fallback(None)` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
-    /// The residual LLM plane. `Some(dialect)` when the path shape names one of the registered LLM
+    /// The fallback LLM plane. `Some(dialect)` when the path shape names one of the registered LLM
     /// dialects; `None` when it names none — a bare `/`, a typo, a probe. `None` is a real answer
     /// and not a failure: what to SAY to a caller whose dialect is unknown is a decision for the
     /// site composing the reply, not for the resolver, which would otherwise have to invent a
     /// protocol identity for a path that carries none.
-    Residual(Option<&'static str>),
+    Fallback(Option<&'static str>),
 }
 
 impl Ingress {
@@ -575,7 +576,7 @@ impl Ingress {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
             Ingress::Mounted(key) => sole_wire_format(key),
-            Ingress::Residual(dialect) => dialect,
+            Ingress::Fallback(dialect) => dialect,
         }
     }
 
@@ -603,7 +604,7 @@ impl Ingress {
     pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
-            Ingress::Residual(dialect) => dialect,
+            Ingress::Fallback(dialect) => dialect,
         }
     }
 }

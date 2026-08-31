@@ -40,7 +40,7 @@ fn minimal_app() -> Arc<App> {
             &[],
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
-            crate::plane::residual_key(),
+            crate::plane::fallback_key(),
         )),
         llm_runtime: crate::state::NativeRuntime {
             lanes: vec![],

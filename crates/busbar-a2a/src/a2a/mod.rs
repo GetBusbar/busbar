@@ -72,8 +72,8 @@
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "a2a",
-        // A MOUNTED plane, not the residual catch-all.
-        residual: false,
+        // A MOUNTED plane, not the fallback catch-all.
+        fallback: false,
         config_section: "agents",
         scope_kinds: &["agent"],
         subject_noun: "fronted agent",

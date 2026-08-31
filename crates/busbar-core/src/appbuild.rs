@@ -1500,7 +1500,7 @@ pub fn build_app_from_config(
             &lanes,
             &pools,
             &by_model,
-            crate::plane::residual_key(),
+            crate::plane::fallback_key(),
         )),
         // THE LLM DATA-PLANE RUNTIME bundle (R3/R4 sub-phase A): the pool/lane/failover/egress tables
         // that were 12 flat `App` fields, built here in ONE place. Placed AFTER `tslots` so the

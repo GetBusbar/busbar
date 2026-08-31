@@ -63,7 +63,7 @@ pub(crate) fn native_error(
         // THE RESIDUAL, including the case where the path names no dialect at all — see
         // [`envelope_dialect`] for what is chosen then, and why that is a decision about the reply
         // rather than the fallthrough the old classifier smuggled into every site that read it.
-        Ingress::Residual(_) => {
+        Ingress::Fallback(_) => {
             crate::proxy::ingress_error(envelope_dialect(ingress), status, kind, message)
         }
     }

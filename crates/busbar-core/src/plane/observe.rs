@@ -38,7 +38,7 @@
 //!   matched. A plane whose binding has a door of its own is labelled here with that binding's name
 //!   whatever else the plane speaks, because the door declares what is spoken at it. The LLM plane
 //!   still cannot be labelled here: not "it is the LLM plane", but "it has no door at all" — it is
-//!   the residual, it claims no path, and it labels its own requests from inside its handler.
+//!   the fallback, it claims no path, and it labels its own requests from inside its handler.
 //! * *Did this request's own handler already label it?* — [`Counted`], a marker the handler puts on
 //!   the response it is labelling. Needed as well as the claim, because two of the A2A plane's three
 //!   bindings SHARE the `/a2a` door: the claim can say `jsonrpc` there, and only the reader knows
@@ -100,7 +100,7 @@ pub(crate) use busbar_substrate::plane::observe::Counted;
 /// `plane` label), and the mounted planes answer `sum by (plane) (rate(busbar_plane_requests_total[5m]))`
 /// without ever changing the model series' label identity.
 ///
-/// A path on the RESIDUAL plane passes straight through: `/healthz`, `/metrics`, `/stats`, the
+/// A path on the FALLBACK plane passes straight through: `/healthz`, `/metrics`, `/stats`, the
 /// admin surface and every protocol endpoint. The protocol endpoints emit their own, richer
 /// labelling from `ingress::finish_inner` — which also owns the non-2xx flat-fee REFUND and so
 /// cannot simply be replaced by this — and double-counting them here would silently double every

@@ -1838,7 +1838,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::plane::config::split_section::<D, PoolCfg>(
             deserializer,
-            crate::plane::residual_key(),
+            crate::plane::fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -4678,7 +4678,7 @@ pub fn resolve(
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
-                return Some(crate::plane::residual_key());
+                return Some(crate::plane::fallback_key());
             }
             // The plane registry nouns read through their always-present type-erased seam. With the
             // owning plane compiled out the seam holds a `RawPlaneSection`, whose `contains_def` is
