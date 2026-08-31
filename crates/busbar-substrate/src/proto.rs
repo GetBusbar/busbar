@@ -1075,3 +1075,65 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
         }
     }
 }
+
+// ── TEST-SUPPORT PROTOCOL REGISTRATION (the neutral seam) ──────────────────────────────────────────
+// A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
+// as production's composition root `install_protocols` does, so the extracted protocol crates
+// (`busbar-llm`, `busbar-mcp`) reach the neutral ABI (`busbar_substrate::proto::register_test_protocol`)
+// rather than back into `busbar_core::proto::registry`. `busbar-core`'s test-support `registry()` folds
+// this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
+// the registry is visible regardless of test order. This is the exact analogue of the plane axis's
+// `busbar_substrate::plane::registry::register_test_plane`, and it is what let the `#[path]` witness
+// re-includes of the dialect sources into `busbar-core` be deleted: the externally-linked crate's
+// `&DECL` is now the SAME `ProtocolDecl` type (this one), so core no longer needs a re-compiled copy.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// TEST-SUPPORT SEAM — register an extracted protocol's declaration into the process registry, the way
+/// the composition root's `install_protocols` does in production. Idempotent by protocol name; a
+/// protocol crate's test setup calls it (eagerly, and/or from its App-building finalizer) so the
+/// fixture registry matches a shipped "busbar with this protocol" binary. The storage lives HERE, on
+/// the neutral substrate, so a protocol crate names no `busbar_core::` implementation to register
+/// itself.
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_test_protocol(decl: &'static ProtocolDecl) {
+    let mut reg = TEST_REGISTERED_PROTOCOLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !reg.iter().any(|d| d.name == decl.name) {
+        reg.push(decl);
+    }
+}
+
+/// TEST-SUPPORT SEAM — register a whole SLICE of an extracted protocol crate's declarations at once
+/// (the LLM protocol contributes six dialect declarations). Idempotent per name, order-preserving.
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_test_protocols(decls: &[&'static ProtocolDecl]) {
+    for d in decls {
+        register_test_protocol(d);
+    }
+}
+
+/// TEST-SUPPORT SEAM — the protocols registered through [`register_test_protocol`], snapshot in
+/// registration order. `busbar-core`'s test-support `registry()` reads this to fold the extracted
+/// protocols into the process registry.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_registered_protocols() -> Vec<&'static ProtocolDecl> {
+    TEST_REGISTERED_PROTOCOLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// TEST-SUPPORT SEAM — the COUNT of registered protocols, without cloning the list. `busbar-core`'s
+/// test-support `registry()` reads this on its memoized fast path (the one `decl_for` drives several
+/// times per request) so resolving a registry that has NOT grown allocates nothing — the alloc-gated
+/// hot-path invariant the production `OnceLock` had, preserved under the re-folding test surface.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_registered_protocols_len() -> usize {
+    TEST_REGISTERED_PROTOCOLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len()
+}

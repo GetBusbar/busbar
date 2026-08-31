@@ -78,59 +78,41 @@ pub use busbar_substrate::proto::{
 /// here becomes an entry in that crate's own declaration set (`busbar_llm::DECLS`) and nothing else
 /// in core moves; when a protocol is LOADED, it never appears here at all and reaches
 /// [`Registry::new`] through the same iterator.
-static BUILTIN_DECLS: &[&ProtocolDecl] = &[
-    // Order is the operator-visible order: it is the order `known_protocols()` reports, and
-    // `telemetry` indexes its per-protocol metric families by position in that list.
-    // ── THE LLM PROTOCOL'S DIALECTS THAT NOW LIVE IN THE `busbar-llm` PLUGIN ───────────────────
-    // These rows exist ONLY in the builds that compile those dialects back in for the fixture
-    // surface (see the `mod anthropic` decl in proto/mod.rs and the dual-compile note there). In
-    // the production binary the composition root installs `busbar_llm::DECLS` through
-    // [`install_protocols`], folded AHEAD of this table — so the operator-visible protocol order
-    // is the same in both shapes, and `merged_boot_decls` skips whichever copy registers second.
-    //
-    // THEY ARE LISTED IN `busbar_llm::DECLS`' OWN ORDER, and that is a requirement, not tidiness:
-    // this table and that slice are two statements of ONE sequence. Core cannot check that itself
-    // (it must not name the plugin), so the check is black-box on the shipped binary —
-    // `crates/busbar/tests/cli_validate.rs::the_operator_visible_protocol_order_is_exactly_the_
-    // shipped_one` reads the `must be one of:` refusal an operator would read. Before the
-    // consolidation the two orders DID disagree (this table said anthropic, openai, gemini; the
-    // composition root installed anthropic, gemini, openai), which was harmless only because
-    // nothing compared them.
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::anthropic::DECL,
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::gemini::DECL,
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::openai_chat::DECL,
-    // ── The remaining LLM dialects also live in the `busbar-llm` plugin now — same rationale as
-    //    the three rows above; these fixture-surface copies exist ONLY in the builds that compile
-    //    the dialects back in, and their ORDER matches `busbar_llm::DECLS` exactly (this table and
-    //    that slice are two statements of one operator-visible sequence).
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::bedrock::DECL,
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::openai_responses::DECL,
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::cohere::DECL,
-    // MCP declares a handler and NO codec: its IR is its own and there is no cross-dialect
-    // translation into or out of it. That asymmetry is the point — the registry holds protocols,
-    // not codecs, and a protocol that translates to nothing is still a protocol.
-    //
-    // MCP IS AN EXTRACTED CRATE (`busbar-mcp`, the codec half) on the same terms as anthropic above,
-    // and this row exists only in the builds that compile the dialect back in for the fixture surface
-    // (see the `mod mcp` decl in handlers/mod.rs). In the production binary the composition root
-    // installs the crate's own `PROTO_DECL` through [`install_protocols`], folded AHEAD of this table.
-    // The `mcp/` PLANE is a different thing and is still core's — the crate carries the protocol.
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::handlers::mcp::DECL,
-];
+/// Production carries NO built-in protocol rows: every protocol is a plugin crate the composition
+/// root installs through [`install_protocols`]. Naming a protocol crate's `&DECL` here would be a
+/// protocol-crate symbol reference in neutral source — a side channel around the ABI, and the very
+/// coupling the `#[path]` witness re-includes used to be — so this stays empty.
+///
+/// Core's OWN test binary still needs the shipped protocol set (the six LLM dialects + MCP) so its
+/// pre-extraction fixture surface keeps exercising the real codecs; the plugin crates are
+/// dev-dependencies there. That list names `busbar_llm::DECLS` and `busbar_mcp::PROTO_DECL`, which
+/// belong OFF the neutral source, so it is defined in the test module (`test_builtins`, a `tests/`
+/// file the neutral-purity lint excludes) and reached ONLY through [`builtin_decls`]. An EXTERNAL
+/// `test-support` consumer (the plugin suites, core's integration target) has `cfg(test)` false and
+/// registers through the neutral [`busbar_substrate::proto::register_test_protocol`] seam instead —
+/// the exact mirror of how `plane::registry` handles its extracted-plane rows.
+#[cfg(not(test))]
+static BUILTIN_DECLS: &[&ProtocolDecl] = &[];
 
-/// The built-in declarations. Read by [`registry`] to build the process registry, and by the
-/// registry's own tests to build a registry with ONE MORE declaration in it — which is the whole of
-/// what a loader will do differently.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The built-in declarations. Read by [`registry`] to build the process registry. Empty in
+/// production and under `test-support`; under core's own `#[cfg(test)]` binary it is the test-module
+/// list, so no protocol crate is named in neutral source.
+#[cfg(not(test))]
 pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
     BUILTIN_DECLS
+}
+
+/// The extracted-dialect built-in list for core's OWN test binary — `busbar_llm::DECLS` and
+/// `busbar_mcp::PROTO_DECL`, named in a `tests/` file the neutral-purity lint excludes so the neutral
+/// source spells no protocol crate. It reproduces the shipped protocol set (and its operator-visible
+/// ORDER) for the pre-extraction fixture surface.
+#[cfg(test)]
+#[path = "tests/registry_builtins.rs"]
+mod test_builtins;
+
+#[cfg(test)]
+pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
+    test_builtins::TEST_BUILTIN_DECLS
 }
 
 /// THE REGISTRY: the declarations, plus the aggregates that used to be three separate `OnceLock`
@@ -275,7 +257,11 @@ pub fn declared_verbs() -> &'static [crate::operation::Operation] {
     registry().declared_verbs()
 }
 
-/// The process registry, built on first read from the built-ins plus anything installed.
+/// The process registry, built on first read from the built-ins plus anything installed. Production
+/// only: under the test-support surface [`registry`] re-folds on every read (folding the growable
+/// [`busbar_substrate::proto::test_registered_protocols`] set), so there is no frozen memo there —
+/// the FIRST-READ witness [`install_protocols`] asserts on is [`TEST_REGISTRY_MEMO`] instead.
+#[cfg(not(any(test, feature = "test-support")))]
 static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 
 /// Declarations the COMPOSITION ROOT installed before the registry was first read — the protocol
@@ -323,8 +309,24 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
     );
+    // The "install before first read" invariant is enforced by the production memo.
+    #[cfg(not(any(test, feature = "test-support")))]
     assert!(
         REGISTRY.get().is_none(),
+        "install_protocols called after the protocol registry was first read; register in main \
+         before any config load or validation touches a protocol"
+    );
+    // Under the test-support surface `registry` re-folds on every read (no frozen `REGISTRY` memo),
+    // so the FIRST-READ witness is `TEST_REGISTRY_MEMO` being populated instead: it is set the first
+    // time the process registry is folded, so a non-empty memo means a layer has already resolved
+    // against the built-ins-only set — the same invariant the production `REGISTRY` memo enforces,
+    // spelled on the structure that stands in for it here.
+    #[cfg(any(test, feature = "test-support"))]
+    assert!(
+        TEST_REGISTRY_MEMO
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none(),
         "install_protocols called after the protocol registry was first read; register in main \
          before any config load or validation touches a protocol"
     );
@@ -406,11 +408,69 @@ pub fn merged_boot_decls(
 }
 
 /// The process registry. One acquire-load once initialized.
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| {
         let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
         Registry::new(merged_boot_decls(installed, BUILTIN_DECLS))
     })
+}
+
+// ── TEST-SUPPORT PROCESS REGISTRY ──────────────────────────────────────────────────────────────
+// The extracted protocol crates can't be hard-coded into a neutral `BUILTIN_DECLS` (core cannot name
+// them), so under the test-support surface each protocol crate's test setup REGISTERS its
+// `&'static ProtocolDecl`s through the NEUTRAL seam `busbar_substrate::proto::register_test_protocol`
+// — the storage lives on the substrate so a protocol crate names no `busbar_core::` implementation to
+// register itself, exactly as production's composition root `install_protocols`. `registry()` folds
+// the registered set (and any explicit `install_protocols` set) ahead of the built-ins on every read,
+// recomputing (and leaking once) only when the set GROWS — so a protocol registered by any test before
+// it reads the registry is visible regardless of test order, and the `&'static` contract holds.
+// Bounded: at most one leak per distinct registered-set size. This is the exact mirror of
+// `plane::registry::plane_decls`'s test-support re-fold.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTRY_MEMO: std::sync::Mutex<Option<(usize, &'static Registry)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn registry() -> &'static Registry {
+    // CORE'S OWN TEST BINARY (`cfg(test)`) publishes its extracted-dialect built-ins into the SHARED
+    // substrate test registry ONCE, so the OTHER `busbar-core` instance this binary links (the
+    // `test-support`, non-`cfg(test)` copy the `busbar-llm`/`busbar-mcp` dev-deps compile against —
+    // whose `builtin_decls()` is empty) resolves the SAME protocol set. That second instance is what a
+    // plugin's codec reaches through `busbar_core::proto::decl_for` (e.g. the tool-id remap's
+    // `native_tool_id_prefix`) and what `busbar_llm::PLANE_DECL.wire_format_names` reads — both were
+    // served by the deleted `test-support` witness rows before.
+    #[cfg(test)]
+    {
+        static PUBLISH_BUILTINS: std::sync::Once = std::sync::Once::new();
+        PUBLISH_BUILTINS
+            .call_once(|| busbar_substrate::proto::register_test_protocols(builtin_decls()));
+    }
+    // THE MEMOIZED FAST PATH IS ALLOCATION-FREE (the alloc-gated invariant `decl_for` relies on): the
+    // registered-set SIZE is read without cloning the list, and a set that has not grown returns the
+    // memoized `&'static Registry` with no fold and no allocation — the counterpart of the production
+    // `OnceLock` acquire-load.
+    let want = busbar_substrate::proto::test_registered_protocols_len()
+        + INSTALLED.get().map(Vec::len).unwrap_or(0);
+    let mut memo = TEST_REGISTRY_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((n, reg)) = *memo {
+        if n == want {
+            return reg;
+        }
+    }
+    // SLOW PATH (the set GREW): fold explicit `install_protocols` registrations (the registry's own
+    // tests) AND `register_test_protocol` registrations ahead of the built-ins, then leak ONCE for this
+    // grown set — the same `Vec::leak`-shaped process-singleton allocation `Registry::new` relies on.
+    let test_reg = busbar_substrate::proto::test_registered_protocols();
+    let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
+    let mut all: Vec<&'static ProtocolDecl> = installed.to_vec();
+    all.extend(test_reg.iter().copied());
+    let reg: &'static Registry = Box::leak(Box::new(Registry::new(merged_boot_decls(
+        &all,
+        builtin_decls(),
+    ))));
+    *memo = Some((want, reg));
+    reg
 }
 
 /// RESOLVE A PROTOCOL BY NAME — the one by-name protocol resolution in busbar, and the function the

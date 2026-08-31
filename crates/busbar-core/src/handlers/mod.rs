@@ -43,21 +43,13 @@
 // `IrReq`/`IrResp` dissolved onto `Box<dyn IrHandle>`, the chat codec names the concrete chat IR
 // that now lives in the plugin, so it cannot stay in core. Core names no chat codec in production;
 // chat resolves through the registry like every other operation (see `chat` below).
-/// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
-/// `crates/busbar-mcp/src/codec` (the MCP plugin's codec half; the `busbar` binary registers its
-/// `PROTO_DECL` through `crate::proto::registry::install_protocols`), and core's PRODUCTION build
-/// knows nothing of them — this decl exists so the pre-extraction fixture surface (the
-/// `protocol: mcp` configs and the `(mcp, Invoke)`/`(mcp, Subscribe)` matrix fixtures across the
-/// core suite) keeps exercising the real codec from inside this crate's test binary, where an
-/// externally-linked copy could not reach the registry (its `ProtocolDecl` would be a different
-/// crate's type). The dialect's sources are written against `busbar_core::` paths, which the
-/// `extern crate self as busbar_core` alias in lib.rs resolves here.
-///
-/// NOTE THE SCOPE: this is MCP the PROTOCOL. The `mcp/` PLANE (`crate::mcp`) did not travel with
-/// the codec and is still core's — see the crate docs in `busbar-mcp/src/codec/mod.rs`.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-mcp/src/codec/mod.rs"]
-pub(crate) mod mcp;
+// THE EXTRACTED MCP PROTOCOL CODEC lives wholly in the `busbar-mcp` plugin crate
+// (`crates/busbar-mcp/src/codec`). Its `#[path]` witness re-include into core (which let the
+// pre-extraction fixture surface reach the real MCP codec from inside core's own test binary, back
+// when a `ProtocolDecl` was a `busbar-core` type an external crate could not hand to the registry)
+// was DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test binary reads
+// `busbar_mcp::PROTO_DECL` directly (dev-dependency). NOTE THE SCOPE: this was MCP the PROTOCOL; the
+// `mcp/` PLANE (`crate::mcp`) never travelled with the codec and is still core's.
 
 // THE CODEC-CELL MATRIX, relocated to `busbar-substrate` (`busbar_substrate::handlers`) so the
 // dialect crates implement it without reaching into `busbar-core`, and re-exported here at its
@@ -251,18 +243,18 @@ impl OpDispatch {
     }
 }
 
-/// Chat — operation #1. A const handle to the shared chat OperationHandler, for tests and as the
-/// resolver's fallback. TEST-BUILD ONLY: `ChatOperation` relocated to the `busbar-llm` plugin at the
-/// G6 A4b dissolve (it names the concrete chat IR that moved there), so production core has no chat
-/// codec to name; the netted `crate::proto::chat_handle::ChatOperation` supplies it for the core test
-/// binary. Prefer [`chat`] on the request path so the RequestHandler actually decides the handler.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)] // exercised by the dialect test crates; unused in the netted-core target
-pub(crate) const CHAT: Op = frame(
-    crate::transport::Transport::Http,
-    Operation::CHAT,
-    &crate::proto::chat_handle::ChatOperation("openai"),
-);
+/// Chat — operation #1. A const handle to the shared chat `OperationHandler`, for core's own tests.
+/// TEST-BINARY ONLY: `ChatOperation` lives in the `busbar-llm` plugin (it names the concrete chat IR
+/// that moved there at the G6 A4b dissolve), so production core has no chat codec to name and the
+/// neutral source may not spell the plugin. The fixture is therefore DEFINED in a `tests/` file the
+/// neutral-purity lint excludes (`chat_fixture`, which names `busbar_llm::chat_handle::ChatOperation`)
+/// and re-exported here at its historical `crate::handlers::CHAT` path. Prefer [`chat`] on the request
+/// path so the `RequestHandler` actually decides the handler.
+#[cfg(test)]
+#[path = "tests/chat_fixture.rs"]
+mod chat_fixture;
+#[cfg(test)]
+pub(crate) use chat_fixture::CHAT;
 
 /// Resolve the chat dispatch THROUGH the registry — the same path every other operation takes:
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which

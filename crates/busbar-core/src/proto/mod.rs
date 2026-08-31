@@ -220,43 +220,26 @@ pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
 pub(crate) mod stream_translator;
 pub use stream_translator::install_stream_translator_factory;
 pub(crate) use stream_translator::new_stream_translator;
+/// Core's OWN test binary routes the streaming-translator seam straight to the `busbar-llm` concrete
+/// factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
+/// suites that drive `new_stream_translator` standalone keep working after the `#[path]` witness of the
+/// concrete translator was deleted — with no plugin symbol in neutral source and no `install_*` call.
+#[cfg(test)]
+#[path = "tests/stream_factory_fixture.rs"]
+mod stream_factory_fixture;
 // The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_substrate::proto`; re-exported here
 // at its historical `busbar_core::proto::StreamTranslator` path so core's forward path is unchanged.
 pub use busbar_substrate::proto::StreamTranslator;
 
-/// THE EXTRACTED CONCRETE STREAM TRANSLATOR (`StreamTranslate` + factory + frame helpers), compiled
-/// back in for TEST BUILDS ONLY (G6 A4b). Sources live in `crates/busbar-llm/src/proto_stream.rs`
-/// (it names `IrStreamEvent`/`IrUsage`/`StreamDecodeState`, so it relocated to the plugin); same
-/// `#[path]` dual-compile mechanism as the dialects. Production reaches it via the installed factory.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/proto_stream.rs"]
-pub(crate) mod stream;
-// The production forward path constructs translators through `new_stream_translator` and holds them
-// behind `dyn StreamTranslator`, so the concrete translator is named only by the proto / proxy test
-// suites (the streaming witnesses drive it directly). Glob re-export (not an explicit `use`, which
-// would name `StreamTranslate` — a witness TYPE) so those suites reach it at `crate::proto::StreamTranslate`
-// as before; core names it nowhere in production (freeze witness → 0).
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)]
-// glob re-export; `crate::proto::StreamTranslate` reached by the proxy witnesses
-pub(crate) use stream::*;
-
-/// THE EXTRACTED CONCRETE WIRE-CODEC SURFACE (`ProtocolReader`/`ProtocolWriter`/`StreamFraming`/
-/// `Protocol`/`protocol_for`/`DialectRef`/`ToolIdRemap`), compiled back in for TEST BUILDS ONLY (G6
-/// A4b). Sources live in `crates/busbar-llm/src/proto_codec.rs` — it names the concrete LLM IR types,
-/// so it relocated to the plugin; production core drives translation through the neutral `DialectCodec`
-/// seam + the per-cell `TranslateCodec` and names none of these. Netted here (module name matches the
-/// plugin root file so the dialect files' `super::super::proto_codec` resolves in both shapes) so the
-/// pre-extraction fixture surface (`Protocol::anthropic()`, `protocol_for(p).reader()/.writer()`, the
-/// stream-translate + identity suites) keeps resolving. Same `#[path]` dual-compile mechanism.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/proto_codec.rs"]
-pub(crate) mod proto_codec;
-// Glob re-export (not an explicit list) so the pre-extraction call surface reaches these at their old
-// `crate::proto::<Item>` paths WITHOUT this line textually naming a concrete-family type the freeze
-// witness would count (`StreamFraming` is on its TYPES list).
-#[cfg(any(test, feature = "test-support"))]
-pub use proto_codec::*;
+// THE EXTRACTED CONCRETE STREAM TRANSLATOR (`StreamTranslate`) and WIRE-CODEC SURFACE
+// (`ProtocolReader`/`ProtocolWriter`/`Protocol`/`protocol_for`/…) live wholly in the `busbar-llm`
+// plugin (`proto_stream.rs`/`proto_codec.rs`) — they name the concrete LLM IR types. Their `#[path]`
+// witness re-includes (and the `pub use stream::*` / `pub use proto_codec::*` glob re-exports that
+// let the pre-extraction fixture surface reach them at `crate::proto::…`) were DELETED once Phase 1.6
+// drained core's own suite of any dependence on the witnessed codec: the concrete-codec tests moved
+// beside the types they exercise (`busbar-llm/src/tests/proto/`), where they name
+// `crate::proto_codec::…` in the plugin. Production core drives translation through the neutral
+// `DialectCodec` seam + the installed `StreamTranslator` factory and names none of these.
 
 // `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_substrate::proto` (the
 // `busbar-llm` stream translator + gemini reassembler drive them); re-exported here at their
@@ -281,163 +264,29 @@ pub use busbar_substrate::proto::strip_top_level_usage_member;
 // emits through it); re-exported here at its historical `busbar_core::proto::write_sse_frame` path.
 pub use busbar_substrate::proto::write_sse_frame;
 
-/// THE EXTRACTED ANTHROPIC DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
-/// `crates/busbar-llm/src/anthropic` (a module of the ONE LLM plugin crate; the `busbar`
-/// binary registers every dialect's `DECL` through `registry::install_protocols`), and core's PRODUCTION build knows nothing of
-/// them — this decl exists so the pre-extraction fixture surface (the `Protocol::anthropic()`
-/// fixtures and `protocol: anthropic` configs across the core suite) keeps exercising the real
-/// codec from inside this crate's test binary, where an externally-linked copy could not reach the
-/// registry (its `ProtocolDecl` would be a different crate's type). The dialect's sources are
-/// written against `busbar_core::` paths, which the `extern crate self as busbar_core` alias in
-/// lib.rs resolves here.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/anthropic/mod.rs"]
-pub mod anthropic;
-/// THE EXTRACTED BEDROCK DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/bedrock`; see the `mod anthropic` doc above — same mechanism, same crate,
-/// a different dialect module of it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/bedrock/mod.rs"]
-pub mod bedrock;
-/// THE EXTRACTED COHERE DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/cohere`; see the `mod anthropic` doc above — same mechanism, same crate,
-/// a different dialect module of it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/cohere/mod.rs"]
-pub mod cohere;
+// THE SIX EXTRACTED LLM DIALECTS (anthropic, bedrock, cohere, gemini, openai_chat, openai_responses)
+// live wholly in the `busbar-llm` plugin crate. Their `#[path]` witness re-includes into core (which
+// existed only so the pre-extraction fixture surface could reach the real codecs from inside core's
+// own test binary, back when a `ProtocolDecl` was a `busbar-core` type an external crate could not
+// hand to the registry) were DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test
+// binary reads `busbar_llm::DECLS` directly (dev-dependency) and the dialect suites moved to
+// `busbar-llm/src/tests/`. Production core drives every dialect through the registry's
+// `ProtocolDecl` vtable and names none of them.
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
-/// THE EXTRACTED GEMINI DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/gemini`; see the `mod anthropic` doc above for the full rationale —
-/// same mechanism, same crate, a different dialect module of it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/gemini/mod.rs"]
-pub mod gemini;
-/// THE EXTRACTED OPENAI CHAT DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/openai_chat`; see the `mod anthropic` doc above for the full
-/// rationale — same mechanism, same crate, a different dialect module of it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/openai_chat/mod.rs"]
-pub mod openai_chat;
 pub mod openai_family;
-/// THE EXTRACTED OPENAI RESPONSES DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/openai_responses`; see the `mod anthropic` doc above — same mechanism,
-/// same crate, a different dialect module of it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/openai_responses/mod.rs"]
-pub mod openai_responses;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
 pub mod registry;
 
-/// THE EXTRACTED TAIL-USAGE ISOLATION HELPER, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/usage_tail.rs` (the dialect readers' `recover_truncated_usage` overrides
-/// call it via `super::super::usage_tail`); see the `mod anthropic` doc above — same mechanism, same
-/// crate. Production core drives the readers through the vtable and never names this module directly.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/usage_tail.rs"]
-pub mod usage_tail;
+// THE EXTRACTED PER-DIALECT CODEC HELPERS — `usage_tail`, `synth_rng`, `openai_annotations`,
+// `ir_encode`, `leaf_codec`, `chat_handle` (the `ChatOperation` cell) and `leaf_handles` — live wholly
+// in the `busbar-llm` plugin crate. Their `#[path]` witness re-includes into core, and the bare-name
+// `use <dialect>::{Reader,Writer}` scaffolding imports the netted fixtures needed, were DELETED with
+// the dialects: Phase 1.6 drained core's own suite of any dependence on the witnessed codec, so the
+// suites that named these moved to `busbar-llm/src/tests/`, where they resolve the helpers at their
+// plugin paths. Production core drives every codec through the registry's `ProtocolDecl` vtable.
 
-/// THE THREAD-LOCAL OS-ENTROPY POOL for synthesized wire ids, compiled back in for TEST BUILDS ONLY.
-/// Sources live in `crates/busbar-llm/src/synth_rng.rs` (the dialect writers reach it via
-/// `super::synth_rng` from a `mod.rs`); same `#[path]` dual-compile mechanism as `usage_tail` above.
-/// Production core drives the writers through the vtable and never names this module directly.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/synth_rng.rs"]
-pub mod synth_rng;
-
-/// THE EXTRACTED OPENAI-FAMILY CITATION MAPPING, compiled back in for TEST BUILDS ONLY. Sources live
-/// in `crates/busbar-llm/src/openai_annotations.rs` (the openai Chat/Responses codecs call it via
-/// `super::super::openai_annotations`); same `#[path]` dual-compile mechanism as `mod anthropic` and
-/// `usage_tail` above. Production core drives the codecs through the vtable and never names it.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/openai_annotations.rs"]
-pub mod openai_annotations;
-
-/// THE EXTRACTED IR→WIRE ENCODE HELPERS, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-llm/src/ir_encode.rs` (the dialect writers call it via `super::ir_encode` from a
-/// `mod.rs` and `super::super::ir_encode` from a `writer.rs`); same `#[path]` dual-compile mechanism
-/// as `usage_tail`/`openai_annotations`. Production core drives the codecs through the vtable.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir_encode.rs"]
-pub mod ir_encode;
-
-/// THE EXTRACTED LEAF-OP WRITER DISPATCH, compiled back in for TEST BUILDS ONLY (G6 A4b option-a).
-/// Sources live in `crates/busbar-llm/src/leaf_codec.rs` — the per-`(operation, egress-protocol)`
-/// writer dispatcher the dialect leaf-op handlers route their writes through (they call it via
-/// `super::super::leaf_codec`, and it reaches each dialect's write body via `super::<dialect>::…`);
-/// same `#[path]` dual-compile mechanism as `ir_encode`/`usage_tail`. Production core drives the
-/// codecs through the vtable and never names this module directly.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/leaf_codec.rs"]
-pub mod leaf_codec;
-
-/// THE EXTRACTED CHAT `IrHandle` + `ChatOperation`, compiled back in for TEST BUILDS ONLY (G6 A4b
-/// dissolve). Sources live in `crates/busbar-llm/src/chat_handle.rs`. `ChatOperation` is the shared
-/// chat cell the LLM dialects parameterize by protocol name (each dialect's `handler.rs` reaches it
-/// via `super::super::chat_handle::ChatOperation`); the handle writes ITSELF onto the egress dialect
-/// by protocol string. Netted here (a sibling of the dialects/`leaf_codec`) so the dialect handlers'
-/// `super::super::chat_handle` resolves; `crate::ir` inside it resolves to core's root `ir`. Same
-/// `#[path]` dual-compile mechanism as `leaf_codec`; production core names no chat codec.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/chat_handle.rs"]
-pub mod chat_handle;
-
-/// THE EXTRACTED SIX LEAF-OP `IrHandle`s, compiled back in for TEST BUILDS ONLY (G6 A4b dissolve).
-/// Sources live in `crates/busbar-llm/src/leaf_handles.rs`; each dialect's leaf-op cell yields these
-/// from `read_request`/`read_response` (reached via `super::super::leaf_handles`), and each handle
-/// writes itself via the `super::leaf_codec` `(op, protocol)` dispatchers. Same `#[path]` mechanism.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/leaf_handles.rs"]
-pub mod leaf_handles;
-
-// Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
-// constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other
-// caller references these at their owning module path (e.g. `crate::proto::bedrock::...`).
-// The extracted dialect's codec structs, in scope for the same test surface that predates the
-// extraction (the proto test modules construct them bare via `use super::*`). Present only in the
-// builds that compile the dialect back in; production core has no such names.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)]
-// test-surface scaffolding for the netted dialect fixtures (suites relocated to busbar-llm)
-use anthropic::{AnthropicReader, AnthropicWriter};
-// `synth_anthropic_request_id` lives in `anthropic.rs`; mod.rs references it only from its own test
-// module (production callers use `crate::proto::anthropic::synth_anthropic_request_id`). Private,
-// test-gated import — NOT a re-export.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding (suites relocated to busbar-llm)
-use anthropic::synth_anthropic_request_id;
-// The extracted Bedrock and Cohere codec structs, in scope for the same test surface that predates
-// the extraction. Present only in the builds that compile the dialects back in.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding for the netted dialect fixtures
-use bedrock::{BedrockReader, BedrockWriter};
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding for the netted dialect fixtures
-use cohere::{CohereReader, CohereWriter};
-// The extracted Gemini dialect's codec structs, in scope for the same test surface that predates
-// the extraction. Present only in the builds that compile the dialect back in.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding for the netted dialect fixtures
-use gemini::{GeminiReader, GeminiWriter};
-// `GeminiJsonArrayFramer` lives in `gemini.rs`; mod.rs references it only from its own test module
-// (production callers use `crate::proto::gemini::GeminiJsonArrayFramer`). Private, test-gated import
-// — NOT a re-export.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding (suites relocated to busbar-llm)
-use gemini::GeminiJsonArrayFramer;
-// The extracted OpenAI Chat dialect's codec structs, in scope for the same test surface that
-// predates the extraction. Present only in the builds that compile the dialect back in — and on the
-// `test-support` gate, not bare `cfg(test)`, because `Protocol::openai()` (which names them) is on
-// that gate for a sibling dialect crate's test build.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding for the netted dialect fixtures
-use openai_chat::{OpenAiReader, OpenAiWriter};
-// The extracted OpenAI Responses codec structs, in scope for the same test surface that predates
-// the extraction. Present only in the builds that compile the dialect back in.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports)] // test-surface scaffolding for the netted dialect fixtures
-use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
 // which does `use super::*`) can state its `DECL` without importing the registry by path.
 pub use registry::{

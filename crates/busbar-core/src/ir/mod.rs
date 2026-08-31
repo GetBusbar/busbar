@@ -35,44 +35,16 @@ pub mod neutral_handles;
 /// The genuinely cross-plane SUBSCRIBE leaf (mcp + a2a) — neutral, stays in core.
 pub mod subscribe;
 
-// ── CONCRETE IR — RELOCATED to busbar-llm (G6 A4b); re-included for TEST BUILDS ONLY ─────────────
+// ── CONCRETE IR — RELOCATED to busbar-llm (G6 A4b) ───────────────────────────────────────────────
 //
-// The type DEFINITIONS live in `crates/busbar-llm/src/ir/*` (they address core as `busbar_core::`,
-// which the `extern crate self as busbar_core` alias resolves here). Core's PRODUCTION build names
-// none of them; the `#[path]` re-include below makes `crate::ir::IrRequest` (and the five leaf-op
-// IR modules + the `IrFacts for IrRequest` projection) resolve at this module root for core's test
-// binary, exactly as before the relocation.
-
-/// The concrete chat IR TYPES (`IrRequest`/`IrResponse`/`IrBlock`/…), re-exported flat so every
-/// pre-cutover `crate::ir::<Type>` path still resolves in the test build.
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/types.rs"]
-mod types;
-#[cfg(any(test, feature = "test-support"))]
-pub use types::*;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/audio.rs"]
-pub mod audio;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/embeddings.rs"]
-pub mod embeddings;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/image.rs"]
-pub mod image;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/moderation.rs"]
-pub mod moderation;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/rerank.rs"]
-pub mod rerank;
-
-/// `impl IrFacts for IrRequest` + `project` — relocated with the concrete chat IR (G6 A4b).
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-llm/src/ir/facts_impl.rs"]
-mod facts_impl;
-#[cfg(any(test, feature = "test-support"))]
-pub use facts_impl::project;
+// The concrete chat IR and the LLM leaf-op IR (`IrRequest`/`IrResponse`/`IrBlock`/`Embeddings*`/… —
+// the five leaf-op IR modules and the `IrFacts for IrRequest` projection) live wholly in the
+// `busbar-llm` plugin crate (`crates/busbar-llm/src/ir/*`). Their `#[path]` witness re-includes into
+// core (which made `crate::ir::IrRequest` etc. resolve at this module root for core's own test binary)
+// were DELETED once Phase 1.6 drained core's own suite of any dependence on the witnessed concrete IR:
+// the concrete-IR unit tests moved to `busbar-llm/src/ir/tests/`, beside the types they exercise.
+// Production core reads a request only through the neutral projection (`facts`) and drives translation
+// through the sealed neutral `IrHandle` (`handle`); it names no concrete LLM family type.
 
 // The concrete-IR unit tests (`tests.rs` + the leaf-op `*_tests.rs`) RELOCATED with their types to
 // `crates/busbar-llm/src/ir/tests/`, declared by the plugin's own IR modules; core's neutral IR keeps

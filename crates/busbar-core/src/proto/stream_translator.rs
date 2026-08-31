@@ -30,19 +30,26 @@ pub fn install_stream_translator_factory(f: StreamTranslatorFactory) {
 }
 
 /// The SINGLE streaming-translator construction seam both forward paths (`engine/mod.rs`,
-/// `engine/walk.rs`) call. Neutral in and out. In the test build it routes to the netted concrete
-/// factory; in production it routes to the installed pointer (returns `None` — legacy raw passthrough
-/// — when no plugin installed one, e.g. a core-only build with no dialects).
-#[cfg(any(test, feature = "test-support"))]
+/// `engine/walk.rs`) call. Neutral in and out. It routes to the installed pointer (returns `None` —
+/// legacy raw passthrough — when no plugin installed one, e.g. a core-only build with no dialects).
+///
+/// Under core's OWN test binary (`cfg(test)`) it instead routes to the `busbar-llm` concrete factory
+/// DIRECTLY — through a `tests/` fixture the neutral-purity lint excludes (`stream_factory_fixture`),
+/// so no plugin symbol appears in neutral source and no runtime `install_*` call is needed before a
+/// test that drives the seam standalone (the streaming-fidelity suites call it without booting an App).
+/// This replaces the deleted `#[path]` witness (`super::stream::new_stream_translator`). External
+/// `test-support` consumers (the plugin test binaries) have `cfg(test)` false and reach the installed
+/// factory, which their own test setup fills through [`install_stream_translator_factory`].
+#[cfg(test)]
 pub(crate) fn new_stream_translator(
     ingress: &str,
     egress: &str,
     is_sse: bool,
 ) -> Option<Box<dyn StreamTranslator>> {
-    super::stream::new_stream_translator(ingress, egress, is_sse)
+    super::stream_factory_fixture::new_stream_translator(ingress, egress, is_sse)
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 pub(crate) fn new_stream_translator(
     ingress: &str,
     egress: &str,
