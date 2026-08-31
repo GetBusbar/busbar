@@ -31,7 +31,7 @@ use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 use super::super::task::{Direction, Task, TaskState};
-use busbar_core::provenance;
+use busbar_substrate::audit::vocab as provenance;
 
 const CALLBACK: &str = "https://hook.caller.test/notify";
 /// The address the callback resolved to when it was REGISTERED. Public, so it passed.
@@ -690,36 +690,31 @@ async fn a_task_in_the_registry(
     state: TaskState,
 ) -> (
     Task,
-    Arc<busbar_core::plane::taskstore::event_ledger::EventLedger>,
+    Arc<crate::taskstore::event_ledger::EventLedger>,
     tokio::sync::MutexGuard<'static, ()>,
 ) {
-    let guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
-    let ledger = Arc::new(busbar_core::plane::taskstore::event_ledger::EventLedger::new());
+    let guard = crate::taskstore::TASKS_SINK_LOCK.lock().await;
+    let ledger = Arc::new(crate::taskstore::event_ledger::EventLedger::new());
     // Aim the process-wide `task_event` stream at THIS ledger for the duration of the lock — a sink
     // swap, not a re-register, so the working-set tests' shared registration (and every position) is
     // left intact — and attach the row-upsert sink.
-    busbar_core::plane::taskstore::aim_global_task_sink(Some(
-        busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        ledger.clone(),
     ));
-    busbar_core::plane::taskstore::TASKS.set_sink(
-        busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
-    );
     let task = task_with_callback(task_id, state);
-    busbar_core::plane::taskstore::with_global_task_host(|host| {
-        busbar_core::plane::taskstore::TASKS
-            .submit(host, &task.to_row(), "req-1")
-            .expect("the task is admitted");
-    });
+    crate::taskstore::TASKS
+        .submit(&task.to_row(), "req-1")
+        .expect("the task is admitted");
     (task, ledger, guard)
 }
 
 /// The kinds on a task's chain, oldest first, read back out of the store.
 fn kinds_of(
-    ledger: &busbar_core::plane::taskstore::event_ledger::EventLedger,
+    ledger: &crate::taskstore::event_ledger::EventLedger,
     task_id: &str,
 ) -> Vec<String> {
     let events = ledger.events_for(task_id);
-    busbar_core::plane::taskstore::verify_task_event_rows(&events)
+    crate::taskstore::verify_chain(&events)
         .expect("the per-task chain verifies after a delivery");
     events.into_iter().map(|e| e.kind).collect()
 }
@@ -749,8 +744,7 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
     );
 
     let kinds = kinds_of(&ledger, id);
-    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
-    busbar_core::plane::taskstore::aim_global_task_sink(None);
+    crate::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
@@ -780,8 +774,7 @@ async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chai
     assert_eq!(log.lock().unwrap().len(), 1, "the notification went out");
 
     let kinds = kinds_of(&ledger, id);
-    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
-    busbar_core::plane::taskstore::aim_global_task_sink(None);
+    crate::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert_eq!(
         kinds,
@@ -809,8 +802,7 @@ async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refuse
     assert!(matches!(refusal, PushRefusal::Status(500)), "{refusal}");
 
     let kinds = kinds_of(&ledger, id);
-    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
-    busbar_core::plane::taskstore::aim_global_task_sink(None);
+    crate::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_FAILED.to_string())

@@ -40,10 +40,10 @@
 //! failing is the tripwire working.
 
 use crate::plane::store::{
-    decode, encode, PlaneStore, KIND_AUDIT, KIND_CALL, KIND_TASK, KIND_TASK_EVENT,
+    decode, PlaneStore, KIND_AUDIT, KIND_CALL,
 };
 use busbar_api::{
-    AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult, TaskEventRow, TaskRow,
+    AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult,
 };
 
 // ── THE FROZEN PERSISTED BYTES — captured from the pre-cleave build, opaque on purpose ──────────
@@ -55,16 +55,12 @@ use busbar_api::{
 const MCP_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
 const MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
 
-const A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
-const A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
-
 const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
 
 // The frozen hashes named explicitly, so a diff of this file shows WHICH digest a change perturbed
 // rather than only "some bytes moved". They are the tail links of each two-record chain.
 const MCP_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
-const A2A_TAIL_HASH: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
 const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
 // ── A FROZEN-BYTES PLANE STORE ──────────────────────────────────────────────────────────────────
@@ -175,54 +171,11 @@ fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(tail.hash, MCP_TAIL_HASH);
 }
 
-/// A2A task provenance chain (PipeSeparated, scope-in-digest, GENESIS LANDMINE): the frozen opaque
-/// events restore through the real boot path and verify — proving the leading-`|` before `task_id`
-/// that the empty genesis `prev_hash` produces is preserved by the framing.
-#[test]
-fn a2a_task_chain_boot_verifies_from_frozen_bytes() {
-    // The task row is NOT hash-chained (only its events are), so it is built here rather than frozen;
-    // it must be a non-terminal row `Task::from_row` accepts so the events are loaded and verified.
-    let task_row = TaskRow {
-        task_id: "task-1".to_string(),
-        context_id: "ctx-1".to_string(),
-        principal: "vk_alice".to_string(),
-        direction: "inbound".to_string(),
-        state: "working".to_string(),
-        agent_id: "planner".to_string(),
-        artifact_cursor: 0,
-        push_callback: String::new(),
-        created_at: 1_700_000_000,
-        updated_at: 1_700_000_060,
-    };
-    let mut store = FrozenStore::new();
-    store.put(KIND_TASK, None, &encode(&task_row).unwrap());
-    store.put(KIND_TASK_EVENT, Some("task-1"), A2A_1);
-    store.put(KIND_TASK_EVENT, Some("task-1"), A2A_2);
-
-    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
-    // rehydrate. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
-    // through the durable seam changed. The rehydrate SEEDS positions from the store passed here (the
-    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
-    let h = crate::plane::taskstore::TaskTestHarness::over(std::sync::Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    ));
-    let rehydrated = h
-        .host(|host| {
-            h.reg
-                .restore_from_store(host, &store, busbar_a2a::a2a::task::readable_row)
-        })
-        .expect("store read");
-    assert!(
-        rehydrated.chain_breaks.is_empty(),
-        "a persisted A2A chain reported TAMPERED means the digest drifted: {:?}",
-        rehydrated.chain_breaks
-    );
-    assert_eq!(rehydrated.active, 1, "the working task is resumed");
-    assert_eq!(rehydrated.unreadable, 0);
-
-    let tail: TaskEventRow = decode(A2A_2).unwrap();
-    assert_eq!(tail.hash, A2A_TAIL_HASH);
-}
+// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to `busbar-a2a` with the
+// task subsystem (1.7.0 plane extraction): the plane owns its `TaskRow`/`TaskEventRow` and computes the
+// chain plane-side now, so the digest-drift tripwire lives beside the code that produces it — see
+// `busbar_a2a::taskstore`'s golden test. Core keeps the neutral admin-audit golden below (its generic
+// hash-chain mechanism stays in core) and the MCP call golden above.
 
 /// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
 /// through the REAL boot path — the NEUTRAL journal seam the admin audit stream is registered on, with

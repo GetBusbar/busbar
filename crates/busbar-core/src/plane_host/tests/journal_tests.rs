@@ -508,19 +508,15 @@ fn durable_unregistered_kind_fails_closed() {
 
 const G_MCP_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
 const G_MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
-const G_A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
-const G_A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
+// The A2A task-event fixture was RELOCATED with the task subsystem: the A2A plane computes its chain
+// plane-side over its own `TaskEventRow` now (no host-side journal stream), and its byte-layout golden
+// lives in `busbar_a2a::taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
+// admin `audit` (PipeSeparated, no scope) fixtures.
 const G_AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
 
 const G_MCP_TAIL: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
-const G_A2A_TAIL: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
 const G_AD_TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
-
-/// When true, the reframe DROPS the leading `|` of the pre-framed suffix — the exact PipeSeparated
-/// genesis-landmine perturbation, which makes the golden below report a chain break. Left `false`
-/// in the shipped tree; set true locally to confirm the golden is a live tripwire, not a decoration.
-const DROP_SEPARATOR: bool = false;
 
 // Mirrors the FFI `JournalReframeFn` buffer-out signature verbatim, so the arg count is fixed by the ABI.
 #[allow(clippy::too_many_arguments)]
@@ -560,46 +556,6 @@ fn write_reframe(
         std::ptr::copy_nonoverlapping(suffix.as_ptr(), suffix_buf, suffix.len());
     }
     StatusClass::Ok
-}
-
-/// A2A plane reframe: decode the legacy `TaskEventRow` and emit the PipeSeparated suffix (Option A
-/// leading `|`), scope-in-digest. `frame_prelude(prev_hash, task_id, seq) ⧺ suffix` == the legacy
-/// `TaskEventRow::digest_fields` byte stream.
-extern "C-unwind" fn a2a_reframe(
-    _host: HostCtx,
-    _kind_id: u32,
-    body_ptr: *const u8,
-    body_len: usize,
-    out: *mut MaybeUninit<ReframeOut>,
-    prev_buf: *mut u8,
-    prev_cap: usize,
-    hash_buf: *mut u8,
-    hash_cap: usize,
-    suffix_buf: *mut u8,
-    suffix_cap: usize,
-) -> StatusClass {
-    // SAFETY: live borrowed body range (ABI).
-    let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-    let r: busbar_api::TaskEventRow = serde_json::from_slice(body).expect("TaskEventRow decodes");
-    let lead = if DROP_SEPARATOR { "" } else { "|" };
-    let suffix = format!(
-        "{lead}{}|{}|{}|{}|{}|{}",
-        r.ts, r.kind, r.context_id, r.principal, r.agent_id, r.state
-    );
-    write_reframe(
-        out,
-        r.seq,
-        1,
-        r.prev_hash.as_bytes(),
-        r.hash.as_bytes(),
-        suffix.as_bytes(),
-        prev_buf,
-        prev_cap,
-        hash_buf,
-        hash_cap,
-        suffix_buf,
-        suffix_cap,
-    )
 }
 
 /// MCP plane reframe: decode the legacy `McpCallRecord` and emit the LengthPrefixed suffix
@@ -778,27 +734,15 @@ fn restore_and_verify(
 #[test]
 fn frozen_chains_boot_verify_through_the_durable_seam() {
     let store = Arc::new(GenericPlaneStore::new());
-    put_frozen(&store, "task_event", "task-1", 1, G_A2A_1);
-    put_frozen(&store, "task_event", "task-1", 2, G_A2A_2);
     put_frozen(&store, "call", "vk_alice", 1, G_MCP_1);
     put_frozen(&store, "call", "vk_alice", 2, G_MCP_2);
     put_frozen(&store, "admin_audit", "log", 1, G_AD_1);
     put_frozen(&store, "admin_audit", "log", 2, G_AD_2);
 
     let app = durable_app_over(store);
-    let a2a_id = fresh_kind_id();
     let mcp_id = fresh_kind_id();
     let admin_id = fresh_kind_id();
     with_dispatch_scope(&app, |host, vt| {
-        register_stream(
-            host,
-            vt,
-            a2a_id,
-            b"task_event",
-            AbiFraming::PipeSeparated,
-            1,
-            a2a_reframe,
-        );
         register_stream(
             host,
             vt,
@@ -818,11 +762,9 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
             admin_reframe,
         );
 
-        let a2a_tail: busbar_api::TaskEventRow = serde_json::from_slice(G_A2A_2).unwrap();
         let mcp_tail: busbar_api::McpCallRecord = serde_json::from_slice(G_MCP_2).unwrap();
         let ad_tail: crate::admin::audit::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
 
-        restore_and_verify(host, vt, a2a_id, b"task-1", &a2a_tail.hash, G_A2A_TAIL);
         restore_and_verify(host, vt, mcp_id, b"vk_alice", &mcp_tail.hash, G_MCP_TAIL);
         restore_and_verify(host, vt, admin_id, b"log", &ad_tail.hash, G_AD_TAIL);
     });

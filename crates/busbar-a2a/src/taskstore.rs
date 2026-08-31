@@ -871,6 +871,109 @@ impl TaskTestHarness {
     }
 }
 
+/// THE READ-BACK HALF, shared by every battery that asserts on this chain — the durable-sink test
+/// double, relocated here with the task subsystem so the batteries that attach it to the process-wide
+/// [`TASKS`] name one home.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "a2a/tests/event_ledger.rs"]
+pub mod event_ledger;
+
 #[cfg(all(test, feature = "test-support"))]
 #[path = "a2a/tests/taskstore_tests.rs"]
 mod taskstore_tests;
+
+/// THE FROZEN BYTE-LAYOUT GOLDEN for the A2A per-task provenance chain — relocated from
+/// `busbar-core`'s `audit/tests/boot_verify_golden.rs` with the task subsystem. It pins the durable
+/// digest (`{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}`,
+/// sha256) and the typed `TaskEventRow` body encoding against frozen bytes: a change to either would
+/// report every persisted chain in every deployment as TAMPERED, so it fails LOUDLY on drift. Runs in
+/// the plain unit build (no `test-support`, no `busbar-core`), so it guards the wire contract on every
+/// `cargo test -p busbar-a2a`.
+#[cfg(test)]
+mod chain_golden {
+    use super::*;
+    use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+
+    // The GENESIS event and its successor, frozen — typed `TaskEventRow` JSON bodies exactly as the
+    // plane persists them, with the hashes the plane-side digest produced. The genesis hash proves the
+    // leading-`|` before `task_id` (the empty `prev_hash` "landmine") is in the digest input.
+    const A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
+    const A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
+    const A2A_TAIL_HASH: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
+
+    /// A read-only store returning exactly the one working task and its two frozen events.
+    struct FrozenStore;
+    impl PlaneStore for FrozenStore {
+        fn upsert_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(&self, _k: &str, _i: &str) -> StoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(&self, kind: &str, sel: &PlaneSelector) -> StoreResult<Vec<Vec<u8>>> {
+            Ok(match (kind, sel) {
+                (KIND_TASK, PlaneSelector::All) => {
+                    let row = TaskRow {
+                        task_id: "task-1".into(),
+                        context_id: "ctx-1".into(),
+                        principal: "vk_alice".into(),
+                        direction: "inbound".into(),
+                        state: "working".into(),
+                        agent_id: "planner".into(),
+                        artifact_cursor: 0,
+                        push_callback: String::new(),
+                        created_at: 1_700_000_000,
+                        updated_at: 1_700_000_060,
+                    };
+                    vec![row.to_plane_record().unwrap().body]
+                }
+                (KIND_TASK_EVENT, PlaneSelector::Parent(p)) if p == "task-1" => {
+                    vec![A2A_1.to_vec(), A2A_2.to_vec()]
+                }
+                _ => Vec::new(),
+            })
+        }
+        fn list_plane_record_parents(&self, _k: &str) -> StoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(&self, _k: &str, _b: u64) -> StoreResult<u64> {
+            Ok(0)
+        }
+        fn delete_plane_record(&self, _k: &str, _i: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn the_frozen_a2a_chain_recomputes_from_its_own_bytes() {
+        let e1 = TaskEventRow::from_body(A2A_1).unwrap();
+        let e2 = TaskEventRow::from_body(A2A_2).unwrap();
+        // The digest recomputes to the frozen genesis hash — the byte layout is pinned.
+        assert_eq!(digest_of(&e1), e1.hash, "genesis digest drifted");
+        assert_eq!(e1.hash, "1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1");
+        assert_eq!(digest_of(&e2), e2.hash, "tail digest drifted");
+        assert_eq!(e2.hash, A2A_TAIL_HASH);
+        verify_chain(&[e1, e2]).expect("the frozen chain must verify");
+    }
+
+    #[test]
+    fn a_boot_restore_of_the_frozen_chain_reports_no_tamper() {
+        let reg = TaskRegistry::new();
+        let out = reg
+            .restore_from_store(&FrozenStore, crate::a2a::task::readable_row)
+            .expect("store read");
+        assert!(
+            out.chain_breaks.is_empty(),
+            "a persisted A2A chain reported TAMPERED means the digest drifted: {:?}",
+            out.chain_breaks
+        );
+        assert_eq!(out.active, 1, "the working task is resumed");
+        assert_eq!(out.unreadable, 0);
+    }
+}
