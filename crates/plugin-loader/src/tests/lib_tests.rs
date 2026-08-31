@@ -2040,6 +2040,45 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
     }
 }
 
+/// Plugin#3 regression: `redeem_plane_token` (single-use anti-replay) is the ONE neutral verb whose
+/// safe default is FAIL-CLOSED, not fail-open. A store plugin too OLD to implement the verb answers
+/// UNSUPPORTED; the loader must NOT read that as "this redemption was the first" (`Ok(true)`), which
+/// would silently restore confirm-once / execute-many replay, but as an `Err` the approvals gate
+/// refuses on. No plugin failure or old-plugin shape may fail open here.
+#[test]
+fn redeem_plane_token_unsupported_and_broken_shapes_fail_closed_not_fresh() {
+    let Some(store) = dyn_store_with_fake_call() else {
+        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        return;
+    };
+    // The MOTIVATING row is `STATUS_UNSUPPORTED`: a store predating the verb. Before the fix its
+    // legacy default was `Ok(true)` — a replay hole. It, and every other non-Ok shape, must refuse.
+    let shapes: &[(i32, &'static [u8], &str)] = &[
+        (
+            STATUS_UNSUPPORTED,
+            b"unknown variant `RedeemPlaneToken`",
+            "an old store plugin that predates the anti-replay verb",
+        ),
+        (STATUS_PANIC, b"panicked in redeem", "a caught panic"),
+        (
+            STATUS_PROTOCOL,
+            b"",
+            "a bare protocol violation / null handle",
+        ),
+        (STATUS_ERR, b"ledger unreachable", "a real backend error"),
+        (99, b"", "an unknown status from a future or broken plugin"),
+    ];
+    for (status, body, what) in shapes {
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, body)));
+        assert!(
+            store
+                .redeem_plane_token("ask", "nonce-1", 1_000, 1)
+                .is_err(),
+            "{what}: redeem_plane_token must FAIL CLOSED (refuse), never fail open as fresh=true"
+        );
+    }
+}
+
 /// A throwaway `SampleEvent` for the failure-shape sweep, where the contents are irrelevant.
 fn event_free_probe() -> SampleEvent {
     SampleEvent {

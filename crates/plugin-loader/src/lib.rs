@@ -1066,19 +1066,39 @@ impl Store for DynStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
-        self.call_with_legacy_default(
-            StoreRequest::RedeemPlaneToken {
-                kind: kind.to_string(),
-                token: token.to_string(),
-                expires_at,
-                now,
-            },
-            |r| match r {
-                StoreResponse::Redeemed(fresh) => Ok(fresh),
-                other => Err(unexpected(other)),
-            },
-            || Ok(true),
-        )
+        // DELIBERATELY NOT `call_with_legacy_default`: this is the ONE neutral verb whose safe
+        // default is FAIL-CLOSED, not fail-open. The others (`list_denylist`, the audit tail, the
+        // plane-record reads) tolerate an old plugin by returning an empty/`Ok` default; anti-replay
+        // is the opposite — a store too OLD to implement the single-use test-and-set must NOT be read
+        // as "fresh = true" (`|| Ok(true)`), because that silently restores confirm-once /
+        // execute-many replay across the fleet the instant a legacy store is paired with a plane that
+        // mints single-use approval tokens. So the unsupported case fails CLOSED and LOUD: an `Err`
+        // that the approvals gate reads as REFUSE (see `plane::approvals::spend`), with a boot-visible
+        // error naming the plugin so an operator upgrades it rather than losing anti-replay silently.
+        match self.call_raw_status(StoreRequest::RedeemPlaneToken {
+            kind: kind.to_string(),
+            token: token.to_string(),
+            expires_at,
+            now,
+        }) {
+            Ok(StoreResponse::Redeemed(fresh)) => Ok(fresh),
+            Ok(other) => Err(unexpected(other)),
+            Err(e) if e.is_unsupported() => {
+                tracing::error!(
+                    store = %self.raw.path,
+                    "store plugin does not implement redeem_plane_token (single-use anti-replay); \
+                     REFUSING the redemption rather than failing open — a store that cannot say \
+                     whether a token was already spent must not be read as saying it was not. \
+                     Upgrade the store plugin to a build that persists the single-use token ledger."
+                );
+                Err(StoreError(
+                    "store plugin does not support redeem_plane_token (single-use anti-replay); \
+                     refusing to fail open"
+                        .to_string(),
+                ))
+            }
+            Err(e) => Err(StoreError(e.message)),
+        }
     }
 }
 
