@@ -24,7 +24,18 @@
 //! enforcement in the one crate that has the denylist.
 
 use busbar_plugin_sign::sha256_hex;
-use std::path::Path;
+use std::path::{Component, Path};
+
+/// Reject any `filename` that is not EXACTLY ONE normal path component before it is joined onto
+/// `plugins.dir`. A config-driven `filename` of `../../evil` (or an absolute `/etc/evil`, or a nested
+/// `a/b`) would otherwise ESCAPE `dir` at the `dir.join(&spec.filename)` sites — a config-driven
+/// arbitrary write. This is the SAME single-`Normal`-component guard [`crate::tarball::unpack`]
+/// applies to archive entries, lifted to the fetch path so both boundaries refuse traversal the same
+/// way. A single ordinary filename (`evil.tar.gz`) is the only shape accepted.
+fn filename_is_single_component(filename: &str) -> bool {
+    let mut comps = Path::new(filename).components();
+    matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+}
 
 /// A fully-resolved fetch: the URL to GET, an optional lowercase-hex sha256 pin (cache key +
 /// verify-before-write gate), and the target filename inside `plugins.dir`. Produced by the engine's
@@ -57,6 +68,8 @@ pub type Downloader<'a> = dyn Fn(&str) -> Result<Vec<u8>, String> + 'a;
 /// Fetch every `spec` into `dir`. See the module doc for the full contract. On boot
 /// (`fatal_on_miss = true`) any problem aborts with `Err(messages)`; on reload it is collected as a
 /// [`FetchOutcome::Warned`] and the call still succeeds.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
 pub fn fetch_plugins(
     dir: &Path,
     specs: &[FetchSpec],
@@ -82,6 +95,21 @@ pub fn fetch_plugins(
                 });
             }
         };
+
+        // Refuse a filename that is not a single normal component BEFORE any join — otherwise a
+        // `../../evil` or absolute `filename` escapes `dir` at the probe/write sites below.
+        if !filename_is_single_component(&spec.filename) {
+            record_problem(
+                &mut errors,
+                &mut outcomes,
+                format!(
+                    "refusing unsafe target filename {:?}: it must be a single path component, not a \
+                     path (absolute or parent reference)",
+                    spec.filename
+                ),
+            );
+            continue;
+        }
 
         let target = dir.join(&spec.filename);
 
@@ -140,128 +168,5 @@ pub fn fetch_plugins(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tmpdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let mut rnd = [0u8; 8];
-        let _ = getrandom::fill(&mut rnd);
-        p.push(format!(
-            "busbar-fetch-test-{}",
-            rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
-    }
-
-    fn spec(url: &str, sha: Option<&str>, file: &str) -> FetchSpec {
-        FetchSpec {
-            url: url.into(),
-            sha256: sha.map(str::to_string),
-            filename: file.into(),
-        }
-    }
-
-    /// A pre-placed tarball hashing to the pin ⇒ Cached, and the (bogus, would-panic) downloader is
-    /// NEVER called.
-    #[test]
-    fn cached_by_pin_skips_network() {
-        let dir = tmpdir();
-        let body = b"the-real-signed-tarball";
-        std::fs::write(dir.join("plugin.tar.gz"), body).unwrap();
-        let pin = sha256_hex(body);
-
-        let never = |_: &str| -> Result<Vec<u8>, String> { panic!("network must not be touched") };
-        let out = fetch_plugins(
-            &dir,
-            &[spec("https://x/plugin.tar.gz", Some(&pin), "plugin.tar.gz")],
-            true,
-            &never,
-        )
-        .unwrap();
-        assert_eq!(
-            out,
-            vec![FetchOutcome::Cached {
-                filename: "plugin.tar.gz".into()
-            }]
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Served bytes ≠ pin ⇒ error, and `dir` is unchanged (no file written).
-    #[test]
-    fn hash_mismatch_never_writes() {
-        let dir = tmpdir();
-        let pin = sha256_hex(b"expected");
-        let dl = |_: &str| Ok(b"WRONG-BYTES".to_vec());
-        let err = fetch_plugins(
-            &dir,
-            &[spec("https://x/p.tar.gz", Some(&pin), "p.tar.gz")],
-            true,
-            &dl,
-        )
-        .unwrap_err();
-        assert!(err[0].contains("mismatch"), "{err:?}");
-        assert!(
-            !dir.join("p.tar.gz").exists(),
-            "no file must be written on mismatch"
-        );
-        // No leftover temp files either.
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
-        assert!(leftovers.is_empty(), "dir must be unchanged: {leftovers:?}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An unreachable spec: boot (fatal=true) ⇒ Err; reload (fatal=false) ⇒ Ok + Warned.
-    #[test]
-    fn boot_miss_fatal_reload_miss_warns() {
-        let dir = tmpdir();
-        let dead = |_: &str| -> Result<Vec<u8>, String> { Err("connection refused".into()) };
-        let s = [spec(
-            "https://unreachable/p.tar.gz",
-            Some("deadbeef"),
-            "p.tar.gz",
-        )];
-
-        assert!(
-            fetch_plugins(&dir, &s, true, &dead).is_err(),
-            "boot miss must be fatal"
-        );
-
-        let out = fetch_plugins(&dir, &s, false, &dead).unwrap();
-        assert!(
-            matches!(out.as_slice(), [FetchOutcome::Warned { .. }]),
-            "reload miss must warn: {out:?}"
-        );
-        assert!(!dir.join("p.tar.gz").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A verified download is written atomically and readable back byte-for-byte.
-    #[test]
-    fn verified_download_is_written() {
-        let dir = tmpdir();
-        let body = b"fresh-tarball-bytes";
-        let pin = sha256_hex(body);
-        let dl = |_: &str| Ok(body.to_vec());
-        let out = fetch_plugins(
-            &dir,
-            &[spec("https://x/p.tar.gz", Some(&pin), "p.tar.gz")],
-            true,
-            &dl,
-        )
-        .unwrap();
-        assert_eq!(
-            out,
-            vec![FetchOutcome::Fetched {
-                filename: "p.tar.gz".into()
-            }]
-        );
-        assert_eq!(std::fs::read(dir.join("p.tar.gz")).unwrap(), body);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "tests/fetch_tests.rs"]
+mod tests;

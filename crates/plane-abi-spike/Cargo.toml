@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# P0 SPIKE — NOT wired into the engine. Self-contained proof that the locked plugin-ABI
+# design's hot host-call (repr(C) POD by pointer, through a fn-pointer vtable) costs <1µs
+# more per call than the equivalent in-core direct call, and that the shipped Vec-returning
+# `PlaneHost` anti-pattern (heap alloc per call) is dramatically worse.
+[package]
+name = "plane-abi-spike"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "P0 spike: empirical proof of the repr(C) POD-by-pointer host-call performance claim."
+license = "Apache-2.0"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { workspace = true }
+libloading = { workspace = true }
+
+[[bench]]
+name = "abi_bench"
+harness = false

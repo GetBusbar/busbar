@@ -214,7 +214,7 @@ pub(crate) fn load_library_from_bytes(
     let path = stage_temp_file(bytes)?;
     // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
     // The file was created by us, in a directory we created 0700, from already-verified bytes.
-    let lib = unsafe { Library::new(&path) }.map_err(|e| {
+    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path)).map_err(|e| {
         let msg = format!("failed to load plugin '{display}': {e}");
         // `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
         // constructed on this error path, so `release_temp_file` (the only decrementer) would never
@@ -268,7 +268,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     let path = format!("/proc/self/fd/{}", fd.as_raw_fd());
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
     // and is not reachable by path from any other process's namespace.
-    let lib = unsafe { Library::new(&path) }
+    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path))
         .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
     Ok((lib, Staged::Memfd { _fd: fd }))
 }
@@ -297,6 +297,16 @@ fn pid_alive(pid: u32) -> bool {
 /// base whose pid is DEAD (a prior busbar crashed before its clean-shutdown cleanup) is removed -
 /// the files are unlocked once the process died. The current process's own directory and any
 /// live process's directory are left alone. Returns the number of directories removed.
+///
+/// UNIX-ONLY IN EFFECT, and the consequence is stated rather than left in [`pid_alive`]'s comment.
+/// The sweep's whole decision is "is this pid dead", and off unix [`pid_alive`] has no
+/// implementation and answers `true` for every pid — so this function walks the directory and
+/// removes NOTHING on Windows. It is a no-op there, not a weaker sweep. What that costs is disk:
+/// a Windows deployment accumulates one abandoned staging directory per crash until the OS temp
+/// cleaner or an operator removes it. What it does NOT cost is integrity, and that is why the
+/// no-op is tolerable rather than a hole: staging always regenerates the library from the verified
+/// in-memory bytes, so a leftover directory is never trusted input and can never be loaded from.
+/// Closing it needs a real Windows liveness probe (`OpenProcess` + `GetExitCodeProcess`).
 pub fn sweep_dead_staging() -> usize {
     let base = std::env::temp_dir();
     let mut removed = 0usize;
@@ -316,7 +326,16 @@ pub fn sweep_dead_staging() -> usize {
         if pid == std::process::id() || pid_alive(pid) {
             continue;
         }
-        if entry.path().is_dir() && std::fs::remove_dir_all(entry.path()).is_ok() {
+        // NO-FOLLOW: `is_dir()` follows symlinks, so a symlink named `busbar-plugins-<dead-pid>-*`
+        // planted in the world-writable temp base could aim `remove_dir_all` at an ATTACKER-CHOSEN
+        // directory outside staging. `symlink_metadata` inspects the entry ITSELF; a symlink is not a
+        // directory here, so it is skipped, never traversed. Only a real directory is swept.
+        let is_real_dir = entry
+            .path()
+            .symlink_metadata()
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+        if is_real_dir && std::fs::remove_dir_all(entry.path()).is_ok() {
             removed += 1;
         }
     }
@@ -324,83 +343,5 @@ pub fn sweep_dead_staging() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The per-process staging dir is private (0700 on unix), named with the pid, and stable
-    /// while staged files are live.
-    #[test]
-    fn staging_dir_is_private_and_pid_named() {
-        let mut state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
-        let dir = ensure_staging_dir(&mut state).expect("staging dir");
-        assert!(dir.exists());
-        let name = dir.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with(STAGING_PREFIX));
-        assert!(name.contains(&std::process::id().to_string()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o700, "staging dir must be 0700, got {mode:o}");
-        }
-        // A second call returns the SAME directory while it exists.
-        assert_eq!(ensure_staging_dir(&mut state).unwrap(), dir);
-    }
-
-    /// Dropping a `Staged::TempFile` removes the file (unload-then-remove is enforced by holder
-    /// field order; here we assert the removal half).
-    #[test]
-    fn temp_file_staging_cleans_up_on_drop() {
-        let path = stage_temp_file(b"pretend library bytes").expect("stage");
-        assert!(path.exists());
-        drop(Staged::TempFile { path: path.clone() });
-        assert!(!path.exists(), "staged file must be removed on drop");
-    }
-
-    /// The dead-pid sweep removes a staging dir whose pid is dead, and leaves the live (current)
-    /// process's dir alone.
-    ///
-    /// Unix-only: on non-unix `pid_alive` deliberately reports every pid alive (see its doc
-    /// comment — Windows relies on the locked-DLL failure mode instead), so the sweep never
-    /// removes anything there and `removed >= 1` is unsatisfiable by design, not by defect.
-    #[cfg(unix)]
-    #[test]
-    fn sweep_removes_dead_pid_dirs_only() {
-        // A dir for a pid that is certainly dead (pid_max on linux is < 2^22 by default; u32::MAX
-        // range pids do not exist on any supported platform).
-        let dead = std::env::temp_dir().join(format!("{STAGING_PREFIX}4294967294-deadbeef"));
-        let _ = std::fs::remove_dir_all(&dead);
-        std::fs::create_dir_all(dead.join("sub")).unwrap();
-        std::fs::write(dead.join("sub/lib.so"), b"junk").unwrap();
-
-        // Our own live dir must survive the sweep: hold a real staged file so the shared state
-        // keeps the directory alive for the duration of this test.
-        let held = Staged::TempFile {
-            path: stage_temp_file(b"keepalive bytes").expect("stage keepalive"),
-        };
-        let own = {
-            let state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
-            state
-                .dir
-                .clone()
-                .expect("staging dir exists while a file is live")
-        };
-
-        let removed = sweep_dead_staging();
-        assert!(removed >= 1, "the dead-pid dir must be swept");
-        assert!(!dead.exists(), "dead-pid staging dir removed");
-        assert!(
-            own.exists(),
-            "own (live-pid) staging dir survives the sweep"
-        );
-        drop(held);
-    }
-
-    /// pid_alive is true for ourselves and false for an absurd pid (unix).
-    #[cfg(unix)]
-    #[test]
-    fn pid_liveness() {
-        assert!(pid_alive(std::process::id()));
-        assert!(!pid_alive(4_294_967_294));
-    }
-}
+#[path = "tests/stage_tests.rs"]
+mod tests;

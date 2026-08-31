@@ -18,13 +18,13 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # pub(crate) inside the busbar binary crate). Used to derive the x-busbar-secret `oneOf` shape
 # directly from the real type rather than a hand-written parallel copy.
 busbar-secret-ref = { path = "../secret-ref" }
-hex = "0.4"
+hex = { workspace = true }
 # Keypair generation (`keygen`) draws its ed25519 seed from the OS RNG. The engine-facing
 # plugin-sign crate stays RNG-free on purpose; the RNG lives here, in the tooling.
-getrandom = "0.3"
-serde_json = "1"
+getrandom = { workspace = true }
+serde_json = { workspace = true }
 # Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
 # document at PACK time, not at UI-render time on some operator's machine. Tooling-only (this
 # crate never ships in the engine binary), so a full validator dependency here costs nothing at
 # runtime.
-jsonschema = "0.49"
+jsonschema = { workspace = true }
