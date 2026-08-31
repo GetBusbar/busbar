@@ -1329,7 +1329,7 @@ impl ProtocolReader for ResponsesReader {
         // SIGNAL is not in `status`. Track it here to promote `stop_reason` to `Refusal` below.
         let mut saw_refusal = false;
         if let Some(output_arr) = obj.get("output").and_then(|o| o.as_array()) {
-            for item in output_arr {
+            for (item_ordinal, item) in output_arr.iter().enumerate() {
                 let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                 match item_type {
@@ -1382,16 +1382,25 @@ impl ProtocolReader for ResponsesReader {
                     }
 
                     ITEM_TYPE_FUNCTION_CALL => {
-                        let call_id = item
-                            .get("call_id")
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("")
-                            .to_string();
                         let name = item
                             .get("name")
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
+                        // The RESPONSE-path `call_id` is the correlation key a later
+                        // `function_call_output` (and any cross-protocol target, e.g. Anthropic
+                        // `tool_use.id`) pairs against; a BLANK id becomes an empty tool_use id the
+                        // target rejects. The request path forbids a blank id; here — rather than fail
+                        // an otherwise-good upstream body — SYNTHESIZE a deterministic `call_…` id when
+                        // the backend supplied none, so the correlation key is never blank.
+                        // (`unwrap_or("")` previously let an empty id reach egress.)
+                        let raw_call_id =
+                            item.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                        let call_id = if raw_call_id.is_empty() {
+                            synth_response_tool_call_id(item_ordinal, &name)
+                        } else {
+                            raw_call_id.to_string()
+                        };
                         let arguments = item
                             .get("arguments")
                             .and_then(|a| a.as_str())
@@ -1594,4 +1603,19 @@ impl ProtocolReader for ResponsesReader {
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
     }
+}
+
+/// Synthesize a deterministic, non-empty `call_…` tool-call id for a RESPONSE function-call whose
+/// upstream body carried a blank/absent `call_id`. A blank id becomes an empty `tool_use.id`/
+/// `tool_call_id` the cross-protocol target reader (Anthropic) rejects and that breaks
+/// `function_call_output` correlation. Derived from `(ordinal, name)` via the stdlib fixed-seed
+/// `DefaultHasher` (SipHash-1-3, no new dependency, stable within a run) so repeated function names in
+/// one response stay distinct; the `call_` prefix matches the native tool-id shape and keeps it
+/// visibly synthetic. Mirrors the openai_chat + gemini readers' never-blank-correlation-key discipline.
+fn synth_response_tool_call_id(ordinal: usize, name: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ordinal.hash(&mut hasher);
+    name.hash(&mut hasher);
+    format!("call_{:016x}", hasher.finish())
 }

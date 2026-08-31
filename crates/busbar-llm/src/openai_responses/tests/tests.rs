@@ -7092,3 +7092,43 @@ fn read_reasoning_text_empty_case_borrows_not_owns() {
         std::borrow::Cow::Borrowed("")
     ));
 }
+
+// Chat#6: a RESPONSE function_call with a blank/absent `call_id` must NOT yield an empty IR tool_use
+// id (which a cross-protocol target like Anthropic rejects). The reader synthesizes a deterministic
+// `call_…` id so the correlation key is never blank.
+#[test]
+fn response_blank_call_id_is_synthesized() {
+    let json = serde_json::json!({
+        "id": "resp_x",
+        "object": OBJ_RESPONSE,
+        "status": STATUS_COMPLETED,
+        "output": [
+            {"type": ITEM_TYPE_FUNCTION_CALL, "call_id": "", "name": "get_weather", "arguments": "{}"},
+            {"type": ITEM_TYPE_FUNCTION_CALL, "name": "get_time", "arguments": "{}"}
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    });
+    let resp = ResponsesReader.read_response(&json).expect("read_response");
+    let ids: Vec<&str> = resp
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids.len(),
+        2,
+        "both tool calls must be read: {:?}",
+        resp.content
+    );
+    for id in &ids {
+        assert!(!id.is_empty(), "a synthesized call_id must never be blank");
+        assert!(
+            id.starts_with("call_"),
+            "synthesized id must be call_…: {id}"
+        );
+    }
+    assert_ne!(ids[0], ids[1], "distinct tool calls must get distinct ids");
+}

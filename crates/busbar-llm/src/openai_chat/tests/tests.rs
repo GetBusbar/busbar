@@ -5177,3 +5177,45 @@ fn openai_chat_citation_survives_the_hop_to_anthropic() {
     assert_eq!(citation["url"], "https://example.com/hop");
     assert_eq!(citation["title"], "Hop Source");
 }
+
+// Chat#6: a RESPONSE tool_call with a blank/absent `id` must NOT yield an empty IR tool_use id (which
+// a cross-protocol target like Anthropic rejects). The reader synthesizes a deterministic `call_…` id
+// so the correlation key is never blank.
+#[test]
+fn response_blank_tool_call_id_is_synthesized() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-x", "object": OBJ_COMPLETION, "created": 1u64, "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}},
+                {"type": "function", "function": {"name": "get_time", "arguments": "{}"}}
+            ]},
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 4}
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ids: Vec<&str> = ir
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            IrBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids.len(),
+        2,
+        "both tool calls must be read: {:?}",
+        ir.content
+    );
+    for id in &ids {
+        assert!(!id.is_empty(), "a synthesized id must never be blank");
+        assert!(
+            id.starts_with("call_"),
+            "synthesized id must be call_…: {id}"
+        );
+    }
+    assert_ne!(ids[0], ids[1], "distinct tool calls must get distinct ids");
+}
