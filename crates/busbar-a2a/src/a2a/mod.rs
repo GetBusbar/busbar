@@ -278,7 +278,9 @@ pub(crate) fn carried_a2a_gates(
 /// (`runtime_arc`/`runtime_arc_of` over an `EngineHost`); this `&App` form now survives solely for
 /// the in-crate tests that assert plane presence/absence off a built `App`.
 #[cfg(feature = "test-support")]
-pub fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
+pub fn runtime(
+    app: &dyn busbar_substrate::plane_host::PlaneSlots,
+) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
@@ -297,7 +299,7 @@ pub fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aP
 #[cfg(feature = "test-support")]
 #[allow(dead_code)]
 pub(crate) fn runtime_arc(
-    app: &busbar_core::state::App,
+    app: &dyn busbar_substrate::plane_host::PlaneSlots,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.clone()

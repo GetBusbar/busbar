@@ -662,7 +662,7 @@ pub(super) async fn harness_full(
     // attached sink (this harness does not boot through `a2a_hydrate` and keeps nothing durable), so
     // there is no longer a process-wide stream to register here.
 
-    let plane = crate::a2a::runtime_arc(&app).expect("the plane exists");
+    let plane = crate::a2a::runtime_arc(app.as_ref()).expect("the plane exists");
     plane.with_registrations_mut(|regs| {
         for reg in regs.iter_mut() {
             approve(reg);

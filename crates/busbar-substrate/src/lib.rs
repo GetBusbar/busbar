@@ -120,3 +120,9 @@ pub mod telemetry;
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
 // each from its old `busbar_core::governance::…` path.
 pub mod governance;
+
+// THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
+// crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
+// Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;

@@ -17,7 +17,7 @@
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
-use busbar_core::test_support::TestApp;
+use busbar_substrate::testkit::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
 
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.
@@ -56,7 +56,7 @@ pub(crate) struct McpScratch {
 
 /// Ensure the per-plane finalizer is registered exactly once, then hand back the mutable scratch for
 /// this builder call to mutate.
-fn scratch(app: &mut TestApp) -> &mut McpScratch {
+fn scratch(app: &mut dyn TestAppSeam) -> &mut McpScratch {
     let needs_register = !app.plane_scratch::<McpScratch>(SCRATCH_KEY).registered;
     if needs_register {
         app.plane_scratch::<McpScratch>(SCRATCH_KEY).registered = true;
@@ -67,7 +67,7 @@ fn scratch(app: &mut TestApp) -> &mut McpScratch {
 
 /// BUILD-TIME FINALIZER: consume the accumulated [`McpScratch`] and install the real MCP plane through
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build` used to do inline.
-fn finalize(app: &mut TestApp) {
+fn finalize(app: &mut dyn TestAppSeam) {
     // Register this plane + bind the section-list provider the way production's composition root does,
     // so the fixture registry (config sections, cross-plane refusal, plane resolution) matches a
     // shipped "busbar with MCP" binary.
@@ -140,7 +140,7 @@ pub trait TestAppMcpExt {
     fn with_mcp_sightings(self, cache: Arc<CatalogueCache>) -> Self;
 }
 
-impl TestAppMcpExt for TestApp {
+impl<A: TestAppSeam> TestAppMcpExt for A {
     fn mcp(mut self, cfg: &McpCfg) -> Self {
         let r = McpResource::from_cfg(cfg).expect("test mcp config must be valid");
         scratch(&mut self).mcp = Some(r);

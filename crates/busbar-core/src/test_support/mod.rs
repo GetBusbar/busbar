@@ -856,7 +856,7 @@ pub struct TestApp {
     /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
-    plane_finalizers: Vec<Box<dyn FnOnce(&mut TestApp)>>,
+    plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_substrate::testkit::TestAppSeam)>>,
 }
 
 impl Default for TestApp {
@@ -914,34 +914,6 @@ impl TestApp {
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
         }
-    }
-
-    /// TEST-KIT SEAM — get-or-create this plane's type-erased accumulator scratch, downcast to the
-    /// test-kit's own `T`. The MCP/A2A test-kits call this across the fluent chain to accumulate their
-    /// (plane-typed) builder state without core naming it; `T` MUST be the same type for a given `key`.
-    pub fn plane_scratch<T: std::any::Any + Default>(&mut self, key: &'static str) -> &mut T {
-        self.plane_scratch
-            .entry(key)
-            .or_insert_with(|| Box::new(T::default()))
-            .downcast_mut::<T>()
-            .expect("plane_scratch key is used with one consistent type")
-    }
-
-    /// TEST-KIT SEAM — remove and return this plane's accumulator scratch (or `T::default()` if the
-    /// test-kit never touched it). Called from inside a finalizer at build time to consume the
-    /// accumulated config and build the real plane runtime.
-    pub fn take_plane_scratch<T: std::any::Any + Default>(&mut self, key: &'static str) -> T {
-        self.plane_scratch
-            .remove(key)
-            .map(|b| *b.downcast::<T>().expect("plane_scratch key type"))
-            .unwrap_or_default()
-    }
-
-    /// TEST-KIT SEAM — register a finalizer to run at the top of `build()`. A plane's test-kit
-    /// registers exactly one (guarded by a flag in its own scratch); the finalizer reads the scratch
-    /// and drives the neutral install seams. Kept out of `build()` proper so core names no plane type.
-    pub fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut TestApp)>) {
-        self.plane_finalizers.push(f);
     }
 
     /// TEST-KIT SEAM — the fixture's configured `public_url:`, which a plane's finalizer needs to lower
@@ -1420,10 +1392,18 @@ impl TestApp {
         // every other `TestApp`, sourced from the plane's own test-kit so `build()` names no MCP type.
         // Absent under an external `test-support` build (no `cfg(test)`), where the process list has no
         // MCP plane unless a test registers it — and such a test installs its own runtime.
+        // The plane that owns the `tools:` section is the MCP plane; its stable decl key comes from the
+        // registry (a built-in under `cfg(test)`), never spelled as a literal, and its default runtime
+        // factory is reached through the `tests/`-file helper (which alone names `busbar_mcp`), so this
+        // neutral source names no MCP token nor a plane symbol.
         #[cfg(test)]
-        plane_slots
-            .entry(crate::state::runtime_slot_key("mcp"))
-            .or_insert_with(busbar_mcp::testkit::default_mcp_runtime);
+        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+            crate::config::named_map::NamedMapSection::Tools.key(),
+        ) {
+            plane_slots
+                .entry(crate::state::runtime_slot_key(decl.key))
+                .or_insert_with(crate::plane::registry::default_mcp_test_runtime);
+        }
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
         // test sees the surface a deployment would have without `build()` naming a plane type.
@@ -1502,8 +1482,16 @@ impl TestApp {
             incremental_scan: false,
             tool_pools: self.tool_pools,
             plane_pools: {
+                // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from
+                // the registry, never spelled as a literal — exactly as production `appbuild` keys it.
+                // A compiled-out plane has no decl for its section, so nothing is inserted (the pool
+                // read treats an absent key identically to the former empty-value entry).
                 let mut m = std::collections::BTreeMap::new();
-                m.insert("a2a", self.agent_pools);
+                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                    crate::config::named_map::NamedMapSection::Agents.key(),
+                ) {
+                    m.insert(decl.key, self.agent_pools);
+                }
                 m
             },
             by_model,
@@ -1535,9 +1523,21 @@ impl TestApp {
             tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
             plane_gates: {
+                // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named
+                // as a literal — exactly as production `appbuild`: the `tools:` section's plane takes
+                // the MCP gate map, the `agents:` section's plane the A2A one. A compiled-out plane has
+                // no decl for its section, so its (empty) gate map is simply not inserted.
                 let mut m = std::collections::BTreeMap::new();
-                m.insert("mcp", mcp_server_gates);
-                m.insert("a2a", a2a_agent_gates);
+                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                    crate::config::named_map::NamedMapSection::Tools.key(),
+                ) {
+                    m.insert(decl.key, mcp_server_gates);
+                }
+                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                    crate::config::named_map::NamedMapSection::Agents.key(),
+                ) {
+                    m.insert(decl.key, a2a_agent_gates);
+                }
                 m
             },
             hook_env,
@@ -1982,7 +1982,13 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
     let provider = crate::config::ProviderCfg {
-        protocol: "openai".into(),
+        // The registry-supplied residual-default dialect — the neutral test protocol — in place of the
+        // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
+        // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
+        // so this resolves to the same default dialect the literal named.
+        protocol: crate::proto::residual_default_dialect()
+            .expect("a residual-default protocol (the neutral test dialect) must be registered")
+            .into(),
         base_url: "https://api.example.com".into(),
         api_key,
         health: None,
@@ -2099,4 +2105,79 @@ pub async fn oversized_413_body(
     server.abort();
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
+}
+
+// ── THE NEUTRAL TEST-APP SEAM (busbar_substrate::testkit::TestAppSeam) ──────────────────────────────
+// Core implements the neutral fixture seam for its concrete `TestApp`, so the extracted plane
+// test-kits (`busbar-mcp`/`busbar-a2a`) build and drive the test App through the trait — naming no
+// `busbar_core::state::App`/`test_support::TestApp` backwards. Each method delegates to the inherent
+// fixture logic above (or to the type-erased scratch map); the object-safe scratch primitives back the
+// generic `TestAppSeamExt::plane_scratch::<T>` sugar the plane test-kits call.
+impl busbar_substrate::testkit::TestAppSeam for TestApp {
+    fn plane_scratch_any(
+        &mut self,
+        key: &'static str,
+        init: &dyn Fn() -> Box<dyn std::any::Any>,
+    ) -> &mut dyn std::any::Any {
+        self.plane_scratch.entry(key).or_insert_with(init).as_mut()
+    }
+
+    fn take_plane_scratch_any(&mut self, key: &'static str) -> Option<Box<dyn std::any::Any>> {
+        self.plane_scratch.remove(key)
+    }
+
+    fn register_plane_finalizer(
+        &mut self,
+        f: Box<dyn FnOnce(&mut dyn busbar_substrate::testkit::TestAppSeam)>,
+    ) {
+        self.plane_finalizers.push(f);
+    }
+
+    fn configured_public_url(&self) -> Option<&str> {
+        TestApp::configured_public_url(self)
+    }
+
+    fn a2a_card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
+        TestApp::a2a_card_issuer(self)
+    }
+
+    fn install_plane_runtime(
+        &mut self,
+        key: &'static str,
+        rt: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) {
+        TestApp::install_plane_runtime(self, key, rt);
+    }
+
+    fn mount_plane(&mut self, key: &'static str, path: &str, wire: &'static str) {
+        TestApp::mount_plane(self, key, path, wire);
+    }
+
+    fn admit_plane(
+        &mut self,
+        key: &'static str,
+        admission: busbar_substrate::plane::PlaneAdmission,
+    ) {
+        TestApp::admit_plane(self, key, admission);
+    }
+
+    fn set_mcp_container_hooks(
+        &mut self,
+        containers: Vec<(String, Vec<String>)>,
+        section: Vec<String>,
+    ) {
+        TestApp::set_mcp_container_hooks(self, containers, section);
+    }
+
+    fn set_a2a_container_hooks(
+        &mut self,
+        containers: Vec<(String, Vec<String>)>,
+        section: Vec<String>,
+    ) {
+        TestApp::set_a2a_container_hooks(self, containers, section);
+    }
+
+    fn set_agent_defs_any(&mut self, defs: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
+        TestApp::set_agent_defs_any(self, defs);
+    }
 }

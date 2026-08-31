@@ -13,8 +13,15 @@
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
-use busbar_core::test_support::TestApp;
+use busbar_substrate::testkit::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
+
+// The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the
+// router that serves a plane verb has THIS crate's core copy's envelope, matching its recording
+// middleware's condition `Tag` type. The one `busbar_core::` name lives in this `tests/`-path file the
+// neutral-purity lint excludes (the twin of core's `plane/tests/registry_tests.rs`).
+#[path = "a2a/tests/envelope_boot.rs"]
+mod envelope_boot;
 
 /// The A2A plane's scratch key — the same string as `PLANE_DECL.key`.
 const SCRATCH_KEY: &str = "a2a";
@@ -28,9 +35,10 @@ pub fn install_test_seams() {
     busbar_substrate::plane::config::install_plane_sections(
         busbar_substrate::plane::config::default_plane_sections,
     );
-    busbar_substrate::admin_verbs::install_plane_admin_envelope(
-        &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
-    );
+    // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`), bound plane-side from
+    // THIS crate's core copy through the `tests/`-path `envelope_boot` helper (the composition-root job
+    // `main` does in production) — so the plane's shipped source names no `busbar_core::` item.
+    envelope_boot::install();
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
@@ -44,7 +52,7 @@ pub(crate) struct A2aScratch {
     registered: bool,
 }
 
-fn scratch(app: &mut TestApp) -> &mut A2aScratch {
+fn scratch(app: &mut dyn TestAppSeam) -> &mut A2aScratch {
     let needs_register = !app.plane_scratch::<A2aScratch>(SCRATCH_KEY).registered;
     if needs_register {
         app.plane_scratch::<A2aScratch>(SCRATCH_KEY).registered = true;
@@ -55,7 +63,7 @@ fn scratch(app: &mut TestApp) -> &mut A2aScratch {
 
 /// BUILD-TIME FINALIZER: consume the accumulated [`A2aScratch`] and install the real A2A plane through
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build`/`build_a2a_plane_runtime` did.
-fn finalize(app: &mut TestApp) {
+fn finalize(app: &mut dyn TestAppSeam) {
     // Register this plane in the process registry the way production's composition root does.
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     let scratch = app.take_plane_scratch::<A2aScratch>(SCRATCH_KEY);
@@ -86,12 +94,12 @@ fn finalize(app: &mut TestApp) {
         app.mount_plane(
             crate::PLANE_DECL.key,
             crate::a2a::serve::MOUNT_PATH,
-            busbar_core::plane::WIRE_JSONRPC,
+            busbar_substrate::plane::WIRE_JSONRPC,
         );
         app.mount_plane(
             crate::PLANE_DECL.key,
             crate::a2a::serve::GRPC_MOUNT_PATH,
-            busbar_core::plane::WIRE_GRPC,
+            busbar_substrate::plane::WIRE_GRPC,
         );
         if let Some(admission) = admission {
             app.admit_plane(crate::PLANE_DECL.key, admission);
@@ -162,7 +170,7 @@ pub trait TestAppA2aExt {
     fn agents_hooks(self, names: &[&str]) -> Self;
 }
 
-impl TestAppA2aExt for TestApp {
+impl<A: TestAppSeam> TestAppA2aExt for A {
     fn agent_def(mut self, name: &str, cfg: AgentDefCfg) -> Self {
         scratch(&mut self)
             .agent_defs

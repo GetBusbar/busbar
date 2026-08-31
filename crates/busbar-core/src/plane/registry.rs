@@ -287,6 +287,15 @@ pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     registry_tests::TEST_BUILTIN_PLANE_DECLS
 }
 
+/// THE MCP PLANE'S DEFAULT per-generation runtime, type-erased — the object core's `cfg(test)` fixture
+/// seeds under the MCP runtime-slot companion for every `TestApp` (the plane is a built-in of core's
+/// own test process). Delegates to the `tests/registry_tests.rs` helper, the one `tests/`-file the
+/// neutral-purity lint excludes, so the `busbar_mcp` name that builds it stays OFF this neutral source.
+#[cfg(test)]
+pub(crate) fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+    registry_tests::default_mcp_test_runtime()
+}
+
 /// The process plane list, folded on first read from the built-ins plus anything installed. Under the
 /// test-support surface `plane_decls` folds a growable test registration set instead (see below), so
 /// this memo is the production path only.

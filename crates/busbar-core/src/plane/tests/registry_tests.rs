@@ -29,6 +29,13 @@ pub(super) static TEST_BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &busbar_a2a::PLANE_DECL,
 ];
 
+/// THE MCP PLANE'S DEFAULT per-generation runtime for core's `cfg(test)` fixture — reached by
+/// `super::default_mcp_test_runtime()`. It names `busbar_mcp::testkit` here, in this `tests/` module
+/// the neutral-purity lint excludes, so that plane symbol stays off the neutral `test_support` source.
+pub(super) fn default_mcp_test_runtime() -> std::sync::Arc<dyn Any + Send + Sync> {
+    busbar_mcp::testkit::default_mcp_runtime()
+}
+
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
 /// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.

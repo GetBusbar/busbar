@@ -314,6 +314,22 @@ struct Hop<'a> {
     body: Option<Vec<u8>>,
 }
 
+/// TEST-ONLY: install the core-backed hostless-egress driver the composition root installs at boot.
+/// The plane's own test binary (which links `busbar_core` as a dev-dependency, the one place it is
+/// nameable) has no `main` to do it, so `hop_spec` calls this once, idempotently (`OnceLock`). It
+/// reaches `busbar_core::egress::seam::CoreHostlessEgress` — the driver's only production
+/// implementation — as the plane's OWN test dependency, so the name stays inside this `#[cfg(test)]`
+/// module (off the neutral-purity lint's reverse scan) and out of every shipped build. Mirrors the MCP
+/// leg's identical `test_egress_boot`.
+#[cfg(all(test, feature = "test-support"))]
+mod test_egress_boot {
+    pub(super) fn install() {
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &busbar_core::egress::seam::CoreHostlessEgress,
+        );
+    }
+}
+
 impl ReqwestTransport {
     /// The neutral [`HopSpec`] for one hop, carrying the plane's ALREADY-JUDGED pinned address as
     /// `resolved_addr` (Design A: the host connects there and resolves nothing, so this plane's "no
@@ -333,9 +349,7 @@ impl ReqwestTransport {
         // (`OnceLock`) — reached by both hop methods (`execute`/`post_stream`) since both build their
         // spec through this. Compiled out of every non-test build; production installs it at boot.
         #[cfg(all(test, feature = "test-support"))]
-        busbar_substrate::egress::seam::install_hostless_egress(
-            &busbar_core::egress::seam::CoreHostlessEgress,
-        );
+        test_egress_boot::install();
         HopSpec {
             verb: "",
             url,

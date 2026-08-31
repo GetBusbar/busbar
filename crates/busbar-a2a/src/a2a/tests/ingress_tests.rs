@@ -51,7 +51,7 @@ fn no_agents_configured_means_no_route_in_the_table_at_all() {
     // route somebody has to reason about.
     busbar_core::metrics::init();
     let app = busbar_core::test_support::TestApp::new().build();
-    assert!(crate::a2a::runtime(&app).is_none());
+    assert!(crate::a2a::runtime(app.as_ref()).is_none());
     let table = mounted(&app);
     // EVERY path this plane can claim, listed here rather than a prefix test: the plane serves two
     // routes OUTSIDE its own `/a2a` prefix — the RFC 9728 metadata document and the well-known
@@ -123,7 +123,7 @@ fn a_delegation_only_deployment_mounts_no_receiving_surface() {
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
     assert!(
-        crate::a2a::runtime(&app).is_some(),
+        crate::a2a::runtime(app.as_ref()).is_some(),
         "the registry exists for the delegating side"
     );
     let ps = paths(&mounted(&app));
