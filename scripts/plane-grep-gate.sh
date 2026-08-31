@@ -34,9 +34,23 @@
 #     so a token INSIDE a string literal is KEPT and a `//` inside a string is NOT a comment). This is
 #     the same strip() the sibling plane-purity-lint.sh uses.
 #   * test code — a `*/tests/*` or `*_test(s).rs` file, and a `#[cfg(test)] mod … { … }` block.
+#   * TEST-SUPPORT SCAFFOLDING — the fixture surface compiled only under the `test-support` feature is
+#     not production debt, so it is excluded two ways, mirroring the existing `#[cfg(test)]` handling:
+#       - test-support MODULES: a brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES `test-support`
+#         (and is NOT negated with `not(…)`, and has NO production-visible sibling decl of the same name
+#         in the same file — so `#[cfg(not(any(test, feature = "test-support")))] mod store;`'s partner
+#         `#[cfg(any(test, feature = "test-support"))] pub mod store;` keeps `store` IN scope) causes the
+#         module's whole file/subtree to be dropped from the scan (see prepass `compute_mod_excludes`).
+#       - test-support ITEMS / `pub use`: an item whose own `#[cfg(…)]` predicate names `test-support`
+#         (e.g. a `#[cfg(any(test, feature = "test-support"))] pub use …::{…};` re-export or a gated
+#         `pub fn`) is skipped for its whole span (brace- and `;`-terminated) inside the scanner.
 #   * the neutral `Operation` enum — crates/api/src/operation.rs is EXCLUDED wholesale: its variants
 #     (Chat/Embeddings/Moderation/…) are the generic, protocol-neutral op vocabulary the ABI carries as
 #     DATA, and are explicitly in-scope-neutral per F4.
+#   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional line) of hits
+#     that are frozen CONTRACT vocabulary, not dialect leakage: the OpenAPI/MCP `responses` object key
+#     under the admin/mcp/a2a wire crates, and the frozen `anthropic` protocol default / `mcp:` deploy
+#     key at their pinned lines in config/mod.rs. See ALLOWLIST below — each entry is scoped, never global.
 #
 # REPORTING MODE (this lands NON-BLOCKING to measure the debt R3/R4/R5 will drive to 0):
 #   GREP_GATE_REPORT_ONLY=1 (DEFAULT) → PRINT the violation count + the offending file:line list, EXIT 0.
@@ -84,13 +98,71 @@ A2A_NEEDLES="$DIALECTS mcp"
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral (F4). Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
 
-# Production .rs under a set of roots, minus test files and the excluded Operation enum.
+# ── THE FROZEN-WIRE ALLOWLIST (path-scoped, never global) ──────────────────────────────────────────
+# One entry per line:  NEEDLE|PATH-PREFIX|LINE   (LINE empty = every line under the prefix).
+# A hit is suppressed iff its needle equals NEEDLE, its file path STARTS WITH PATH-PREFIX, and (when
+# LINE is given) its line number equals LINE. This is the ONLY allowlist mechanism — inline source
+# markers are NOT honoured (the gate must stay a source-read-only meter; the .rs files are frozen).
+#   responses : the OpenAPI-3 response-object key + MCP `inputResponses` wire field — frozen contract
+#               vocabulary, allowlisted ONLY under the admin / mcp / a2a wire crates (a stray
+#               `responses` elsewhere still trips).
+#   anthropic : the frozen `DEFAULT_PROTOCOL = "anthropic"` providers.yaml config-grammar default —
+#               its own comment declares it frozen-wire. Pinned to its exact line in config/mod.rs.
+#   mcp       : the public frozen `mcp:` deploy-config key (`mcp: McpEndpointSection` field + the
+#               `deploy.mcp.0` read). Pinned to the two exact deploy-config lines in config/mod.rs —
+#               the unrelated `mcp` import at the top of the file is NOT covered and still trips.
+ALLOWLIST="responses|crates/busbar-core/src/admin/|
+responses|crates/busbar-mcp/src/|
+responses|crates/busbar-a2a/src/|
+anthropic|crates/busbar-core/src/config/mod.rs|1291
+mcp|crates/busbar-core/src/config/mod.rs|2974
+mcp|crates/busbar-core/src/config/mod.rs|5017"
+
+# ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
+# Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES
+# `test-support` (positively — not under `not(…)`) and that has NO production-visible sibling decl of
+# the same name in the same file. Those modules are the crate's test-support fixture surface (compiled
+# only under the feature), so their whole files are dropped from the scan. Populated into MOD_EXCLUDE.
+MOD_EXCLUDE=""
+compute_mod_excludes() {
+  local roots="$*" decls
+  # Per file: pair a pending `#[cfg(…)]` attr with the next brace-less `mod NAME;`, classify test-only
+  # vs production, then keep only names that are test-only with no production sibling in that file.
+  decls="$(
+    for f in $(find $roots -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$'); do
+      awk -v dir="$(dirname "$f")" '
+        /#\[cfg\(/ { pendcfg = $0; pend = 1 }
+        {
+          if (match($0, /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z0-9_]+[ \t]*;/)) {
+            name = substr($0, RSTART, RLENGTH); sub(/^.*mod[ \t]+/, "", name); sub(/[ \t]*;.*/, "", name)
+            cfg = pend ? pendcfg : ""; cls = "prod"
+            if (cfg != "" && index(tolower(cfg), "test-support") > 0 && index(cfg, "not(") == 0) cls = "testonly"
+            print dir "/" name "\t" cls
+            pend = 0; pendcfg = ""; next
+          }
+          if ($0 ~ /[^ \t]/ && $0 !~ /#\[cfg\(/) { pend = 0; pendcfg = "" }
+        }
+      ' "$f"
+    done
+  )"
+  MOD_EXCLUDE="$(printf '%s\n' "$decls" \
+    | awk -F'\t' '{ if ($2=="testonly") t[$1]=1; else p[$1]=1 }
+                  END { for (k in t) if (!(k in p)) print k }' \
+    | sort)"
+}
+
+# Production .rs under a set of roots, minus test files, the excluded Operation enum, and any file that
+# lives under (or is) a test-support module dropped by the prepass.
 prod_files() {
-  find $* -name '*.rs' 2>/dev/null \
+  local out; out="$(find $* -name '*.rs' 2>/dev/null \
     | grep -v '/tests/' \
     | grep -Ev '_tests?\.rs$' \
-    | grep -vxF "$OPERATION_EXCLUDE" \
-    | sort
+    | grep -vxF "$OPERATION_EXCLUDE")"
+  local m
+  for m in $MOD_EXCLUDE; do
+    out="$(printf '%s\n' "$out" | grep -Ev "^${m}(/|\.rs$)")"
+  done
+  printf '%s\n' "$out" | grep -v '^$' | sort
 }
 
 # ── THE SCANNER (one copy; the self-test drives THIS function, never a duplicate) ─────────────────
@@ -100,7 +172,8 @@ prod_files() {
 scan() {
   local needles="$1"; shift
   [ "$#" -gt 0 ] || return 0
-  awk -v needles="$needles" '
+  # BSD awk forbids a literal newline in a -v value, so flatten the row-per-line ALLOWLIST to `;`-joined.
+  awk -v needles="$needles" -v allow="$(printf '%s' "$ALLOWLIST" | tr '\n' ';')" '
     function strip(line,   res, i, n, c, c2, instr) {
       res = ""; n = length(line); i = 1; instr = 0
       while (i <= n) {
@@ -121,36 +194,72 @@ scan() {
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function emit(needle, text) { printf "%s\t%s:%d\t%s\n", needle, FILENAME, FNR, trim(text) }
+    # allowlisted(needle) — true iff a frozen-wire ALLOWLIST entry covers this needle at FILENAME:FNR.
+    function allowlisted(needle,   i) {
+      for (i = 1; i <= naA; i++)
+        if (needle == aN[i] && index(FILENAME, aP[i]) == 1 && (aL[i] == "" || aL[i] + 0 == FNR)) return 1
+      return 0
+    }
 
-    BEGIN { nN = split(needles, N, " ") }
+    BEGIN {
+      nN = split(needles, N, " ")
+      # Parse the ALLOWLIST (NEEDLE|PATH-PREFIX|LINE per row).
+      naA = 0; nrows = split(allow, rows, ";")
+      for (r = 1; r <= nrows; r++) {
+        if (rows[r] == "") continue
+        nf = split(rows[r], fld, "|")
+        naA++; aN[naA] = fld[1]; aP[naA] = fld[2]; aL[naA] = (nf >= 3 ? fld[3] : "")
+      }
+    }
 
     # Per-FILE reset (awk shares state across the file list).
-    FNR == 1 { inblk = 0; testdepth = 0; pend = 0 }
+    FNR == 1 { inblk = 0; testdepth = 0; pend = 0; pendts = 0; itemskip = 0; idepth = 0; seenbrace = 0 }
 
     {
       code = strip($0)
       lc   = tolower(code)
       nopen = gsub(/[{]/, "{", code); nclose = gsub(/[}]/, "}", code)
 
-      # ── #[cfg(test)] mod { … } block tracking (exclude unit-test code) ──
-      is_cfgtest = (code ~ /#\[cfg\(/ && (tolower(" " code " ") ~ /[^a-z0-9_]test[^a-z0-9_]/))
+      is_cfg     = (code ~ /#\[cfg\(/)
+      # names `test` as a bounded token (this also covers `"test-support"`, `test` bounded by `"`/`-`).
+      is_cfgtest = (is_cfg && (tolower(" " code " ") ~ /[^a-z0-9_]test[^a-z0-9_]/))
+      # names the `test-support` feature specifically (drives the ITEM/pub-use skip below).
+      is_testsup = (is_cfg && index(lc, "test-support") > 0)
       has_mod    = (code ~ /(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])/)
+
+      # ── skipping a test-support-gated NON-mod item span (brace- or `;`-terminated) ──
+      if (itemskip) {
+        if (nopen > 0) seenbrace = 1
+        idepth += nopen - nclose
+        if ((seenbrace && idepth <= 0) || (!seenbrace && idepth <= 0 && index(code, ";") > 0)) {
+          itemskip = 0; idepth = 0; seenbrace = 0
+        }
+        next
+      }
+
+      # ── #[cfg(test | test-support)] mod { … } block tracking + test-support item skipping ──
       entered = 0
       if (is_cfgtest && has_mod) {
-        testdepth = nopen - nclose; if (testdepth < 0) testdepth = 0; entered = (testdepth > 0); pend = 0
+        testdepth = nopen - nclose; if (testdepth < 0) testdepth = 0; entered = (testdepth > 0); pend = 0; pendts = 0
       } else if (pend && has_mod) {
-        testdepth = nopen - nclose; if (testdepth < 0) testdepth = 0; entered = (testdepth > 0); pend = 0
-      } else if (pend && code ~ /[^[:space:]]/ && !is_cfgtest) {
-        pend = 0
+        testdepth = nopen - nclose; if (testdepth < 0) testdepth = 0; entered = (testdepth > 0); pend = 0; pendts = 0
+      } else if (pendts && !is_cfg && code ~ /[^[:space:]]/) {
+        # a `test-support` attr on the previous line, and THIS line is its (non-mod) item → skip its span.
+        pend = 0; pendts = 0
+        seenbrace = (nopen > 0); idepth = nopen - nclose
+        if (!((seenbrace && idepth <= 0) || (!seenbrace && idepth <= 0 && index(code, ";") > 0))) itemskip = 1
+        next
+      } else if (pend && code ~ /[^[:space:]]/ && !is_cfg) {
+        pend = 0; pendts = 0
       } else if (testdepth > 0) {
         testdepth += nopen - nclose; if (testdepth < 0) testdepth = 0
       }
-      if (is_cfgtest && !has_mod) pend = 1
+      if (is_cfgtest && !has_mod) { pend = 1; if (is_testsup) pendts = 1 }
       if (testdepth > 0 || entered) next
 
-      # ── substring dialect / plane-key hits ──
+      # ── substring dialect / plane-key hits (minus the frozen-wire allowlist) ──
       for (k = 1; k <= nN; k++) {
-        if (index(lc, N[k]) > 0) emit(N[k], code)
+        if (index(lc, N[k]) > 0 && !allowlisted(N[k])) emit(N[k], code)
       }
     }
   ' "$@"
@@ -227,6 +336,9 @@ REPORT_TOTAL=0
 run_report() {
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/hits"
+
+  # Prepass: compute the test-support module subtrees to drop (across every scanned root).
+  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT
 
   local nf mf af
   nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"
