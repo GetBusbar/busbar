@@ -1,0 +1,23 @@
+# PINNED MISSING SET -- every field of qa/field-inventory.json that is not yet classified in
+# qa/field-coverage.status. RECORDED ON PURPOSE, exactly as qa/method-coverage.missing pins the
+# method work queue and testing/a2a-tck/check-baseline.py pins the TCK's per-requirement map: a
+# suite whose result is UNCHANGING is still a gate, because the thing a gate has to catch is a
+# CHANGE.
+#
+# crates/busbar/tests/field_coverage.rs asserts the computed MISSING set EQUALS this file, in both
+# directions:
+#
+#   a field here that becomes carried/waived -> red. Delete the line in the SAME commit that lands
+#                                               the coverage, so the queue shrinks visibly.
+#   a field that regresses into MISSING      -> red, because it is not listed here.
+#
+# THIS FILE IS NOT A WAIVER LIST. A line here says "enumerated, and no instrument watches it yet".
+# A waiver says "not owed, and here is why" and lives in qa/field-coverage.status with a date and a
+# reason. Do not move a line from here to there to make a number go green -- laundering an
+# undocumented gap into a waiver is how "lossless" became false in the first place.
+#
+# WHY IT IS LONG. The audit that produced this gate found its losses in fields that are never read
+# and never emitted -- where a mutation test has nothing to break and therefore catches nothing. So
+# "the reader looks like it handles that" is not admissible evidence here, and every field whose
+# survival no test asserts is listed below rather than assumed.
+

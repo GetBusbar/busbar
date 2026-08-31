@@ -58,7 +58,7 @@
 # umbrella's union is a SUPERSET of today's gate.
 #
 # Reserved -> release map:
-#   mcp-integrity -> 1.5.4    a2a -> 1.5.6    smart-router -> 1.5.5
+#   mcp-integrity -> 1.6.0    a2a -> 1.6.0    smart-router -> 1.5.6
 
 # ── ACTIVE (green-on-completion) ─────────────────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ id     = "export"
 status = "active"
 tier   = "fast"
 # The export coverage lives as in-crate unit tests rather than an integration target —
-# crates/busbar/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
+# crates/busbar-core/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
 # export surfaces outside that module (the admin export API, the config-migrate export rewrites, the
 # plugin-route export/metrics confinement). `busbar` is a BINARY-ONLY package (no [lib]), so its unit
 # tests run under `--bin busbar`.
@@ -75,12 +75,12 @@ tier   = "fast"
 # The filter is the module-and-name substring `export`, not an enumerated case list, deliberately:
 # a substring filter picks up newly added export tests automatically, whereas a written-out list is
 # one more thing that drifts quietly. The streams the projection tests exercise are named in
-# crates/busbar/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
+# crates/busbar-core/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
 # the unknown-stream vocabulary error, the producerless-stream boot error).
 #
 # The webhook/scrape rows that need a REAL receiver are not in this fast segment; they belong to the
 # live-mock cadence and are covered by core-data-plane's release-check soak.
-run    = "cargo test --release -p busbar --bin busbar -- export"
+run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- export"
 
 [[segment]]
 id     = "hook-bindings"
@@ -107,7 +107,7 @@ tier   = "fast"
 #   hooks::* (the wire/plugin/scrape hook seam)
 #
 # Same reasoning as `export` for the substring filter over an enumerated list.
-run    = "cargo test --release -p busbar --bin busbar -- hook"
+run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- hook"
 
 [[segment]]
 id     = "config-stability"
@@ -115,6 +115,47 @@ status = "active"
 tier   = "fast"
 # The config-stability gate: the drift guard, the additive-only classifier, and its self-test.
 run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
+
+[[segment]]
+id     = "method-coverage-acceptance"
+status = "active"
+tier   = "fast"
+# ACCEPTANCE TEST 5 OF THE 1.6.0 RELEASE (GOAL-1.6.0-UNATTENDED.md §1.1): every cell of
+# method x direction x transport is implemented or waived — the full-strength, #[ignore]d
+# assertion in crates/busbar/tests/method_coverage.rs. The per-push HALF of that gate
+# (pinned_missing_set_is_exact) already rides `cargo test --workspace` in ci.yml and catches
+# CHANGE in either direction; THIS segment is the release-acceptance invocation the test's doc
+# promised ("CI runs it with -- --ignored") and which no workflow actually ran. Homed HERE, on
+# the qa promotion gate, because that is the tier the test's own doc says it gates: a release
+# acceptance, not a per-commit check. It is RED while any pinned-missing cell is still owed —
+# and that red is the gate working, not the gate broken: per the owner's ruling ("nothing should
+# ever be released red"), a qa->main promotion with owed cells must not earn a release. Fix by
+# implementing the cell or waiving it with a dated reason in qa/method-coverage.status; never by
+# weakening the test or this segment.
+run    = "cargo test --release -p busbar --test method_coverage -- --ignored"
+
+[[segment]]
+id     = "field-coverage"
+status = "active"
+tier   = "fast"
+# THE LLM-PROTOCOL FIELD-COVERAGE GATE (crates/busbar/tests/field_coverage.rs) promoted to its own
+# verdict line — the field-level analogue of method-coverage-acceptance above. Every request/response
+# field of every chat dialect busbar speaks is `carried` (with a named test that FAILS if the field
+# stops surviving), `waived` (dated reason), or MISSING — and the MISSING set is PINNED, so
+# `pinned_missing_set_is_exact` fails the build the moment coverage changes in EITHER direction.
+#
+# RUN WITH `-- --ignored` — the full-strength acceptance every_field_is_carried_or_waived is ARMED.
+# The field work queue in qa/field-coverage.missing has been fully DRAINED across all six chat
+# dialects: every enumerated field is carried (zero waivers added beyond the 9 pre-existing), so the
+# acceptance — `#[ignore]`d and RED BY DESIGN while the queue was non-empty — now PASSES, and this
+# segment gates on it exactly as method-coverage-acceptance above gates on its own drained
+# acceptance. The three change-detecting gates (every_status_line_names_a_real_field,
+# every_carried_claim_names_a_real_test, pinned_missing_set_is_exact) are not `#[ignore]`d and ride
+# `cargo test --workspace` in ci.yml; this segment makes the field-coverage ACCEPTANCE a first-class,
+# independently-reported line on the qa promotion gate. Never weaken the test or this segment to keep
+# it green, and launder no gap into a waiver: if the queue ever regrows, this goes RED until the
+# field is CARRIED, not waived.
+run    = "cargo test --release -p busbar --test field_coverage -- --ignored"
 
 [[segment]]
 id     = "core-data-plane"
@@ -161,18 +202,39 @@ run       = "./scripts/release-check.sh --segment plugin-{repo}"
 
 [[segment]]
 id     = "mcp-integrity"
-status = "reserved"   # -> active in 1.5.4 (pure MCP)
+status = "reserved"   # -> active in 1.6.0 (pure MCP)
 tier   = "live-mock"
 run    = "cargo test -p busbar --test qa_mcp_integrity"
 
 [[segment]]
 id     = "a2a"
-status = "reserved"   # -> active in 1.5.6 (A2A)
+status = "reserved"   # -> active in 1.6.0 (A2A)
 tier   = "live-mock"
 run    = "cargo test -p busbar --test qa_a2a"
 
 [[segment]]
 id     = "smart-router"
-status = "reserved"   # -> active in 1.5.5 (smart-router)
+status = "reserved"   # -> active in 1.5.6 (smart-router)
 tier   = "fast"
 run    = "cargo test -p busbar --test qa_smart_router"
+
+[[segment]]
+id     = "plane-purity"
+status = "active"   # ARMED: the plane extraction drained the neutral crates to 0 (design P5 complete)
+tier   = "fast"
+# THE NEUTRAL-PURITY GATE, an independently-reported release verdict —
+# the plane-boundary analogue of field-coverage/config-stability above. The plane ABI (PlaneDecl /
+# ProtocolDecl / install_* / the opaque PlaneRecord / plane_slots / the PLANE_* diagnostics namespace)
+# is the ONE surface between core and a plane; this segment fails RED on any SIDE CHANNEL in a neutral
+# crate — a `#[path=…/busbar-<plane>/…]` witness include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete
+# plane key/dialect/record-type, or a plane crate reaching BACK into busbar_core:: implementation.
+#
+# ACTIVE, PERMANENT GATE. The extraction is COMPLETE: the baseline drained from ~1236 side channels to
+# 0, the deletion test passes strong-form for all three planes (each crate physically removable with the
+# neutral crates + bin still compiling), and `--check` passes green. This slot is now `active` — a real
+# release verdict, no longer red-by-design — so the plane boundary can never erode unwatched again: any
+# future `#[path=…/busbar-<plane>/…]` witness, `busbar_{llm,mcp,a2a}::` symbol in a neutral crate,
+# concrete plane key/dialect/record-type, or plane→busbar_core:: back-reach fails this gate RED.
+# The self-test (proving the scanner catches the four planted side channels) also runs per-push in
+# ci.yml, so the scanner's own honesty is continuously verified alongside the tree verdict.
+run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"
