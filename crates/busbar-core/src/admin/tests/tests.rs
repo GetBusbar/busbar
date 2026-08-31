@@ -13183,7 +13183,10 @@ async fn named_map_app_opts(
             serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
                 .unwrap(),
         );
-        builder.set_plane_defs_any(busbar_a2a::PLANE_DECL.key, std::sync::Arc::new(agents.clone()));
+        builder.set_plane_defs_any(
+            busbar_a2a::PLANE_DECL.key,
+            std::sync::Arc::new(agents.clone()),
+        );
         // The A2A admin verbs re-read the agent registry off the plane's OWN runtime slot (the same
         // shape as MCP above), so the runtime this generation carries must hold `base-agent` or a patch
         // of it 404s. Build the plane from the same `AgentsCfg` and install it under the A2A slot.

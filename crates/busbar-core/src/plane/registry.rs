@@ -437,9 +437,12 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 // one while `register_test_plane`'s set SHRANK by one (the isolation guard's snapshot/restore) sums to
 // the same total but folds to a different list, and a lone sum would alias the two and hand back a
 // stale leak. The pair distinguishes them for the price of one extra `usize`.
+/// The memo entry: the `(installed_len, registered_len)` key the fold was last computed for, and the
+/// leaked slice it produced.
 #[cfg(any(test, feature = "test-support"))]
-static TEST_MEMO: std::sync::Mutex<Option<((usize, usize), &'static [&'static PlaneDecl])>> =
-    std::sync::Mutex::new(None);
+type TestMemoEntry = ((usize, usize), &'static [&'static PlaneDecl]);
+#[cfg(any(test, feature = "test-support"))]
+static TEST_MEMO: std::sync::Mutex<Option<TestMemoEntry>> = std::sync::Mutex::new(None);
 
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
 /// from the neutral substrate ([`busbar_substrate::plane::registry::register_test_plane`], which owns

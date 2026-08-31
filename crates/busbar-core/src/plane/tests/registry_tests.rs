@@ -344,8 +344,8 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
         .collect();
     assert!(kinds.len() > 1, "the builtin kind set must be non-trivial");
     for k in kinds {
-        let idx =
-            scope_kind_index(k).unwrap_or_else(|| panic!("'{k}' is a declared kind but has no index"));
+        let idx = scope_kind_index(k)
+            .unwrap_or_else(|| panic!("'{k}' is a declared kind but has no index"));
         assert_eq!(
             scope_kind_at(idx),
             Some(k),

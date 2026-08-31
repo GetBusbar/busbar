@@ -755,6 +755,11 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     }
 }
 
+/// Per-plane container-gate hook SPECS, keyed by plane decl key: each value is the plane's
+/// `(container_name, own_hook_names)` pairs plus its section-level hook list.
+type PlaneContainerHooks =
+    std::collections::BTreeMap<&'static str, (Vec<(String, Vec<String>)>, Vec<String>)>;
+
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
@@ -839,8 +844,7 @@ pub struct TestApp {
     /// through the public `hooks::resolve_container_gates` (exactly as production does) without ever
     /// naming a plane-typed config section. Resolving at build time (not in the test-kit) keeps the
     /// resolution reading the same registry/env the fixture was given, regardless of builder order.
-    container_hooks:
-        std::collections::BTreeMap<&'static str, (Vec<(String, Vec<String>)>, Vec<String>)>,
+    container_hooks: PlaneContainerHooks,
     /// POST-BUILD hooks a plane's test-kit registers to run against the finished `App` (e.g. the MCP
     /// plane's durable-demotion replay, which names `mcp::demotion` and so cannot live in core).
     #[allow(clippy::type_complexity)]
@@ -979,7 +983,8 @@ impl TestApp {
         containers: Vec<(String, Vec<String>)>,
         section: Vec<String>,
     ) -> &mut Self {
-        self.container_hooks.insert(plane_key, (containers, section));
+        self.container_hooks
+            .insert(plane_key, (containers, section));
         self
     }
 
@@ -1445,8 +1450,11 @@ impl TestApp {
                 if let Some(decl) =
                     crate::plane::registry::plane_decl_for_config_section(section.key())
                 {
-                    let (containers, section_hooks) =
-                        self.container_hooks.get(decl.key).cloned().unwrap_or_default();
+                    let (containers, section_hooks) = self
+                        .container_hooks
+                        .get(decl.key)
+                        .cloned()
+                        .unwrap_or_default();
                     let gates = crate::hooks::resolve_container_gates(
                         containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
                         &section_hooks,
