@@ -900,7 +900,7 @@ fn test_error_kind_to_bedrock_type_mapping() {
     // would pair an HTTP 503 with a 400-class `__type` AWS never produces, making an AWS SDK
     // raise a non-retryable client fault instead of a retryable ServiceUnavailableException.
     assert_eq!(
-        error_kind_to_bedrock_type(busbar_core::proxy::KIND_OVERLOADED),
+        error_kind_to_bedrock_type(busbar_substrate::proxy::KIND_OVERLOADED),
         "ServiceUnavailableException"
     );
     assert_eq!(

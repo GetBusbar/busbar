@@ -1433,7 +1433,7 @@ impl ProtocolWriter for ResponsesWriter {
             // exhaustion/timeout, a non-native type and a deterministic cross-protocol tell. Map the
             // overloaded/unavailable family onto the native `server_error`. Same class as the OpenAI
             // writer's 5xx bucket.
-            busbar_core::proxy::KIND_OVERLOADED
+            busbar_substrate::proxy::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable" => ERR_TYPE_SERVER_ERROR,
@@ -1445,12 +1445,12 @@ impl ProtocolWriter for ResponsesWriter {
             // non-native `type` such as `{"error":{"type":"timeout"}}` or `{"error":{"type":"5xx"}}`
             // to a Responses-API client: a deterministic cross-protocol tell that breaks SDK
             // consumers switching on `error.type`. Mirrors openai_chat.rs's `server_error` bucket.
-            busbar_core::proxy::KIND_TIMEOUT
+            busbar_substrate::proxy::KIND_TIMEOUT
             | "network"
             | "connect"
             | "5xx"
             | "transient"
-            | busbar_core::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
+            | busbar_substrate::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
             // A context-length overflow is surfaced by proxy engine as `context_length_exceeded`; the
             // Responses vocabulary has no dedicated type for it (as openai_chat.rs also maps it), so it
             // folds into `invalid_request_error`. `bad_request` is the same client-error class.

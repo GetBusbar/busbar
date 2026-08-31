@@ -9,8 +9,37 @@
 //! so every existing in-core and plugin caller compiles unchanged. Values are byte-identical to the
 //! pre-move definitions.
 
+// ── CANONICAL error-`type` vocabulary home. The forward-layer KIND_* bank (`proxy::KIND_*`), the
+//    admin API's not-found/invalid-request types, the anthropic writer's private ERR_TYPE_* bank, and
+//    the OpenAI-family writers all alias these consts, so the shared string values are single-sourced
+//    HERE (the neutral substrate) so every consumer — core, admin, and the `busbar-llm` dialects —
+//    names them without reaching into `busbar-core`. Relocated DOWN from `busbar-core`'s
+//    `proto::openai_family`, which now re-exports them so its callers are unchanged. (`proxy::KIND_OVERLOADED`
+//    = "overloaded" and anthropic's "timeout_error" are DELIBERATELY different values and stay at
+//    their own sites.)
 /// OpenAI error `type` for a missing or invalid API key.
 pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
+/// OpenAI error `type` for a malformed / bad-argument request.
+pub const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
+/// OpenAI error `type` for a permission / access-control denial.
+pub const ERR_TYPE_PERMISSION: &str = "permission_error";
+/// OpenAI error `type` for a resource that does not exist.
+pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
+/// OpenAI error `type` for a rate-limit / throttle response.
+pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
+/// OpenAI error `type` for a transient upstream failure.
+pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
+/// OpenAI error `type` for a billing-quota exhaustion (HTTP 429).
+pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
+/// Anthropic/busbar internal kind for an overloaded upstream; mapped to `server_error` on the
+/// OpenAI wire (OpenAI has no `overloaded_error` type).
+pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
+/// Anthropic-vocabulary error `type` for a generic upstream/API failure; also the agnostic
+/// forward-layer kind (`proxy::KIND_API_ERROR` aliases this).
+pub const ERR_TYPE_API_ERROR: &str = "api_error";
+/// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
+/// anthropic writer.
+pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 
 // ── Neutral protocol atoms relocated DOWN from `busbar-core` (`proto`) so the `busbar-llm` dialect
 //    crate names them WITHOUT reaching into `busbar-core` (the reverse-edge rule, plane-extraction

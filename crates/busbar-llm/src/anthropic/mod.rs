@@ -166,7 +166,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
-        busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[HDR_REQUEST_ID],
@@ -328,16 +328,15 @@ fn find_stashed_block(
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
 /// agnostic kind is the bare `timeout`).
-const ERR_TYPE_OVERLOADED: &str = busbar_core::proto::openai_family::ERR_TYPE_OVERLOADED;
-const ERR_TYPE_INVALID_REQUEST: &str = busbar_core::proto::openai_family::ERR_TYPE_INVALID_REQUEST;
-const ERR_TYPE_AUTHENTICATION: &str = busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION;
-const ERR_TYPE_RATE_LIMIT: &str = busbar_core::proto::openai_family::ERR_TYPE_RATE_LIMIT;
-const ERR_TYPE_API_ERROR: &str = busbar_core::proto::openai_family::ERR_TYPE_API_ERROR;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_INVALID_REQUEST: &str = busbar_substrate::proto::ERR_TYPE_INVALID_REQUEST;
+const ERR_TYPE_AUTHENTICATION: &str = busbar_substrate::proto::ERR_TYPE_AUTHENTICATION;
+const ERR_TYPE_RATE_LIMIT: &str = busbar_substrate::proto::ERR_TYPE_RATE_LIMIT;
+const ERR_TYPE_API_ERROR: &str = busbar_substrate::proto::ERR_TYPE_API_ERROR;
 const ERR_TYPE_TIMEOUT: &str = "timeout_error";
-const ERR_TYPE_NOT_FOUND: &str = busbar_core::proto::openai_family::ERR_TYPE_NOT_FOUND;
-const ERR_TYPE_PERMISSION: &str = busbar_core::proto::openai_family::ERR_TYPE_PERMISSION;
-const ERR_TYPE_REQUEST_TOO_LARGE: &str =
-    busbar_core::proto::openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
+const ERR_TYPE_NOT_FOUND: &str = busbar_substrate::proto::ERR_TYPE_NOT_FOUND;
+const ERR_TYPE_PERMISSION: &str = busbar_substrate::proto::ERR_TYPE_PERMISSION;
+const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_substrate::proto::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";

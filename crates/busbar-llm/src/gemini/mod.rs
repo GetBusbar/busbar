@@ -290,7 +290,7 @@ const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 /// google.rpc.Code name for an unimplemented / not-supported operation.
 const GRPC_UNIMPLEMENTED: &str = "UNIMPLEMENTED";
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
-const ERR_TYPE_OVERLOADED: &str = busbar_core::proto::openai_family::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
 
 // ── ErrorInfo tokens ──────────────────────────────────────────────────────────
 /// The machine-readable `reason` value carried in `google.rpc.ErrorInfo` for an invalid API key.

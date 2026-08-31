@@ -172,11 +172,11 @@ const APPLICATION_VND_AMAZON_EVENTSTREAM: &str = "application/vnd.amazon.eventst
 
 /// The Bedrock-side spelling of the "overloaded" error type that AWS's own error responses carry
 /// in their `__type` field (`ServiceUnavailableException` maps back to this on a round-trip).
-/// Distinguished from `busbar_core::proxy::KIND_OVERLOADED` ("overloaded"), which is busbar's own
+/// Distinguished from `busbar_substrate::proxy::KIND_OVERLOADED` ("overloaded"), which is busbar's own
 /// internal kind vocabulary. Both map to `ServiceUnavailableException` via
 /// `error_kind_to_bedrock_type`; named here so the match arm is a const pattern rather than a
 /// bare literal.
-const ERR_TYPE_OVERLOADED: &str = busbar_core::proto::openai_family::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_substrate::proto::ERR_TYPE_OVERLOADED;
 
 /// Map busbar's generic error `kind` vocabulary to the AWS Bedrock Converse exception name carried
 /// in `__type`. AWS's Converse error model is a fixed, closed set of exception shapes
@@ -197,17 +197,17 @@ pub(crate) fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
             "AccessDeniedException"
         }
         "not_found" | ERR_TYPE_NOT_FOUND | "model_not_found" => "ResourceNotFoundException",
-        busbar_core::proxy::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
-        busbar_core::proxy::KIND_OVERLOADED
+        busbar_substrate::proxy::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
+        busbar_substrate::proxy::KIND_OVERLOADED
         | ERR_TYPE_OVERLOADED
         | "service_unavailable"
         | "unavailable" => EXC_SERVICE_UNAVAILABLE,
         "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => {
             "ServiceQuotaExceededException"
         }
-        busbar_core::proxy::KIND_API_ERROR
+        busbar_substrate::proxy::KIND_API_ERROR
         | "internal_error"
-        | busbar_core::proxy::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
+        | busbar_substrate::proxy::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
         // No native Bedrock counterpart: fall back to the generic client-error exception so the
         // wire `__type` is still a real AWS exception name a native SDK can decode.
         _ => EXC_VALIDATION,

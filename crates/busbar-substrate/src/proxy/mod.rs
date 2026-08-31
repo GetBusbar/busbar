@@ -154,3 +154,20 @@ pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 /// able to name it without reaching into `busbar-core`. Core's `proxy::egress` re-exports it for its
 /// own resolver fallback and the per-protocol writers.
 pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
+
+// ── Canonical error-KIND tokens the forward layer produces (`cross_protocol_error_kind`) and passes
+//    to `ingress_error` as the `kind` argument — the protocol-agnostic discriminant each per-protocol
+//    writer maps to its native error category. Relocated DOWN from `busbar-core`'s `proxy` so the
+//    `busbar-llm` dialect writers name them without reaching into `busbar-core`; core's `proxy`
+//    re-exports each at its historical `crate::proxy::KIND_*` path. The values shared with the
+//    OpenAI-family vocabulary alias their canonical home in [`crate::proto`]; the two forward-specific
+//    tokens (`overloaded`, `timeout`) are defined here.
+/// Anthropic-vocabulary/agnostic forward kind for a generic upstream/API failure.
+pub const KIND_API_ERROR: &str = crate::proto::ERR_TYPE_API_ERROR;
+/// Bare `overloaded` — DELIBERATELY distinct from `proto::ERR_TYPE_OVERLOADED` ("overloaded_error",
+/// the Anthropic wire spelling): this is busbar's own agnostic kind for a relayed upstream 503.
+pub const KIND_OVERLOADED: &str = "overloaded";
+/// Bare `timeout` — distinct from the Anthropic wire's `timeout_error` spelling.
+pub const KIND_TIMEOUT: &str = "timeout";
+/// Transient upstream-failure forward kind (aliases the OpenAI `server_error` type).
+pub const KIND_SERVER_ERROR: &str = crate::proto::ERR_TYPE_SERVER_ERROR;

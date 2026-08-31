@@ -33,36 +33,16 @@ pub const OPENAI_FAMILY_DEFAULT_MODEL: &str = "gpt-4o";
 /// Responses cannot drift.
 pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 
-// CANONICAL error-kind vocabulary home. The forward-layer KIND_* bank (`proxy::KIND_*`), the
-// admin API's ERR_TYPE_NOT_FOUND/ERR_TYPE_INVALID_REQUEST, and the anthropic writer's private
-// ERR_TYPE_* bank all alias these consts, so the shared string values are single-sourced here and
-// cannot drift. (`proxy::KIND_OVERLOADED` = "overloaded" and anthropic's "timeout_error" are
-// DELIBERATELY different values and stay defined at their own sites.)
-/// OpenAI error `type` for a malformed / bad-argument request.
-pub const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
-/// OpenAI error `type` for a missing or invalid API key. Relocated to the neutral
-/// `busbar_substrate::proto` leaf (Batch A) so `busbar-mcp` names it without depending on
-/// `busbar-core`; re-exported here so every existing caller is unchanged.
-pub use busbar_substrate::proto::ERR_TYPE_AUTHENTICATION;
-/// OpenAI error `type` for a permission / access-control denial.
-pub const ERR_TYPE_PERMISSION: &str = "permission_error";
-/// OpenAI error `type` for a resource that does not exist.
-pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
-/// OpenAI error `type` for a rate-limit / throttle response.
-pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
-/// OpenAI error `type` for a transient upstream failure.
-pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
-/// OpenAI error `type` for a billing-quota exhaustion (HTTP 429).
-pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
-/// Anthropic/busbar internal kind for an overloaded upstream; mapped to `server_error` on the
-/// OpenAI wire (OpenAI has no `overloaded_error` type).
-pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
-/// Anthropic-vocabulary error `type` for a generic upstream/API failure; also the agnostic
-/// forward-layer kind (`proxy::KIND_API_ERROR` aliases this).
-pub const ERR_TYPE_API_ERROR: &str = "api_error";
-/// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
-/// anthropic writer.
-pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
+// CANONICAL error-`type` vocabulary — the whole ERR_TYPE_* bank RELOCATED DOWN to the neutral
+// `busbar_substrate::proto` leaf so every consumer (core's forward `proxy::KIND_*`, the admin API,
+// the anthropic writer, and the OpenAI-family writers in `busbar-llm`) names it without reaching into
+// `busbar-core`. Re-exported here at their historical `proto::openai_family::ERR_TYPE_*` paths so
+// every existing in-core / plugin caller compiles unchanged; the string values are byte-identical.
+pub use busbar_substrate::proto::{
+    ERR_TYPE_API_ERROR, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
+    ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
+    ERR_TYPE_RATE_LIMIT, ERR_TYPE_REQUEST_TOO_LARGE, ERR_TYPE_SERVER_ERROR,
+};
 
 /// Precise context-length prose scan shared by `OpenAiReader::extract_error` and
 /// `ResponsesReader::extract_error` — the message scan was duplicated. The scan must be PRECISE:

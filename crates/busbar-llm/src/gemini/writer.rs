@@ -687,15 +687,15 @@ impl ProtocolWriter for GeminiWriter {
                 ERR_TYPE_RATE_LIMIT | "resource_exhausted" | "rate_limit" => {
                     Some(GRPC_RESOURCE_EXHAUSTED)
                 }
-                ERR_TYPE_OVERLOADED | busbar_core::proxy::KIND_OVERLOADED | "unavailable" => {
+                ERR_TYPE_OVERLOADED | busbar_substrate::proxy::KIND_OVERLOADED | "unavailable" => {
                     Some(GRPC_UNAVAILABLE)
                 }
-                "deadline_exceeded" | busbar_core::proxy::KIND_TIMEOUT => {
+                "deadline_exceeded" | busbar_substrate::proxy::KIND_TIMEOUT => {
                     Some(GRPC_DEADLINE_EXCEEDED)
                 }
-                busbar_core::proxy::KIND_API_ERROR
+                busbar_substrate::proxy::KIND_API_ERROR
                 | "internal"
-                | busbar_core::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
+                | busbar_substrate::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
                 "unimplemented" | "not_implemented" => Some(GRPC_UNIMPLEMENTED),
                 _ => None,
             }

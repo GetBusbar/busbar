@@ -77,15 +77,14 @@ pub(crate) const KIND_PERMISSION: &str = openai_family::ERR_TYPE_PERMISSION;
 pub(crate) const KIND_RATE_LIMIT: &str = openai_family::ERR_TYPE_RATE_LIMIT;
 pub(crate) const KIND_INVALID_REQUEST: &str = openai_family::ERR_TYPE_INVALID_REQUEST;
 pub(crate) const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
-pub const KIND_API_ERROR: &str = openai_family::ERR_TYPE_API_ERROR;
-/// Bare `overloaded` — DELIBERATELY distinct from `openai_family::ERR_TYPE_OVERLOADED`
-/// ("overloaded_error", the Anthropic wire spelling): this is busbar's own agnostic kind for a
-/// relayed upstream 503.
-pub const KIND_OVERLOADED: &str = "overloaded";
-/// Bare `timeout` — distinct from the Anthropic wire's `timeout_error` spelling.
-pub const KIND_TIMEOUT: &str = "timeout";
+// The four PUBLIC forward-kind tokens the `busbar-llm` dialect writers name are RELOCATED DOWN to the
+// neutral `busbar_substrate::proxy` leaf (so the plane names them without reaching into `busbar-core`)
+// and re-exported here at their historical `crate::proxy::KIND_*` paths; the values are byte-identical
+// (`KIND_API_ERROR`/`KIND_SERVER_ERROR` still alias the ERR_TYPE_* bank, now at its substrate home).
+pub use busbar_substrate::proxy::{
+    KIND_API_ERROR, KIND_OVERLOADED, KIND_SERVER_ERROR, KIND_TIMEOUT,
+};
 pub(crate) const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
-pub const KIND_SERVER_ERROR: &str = openai_family::ERR_TYPE_SERVER_ERROR;
 pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
