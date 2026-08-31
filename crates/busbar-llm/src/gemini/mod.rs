@@ -5,12 +5,12 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
 use busbar_core::proto::*;
+use busbar_substrate::breaker::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).

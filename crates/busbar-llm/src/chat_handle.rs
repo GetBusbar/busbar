@@ -10,14 +10,14 @@
 //! warn strings and their order are unchanged.
 
 use crate::ir::{IrRequest, IrResponse};
+use busbar_api::operation::Operation;
 use busbar_substrate::billing::{Billing, TokenUsage};
 use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate::wire::{EgressWire, TranslatedResponse};
 use busbar_substrate::ir::egress_prep::EgressPrep;
 use busbar_substrate::ir::facts::IrFacts;
 use busbar_substrate::ir::handle::sealed::Sealed;
 use busbar_substrate::ir::handle::IrHandle;
-use busbar_api::operation::Operation;
+use busbar_substrate::wire::{EgressWire, TranslatedResponse};
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -420,7 +420,11 @@ impl ChatOperation {
 }
 
 impl OperationHandler for ChatOperation {
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error(self.0, status, body)
     }
 

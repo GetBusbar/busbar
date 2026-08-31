@@ -6,10 +6,10 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
-use busbar_substrate::wire::{EgressCtx, WireBody};
-use busbar_substrate::ir::handle::IrHandle;
 use busbar_api::operation::Operation;
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -113,7 +113,11 @@ struct CohereEmbeddings;
 impl OperationHandler for CohereEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("cohere", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -255,7 +259,11 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
 impl OperationHandler for CohereRerank {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("cohere", status, body)
     }
     fn read_request(

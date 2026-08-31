@@ -9,8 +9,8 @@
 //! vectors AT ONCE (Cohere/Titan return float AND int8/binary), so vectors are keyed BY ENCODING in
 //! [`EmbeddingItem::vectors`] — a flat `Vec<f32>` would silently drop the others.
 
-use busbar_substrate::billing::{Billing, TokenUsage};
 use busbar_core::lossless::SourceScopedExtra;
+use busbar_substrate::billing::{Billing, TokenUsage};
 use std::collections::BTreeMap;
 
 /// Output vector encoding. Also the KEY into [`EmbeddingItem::vectors`], so multi-encoding responses

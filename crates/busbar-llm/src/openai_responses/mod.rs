@@ -5,13 +5,13 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     bearer_error_code, CODE_INVALID_API_KEY, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
     ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR,
 };
 use busbar_core::proto::*;
+use busbar_substrate::breaker::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -37,7 +37,10 @@ pub fn protocol() -> Protocol {
 
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn claims(
+    _h: &axum::http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate::proto::ClaimStrength> {
     if path.ends_with("/v1/responses") {
         return Some(busbar_substrate::proto::ClaimStrength(10));
     }

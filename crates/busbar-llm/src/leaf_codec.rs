@@ -159,9 +159,9 @@ pub(crate) fn embeddings_read_request(
         "bedrock" => super::bedrock::handler::read_embeddings_request(body, content_type),
         "gemini" => super::gemini::handler::read_embeddings_request(body, content_type),
         "openai" => super::openai_chat::handler::read_embeddings_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no embeddings reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no embeddings reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -190,9 +190,9 @@ pub(crate) fn rerank_read_request(
     match proto {
         "cohere" => super::cohere::handler::read_rerank_request(body, content_type),
         "bedrock" => super::bedrock::handler::read_rerank_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no rerank reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no rerank reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -220,9 +220,9 @@ pub(crate) fn image_read_request(
         "bedrock" => super::bedrock::handler::read_image_request(body, content_type),
         "gemini" => super::gemini::handler::read_image_request(body, content_type),
         "openai" => super::openai_chat::handler::read_image_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no image reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no image reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -250,9 +250,9 @@ pub(crate) fn transcription_read_request(
     match proto {
         "gemini" => super::gemini::handler::read_transcription_request(body, content_type),
         "openai" => super::openai_chat::handler::read_transcription_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no transcription reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no transcription reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -279,9 +279,9 @@ pub(crate) fn speech_read_request(
     match proto {
         "gemini" => super::gemini::handler::read_speech_request(body, content_type),
         "openai" => super::openai_chat::handler::read_speech_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no speech reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no speech reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -307,9 +307,9 @@ pub(crate) fn moderation_read_request(
 ) -> Result<crate::ir::moderation::ModerationReq, busbar_substrate::handlers::IngressReject> {
     match proto {
         "openai" => super::openai_chat::handler::read_moderation_request(body, content_type),
-        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(format!(
-            "no moderation reader for protocol `{other}`"
-        ))),
+        other => Err(busbar_substrate::handlers::IngressReject::BadRequest(
+            format!("no moderation reader for protocol `{other}`"),
+        )),
     }
 }
 #[cfg(any(test, feature = "test-support"))]

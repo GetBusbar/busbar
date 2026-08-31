@@ -5,9 +5,9 @@
 //! its non-chat operations stay `None` = no-handler 404. Chat dispatches through the same registry as
 //! every other operation.
 
+use busbar_api::operation::Operation;
 use busbar_substrate::handlers::{OperationHandler, RequestHandler};
 use busbar_substrate::wire::EgressCtx;
-use busbar_api::operation::Operation;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.

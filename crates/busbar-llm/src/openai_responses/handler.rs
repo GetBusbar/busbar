@@ -4,9 +4,9 @@
 //! OpenAI Responses `RequestHandler`. Chat-only (the `/v1/responses` conversational API); non-chat
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
 
+use busbar_api::operation::Operation;
 use busbar_substrate::handlers::{OperationHandler, RequestHandler};
 use busbar_substrate::wire::EgressCtx;
-use busbar_api::operation::Operation;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.

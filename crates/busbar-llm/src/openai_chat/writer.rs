@@ -815,7 +815,9 @@ impl ProtocolWriter for OpenAiWriter {
                     // kind to this type + code.
                     busbar_substrate::breaker::StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
                     busbar_substrate::breaker::StatusClass::ContextLength
-                    | busbar_substrate::breaker::StatusClass::ClientError => ERR_TYPE_INVALID_REQUEST,
+                    | busbar_substrate::breaker::StatusClass::ClientError => {
+                        ERR_TYPE_INVALID_REQUEST
+                    }
                     busbar_substrate::breaker::StatusClass::Overloaded
                     | busbar_substrate::breaker::StatusClass::ServerError
                     | busbar_substrate::breaker::StatusClass::Timeout

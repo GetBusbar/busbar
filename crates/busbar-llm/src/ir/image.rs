@@ -11,9 +11,9 @@
 //! `controlMode`, SDXL `sampler`/`clip_guidance_preset`, per-prompt weights…) ride source-scoped
 //! `extra`. Billing: `Tokens` for gpt-image-1/Gemini, else `Billing::Images` (per-image, no usage body).
 
-use busbar_substrate::billing::{Billing, TokenUsage};
 use busbar_core::lossless::SourceScopedExtra;
 use busbar_core::media::ImageOutput;
+use busbar_substrate::billing::{Billing, TokenUsage};
 
 /// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

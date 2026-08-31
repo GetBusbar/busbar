@@ -29,10 +29,10 @@ mod writer;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
+use busbar_core::proto::*;
 #[cfg(test)]
 use busbar_substrate::breaker::CanonicalSignal;
 use busbar_substrate::breaker::StatusClass;
-use busbar_core::proto::*;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).

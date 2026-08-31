@@ -5,10 +5,10 @@
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
 use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
-use busbar_substrate::wire::{EgressCtx, WireBody};
-use busbar_substrate::ir::handle::IrHandle;
 use busbar_api::operation::Operation;
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -99,8 +99,8 @@ impl RequestHandler for OpenAiRequestHandler {
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
 use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use busbar_substrate::billing::Billing;
 use busbar_core::media::{base64_decode, MediaBlob, MediaPayload};
+use busbar_substrate::billing::Billing;
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
 struct MultipartField<'a> {
@@ -245,7 +245,11 @@ struct OpenAiTranscription;
 impl OperationHandler for OpenAiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
@@ -419,7 +423,11 @@ struct OpenAiSpeech;
 impl OperationHandler for OpenAiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -481,7 +489,11 @@ struct OpenAiEmbeddings;
 impl OperationHandler for OpenAiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -576,7 +588,11 @@ struct OpenAiImage;
 impl OperationHandler for OpenAiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
@@ -697,7 +713,11 @@ struct OpenAiModeration;
 impl OperationHandler for OpenAiModeration {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -1161,10 +1181,12 @@ pub(crate) fn read_embeddings_response(
                 .collect()
         })
         .unwrap_or_default();
-    let usage = v.get("usage").map(|u| busbar_substrate::billing::TokenUsage {
-        input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
-        ..Default::default()
-    });
+    let usage = v
+        .get("usage")
+        .map(|u| busbar_substrate::billing::TokenUsage {
+            input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+            ..Default::default()
+        });
     Ok(EmbeddingsResp {
         model: v.get("model").and_then(Value::as_str).map(str::to_string),
         object_kind: Some("list".into()),
@@ -1288,11 +1310,13 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
     // per-image models (dall-e, etc.) return no usage body at all. Without this the response was
     // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
     // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
-    let usage = v.get("usage").map(|u| busbar_substrate::billing::TokenUsage {
-        input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-        output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
-        ..Default::default()
-    });
+    let usage = v
+        .get("usage")
+        .map(|u| busbar_substrate::billing::TokenUsage {
+            input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+            output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+            ..Default::default()
+        });
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request

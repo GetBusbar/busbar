@@ -5,7 +5,6 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
-use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::openai_family::{
     bearer_error_code, openai_context_length_prose_scan, ERR_TYPE_AUTHENTICATION,
     ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED,
@@ -13,6 +12,7 @@ use busbar_core::proto::openai_family::{
     OPENAI_FAMILY_MAX_OPEN_TOOLS,
 };
 use busbar_core::proto::*;
+use busbar_substrate::breaker::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -58,7 +58,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// OPENAI'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: `/v1/chat/completions`
 /// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
 /// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn claims(
+    _h: &axum::http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate::proto::ClaimStrength> {
     use busbar_substrate::proto::ClaimStrength;
     if path.ends_with("/v1/chat/completions") {
         return Some(ClaimStrength(7));

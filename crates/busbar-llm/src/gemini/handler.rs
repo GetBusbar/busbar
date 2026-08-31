@@ -7,11 +7,11 @@ use crate::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
-use busbar_substrate::wire::{EgressCtx, WireBody};
-use busbar_substrate::ir::handle::IrHandle;
-use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_api::operation::Operation;
+use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_substrate::ir::handle::IrHandle;
+use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -143,7 +143,11 @@ struct GeminiTranscription;
 impl OperationHandler for GeminiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
@@ -250,7 +254,11 @@ struct GeminiSpeech;
 impl OperationHandler for GeminiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
@@ -335,7 +343,11 @@ struct GeminiImage;
 impl OperationHandler for GeminiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
@@ -423,7 +435,11 @@ struct GeminiEmbeddings;
 impl OperationHandler for GeminiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default

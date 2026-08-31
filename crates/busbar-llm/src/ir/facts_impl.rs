@@ -6,10 +6,10 @@
 //! `Slot` stay in `busbar_substrate::ir::facts`; this impl is for the moved `crate::ir::IrRequest`.
 
 use super::{IrBlock, IrRequest, IrRole};
+use busbar_api::operation::Operation;
 use busbar_substrate::ir::facts::{
     ContentItem, IrFacts, Shape, Slot, LABEL_JSON, LABEL_REASONING, OPAQUE_CONTENT_MARKER,
 };
-use busbar_api::operation::Operation;
 use std::borrow::Cow;
 
 impl IrFacts for IrRequest {

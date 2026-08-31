@@ -2168,7 +2168,8 @@ fn test_extract_error_non_context_length_message_preserved() {
         Some("invalid api key"),
         "a non-context-length message must be carried verbatim"
     );
-    let signal = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let signal =
+        busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_ne!(
         signal.class,
         busbar_substrate::breaker::StatusClass::ContextLength,
@@ -4174,7 +4175,8 @@ fn test_rate_limit_body_mentioning_tokens_is_not_context_length() {
     );
 
     // End-to-end through the breaker: the canonical class is RateLimit, not ContextLength.
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig =
+        busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(
             sig.class,
             StatusClass::RateLimit,
@@ -4199,7 +4201,8 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
         Some("context_length_exceeded"),
         "a 400 oversized-request body must still override to the canonical code"
     );
-    let sig = busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig =
+        busbar_substrate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(sig.class, StatusClass::ContextLength);
 
     let signal = reader.classify(StatusCode::BAD_REQUEST, body);

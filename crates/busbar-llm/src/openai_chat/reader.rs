@@ -1,7 +1,10 @@
 use super::*;
 
 impl ProtocolReader for OpenAiReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
+    fn recover_truncated_usage(
+        &self,
+        tail: &[u8],
+    ) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         let cached = v

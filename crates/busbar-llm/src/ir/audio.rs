@@ -11,9 +11,9 @@
 //! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
 
-use busbar_substrate::billing::Billing;
 use busbar_core::lossless::SourceScopedExtra;
 use busbar_core::media::MediaBlob;
+use busbar_substrate::billing::Billing;
 
 /// Timestamp detail requested on a transcription (whisper-1 only; requires verbose_json).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

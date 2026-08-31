@@ -5,8 +5,8 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_substrate::breaker::StatusClass;
 use busbar_core::proto::*;
+use busbar_substrate::breaker::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
@@ -33,7 +33,10 @@ pub fn protocol() -> Protocol {
 /// COHERE'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the v2/v1 chat paths
 /// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
 /// 9). Lower strength binds tighter — the shared ladder positions.
-fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_substrate::proto::ClaimStrength> {
+fn claims(
+    _h: &axum::http::HeaderMap,
+    path: &str,
+) -> Option<busbar_substrate::proto::ClaimStrength> {
     use busbar_substrate::proto::ClaimStrength;
     if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
         return Some(ClaimStrength(8));

@@ -1,7 +1,10 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
+    fn recover_truncated_usage(
+        &self,
+        tail: &[u8],
+    ) -> Option<busbar_substrate::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         Some(
@@ -107,7 +110,9 @@ impl ProtocolReader for BedrockReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(
+                    busbar_substrate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
+                ),
                 retry_after: None,
             };
         }

@@ -87,7 +87,10 @@ pub trait ProtocolReader: Send + Sync {
     /// [`busbar_substrate::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
     /// object (the caller treats that as "bill zero, counted+warned"). Defaulted to `None` so a
     /// non-LLM dialect need not implement it.
-    fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
+    fn recover_truncated_usage(
+        &self,
+        _tail: &[u8],
+    ) -> Option<busbar_substrate::billing::TokenUsage> {
         None
     }
 
@@ -864,7 +867,10 @@ impl DialectCodec for DialectRef {
             })
             .unwrap_or(false)
     }
-    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_substrate::billing::TokenUsage> {
+    fn recover_truncated_usage(
+        &self,
+        tail: &[u8],
+    ) -> Option<busbar_substrate::billing::TokenUsage> {
         protocol_for(self.0).and_then(|p| p.reader().recover_truncated_usage(tail))
     }
     fn ingress_response_request_id(
@@ -909,7 +915,11 @@ impl DialectCodec for DialectRef {
                 .attach_error_response_headers(headers, kind, envelope);
         }
     }
-    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_substrate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> busbar_substrate::breaker::RawUpstreamError {
         match protocol_for(self.0) {
             Some(p) => p.reader().extract_error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),

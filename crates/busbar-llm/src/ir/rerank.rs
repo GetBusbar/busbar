@@ -8,8 +8,8 @@
 //! no-handler rule. Search-unit metered → `Billing::Flat` (Cohere bills per search unit, carried
 //! for the response echo; the pricing engine lands in 1.3).
 
-use busbar_substrate::billing::Billing;
 use busbar_core::lossless::SourceScopedExtra;
+use busbar_substrate::billing::Billing;
 
 /// Rerank request IR — the superset over both providers.
 #[derive(Debug, Clone, PartialEq, Default)]
