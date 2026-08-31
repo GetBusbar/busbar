@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/plane/taskstore.rs`.
+//! Tests for `crates/busbar-a2a/src/taskstore.rs`.
 //!
 //! ## What "durable" is allowed to mean in a test
 //!
@@ -17,8 +17,7 @@
 
 use crate::a2a::task::{Direction, Task, TaskState};
 use crate::{TaskEventRow, TaskRow};
-use busbar_core::plane::store::StoreNamedTestExt;
-use busbar_core::plane::taskstore::{Denied, Rehydrated, TaskRegistry, TaskTestHarness};
+use crate::taskstore::{Denied, Rehydrated, TaskRegistry, TaskStoreTestExt, TaskTestHarness};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -36,10 +35,10 @@ const NOW: u64 = 1_770_000_000;
 struct DurableTaskStore {
     inner: busbar_store_memory::MemoryStore,
     tasks: std::sync::Mutex<BTreeMap<String, TaskRow>>,
-    /// The chained events as the OPAQUE stored BODIES a durable backend holds — the neutral
-    /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists — keyed by `(task_id, seq)`. A typed view
-    /// is reconstructed on read via [`busbar_core::plane::store::task_event_row_from_body`] (which also reads
-    /// legacy serde bodies), so "durable" here is byte-for-byte what a real store keeps.
+    /// The chained events as the OPAQUE stored BODIES a durable backend holds — the plane's own typed
+    /// [`TaskEventRow`] JSON the seam persists — keyed by `(task_id, seq)`. A typed view is
+    /// reconstructed on read via [`TaskEventRow::from_body`], so "durable" here is byte-for-byte what a
+    /// real store keeps.
     events: std::sync::Mutex<BTreeMap<(String, u64), Vec<u8>>>,
 }
 
@@ -55,31 +54,22 @@ impl DurableTaskStore {
     /// access, or an attacker who got there. The only way to stage the tamper the chain exists to
     /// detect.
     ///
-    /// The stored body is opaque (the neutral seam envelope), so the edit is staged by reconstructing
-    /// the typed row, applying the caller's mutation, and re-persisting the body with its `hash` LEFT
-    /// STALE — a rewritten payload under an unchanged digest, which is exactly the tamper `verify_chain`
-    /// recomputes and catches.
+    /// The stored body is the plane's typed [`TaskEventRow`] JSON, so the edit is staged by
+    /// reconstructing the typed row, applying the caller's mutation, and re-persisting the body with its
+    /// `hash` LEFT STALE — a rewritten payload under an unchanged digest, which is exactly the tamper
+    /// `verify_chain` recomputes and catches.
     fn tamper_event(&self, task_id: &str, seq: u64, edit: impl Fn(&mut TaskEventRow)) {
         let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         let body = events
             .get_mut(&(task_id.to_string(), seq))
             .expect("the event to tamper with must exist");
-        let mut row = busbar_core::plane::store::task_event_row_from_body(task_id, body)
-            .expect("the event to tamper with decodes");
+        let mut row = TaskEventRow::from_body(body).expect("the event to tamper with decodes");
         edit(&mut row);
-        // Rebuild the neutral body from the edited fields, KEEPING the original (now stale) `hash`.
-        let content = format!(
-            "|{}|{}|{}|{}|{}|{}",
-            row.ts, row.kind, row.context_id, row.principal, row.agent_id, row.state
-        )
-        .into_bytes();
-        let tampered = busbar_core::audit::journal::NeutralBody {
-            seq: row.seq,
-            prev_hash: row.prev_hash,
-            hash: row.hash,
-            content,
-        };
-        *body = busbar_core::plane::store::encode(&tampered).expect("neutral body re-encodes");
+        // Re-encode the edited fields, KEEPING the original (now stale) `hash` on the row.
+        *body = row
+            .to_plane_record()
+            .expect("the tampered event body re-encodes")
+            .body;
     }
 }
 
@@ -120,24 +110,22 @@ impl busbar_api::Store for DurableTaskStore {
     // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
     fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            busbar_core::plane::store::KIND_TASK => {
-                self.put_task(&busbar_core::plane::store::decode(&record.body)?)
-            }
+            crate::record::KIND_TASK => self.put_task(&TaskRow::from_body(&record.body)?),
             _ => Ok(()),
         }
     }
     fn get_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
         match kind {
-            busbar_core::plane::store::KIND_TASK => self
+            crate::record::KIND_TASK => self
                 .get_task(id)?
-                .map(|r| busbar_core::plane::store::encode(&r))
+                .map(|r| r.to_plane_record().map(|rec| rec.body))
                 .transpose(),
             _ => Ok(None),
         }
     }
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            busbar_core::plane::store::KIND_TASK_EVENT => self.append_event_body(record),
+            crate::record::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
         }
     }
@@ -147,27 +135,25 @@ impl busbar_api::Store for DurableTaskStore {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (busbar_core::plane::store::KIND_TASK, busbar_api::PlaneSelector::All) => self
+            (crate::record::KIND_TASK, busbar_api::PlaneSelector::All) => self
                 .list_tasks()?
                 .iter()
-                .map(busbar_core::plane::store::encode)
+                .map(|r| r.to_plane_record().map(|rec| rec.body))
                 .collect(),
-            (busbar_core::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
-                Ok(self
-                    .events
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .iter()
-                    .filter(|((id, _), _)| id == p)
-                    .map(|(_, body)| body.clone())
-                    .collect())
-            }
+            (crate::record::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+                .events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|((id, _), _)| id == p)
+                .map(|(_, body)| body.clone())
+                .collect()),
             _ => Ok(Vec::new()),
         }
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
         match kind {
-            busbar_core::plane::store::KIND_TASK => self.purge_tasks_before(before),
+            crate::record::KIND_TASK => self.purge_tasks_before(before),
             _ => Ok(0),
         }
     }
@@ -245,69 +231,57 @@ fn ram_default() -> Arc<dyn busbar_api::Store> {
 fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskTestHarness {
     let h = TaskTestHarness::over(store);
     let reg = &h.reg;
-    h.host(|host| {
-        reg.submit(
-            host,
-            &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW)
-                .unwrap()
-                .to_row(),
-            "req-1",
-        )
-        .expect("submit t-work");
-        reg.transition(
-            host,
-            "t-work",
-            "req-1",
-            crate::a2a::task::plan_transition(TaskState::Working, NOW + 1),
-        )
-        .expect("t-work -> working");
+    reg.submit(
+        &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW)
+            .unwrap()
+            .to_row(),
+        "req-1",
+    )
+    .expect("submit t-work");
+    reg.transition(
+        "t-work",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Working, NOW + 1),
+    )
+    .expect("t-work -> working");
 
-        reg.submit(
-            host,
-            &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW)
-                .unwrap()
-                .to_row(),
-            "req-2",
-        )
-        .expect("submit t-paused");
-        reg.record_dispatch(host, "t-paused", "planner", NOW + 1, "req-2")
-            .expect("dispatch");
-        reg.transition(
-            host,
-            "t-paused",
-            "req-2",
-            crate::a2a::task::plan_transition(TaskState::Working, NOW + 2),
-        )
-        .expect("t-paused -> working");
-        reg.advance_cursor(host, "t-paused", 7, NOW + 3, "req-2")
-            .expect("cursor");
-        reg.transition(
-            host,
-            "t-paused",
-            "req-2",
-            crate::a2a::task::plan_transition(TaskState::AuthRequired, NOW + 4),
-        )
-        .expect("t-paused -> auth-required");
-    });
+    reg.submit(
+        &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW)
+            .unwrap()
+            .to_row(),
+        "req-2",
+    )
+    .expect("submit t-paused");
+    reg.record_dispatch("t-paused", "planner", NOW + 1, "req-2")
+        .expect("dispatch");
+    reg.transition(
+        "t-paused",
+        "req-2",
+        crate::a2a::task::plan_transition(TaskState::Working, NOW + 2),
+    )
+    .expect("t-paused -> working");
+    reg.advance_cursor("t-paused", 7, NOW + 3, "req-2")
+        .expect("cursor");
+    reg.transition(
+        "t-paused",
+        "req-2",
+        crate::a2a::task::plan_transition(TaskState::AuthRequired, NOW + 4),
+    )
+    .expect("t-paused -> auth-required");
     h
 }
 
 /// Restart over the SAME durable `store` and REHYDRATE — the "process 2" half every restart test runs.
-/// Re-registers the chain stream under `kind_id` (fresh host-side positions), reads the persisted rows
-/// back, and returns the fresh harness + the rehydrate report.
-fn restart_and_restore(
-    kind_id: u32,
-    store: Arc<dyn busbar_api::Store>,
-) -> (TaskTestHarness, Rehydrated) {
-    let h = TaskTestHarness::restart(kind_id, store.clone());
+/// Opens a fresh registry (empty working set) over the unchanged durable store, reads the persisted
+/// rows back, and returns the fresh harness + the rehydrate report.
+fn restart_and_restore(store: Arc<dyn busbar_api::Store>) -> (TaskTestHarness, Rehydrated) {
+    let h = TaskTestHarness::restart(store.clone());
     let out = h
-        .host(|host| {
-            h.reg.restore_from_store(
-                host,
-                busbar_core::plane::store::PlaneStoreView::narrow(store).as_ref(),
-                crate::a2a::task::readable_row,
-            )
-        })
+        .reg
+        .restore_from_store(
+            busbar_substrate::plane::store::PlaneStoreView::narrow(store).as_ref(),
+            crate::a2a::task::readable_row,
+        )
         .expect("rehydrate must succeed");
     (h, out)
 }
@@ -322,14 +296,13 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
 
-    let kind_id = {
+    {
         let h1 = process_one(handle.clone());
         assert_eq!(h1.reg.len(), 2, "process 1 holds both tasks");
-        h1.kind_id()
         // h1 dropped here — THE RESTART. Every byte of in-memory state is gone from here on.
-    };
+    }
 
-    let (h2, rehydrated) = restart_and_restore(kind_id, handle.clone());
+    let (h2, rehydrated) = restart_and_restore(handle.clone());
     let reg2 = &h2.reg;
 
     assert_eq!(rehydrated.active, 2, "both in-flight tasks came back");
@@ -375,12 +348,11 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
 #[test]
 fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
     let store = ram_default();
-    let kind_id = {
+    {
         let h1 = process_one(store.clone());
         assert_eq!(h1.reg.len(), 2, "process 1 holds both tasks IN RAM");
-        h1.kind_id()
-    };
-    let (h2, rehydrated) = restart_and_restore(kind_id, store.clone());
+    }
+    let (h2, rehydrated) = restart_and_restore(store.clone());
     let reg2 = &h2.reg;
     assert_eq!(
         rehydrated,
@@ -401,22 +373,20 @@ fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
 fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let kind_id = process_one(handle.clone()).kind_id();
+    process_one(handle.clone());
 
     let seq_before = handle.list_task_events("t-paused").unwrap().len() as u64;
     assert!(seq_before >= 4, "process 1 wrote a real chain");
 
-    let (h2, _) = restart_and_restore(kind_id, handle.clone());
+    let (h2, _) = restart_and_restore(handle.clone());
 
     let resumed = h2
-        .host(|host| {
-            h2.reg.transition(
-                host,
-                "t-paused",
-                "req-resume",
-                crate::a2a::task::plan_transition(TaskState::Working, NOW + 100),
-            )
-        })
+        .reg
+        .transition(
+            "t-paused",
+            "req-resume",
+            crate::a2a::task::plan_transition(TaskState::Working, NOW + 100),
+        )
         .expect("the caller supplied the required auth on the same contextId");
     assert_eq!(resumed.state, "working");
 
@@ -433,7 +403,7 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
         "resuming from an interrupt is its own event kind, not a plain `working`"
     );
     assert_eq!(
-        busbar_core::plane::taskstore::verify_task_event_rows(&events),
+        crate::taskstore::verify_chain(&events),
         Ok(()),
         "the chain verifies across the restart boundary"
     );
@@ -454,7 +424,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let n = h
         .reg
         .verify_task_chain(
-            busbar_core::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -469,7 +439,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let brk = h
         .reg
         .verify_task_chain(
-            busbar_core::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
         )
         .unwrap()
@@ -478,7 +448,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     assert!(
         matches!(
             brk.kind,
-            busbar_core::audit::ChainBreakKind::DigestMismatch { .. }
+            crate::taskstore::ChainBreakKind::DigestMismatch { .. }
         ),
         "an in-place edit is a digest mismatch, got {:?}",
         brk.kind
@@ -528,7 +498,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
         store.tamper_event("t-paused", 2, edit);
         h.reg
             .verify_task_chain(
-                busbar_core::plane::store::PlaneStoreView::narrow(handle).as_ref(),
+                busbar_substrate::plane::store::PlaneStoreView::narrow(handle).as_ref(),
                 "t-paused",
             )
             .expect("verify reads")
@@ -576,10 +546,10 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
 fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let kind_id = process_one(handle.clone()).kind_id();
+    process_one(handle.clone());
     store.tamper_event("t-paused", 1, |e| e.principal = "someone-else".to_string());
 
-    let (h2, out) = restart_and_restore(kind_id, handle.clone());
+    let (h2, out) = restart_and_restore(handle.clone());
     let reg2 = &h2.reg;
 
     assert_eq!(out.active, 2, "both tasks are still restored");
@@ -647,28 +617,23 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
-    h.host(|host| {
-        reg.transition(
-            host,
-            "t-work",
-            "req-1",
-            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
-        )
-        .expect("t-work completes");
-        assert!(
-            reg.evict_terminal(host, "t-work"),
-            "a terminal task may be evicted"
-        );
-        assert!(
-            !reg.evict_terminal(host, "t-paused"),
-            "an ACTIVE task may NOT be evicted — evicting it loses its chain position and the next \
-             event would open a SECOND chain at seq 1 under the same task id"
-        );
-    });
+    reg.transition(
+        "t-work",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+    )
+    .expect("t-work completes");
+    assert!(
+        reg.evict_terminal("t-work"),
+        "a terminal task may be evicted"
+    );
+    assert!(
+        !reg.evict_terminal("t-paused"),
+        "an ACTIVE task may NOT be evicted — evicting it loses its chain position and the next \
+         event would open a SECOND chain at seq 1 under the same task id"
+    );
 
-    let removed = h
-        .host(|host| reg.compact(host, NOW + 1_000))
-        .expect("compact");
+    let removed = reg.compact(NOW + 1_000).expect("compact");
     assert_eq!(removed, 1, "exactly the completed task was collected");
     assert!(
         handle.get_task("t-work").unwrap().is_none(),
@@ -693,15 +658,12 @@ fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footpri
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
-    h.host(|host| {
-        reg.transition(
-            host,
-            "t-work",
-            "req-1",
-            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
-        )
-        .expect("t-work completes");
-    });
+    reg.transition(
+        "t-work",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+    )
+    .expect("t-work completes");
     assert_eq!(reg.len(), 2);
     assert_eq!(
         reg.chain_positions(),
@@ -712,16 +674,13 @@ fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footpri
     // A submit at age == TTL sweeps nothing: expiry is STRICTLY past the window (as MCP's), so the
     // settled task is still pollable for the whole of it.
     let inside = NOW + 10 + ttl_secs;
-    h.host(|host| {
-        reg.submit(
-            host,
-            &Task::submitted("t-early", "ctx-c", "key-3", Direction::Inbound, inside)
-                .unwrap()
-                .to_row(),
-            "req-3",
-        )
-        .expect("submit t-early");
-    });
+    reg.submit(
+        &Task::submitted("t-early", "ctx-c", "key-3", Direction::Inbound, inside)
+            .unwrap()
+            .to_row(),
+        "req-3",
+    )
+    .expect("submit t-early");
     assert!(
         reg.get_unscoped("t-work").is_some(),
         "inside the TTL the terminal task is still readable"
@@ -729,16 +688,13 @@ fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footpri
     assert_eq!(reg.len(), 3);
 
     // One second later the window has passed: the next submit evicts it, and ONLY it.
-    h.host(|host| {
-        reg.submit(
-            host,
-            &Task::submitted("t-late", "ctx-d", "key-4", Direction::Inbound, inside + 1)
-                .unwrap()
-                .to_row(),
-            "req-4",
-        )
-        .expect("submit t-late");
-    });
+    reg.submit(
+        &Task::submitted("t-late", "ctx-d", "key-4", Direction::Inbound, inside + 1)
+            .unwrap()
+            .to_row(),
+        "req-4",
+    )
+    .expect("submit t-late");
     assert!(
         reg.get_unscoped("t-work").is_none(),
         "the expired terminal task left the working set"
@@ -773,24 +729,21 @@ fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
     let reg = &h.reg;
     // Far past every TTL, so the fill also proves age ALONE never evicts a live task.
     let late = NOW + ttl_secs * 10;
-    h.host(|host| {
-        for i in 0..cap {
-            reg.submit(
-                host,
-                &Task::submitted(
-                    format!("t-fill-{i:05}"),
-                    "ctx-f",
-                    "key-f",
-                    Direction::Inbound,
-                    late,
-                )
-                .unwrap()
-                .to_row(),
-                "req-f",
+    for i in 0..cap {
+        reg.submit(
+            &Task::submitted(
+                format!("t-fill-{i:05}"),
+                "ctx-f",
+                "key-f",
+                Direction::Inbound,
+                late,
             )
-            .expect("submit fill");
-        }
-    });
+            .unwrap()
+            .to_row(),
+            "req-f",
+        )
+        .expect("submit fill");
+    }
     assert_eq!(
         reg.len(),
         cap + 2,
@@ -804,23 +757,19 @@ fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
     assert!(reg.get_unscoped("t-work").is_some());
 
     // Settle ONE task; the next submit's sweep is over the cap and collects exactly it.
-    h.host(|host| {
-        reg.transition(
-            host,
-            "t-work",
-            "req-1",
-            crate::a2a::task::plan_transition(TaskState::Completed, late + 1),
-        )
-        .expect("t-work completes");
-        reg.submit(
-            host,
-            &Task::submitted("t-one-more", "ctx-g", "key-g", Direction::Inbound, late + 2)
-                .unwrap()
-                .to_row(),
-            "req-g",
-        )
-        .expect("submit one more");
-    });
+    reg.transition(
+        "t-work",
+        "req-1",
+        crate::a2a::task::plan_transition(TaskState::Completed, late + 1),
+    )
+    .expect("t-work completes");
+    reg.submit(
+        &Task::submitted("t-one-more", "ctx-g", "key-g", Direction::Inbound, late + 2)
+            .unwrap()
+            .to_row(),
+        "req-g",
+    )
+    .expect("submit one more");
     assert!(
         reg.get_unscoped("t-work").is_none(),
         "the one terminal task was collected to make room"
@@ -844,20 +793,17 @@ fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
 fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let kind_id = {
+    {
         let h1 = process_one(handle.clone());
-        h1.host(|host| {
-            h1.reg.transition(
-                host,
+        h1.reg
+            .transition(
                 "t-work",
                 "req-1",
                 crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
             )
-        })
-        .unwrap();
-        h1.kind_id()
-    };
-    let (h2, out) = restart_and_restore(kind_id, handle.clone());
+            .unwrap();
+    }
+    let (h2, out) = restart_and_restore(handle.clone());
     let reg2 = &h2.reg;
     assert_eq!(out.active, 1);
     assert_eq!(out.terminal, 1);
@@ -879,13 +825,13 @@ fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
 fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let kind_id = process_one(handle.clone()).kind_id();
+    process_one(handle.clone());
     // A row written by a hypothetical newer engine carrying a state this binary does not know.
     let mut row = handle.get_task("t-work").unwrap().unwrap();
     row.state = "nearly-done".to_string();
     handle.put_task(&row).unwrap();
 
-    let (_h2, out) = restart_and_restore(kind_id, handle.clone());
+    let (_h2, out) = restart_and_restore(handle.clone());
     assert_eq!(out.unreadable, 1, "the row is COUNTED");
     assert_eq!(out.active, 1, "and the readable one still came back");
 }
@@ -933,7 +879,7 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
             &self,
             record: &busbar_api::PlaneRecord,
         ) -> busbar_api::StoreResult<()> {
-            self.put_task(&busbar_core::plane::store::decode(&record.body)?)
+            self.put_task(&TaskRow::from_body(&record.body)?)
         }
     }
 
@@ -950,8 +896,8 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
     let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW)
         .unwrap()
         .to_row();
-    let err = h
-        .host(|host| reg.submit(host, &task, "req-1"))
+    let err = reg
+        .submit(&task, "req-1")
         .expect_err("a submit that cannot be persisted must not report success");
     assert!(err.to_string().contains("disk is full"), "{err}");
     assert_eq!(
@@ -972,7 +918,8 @@ fn the_artifact_cursor_never_moves_backwards() {
     let before = handle.list_task_events("t-paused").unwrap().len();
 
     let same = h
-        .host(|host| h.reg.advance_cursor(host, "t-paused", 3, NOW + 50, "req-2"))
+        .reg
+        .advance_cursor("t-paused", 3, NOW + 50, "req-2")
         .unwrap();
     assert_eq!(same.artifact_cursor, 7, "a rewind is refused, not applied");
     assert_eq!(
@@ -982,7 +929,8 @@ fn the_artifact_cursor_never_moves_backwards() {
     );
 
     let forward = h
-        .host(|host| h.reg.advance_cursor(host, "t-paused", 9, NOW + 51, "req-2"))
+        .reg
+        .advance_cursor("t-paused", 9, NOW + 51, "req-2")
         .unwrap();
     assert_eq!(forward.artifact_cursor, 9);
 }
@@ -993,7 +941,7 @@ fn the_artifact_cursor_never_moves_backwards() {
 fn a_push_callback_survives_the_restart_with_its_task() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let kind_id = {
+    {
         let h1 = process_one(handle.clone());
         h1.reg
             .set_push_callback(
@@ -1002,9 +950,8 @@ fn a_push_callback_survives_the_restart_with_its_task() {
                 NOW + 6,
             )
             .unwrap();
-        h1.kind_id()
-    };
-    let (h2, _) = restart_and_restore(kind_id, handle.clone());
+    }
+    let (h2, _) = restart_and_restore(handle.clone());
     // Read the neutral row back through the codec, the way an A2A caller does — `Task.push_callback`
     // is the `Option<String>` projection of the row's `String` field.
     let restored = Task::from_row(&h2.reg.get_scoped("key-2", "t-paused").unwrap())
@@ -1020,23 +967,20 @@ fn a_push_callback_survives_the_restart_with_its_task() {
 fn a_mutation_against_an_unknown_task_is_refused() {
     let h = TaskTestHarness::over(ram_default());
     let reg = &h.reg;
-    h.host(|host| {
-        for e in [
-            reg.transition(
-                host,
-                "nope",
-                "r",
-                crate::a2a::task::plan_transition(TaskState::Working, NOW),
-            )
-            .map(|_| ()),
-            reg.record_dispatch(host, "nope", "a", NOW, "r").map(|_| ()),
-            reg.advance_cursor(host, "nope", 1, NOW, "r").map(|_| ()),
-            reg.set_push_callback("nope", None, NOW).map(|_| ()),
-        ] {
-            let err = e.expect_err("an unknown task id must be refused");
-            assert!(err.to_string().contains("no such task"), "{err}");
-        }
-    });
+    for e in [
+        reg.transition(
+            "nope",
+            "r",
+            crate::a2a::task::plan_transition(TaskState::Working, NOW),
+        )
+        .map(|_| ()),
+        reg.record_dispatch("nope", "a", NOW, "r").map(|_| ()),
+        reg.advance_cursor("nope", 1, NOW, "r").map(|_| ()),
+        reg.set_push_callback("nope", None, NOW).map(|_| ()),
+    ] {
+        let err = e.expect_err("an unknown task id must be refused");
+        assert!(err.to_string().contains("no such task"), "{err}");
+    }
     assert_eq!(reg.len(), 0, "and nothing was created");
 }
 
@@ -1047,27 +991,23 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
-    h.host(|host| {
-        h.reg.transition(
-            host,
+    h.reg
+        .transition(
             "t-work",
             "r",
             crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
         )
-    })
-    .unwrap();
+        .unwrap();
     let events_before = handle.list_task_events("t-work").unwrap();
     let row_before = handle.get_task("t-work").unwrap().unwrap();
 
     let err = h
-        .host(|host| {
-            h.reg.transition(
-                host,
-                "t-work",
-                "r",
-                crate::a2a::task::plan_transition(TaskState::Working, NOW + 11),
-            )
-        })
+        .reg
+        .transition(
+            "t-work",
+            "r",
+            crate::a2a::task::plan_transition(TaskState::Working, NOW + 11),
+        )
         .expect_err("terminal is terminal");
     assert!(err.to_string().contains("illegal task transition"), "{err}");
     assert_eq!(handle.list_task_events("t-work").unwrap(), events_before);
@@ -1133,21 +1073,18 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
-    let view = busbar_core::plane::store::PlaneStoreView::narrow(handle.clone());
+    let view = busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone());
 
     // t-work last moved at NOW+1, t-paused at NOW+4. A submit at NOW+4+abandon puts t-work
     // strictly PAST the ceiling and t-paused exactly AT it — one sweep, both bounds pinned.
     let at1 = NOW + 4 + abandon;
-    h.host(|host| {
-        reg.submit(
-            host,
-            &Task::submitted("t-mid", "ctx-m", "key-m", Direction::Inbound, at1)
-                .unwrap()
-                .to_row(),
-            "req-m",
-        )
-        .expect("submit t-mid");
-    });
+    reg.submit(
+        &Task::submitted("t-mid", "ctx-m", "key-m", Direction::Inbound, at1)
+            .unwrap()
+            .to_row(),
+        "req-m",
+    )
+    .expect("submit t-mid");
     let work = reg
         .get_unscoped("t-work")
         .expect("abandonment TRANSITIONS; it never drops");
@@ -1186,16 +1123,13 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
     // past the window, the next submit evicts it — while t-mid (active, far younger than the
     // abandonment ceiling) is untouched.
     let at2 = at1 + ttl_secs + 1;
-    h.host(|host| {
-        reg.submit(
-            host,
-            &Task::submitted("t-late", "ctx-l", "key-l", Direction::Inbound, at2)
-                .unwrap()
-                .to_row(),
-            "req-l",
-        )
-        .expect("submit t-late");
-    });
+    reg.submit(
+        &Task::submitted("t-late", "ctx-l", "key-l", Direction::Inbound, at2)
+            .unwrap()
+            .to_row(),
+        "req-l",
+    )
+    .expect("submit t-late");
     assert!(
         reg.get_unscoped("t-work").is_none(),
         "after the terminal TTL the abandoned-then-canceled task left the working set"

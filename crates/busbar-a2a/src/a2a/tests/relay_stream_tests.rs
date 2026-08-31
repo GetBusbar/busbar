@@ -19,7 +19,7 @@
 use super::relay_harness::*;
 use crate::a2a::relay::{read_event, SseReader};
 use crate::a2a::task::TaskState;
-use busbar_core::plane::store::StoreNamedTestExt;
+use crate::taskstore::TaskStoreTestExt;
 
 /// A streaming envelope: `message/stream`, which is what makes `TaskShape::requires_streaming` true
 /// and therefore what makes the ingress take the streaming hop.
@@ -364,7 +364,7 @@ async fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_t
 
     // The engine is `TaskRow`-neutral; read it back through the codec for the `TaskState` assertions.
     let task = crate::a2a::task::Task::from_row(
-        &busbar_core::plane::taskstore::TASKS
+        &crate::taskstore::TASKS
             .get_unscoped(&id)
             .expect("the task exists"),
     )
@@ -406,7 +406,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         .unwrap_or_default()
         .to_string();
     assert_eq!(
-        busbar_core::plane::taskstore::TASKS
+        crate::taskstore::TASKS
             .get_unscoped(&first)
             .map(|t| t.state),
         Some("auth-required".to_string())
@@ -434,7 +434,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
     // are no persisted events, which is the documented product contract rather than a defect.
     let events = h.gov.store().list_task_events(&first).unwrap_or_default();
     if !events.is_empty() {
-        busbar_core::plane::taskstore::verify_task_event_rows(&events)
+        crate::taskstore::verify_chain(&events)
             .expect("the chain verifies across a resume");
         assert!(
             events
@@ -594,7 +594,7 @@ async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let task = busbar_core::plane::taskstore::TASKS
+    let task = crate::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task exists");
     assert_eq!(
@@ -709,16 +709,14 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
 
     // A FRESH REGISTRY, the way a restart gets one, rehydrated from the SAME store the running
     // deployment wrote through to.
-    let fresh = busbar_core::plane::taskstore::TaskRegistry::new();
+    let fresh = crate::taskstore::TaskRegistry::new();
     let store = h.gov.store();
-    let rehydrated = busbar_core::plane::taskstore::with_global_task_host(|host| {
-        fresh.restore_from_store(
-            host,
+    let rehydrated = fresh
+        .restore_from_store(
             busbar_substrate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
             crate::a2a::task::readable_row,
         )
-    })
-    .expect("the rehydrate completes");
+        .expect("the rehydrate completes");
 
     if rehydrated.active == 0 {
         // THE RAM DEFAULT. Nothing survives, and saying so is the truth being reported rather than
@@ -777,7 +775,7 @@ async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
     // The caller's handle comes off the STREAM, which is the only place it appears — and reading it
     // there is itself the assertion that every streamed event carries busbar's task identity.
     let id = first_task_id(&body).expect("the stream names busbar's task id");
-    let task = busbar_core::plane::taskstore::TASKS
+    let task = crate::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the streamed task exists");
     assert_eq!(

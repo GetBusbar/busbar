@@ -30,7 +30,7 @@
 
 use super::relay_harness::*;
 use crate::taskstore::{event_ledger::EventLedger, TASKS, TASKS_SINK_LOCK};
-use busbar_core::provenance;
+use busbar_substrate::audit::vocab as provenance;
 use std::sync::Arc;
 
 /// Attach a fresh ledger to the process-wide registry, hand it back, and hold the lock that keeps

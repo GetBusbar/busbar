@@ -881,6 +881,47 @@ impl TaskTestHarness {
     }
 }
 
+/// TEST-ONLY NAMED-VOCABULARY STORE EXTENSION — the plane-side twin of the former neutral
+/// `busbar_core::plane::store::StoreNamedTestExt`, relocated here with the task subsystem. It exists
+/// only so the plane's own batteries read/write the `task`/`task_event` streams through terse named
+/// methods (`put_task`/`get_task`/`list_task_events`) rather than restating the generic
+/// `PlaneRecord`-kind calls at every site, byte-identically to the neutral path. A test double that
+/// keeps its own typed map provides INHERENT methods of the same names, which win method resolution
+/// over this blanket impl, while a bare `dyn Store` resolves here.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
+pub trait TaskStoreTestExt: busbar_api::Store {
+    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
+        self.upsert_plane_record(&task.to_plane_record()?)
+    }
+    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
+        self.get_plane_record(KIND_TASK, task_id)?
+            .map(|b| TaskRow::from_body(&b))
+            .transpose()
+    }
+    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+        self.list_plane_records(KIND_TASK, &PlaneSelector::All)?
+            .iter()
+            .map(|b| TaskRow::from_body(b))
+            .collect()
+    }
+    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
+        self.purge_plane_records_before(KIND_TASK, before)
+    }
+    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+        self.append_plane_record(&event.to_plane_record()?)
+    }
+    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        self.list_plane_records(KIND_TASK_EVENT, &TaskEventRow::parent_selector(task_id))?
+            .iter()
+            .map(|b| TaskEventRow::from_body(b))
+            .collect()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<T: busbar_api::Store + ?Sized> TaskStoreTestExt for T {}
+
 /// THE READ-BACK HALF, shared by every battery that asserts on this chain — the durable-sink test
 /// double, relocated here with the task subsystem so the batteries that attach it to the process-wide
 /// [`TASKS`] name one home.

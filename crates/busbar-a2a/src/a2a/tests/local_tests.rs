@@ -22,7 +22,7 @@
 
 use super::super::local::{self, Dialect, LocalVerb};
 use super::super::task::{Direction, Task, TaskState};
-use busbar_core::plane::taskstore::TASKS;
+use crate::taskstore::TASKS;
 
 // ══ HELPERS ══════════════════════════════════════════════════════════════════════════════════════
 
@@ -47,21 +47,14 @@ fn epoch() -> u64 {
 fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now: u64) {
     let task = Task::submitted(task_id, context_id, principal, Direction::Inbound, now)
         .expect("a task with these fields is constructible");
-    busbar_core::plane::taskstore::with_global_task_host(|host| {
+    TASKS
+        .submit(&task.to_row(), task_id)
+        .expect("the row records");
+    if state != TaskState::Submitted {
         TASKS
-            .submit(host, &task.to_row(), task_id)
-            .expect("the row records");
-        if state != TaskState::Submitted {
-            TASKS
-                .transition(
-                    host,
-                    task_id,
-                    task_id,
-                    crate::a2a::task::plan_transition(state, now),
-                )
-                .expect("the transition is legal");
-        }
-    });
+            .transition(task_id, task_id, crate::a2a::task::plan_transition(state, now))
+            .expect("the transition is legal");
+    }
 }
 
 /// A neutral `EngineHost` over a bare app. The three task-store reads/writes these verbs go through
@@ -1260,7 +1253,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     crate::testkit::install_test_seams();
     // A sink is attached to the process-wide TASKS below, so the one lock every sink-attaching
     // test takes is held for the duration (see `taskstore::TASKS_SINK_LOCK`).
-    let _guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let _guard = crate::taskstore::TASKS_SINK_LOCK.lock().await;
     let me = "key-push-delfail";
     open(
         me,

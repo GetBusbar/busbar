@@ -657,10 +657,10 @@ pub(super) async fn harness_full(
         }
     }
     let app = builder.build();
-    // The front door writes the A2A task chain through the process-wide `task_event` stream; this
-    // harness does not boot through `a2a_hydrate`, so register that stream once (no-sink; this
-    // harness's store is the RAM default and keeps nothing) so `submit`/`transition` mint sequences.
-    busbar_core::plane::taskstore::ensure_global_task_stream_registered();
+    // The front door writes the A2A task chain through the process-wide `TASKS` registry; the plane
+    // owns it now and mints each chain's `seq`/`prev_hash` on `submit`/`transition` regardless of any
+    // attached sink (this harness does not boot through `a2a_hydrate` and keeps nothing durable), so
+    // there is no longer a process-wide stream to register here.
 
     let plane = crate::a2a::runtime_arc(&app).expect("the plane exists");
     plane.with_registrations_mut(|regs| {

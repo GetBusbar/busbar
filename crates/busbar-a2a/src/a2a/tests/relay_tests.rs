@@ -28,7 +28,7 @@
 //! is the confused-deputy section at the bottom, and it would be satisfied by a relay that violates
 //! rule one and vice versa. Both hold; neither implies the other.
 
-use busbar_core::plane::store::StoreNamedTestExt;
+use crate::taskstore::TaskStoreTestExt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 
@@ -287,7 +287,7 @@ async fn the_backends_reply_comes_back_under_busbars_own_task_identity() {
     );
 
     // And the task busbar recorded ended where the backend said it ended.
-    let task = busbar_core::plane::taskstore::TASKS
+    let task = crate::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
     // The engine is `TaskRow`-neutral; `state` is the canonical token string.
@@ -310,7 +310,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
         id.starts_with("a2a-planner-"),
         "the refusal must name the task busbar opened so the caller can correlate it: {body}"
     );
-    let task = busbar_core::plane::taskstore::TASKS
+    let task = crate::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
     assert_eq!(
@@ -345,7 +345,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     if events.is_empty() {
         return;
     }
-    busbar_core::plane::taskstore::verify_task_event_rows(&events)
+    crate::taskstore::verify_chain(&events)
         .expect("the per-task chain verifies");
     assert!(
         events
@@ -647,7 +647,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
     // restored.
     let id = task_named_by(&body);
     assert!(!id.is_empty(), "the refusal must name the task: {body}");
-    let task = busbar_core::plane::taskstore::TASKS
+    let task = crate::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task exists");
     assert_ne!(
@@ -979,7 +979,7 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
         "the refusal must still name the task: {body}"
     );
     assert_eq!(
-        busbar_core::plane::taskstore::TASKS
+        crate::taskstore::TASKS
             .get_unscoped(&id)
             .expect("the task exists")
             .state,
