@@ -237,7 +237,7 @@ pub(crate) fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     // this whole section exists to remove.
     if let Some(n) = ir
         .extra
-        .get(busbar_core::proto::openai_family::MESSAGE_NAMES_SENTINEL)
+        .get(busbar_substrate::proto::MESSAGE_NAMES_SENTINEL)
         .and_then(|v| v.as_object())
         .map(serde_json::Map::len)
     {

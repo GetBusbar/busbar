@@ -5,12 +5,9 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
-// The core-CONSUMED openai-family helpers (`bearer_error_code`/`openai_context_length_prose_scan`
-// reach `crate::proxy::KIND_*`/`crate::breaker`) and the openai-family dialect consts stay in core.
-use busbar_core::proto::openai_family::{
-    bearer_error_code, openai_context_length_prose_scan, OPENAI_FAMILY_DEFAULT_MODEL,
-    OPENAI_FAMILY_MAX_OPEN_TOOLS,
-};
+// The openai-family error helpers (`bearer_error_code`/`openai_context_length_prose_scan`) now live
+// in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
+use busbar_substrate::proto::{bearer_error_code, openai_context_length_prose_scan};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
 #[cfg(test)]
@@ -171,6 +168,19 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
 /// overflow the `usize` cast or the addition. Chosen as the highest valid 0-based index (127).
 const MAX_TOOL_INDEX: u64 = 127;
 
+/// Fallback model name when a cross-protocol request carries none. The Chat-Completions and
+/// Responses writers are two wire formats of the SAME provider family, so this value is
+/// deliberately identical and MUST stay in lockstep — single-sourced here (`busbar-llm`, the plane
+/// that owns the OpenAI family) and referenced by both modules. If the two protocols ever genuinely
+/// diverge, split it back out at that point. (Relocated UP from `busbar-core`, which had no
+/// production user of it.)
+pub(crate) const OPENAI_FAMILY_DEFAULT_MODEL: &str = "gpt-4o";
+
+/// DoS cap on concurrently-tracked open tool-call accumulators per stream. Matches OpenAI's
+/// documented parallel-tool-call limit (128). Single-sourced here so Chat Completions and
+/// Responses cannot drift. (Relocated UP from `busbar-core`, which had no production user of it.)
+pub(crate) const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
+
 /// Hard cap on the number of DISTINCT tool-call indices we track per stream (`open_tools`). Bounds
 /// per-request memory and the number of synthesized BlockStart events against a pathological backend
 /// emitting unbounded unique indices. Matches OpenAI's documented parallel-tool-call limit (128).
@@ -208,11 +218,10 @@ const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 /// never collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MESSAGE_EXTRAS_SENTINEL: &str = "__busbar_openai_message_extras";
 
-// `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` —
-// lives in `busbar_core::proto::openai_family` (NOT here), because core's own `ir/variant.rs`
-// names it in the generic cross-protocol dropped-keys warn and core cannot name a protocol crate.
-// See that module for the full rationale.
-use busbar_core::proto::openai_family::MESSAGE_NAMES_SENTINEL;
+// `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` — lives
+// in the neutral `busbar_substrate::proto` leaf (core's `ir/variant.rs` names it there in the generic
+// cross-protocol dropped-keys warn); read it there so this plugin names no `busbar-core` path.
+use busbar_substrate::proto::MESSAGE_NAMES_SENTINEL;
 
 // ── OpenAI wire-format named constants ──────────────────────────────────────
 //

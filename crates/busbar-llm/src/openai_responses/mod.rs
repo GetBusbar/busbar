@@ -5,8 +5,9 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-// `bearer_error_code` (reaches `crate::proxy::KIND_*`) and `CODE_INVALID_API_KEY` stay in core.
-use busbar_core::proto::openai_family::{bearer_error_code, CODE_INVALID_API_KEY};
+// `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
+// so this plugin names no `busbar-core` implementation path for them.
+use busbar_substrate::proto::{bearer_error_code, CODE_INVALID_API_KEY};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
 #[cfg(test)]
@@ -132,14 +133,14 @@ const MAX_OUTPUT_INDEX: usize = 127;
 /// omits `model` fails a strict Pydantic/Zod decoder — and a real `/v1/responses` endpoint never
 /// omits it, making the omission a distinguishability tell. On any cross-protocol path
 /// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
-/// than dropping the key. Mirrors `openai_family.rs::OPENAI_FAMILY_DEFAULT_MODEL`.
-const DEFAULT_MODEL: &str = busbar_core::proto::openai_family::OPENAI_FAMILY_DEFAULT_MODEL;
+/// than dropping the key. Mirrors `openai_chat::OPENAI_FAMILY_DEFAULT_MODEL`.
+const DEFAULT_MODEL: &str = super::openai_chat::OPENAI_FAMILY_DEFAULT_MODEL;
 
 /// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
 /// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
 /// pathological backend that emits a unique `output_index` per event (a per-connection amplification
-/// DoS). Matches `openai_family.rs::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
-const MAX_OPEN_TOOLS: usize = busbar_core::proto::openai_family::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+/// DoS). Matches `openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
+const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
 
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
 /// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
