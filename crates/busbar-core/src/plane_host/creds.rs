@@ -102,6 +102,19 @@ pub(crate) fn mint(secret: Vec<u8>, expires_unix: u64, now_unix: u64) -> u64 {
     resolved_ref
 }
 
+/// TEST ONLY: drop every mint and rewind the ref counter, so a test body starts from clean global
+/// state. The registry and `NEXT_REF` are process-global, so parallel test bodies otherwise share
+/// them; the creds tests hold [`tests::TEST_GUARD`] across their body and call this at entry so no
+/// other test's mint (or, critically, its mint-time SWEEP under a different fake clock) can perturb
+/// what this test observes. NOT compiled into production — it never mutates a live registry.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    let mut reg = registry();
+    reg.map.clear();
+    reg.next_sweep_len = SWEEP_MIN_LEN;
+    NEXT_REF.store(1, Ordering::Relaxed);
+}
+
 /// TEST ONLY: is `resolved_ref` physically present in the registry map? Distinct from [`resolve`]
 /// (which answers `None` for expired-but-still-held entries): the retention tests need to see
 /// whether the SWEEP removed an entry, not whether resolution would refuse it.

@@ -4,9 +4,28 @@
 //! Tests for `crates/busbar-core/src/plane_host/creds.rs`.
 
 use super::*;
+use std::sync::{Mutex, MutexGuard};
+
+/// The registry and `NEXT_REF` are process-global, so `cargo test`'s parallel runner would let these
+/// bodies interleave on the ONE shared map. That is not benign here: [`mint`]'s amortized SWEEP
+/// evicts every entry expired at the MINTING caller's clock, and these tests deliberately mint under
+/// wildly different fake clocks (900, 0, 5_000). A sweep fired by the `now = 5_000` retention test
+/// would drop another test's still-live-at-its-own-clock mint, so a concurrent `resolve` sees `None`
+/// — the exact intermittent `left == right` / `right: Some(..)` flake. Each test holds this guard for
+/// its whole body (serialising them) and calls [`reset_for_test`] at entry, so every body runs
+/// against a clean, private global. This is test-only isolation; production `creds.rs` is untouched.
+static TEST_GUARD: Mutex<()> = Mutex::new(());
+
+/// Serialise this test against the others and hand it a freshly reset global registry.
+fn isolated() -> MutexGuard<'static, ()> {
+    let guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    reset_for_test();
+    guard
+}
 
 #[test]
 fn mint_then_resolve_returns_plaintext_then_expires() {
+    let _guard = isolated();
     let r = mint(b"tok-abc".to_vec(), 1_000, 900);
     assert_ne!(r, 0, "a live ref is nonzero");
     assert_eq!(
@@ -25,6 +44,7 @@ fn mint_then_resolve_returns_plaintext_then_expires() {
 
 #[test]
 fn zero_and_unknown_refs_resolve_to_none() {
+    let _guard = isolated();
     assert_eq!(
         resolve(0, 0),
         None,
@@ -39,6 +59,7 @@ fn zero_and_unknown_refs_resolve_to_none() {
 
 #[test]
 fn distinct_mints_get_distinct_refs() {
+    let _guard = isolated();
     let a = mint(b"a".to_vec(), 10, 0);
     let b = mint(b"b".to_vec(), 10, 0);
     assert_ne!(a, b, "each mint is a fresh opaque ref");
@@ -52,6 +73,7 @@ fn an_unexpired_ref_resolves_repeatedly_until_expiry() {
     // expiry), and a plane failover legitimately re-opens an egress carrying the same still-live
     // ref. A one-shot resolve would make that second open inject NOTHING — an unauthenticated
     // request going out silently — rather than failing closed.
+    let _guard = isolated();
     let r = mint(b"tok".to_vec(), 1_000, 900);
     assert_eq!(resolve(r, 950), Some(b"tok".to_vec()), "first resolve");
     assert_eq!(
@@ -66,9 +88,9 @@ fn a_never_resolved_expired_mint_is_swept_by_a_later_mint() {
     // THE UNBOUNDED-GROWTH REGRESSION PIN: a ref that is minted and never carried into
     // `egress_open` must not live past its expiry just because nothing ever looked it up again.
     // Mint one expired entry, then enough further mints to cross any plausible amortization
-    // watermark (the registry is process-global and shared with concurrently running tests, so the
-    // assertions are one-sided: the sweep may only REMOVE expired entries, never resurrect or
-    // touch live ones — extra concurrent mints can only trigger it earlier).
+    // watermark. This body runs isolated (guard + reset), so it owns the global registry outright:
+    // the sweep may only REMOVE entries expired at this test's clock, never touch the one live mint.
+    let _guard = isolated();
     let now = 5_000_u64;
     let stale = mint(b"stale-secret".to_vec(), now - 1, now);
     assert!(
