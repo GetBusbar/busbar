@@ -210,8 +210,10 @@ impl RawPlaneSection {
 /// `*Section` newtype takes when its `#[serde(default)]` field is ABSENT. A plane compiled out has no
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
-fn default_plane_section(key: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.default_section) {
+fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
+    match crate::plane::registry::plane_decl_for_config_section(config_section)
+        .and_then(|d| d.default_section)
+    {
         Some(f) => f(),
         None => Box::new(RawPlaneSection::default()),
     }
@@ -223,14 +225,16 @@ fn default_plane_section(key: &str) -> Box<dyn PlaneCfg> {
 /// `de::Error::custom`, so it rides the SAME `from_str::<DeployCfg>` channel a typed field's parse
 /// error rode — the operator sees the plane's own sentence, byte-identical bar any `at line` suffix.
 fn deserialize_plane_section<'de, D>(
-    key: &str,
+    config_section: &str,
     deserializer: D,
 ) -> Result<Box<dyn PlaneCfg>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.parse_section) {
+    match crate::plane::registry::plane_decl_for_config_section(config_section)
+        .and_then(|d| d.parse_section)
+    {
         Some(parse) => parse(&value).map_err(serde::de::Error::custom),
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
@@ -243,7 +247,7 @@ where
 /// `parse_endpoint` seam hook — the twin of [`deserialize_plane_section`] for the one plane section
 /// that is an endpoint rather than a registry. Compiled out ⇒ raw capture, refused at `resolve`.
 fn deserialize_plane_endpoint<'de, D>(
-    key: &str,
+    config_section: &str,
     deserializer: D,
 ) -> Result<Option<Box<dyn PlaneEndpointCfg>>, D::Error>
 where
@@ -253,7 +257,9 @@ where
     if value.is_null() {
         return Ok(None);
     }
-    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.parse_endpoint) {
+    match crate::plane::registry::plane_decl_for_config_section(config_section)
+        .and_then(|d| d.parse_endpoint)
+    {
         Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
         None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
     }
@@ -267,7 +273,7 @@ pub(crate) struct ToolsSection(pub(crate) Box<dyn PlaneCfg>);
 
 impl Default for ToolsSection {
     fn default() -> Self {
-        ToolsSection(default_plane_section("mcp"))
+        ToolsSection(default_plane_section(NamedMapSection::Tools.key()))
     }
 }
 impl<'de> serde::Deserialize<'de> for ToolsSection {
@@ -275,7 +281,7 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("mcp", deserializer).map(ToolsSection)
+        deserialize_plane_section(NamedMapSection::Tools.key(), deserializer).map(ToolsSection)
     }
 }
 
@@ -286,7 +292,7 @@ pub(crate) struct AgentsSection(pub(crate) Box<dyn PlaneCfg>);
 
 impl Default for AgentsSection {
     fn default() -> Self {
-        AgentsSection(default_plane_section("a2a"))
+        AgentsSection(default_plane_section(NamedMapSection::Agents.key()))
     }
 }
 impl<'de> serde::Deserialize<'de> for AgentsSection {
@@ -294,7 +300,7 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("a2a", deserializer).map(AgentsSection)
+        deserialize_plane_section(NamedMapSection::Agents.key(), deserializer).map(AgentsSection)
     }
 }
 
@@ -309,7 +315,10 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_endpoint("mcp", deserializer).map(McpEndpointSection)
+        // The endpoint door is owned by the `tools:` plane, so it is keyed by that CONFIG SECTION —
+        // no plane key is named here.
+        deserialize_plane_endpoint(NamedMapSection::Tools.key(), deserializer)
+            .map(McpEndpointSection)
     }
 }
 

@@ -4646,23 +4646,32 @@ pub fn resolve(
         crate::failover::CandidatePoolCfg,
     > = std::collections::BTreeMap::new();
     {
+        // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
+        // grammar key (`crate::config::named_map::NamedMapSection::key`), used as OPAQUE DATA. The
+        // router never names a plane: `tools:` routes to the tool-pool projection, `agents:` to the
+        // agent-pool one, and the residual `models:` section stays on the LLM lane. Reading the
+        // discriminant off the section table (rather than a hard-coded plane key) is what lets a
+        // registered plane's pools route with nothing about that plane written here.
+        use crate::config::named_map::NamedMapSection;
+        let tools_section = NamedMapSection::Tools.key();
+        let agents_section = NamedMapSection::Agents.key();
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
                 return Some(crate::plane::RESIDUAL_KEY);
             }
-            // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off
-            // no name resolves to an MCP server (a `tools:` section is refused earlier).
+            // The `tools:` noun exists only when its plane is compiled in; with `plane-mcp` off
+            // no name resolves there (a `tools:` section is refused earlier).
             #[cfg(feature = "plane-mcp")]
             if deploy.tools.0.contains_def(name) {
-                return Some("mcp");
+                return Some(tools_section);
             }
-            // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off
-            // no name resolves to an agent (an `agents:` section is refused earlier).
+            // The `agents:` noun exists only when its plane is compiled in; with `plane-a2a` off
+            // no name resolves there (an `agents:` section is refused earlier).
             #[cfg(feature = "plane-a2a")]
             if deploy.agents.0.contains_def(name) {
-                return Some("a2a");
+                return Some(agents_section);
             }
             None
         };
@@ -4700,7 +4709,7 @@ pub fn resolve(
                 continue;
             }
             match kind {
-                Some("mcp") => {
+                Some(k) if k == tools_section => {
                     tool_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
@@ -4710,7 +4719,7 @@ pub fn resolve(
                     );
                     non_llm.push(pool_name.clone());
                 }
-                Some("a2a") => {
+                Some(k) if k == agents_section => {
                     agent_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
@@ -4932,28 +4941,29 @@ pub fn resolve(
     if let Err(e) = deploy.tools.0.validate_registry() {
         errors.push(e);
     }
-    // With the MCP plane compiled out, a `tools:` section names MCP servers this build cannot reach:
-    // refuse it (the config deletion-gate leg) rather than silently ignore an operator's registry.
+    // With this plane compiled out, a present `tools:` section names a registry this build cannot
+    // serve: refuse it (the config deletion-gate leg), naming the SECTION (its plane-declared grammar
+    // key) rather than a hard-coded plane, rather than silently ignore an operator's registry.
     #[cfg(not(feature = "plane-mcp"))]
     if deploy.tools.0.is_present() {
-        errors.push(
-            "tools: is configured, but this build was compiled without the MCP plane (feature \
-             `plane-mcp` is off), so busbar cannot reach any MCP server. Rebuild with the MCP plane \
-             enabled, or remove the `tools:` block."
-                .to_string(),
-        );
+        let section = crate::config::named_map::NamedMapSection::Tools.key();
+        errors.push(format!(
+            "`{section}:` is configured, but this build was compiled without the plane that owns \
+             it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove \
+             the `{section}:` block."
+        ));
     }
-    // With the A2A plane compiled out, an `agents:` section names agents this build cannot register
-    // or delegate to: refuse it (the config deletion-gate leg), naming the compiled-out plane,
-    // exactly as `tools:`/`mcp:` are refused with the MCP plane off.
+    // With this plane compiled out, a present `agents:` section names a registry this build cannot
+    // serve: refuse it (the config deletion-gate leg), naming the SECTION rather than a hard-coded
+    // plane, exactly as `tools:`/the endpoint block are refused with their plane off.
     #[cfg(not(feature = "plane-a2a"))]
     if deploy.agents.0.is_present() {
-        errors.push(
-            "agents: is configured, but this build was compiled without the A2A plane (feature \
-             `plane-a2a` is off), so busbar cannot register or delegate to any agent. Rebuild with \
-             the A2A plane enabled, or remove the `agents:` block."
-                .to_string(),
-        );
+        let section = crate::config::named_map::NamedMapSection::Agents.key();
+        errors.push(format!(
+            "`{section}:` is configured, but this build was compiled without the plane that owns \
+             it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove \
+             the `{section}:` block."
+        ));
     }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
@@ -5009,7 +5019,14 @@ pub fn resolve(
     let mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = match deploy.mcp.0.as_ref() {
         None => None,
         Some(ep) => {
-            match crate::plane::registry::plane_decl_for("mcp").and_then(|d| d.lower_endpoint) {
+            // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
+            // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
+            // deletion-gate refusal below.
+            match crate::plane::registry::plane_decl_for_config_section(
+                crate::config::named_map::NamedMapSection::Tools.key(),
+            )
+            .and_then(|d| d.lower_endpoint)
+            {
                 Some(lower) => match lower(&**ep) {
                     Ok(resource) => Some(resource),
                     Err(e) => {
@@ -5020,9 +5037,9 @@ pub fn resolve(
                 None => {
                     if ep.is_present() {
                         errors.push(
-                            "mcp: is configured, but this build was compiled without the MCP plane (feature \
-                             `plane-mcp` is off), so busbar cannot serve an MCP endpoint. Rebuild with the MCP \
-                             plane enabled, or remove the `mcp:` block."
+                            "an endpoint block is configured for a plane this build was compiled \
+                             without, so busbar cannot serve it. Rebuild with that plane's feature \
+                             enabled, or remove the block."
                                 .to_string(),
                         );
                     }

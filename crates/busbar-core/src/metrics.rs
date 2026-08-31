@@ -555,7 +555,7 @@ fn describe() {
     );
     describe_counter!(
         PLANE_REQUESTS_TOTAL,
-        "Total mounted-plane (MCP/A2A) requests, by plane, ingress protocol, pool, and outcome"
+        "Total mounted-plane requests, by plane, ingress protocol, pool, and outcome"
     );
     describe_counter!(
         UPSTREAM_ATTEMPTS_TOTAL,
@@ -598,7 +598,7 @@ fn describe() {
     describe_histogram!(
         PLANE_REQUEST_DURATION_SECONDS,
         Unit::Seconds,
-        "End-to-end mounted-plane (MCP/A2A) request duration in seconds, by plane"
+        "End-to-end mounted-plane request duration in seconds, by plane"
     );
     // Scrape-time gauges.
     describe_gauge!(

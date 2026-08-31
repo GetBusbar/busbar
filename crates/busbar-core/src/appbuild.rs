@@ -1403,8 +1403,8 @@ pub fn build_app_from_config(
     };
 
     // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT
-    // companion key (`crate::state::MCP_RUNTIME_SLOT`), distinct from the plane's decl key (`"mcp"`,
-    // whose slot is config-conditional and drives the dispatch door). Built ONCE through the plane's
+    // companion key (`crate::state::MCP_RUNTIME_SLOT`), distinct from the plane's decl key,
+    // whose slot is config-conditional and drives the dispatch door. Built ONCE through the plane's
     // own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
     // `PlaneCfg::as_any`) so this composition names no `crate::mcp` runtime type. It bundles the
     // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
@@ -1415,16 +1415,23 @@ pub fn build_app_from_config(
     // keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and the
     // config that produced it never disagree. With `plane-mcp` off there is no built-in decl, so no
     // slot is inserted and nothing downcasts it (no MCP accessor exists then).
-    if let Some(runtime_slot) = crate::plane::registry::plane_decl_for("mcp")
-        .and_then(|d| d.build_runtime)
-        .map(|f| {
+    if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
+        crate::config::named_map::NamedMapSection::Tools.key(),
+    )
+    .and_then(|d| {
+        d.build_runtime
+            .map(|f| (crate::state::runtime_slot_key(d.key), f))
+    })
+    .map(|(slot_key, f)| {
+        (
+            slot_key,
             f(
                 cfg.tool_defs.as_any(),
                 prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
-            )
-        })
-    {
-        plane_slots.insert(crate::state::runtime_slot_key("mcp"), runtime_slot);
+            ),
+        )
+    }) {
+        plane_slots.insert(slot_key, runtime_slot);
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
@@ -1464,8 +1471,10 @@ pub fn build_app_from_config(
                 .mcp
                 .as_ref()
                 .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for("mcp")
-                        .and_then(|d| (d.admission)(slot.as_ref()))
+                    crate::plane::registry::plane_decl_for_config_section(
+                        crate::config::named_map::NamedMapSection::Tools.key(),
+                    )
+                    .and_then(|d| (d.admission)(slot.as_ref()))
                 })
                 .map(|adm| adm.audience)
                 .into_iter()
@@ -1602,7 +1611,7 @@ pub fn build_app_from_config(
         // downcasts it back in `crate::a2a::agent_cfg`.
         agent_defs: cfg.agent_defs.clone_arc_any(),
         // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
-        // field any more: it lives solely in `plane_slots["a2a"]` (built once by `PlaneDecl::build`),
+        // field any more: it lives solely in its `plane_slots` entry (built once by `PlaneDecl::build`),
         // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which
         // downcast that slot inside the a2a module. So there is no `a2a:` initializer here and `App`
         // names no `crate::a2a` type for the runtime object. The A2A verify-on-call GATE and the
