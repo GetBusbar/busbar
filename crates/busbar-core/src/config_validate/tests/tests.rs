@@ -13,8 +13,8 @@ fn make_root_cfg(
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
-        // Not an MCP server.
-        mcp: None,
+        // No endpoint plane configured.
+        endpoint_resources: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,

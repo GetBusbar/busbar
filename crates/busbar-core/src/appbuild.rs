@@ -1367,11 +1367,15 @@ pub fn build_app_from_config(
             // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and
             // `crate::mcp::resource` downcasts back out inside the plane, so the "one lowering, one
             // Arc" invariant holds — the plane's own module is the only reader, through the slot.
-            // `cfg.mcp` is ALREADY the validated resource, erased as `Option<Arc<dyn Any>>` by
-            // config resolution — so the slot is a CLONE of that one opaque `Arc`, not a re-erasure,
-            // and names no `crate::mcp` type. `None` when `mcp:` is absent or the MCP plane is
-            // compiled out (resolve produced no resource then).
-            mcp_slot: cfg.mcp.clone(),
+            // The endpoint resource is ALREADY validated and erased as `Option<Arc<dyn Any>>` by
+            // config resolution, read here through the neutral SECTION-KEYED accessor (the `tools:`
+            // plane owns the endpoint door) — so the slot is a CLONE of that one opaque `Arc`, not a
+            // re-erasure, and names no plane resource type. `None` when the block is absent or the
+            // owning plane is compiled out (resolve produced no resource then).
+            mcp_slot: cfg
+                .endpoint_resources
+                .get(crate::config::named_map::NamedMapSection::Tools.key())
+                .cloned(),
             // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
             // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
             agent_defs: cfg.agent_defs.as_any(),
@@ -1454,8 +1458,8 @@ pub fn build_app_from_config(
             // plane is compiled out (no built-in decl, hence no admission, so the deployment protects
             // no MCP audience).
             let protected_resources: Vec<String> = cfg
-                .mcp
-                .as_ref()
+                .endpoint_resources
+                .get(crate::config::named_map::NamedMapSection::Tools.key())
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
                         crate::config::named_map::NamedMapSection::Tools.key(),

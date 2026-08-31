@@ -395,12 +395,14 @@ pub struct RootCfg {
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
     pub public_url: Option<String>,
-    /// The VALIDATED MCP resource (`mcp:`), type-erased as `Arc<dyn Any>`, or `None` when this
-    /// deployment is not an MCP server. Lowered and refused at boot by the plane's `lower_endpoint`
-    /// seam hook (the MCP plane's `McpResource::from_cfg`), so core names no plane resource type and
-    /// nothing downstream re-parses the canonical URI or re-derives the mount path. The plane's own
-    /// module downcasts it back to its concrete resource.
-    pub mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// The VALIDATED per-plane endpoint resources, keyed by the owning plane's CONFIG SECTION and
+    /// each type-erased as `Arc<dyn Any>`. Empty when no endpoint plane is configured. Each is lowered
+    /// and refused at boot by that plane's `lower_endpoint` seam hook, so core names no plane resource
+    /// type and nothing downstream re-parses the canonical URI or re-derives the mount path. The
+    /// plane's own module downcasts its entry back to its concrete resource; read it via
+    /// [`RootCfg::endpoint_resource`] keyed by the plane's config section — never a per-plane field.
+    pub(crate) endpoint_resources:
+        std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
@@ -503,6 +505,20 @@ pub struct RootCfg {
     /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
     /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
     pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+}
+
+impl RootCfg {
+    /// The VALIDATED endpoint resource for a plane, keyed by that plane's config `section`, or `None`
+    /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
+    /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
+    /// its concrete resource. This is the NEUTRAL, section-keyed read the composition root uses in
+    /// place of a per-plane field, mirroring `tool_defs`/`agent_defs` beside it.
+    pub fn endpoint_resource(
+        &self,
+        section: &str,
+    ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        self.endpoint_resources.get(section).cloned()
+    }
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -4994,41 +5010,58 @@ pub fn resolve(
     // `lower_endpoint` hook returns the SAME `McpCfgError` `Display` string boot produced, collected
     // verbatim. With the MCP plane compiled out there is no hook: a PRESENT `mcp:` block names a plane
     // this build does not carry, so it is refused (the config deletion-gate leg) with the same wording.
-    // plane-purity: frozen-wire the match below reads deploy.mcp, the frozen mcp: wire field on DeployCfg
-    let mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = match deploy.mcp.0.as_ref() {
-        None => None,
-        Some(ep) => {
-            // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
-            // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
-            // deletion-gate refusal below.
-            match crate::plane::registry::plane_decl_for_config_section(
-                crate::config::named_map::NamedMapSection::Tools.key(),
-            )
-            .and_then(|d| d.lower_endpoint)
-            {
-                Some(lower) => match lower(&**ep) {
-                    Ok(resource) => Some(resource),
-                    Err(e) => {
-                        errors.push(e);
-                        None
-                    }
-                },
-                None => {
-                    if ep.is_present() {
-                        errors.push(
+    // plane-purity: frozen-wire deploy.mcp is the frozen mcp: wire field on DeployCfg
+    let endpoint_block = deploy.mcp.0.as_ref();
+    let lowered_endpoint: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+        match endpoint_block {
+            None => None,
+            Some(ep) => {
+                // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
+                // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
+                // deletion-gate refusal below.
+                match crate::plane::registry::plane_decl_for_config_section(
+                    crate::config::named_map::NamedMapSection::Tools.key(),
+                )
+                .and_then(|d| d.lower_endpoint)
+                {
+                    Some(lower) => match lower(&**ep) {
+                        Ok(resource) => Some(resource),
+                        Err(e) => {
+                            errors.push(e);
+                            None
+                        }
+                    },
+                    None => {
+                        if ep.is_present() {
+                            errors.push(
                             "an endpoint block is configured for a plane this build was compiled \
                              without, so busbar cannot serve it. Rebuild with that plane's feature \
                              enabled, or remove the block."
                                 .to_string(),
                         );
+                        }
+                        None
                     }
-                    None
                 }
             }
-        }
-    };
+        };
 
-    // The `oauth_as:` block, validated HERE for the same reason `mcp:` is: an authorization server
+    // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
+    // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
+    // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
+    // key is the map key; a build compiled without that plane produced no resource and inserts none.
+    let mut endpoint_resources: std::collections::HashMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    > = std::collections::HashMap::new();
+    if let Some(resource) = lowered_endpoint {
+        endpoint_resources.insert(
+            crate::config::named_map::NamedMapSection::Tools.key(),
+            resource,
+        );
+    }
+
+    // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
     // whose issuer is malformed advertises endpoints at paths it does not serve, and every
     // conforming client discovers them and fails. A boot refusal names the field; a runtime one is
     // found by an agent that cannot log in and cannot say why.
@@ -5049,7 +5082,7 @@ pub fn resolve(
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
-            mcp,
+            endpoint_resources,
             oauth_as,
             tool_defs: deploy.tools.0.clone_box(),
             tool_pools: tool_pools_derived,

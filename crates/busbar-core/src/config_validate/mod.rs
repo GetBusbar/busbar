@@ -1015,17 +1015,25 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // for as long as nothing ever grants by default, and the day a default grant is introduced —
     // for any reason, anywhere else — an anonymous caller silently inherits it. The refusal is
     // about the CONFIGURATION being unstatable, which does not decay.
-    // plane-purity: frozen-wire the `if` below reads cfg.mcp, the frozen mcp: wire field on DeployCfg
-    if cfg.mcp.is_some() && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty()) {
-        errors.push(
-            "mcp: is configured but auth.chain is empty, which serves the MCP endpoint to \
-             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
-             runs with WILDCARD grants over every registered server and every approved tool. It \
+    // An endpoint plane present with no data-plane auth chain is refused. Read the endpoint through
+    // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
+    // so this neutral rule carries no plane token: the concrete noun ("MCP server", …) is
+    // registry-supplied at runtime, never a literal here.
+    let endpoint_section = crate::config::named_map::NamedMapSection::Tools.key();
+    if cfg.endpoint_resource(endpoint_section).is_some()
+        && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
+    {
+        let noun = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+            .map(|d| d.subject_noun)
+            .unwrap_or("endpoint");
+        errors.push(format!(
+            "an endpoint plane ({noun}) is configured but auth.chain is empty, which serves that \
+             endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by \
+             one, so it runs with WILDCARD grants over every registered subject on that plane. It \
              also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound \
-             credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth \
-             plugin), or remove the `mcp:` block if this deployment is not an MCP server."
-                .to_string(),
-        );
+             credentials to. Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth \
+             plugin), or remove that endpoint block if this deployment does not serve that plane."
+        ));
     }
 
     // Rule 5: Validate auth-block semantics. `auth.chain` is an ordered list of MODULE ENTRIES +
@@ -1131,8 +1139,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                          (a caller presents their own token, or an unauthenticated caller forwards an \
                          empty credential the provider rejects). The configured key is inert dead \
                          config. If you intended static-key gating, use upstream_credentials: own \
-                         (plus an auth chain); otherwise clear the referenced secret (Bedrock-ingress \
-                         passthrough signs per-request via SigV4 and needs no static key)."
+                         (plus an auth chain); otherwise clear the referenced secret (a passthrough \
+                         provider that signs each request per-call needs no static key)."
                     );
                 }
             }

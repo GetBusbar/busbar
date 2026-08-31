@@ -84,17 +84,18 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // `models` names a provider and a model id; the credential lives on the provider.
         models: _,
         pools: _,
-        // `mcp` carries NO credential, and the reason is checkable rather than asserted: all four of
-        // its fields — `canonical_uri`, `authorization_servers`, `scopes_supported`,
-        // `allowed_origins` — are published VERBATIM in the RFC 9728 protected-resource metadata
-        // document, which is served to unauthenticated callers by design. A secret cannot live in a
-        // struct whose every field is deliberately public. busbar is the RESOURCE server here: it
-        // VERIFIES tokens the operator's IdP mints and holds no issuing key of its own.
+        // The per-plane ENDPOINT RESOURCES carry NO credential, and the reason is checkable rather
+        // than asserted: an endpoint resource's fields — its canonical URI, authorization servers,
+        // supported scopes, allowed origins — are published VERBATIM in the RFC 9728 protected-resource
+        // metadata document, which is served to unauthenticated callers by design. A secret cannot live
+        // in a struct whose every field is deliberately public. busbar is the RESOURCE server here: it
+        // VERIFIES tokens the operator's IdP mints and holds no issuing key of its own. Each resource is
+        // type-erased as `Arc<dyn Any>` behind the neutral seam, so no `SecretRef` can be reached here
+        // even in principle.
         //
-        // This arm exists because B1 made omission impossible: adding `mcp:` to `RootCfg` FAILED TO
+        // This arm exists because B1 made omission impossible: adding the field to `RootCfg` FAILED TO
         // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
-        // Give `McpCfg` a `SecretRef`-typed field later and this breaks again, which is correct.
-        mcp: _, // plane-purity: frozen-wire exhaustive destructure of DeployCfg's frozen mcp: wire field
+        endpoint_resources: _,
         // `oauth_as:` DOES carry a `SecretRef` — the ES256 signing key — and it is walked below
         // rather than declined here. It is the one secret on that plane, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.
@@ -353,7 +354,7 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side `oauth_as:` block. `resolve` lowers it into `AsIdentity`, which \
              IS walked, and every `--validate`/boot check runs against the RESOLVED config. Same \
-             shape as `mcp:` → `McpResource`, and the same reason.",
+             shape as any endpoint plane's `resolve`-lowered resource, and the same reason.",
         ),
     ),
     (

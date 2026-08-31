@@ -1994,8 +1994,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
         tool_defs: crate::plane::config::ToolsSection::default().0,
-        // Not an MCP server.
-        mcp: None,
+        // No endpoint plane configured.
+        endpoint_resources: Default::default(),
         oauth_as: None,
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),

@@ -3485,8 +3485,8 @@ mod disposition_matrix_tests {
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
                 tool_defs: crate::plane::config::ToolsSection::default().0,
-                // Not an MCP server.
-                mcp: None,
+                // No endpoint plane configured.
+                endpoint_resources: Default::default(),
                 oauth_as: None,
                 agent_defs: crate::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
