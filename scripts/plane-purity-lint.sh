@@ -44,8 +44,8 @@
 # THE FROZEN-WIRE CARVE-OUT (the ONE documented exception — narrow, reviewable, per-line):
 #   The config grammar is FROZEN, additive-only, BYTE-IDENTICAL since 1.5.3, enforced by
 #   scripts/config-stability-gate.sh against the committed config-schema.snapshot.json. A handful of
-#   the KEY/TYPE tokens above are ALSO frozen external-wire config-grammar tokens that the neutral
-#   crate CANNOT stop naming without breaking that contract:
+#   the KEY/TYPE/DIALECT tokens above are ALSO frozen external-wire config-grammar tokens that the
+#   neutral crate CANNOT stop naming without breaking that contract:
 #     * the `mcp:` top-level WIRE KEY on `DeployCfg` — a 1.5.x operator's YAML carries `mcp:` and MUST
 #       parse byte-identically; renaming the field (even with `#[serde(rename="mcp")]`) still leaves
 #       the `mcp` token in source, and the snapshot records the wire key `mcp` verbatim.
@@ -53,6 +53,11 @@
 #       `type` of that field. Renaming it to anything plane-neutral is a config-schema RETYPE
 #       (`DeployCfg.mcp: field RETYPED …`) that the additive-only classifier fails RED and that a
 #       snapshot refresh CANNOT launder (the baseline is a git ref). PROVEN, not asserted.
+#     * the `anthropic` DIALECT literal in `config/mod.rs`'s `DEFAULT_PROTOCOL` — the value an
+#       omitted `protocol:` on a `providers.yaml` entry defaults to. The frozen config grammar has
+#       always resolved a protocol-less provider to `anthropic`; the default cannot be read off the
+#       (possibly-empty) protocol registry, so it is named as a frozen-wire literal. Changing it
+#       silently retargets every 1.5.x deployment whose YAML omits `protocol:`.
 #   These are genuine grammar tokens, not lazily-un-extracted vocabulary — Path 1 (eliminate the token
 #   while preserving the wire) is PROVABLY IMPOSSIBLE for them. So a neutral-source line may carry a
 #     // plane-purity: frozen-wire <reason tied to the frozen-config contract>
