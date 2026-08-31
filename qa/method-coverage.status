@@ -1,0 +1,858 @@
+# METHOD COVERAGE STATUS -- the only place a cell of qa/method-inventory.json may be declared
+# anything other than MISSING.
+#
+# Owner's ruling, 2026-08-12: "i want a customer to be able to do anything mcp says it can do and
+# anything a2a says it can do. so if thats calling 20 methods we need to support it. how internally
+# though doesnt matter. i want full alphabet coverage not just A-J. I want A-Z"
+#
+# Owner's ruling, 2026-08-14, which is why the waived section below is EMPTY and stays that way:
+# "100%, and the waiver list should stay empty." A recorded IMPOSSIBILITY -- a cell that cannot be
+# built without defecting from the specification, the conformance suite or a security property --
+# lives in qa/WAIVERS.md with a one-paragraph argument, enforced by the same gate that reads this
+# file. Anything less than impossible is either implemented here or owed in the missing file.
+#
+# THREE STATES PER CELL in THIS file, and there is no fourth:
+#
+#   implemented                          the cell works, and an instrument was watched saying so
+#   waived <YYYY-MM-DD> <reason>         deliberately absent, with a reason a customer could read
+#                                        (empty by the ruling above; impossibilities go to
+#                                        qa/WAIVERS.md, product decisions go back to the queue)
+#   (absent from this file)              MISSING -- and MISSING FAILS THE BUILD, unless the cell is
+#                                        a recorded impossibility in qa/WAIVERS.md
+#
+# FORMAT, following crates/busbar-core/src/config/config-schema.waivers, which is the house waiver
+# format and is this file's precedent:
+#
+#   - One entry per line:  <exact-cell-id> = implemented
+#                          <exact-cell-id> = waived <YYYY-MM-DD> <reason>
+#   - EXACT cell ids only. No globs. `*` or `?` is a hard error -- a wildcard waiver is how a
+#     whole transport disappears in one line.
+#   - A reason is MANDATORY on a waiver. `= waived 2026-08-12` with no text is a hard error.
+#   - A STALE entry (a cell id that is not in qa/method-inventory.json) is a hard error, so a
+#     method that the SDKs renamed cannot keep an entry that no longer excuses anything.
+#   - Blank lines and `#` comments are ignored.
+#
+# WHY A FILE AND NOT A CONSTANT IN THE TEST: a waiver here is a line in the PR diff, sitting next
+# to the obligation it excuses, dated, with the reasoning attached. That is the whole point.
+#
+# WHAT COUNTS AS A LEGITIMATE WAIVER. The PUSH-DELIVER precedent (goal D16): PUSH-DELIVER-001/002/
+# 003 stay red on purpose because the TCK's webhook receiver defaults to localhost and busbar's
+# SSRF guard correctly refuses it. A security control winning over a conformance score is a
+# legitimate waiver. "We ran out of time" is ALSO a legitimate waiver -- but only if it is written
+# down here, dated, with the customer-visible consequence spelled out.
+#
+# WHY THIS FILE STARTED EMPTY OF `implemented` LINES, and why it no longer is.
+# `crates/busbar-core/src/mcp/` and `crates/busbar-core/src/a2a/` are being deleted whole (goal D10) and
+# rebuilt cell by cell on the Protocol x Operation x Transport axes. Claiming a cell here on the
+# strength of code that is scheduled for deletion would be claiming coverage the release does not
+# have, so every cell began MISSING, the full list is pinned in qa/method-coverage.missing, and
+# THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has been
+# watched green on an instrument -- read the output, not the tick. The first cells to leave the
+# queue are the A2A plane's HTTP+JSON and gRPC server sides, below, and each one names the
+# requirement the publisher's own suite passed on that leg's parameterisation.
+
+# ---------------------------------------------------------------------------
+# implemented
+# ---------------------------------------------------------------------------
+
+# GetExtendedAgentCard / agent/getAuthenticatedExtendedCard, busbar as SERVER, over JSON-RPC.
+#
+# WHAT BUSBAR PUBLISHES, because for a gateway this is a design decision before it is a method.
+# The extended card is the AUTHENTICATED half of a two-tier split: the public card at the
+# well-known path is unauthenticated, so it enumerates no fronted agent at all, and this one names
+# exactly the agents THIS CALLER may invoke -- selected by `catalogue::inbound_catalogue`, which is
+# the same judgement that decides dispatch. So the card can never name an agent a submission would
+# refuse, and can never show one tenant another tenant's inventory. The naive implementation --
+# union every fronted agent's skills -- is a data-exposure bug rather than a conformance one, and
+# it is the reason this cell was called out as a decision rather than as unbuilt work.
+#
+# One skill per AGENT, identified by busbar's own agent id, and not the backends' own skills
+# merged: skill ids are upstream-authored and namespaced by nothing, so two vendors both declaring
+# `summarise` produce one id twice -- and `card::skill_digests` REFUSES a card with a duplicate
+# skill id, so a peer applying to busbar the rule busbar applies to everyone else would reject
+# busbar's own card outright.
+#
+# INSTRUMENT. `scripts/a2a-subject/boot.sh` drives the verb over the real wire with a real
+# audience-bound credential, in BOTH live spellings of the name, and asserts the entitled agent is
+# named and the backend authority is not. That is the instrument because the official suite cannot
+# be one here: CORE-CAP-003 only runs when the capability is ABSENT, and CARD-EXT-002 skips itself
+# the moment the card is configured, so a busbar that answers this perfectly and one that answers
+# it with garbage produce identical TCK output.
+a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
+
+# PushNotificationDelivery, busbar as SERVER, over HTTP+JSON -- the outbound POST to a caller's
+# webhook. (The JSON-RPC and gRPC columns are N/A with a reason: there is no delivery rpc.)
+#
+# Two things were owed and missing, and both are built. The config's `authentication` was DROPPED
+# at registration -- the durable row held one URL string, the verbs echoed `{id, url}`, and the
+# delivery sent `content-type` and nothing else -- so a customer whose webhook authenticates could
+# not use push notifications at all. It is now stored and presented as `<scheme> <credentials>` on
+# the `Authorization` header. And the delivered body was a BARE Task where the protocol defines a
+# `StreamResponse`; the specification's own validator rejected every busbar delivery, and the same
+# document nested under `"task"` validates.
+#
+# INSTRUMENT: `a2a/tests/pushdeliver_tests.rs` (the header, the envelope, the withdrawal, and the
+# secret not outliving the task) and `a2a/tests/relay_stream_tests.rs`, which drives a real task to
+# completion and reads what went on the wire.
+#
+# THE THREE TCK MUSTs STAY RED, and that is recorded rather than laundered.
+# PUSH-DELIVER-001/002/003 fail because the suite's own webhook receiver is plaintext `http://` by
+# literal and busbar refuses a plaintext callback before it looks at the address -- the owner's
+# ruling, recorded in testing/a2a-tck/WAIVERS.md. This cell is claimed on the capability, which is
+# owed to every customer whose webhook is https, and NOT on those three going green. Conformance
+# being unobservable here is not permission to leave the capability unbuilt, and it is not
+# permission to claim the three either.
+a2a|http+json|server|server|PushNotificationDelivery = implemented
+
+# ── AND THE ROWS THIS FILE LOST IN A MERGE, RESTORED. ────────────────────────────────────────────
+#
+# The three blocks above and the one below arrived on two branches. The merge that brought them
+# together kept every PROSE block and dropped twelve of the ROWS they were written about, so
+# `pinned_missing_set_is_exact` read twelve cells as having regressed into MISSING while their
+# evidence sat right here. The rows are restored verbatim from the commit that earned them
+# (`c63c966a`, `bba2709a`); nothing new is claimed.
+
+# A2A's HTTP+JSON BINDING, SERVER SIDE. busbar receives these over `POST /a2a/message:send`,
+# `POST /a2a/message:stream`, `GET /a2a/tasks`, `GET /a2a/tasks/{id}`, `POST /a2a/tasks/{id}:cancel`,
+# `POST /a2a/tasks/{id}:subscribe` and the `pushNotificationConfigs` collection, and the card busbar
+# serves advertises the `HTTP+JSON` interface beside `JSONRPC`.
+#
+# THE INSTRUMENT IS THE PUBLISHER'S OWN SUITE, watched, not inferred. `scripts/a2a-subject/boot.sh
+# --tck` boots a busbar built from this commit and runs a2aproject/a2a-tck at its pinned ref against
+# it; the `http_json` transport row went from `3/83 (80 skipped)` to `84/96 (6 skipped)` and every
+# one of these operations has a named requirement passing on the `[http_json]` parameterisation:
+#
+#   SendMessage / SendStreamingMessage  CORE-HIST-001..004, CORE-STREAM-001..003
+#   GetTask                             CORE-HIST-002, CORE-HIST-004
+#   ListTasks                           CORE-LIST-001..005
+#   CancelTask                          CORE-CANCEL-001..003
+#   SubscribeToTask                     STREAM-SUB-002..004, STREAM-ORDER-001..004
+#   Create/Get/List/DeleteTaskPushNotificationConfig
+#                                       PUSH-CREATE-001/002, PUSH-GET-001/002, PUSH-LIST-001,
+#                                       PUSH-DEL-001/002
+#
+# WHAT IS DELIBERATELY NOT CLAIMED HERE, though its route exists:
+#   * `GetExtendedAgentCard` -- not claimed HERE, and the reason moved: this unit armed the routes,
+#     and the verb behind them landed separately. The JSON-RPC cell above is the one an instrument
+#     watched; the HTTP+JSON cell stays in the queue until one watches it there.
+#   * `PushNotificationDelivery` -- PUSH-DELIVER-001/002/003 still FAIL on BOTH bindings, for the
+#     documented SSRF reason. Arming a second binding does not change a security decision.
+#   * every `client` role cell -- busbar speaks JSON-RPC to the backends it fronts. This unit armed
+#     the SERVER side of the binding and nothing else.
+a2a|http+json|server|client|CancelTask = implemented
+a2a|http+json|server|client|CreateTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|DeleteTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|GetTask = implemented
+a2a|http+json|server|client|GetTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|ListTaskPushNotificationConfigs = implemented
+a2a|http+json|server|client|ListTasks = implemented
+a2a|http+json|server|client|SendMessage = implemented
+a2a|http+json|server|client|SendStreamingMessage = implemented
+a2a|http+json|server|client|SubscribeToTask = implemented
+
+# tools/call, busbar as CLIENT, over streamable-HTTP -- the outbound call to a registered upstream.
+# `obligation: issue`: busbar originates this one, so the evidence has to be what busbar PUT ON THE
+# WIRE, not what it accepted.
+#
+# THE INSTRUMENT, AND WHY IT IS A NEW ONE. `testing/mcp-conformance/src/suites/client-role.mjs` has
+# fourteen CLI.* scenarios and every one of them skipped whenever `ctx.target.hasClientRole` was
+# false, which `src/core/target.mjs` derives from whether a `clientLaunch` was configured. Nothing
+# configured one, so THOSE FOURTEEN HAD NEVER RUN AGAINST BUSBAR -- while `187 passed, 0 failed`
+# read as a verdict on "busbar implements MCP". It was a verdict on the SERVER role and silent about
+# the other half, which is the same shape of false green as a disarmed leg. The leg is armed in
+# `scripts/mcp-conformance.sh` by `scripts/mcp-subject/client-arm.sh`, against a busbar booted from
+# THIS COMMIT -- never a deployment, for the settled reason that a gate depending on one produces a
+# green meaning "the deployment was fine yesterday" and a red meaning "somebody redeployed".
+#
+# WHAT THE INSTRUMENT SHOWED, read off the fake server's own transcript of busbar's bytes:
+#
+#   client.methodsUsed        ["tools/call"]        -- the one method busbar issues, see below
+#   client.protocolVersions   ["2026-07-28"]        -- on every request, in params._meta
+#   client.declaredCapabilities []                  -- the honest empty set: busbar answers nothing
+#   client.idType             "number", reusedIds [] -- non-null, unique while in flight
+#
+# and twelve of the thirteen push/pr scenarios PASS, plus CLI.HOSTILE.GIANT-RESULT at prerelease.
+# The nine hostile ones are the load-bearing half: against a peer that opens an unsolicited
+# server-initiated request, closes stdout mid-frame, never answers at all, answers with an id nobody
+# asked for, asks for a password in a form-mode elicitation, asks for a capability busbar never
+# declared, swaps a schema between discovery and invocation, lies about its own outputSchema, or
+# advertises a `javascript:` icon URI, busbar answers none of it, leaks none of it, and gives up on
+# its own deadline rather than hanging.
+#
+# THE ONE THAT IS RED IS NOT THIS CELL, AND IT IS NOT LAUNDERED HERE.
+# `CLI.CACHE.TOLERATES-ABSENT-HINTS` fails, by name, because it needs the client to have called
+# `tools/list` and busbar did not call it inside any window this rig can drive: busbar's outbound
+# `tools/list` lives on the trust-refresh path (`mcp/connect.rs`), fired by a scheduled tick or an
+# operator verb, not by the front-door dispatch the driver triggers. THIS instrument therefore says
+# nothing about the client-side `tools/list` cell. It was NOT moved to a waiver to make a number go
+# green, and the rig was NOT taught to poke the admin refresh verb to manufacture the request -- a
+# driver arranged to produce the observation the test wants is not an observation. That cell is
+# claimed further down, on the instrument that DOES drive the trust-refresh path
+# (`connect_tests.rs`, `drift_dispatch_tests.rs`), and the two statements are consistent: one rig
+# cannot see it, another one can.
+#
+# THE CELL ITSELF IS CLAIMED ONCE, in the client-role block below, beside `tools/list`. A second
+# claim here is what `pinned_missing_set_is_exact` calls "claimed twice", and it was one: two
+# branches recorded the same cell on two instruments and both rows survived the merge that brought
+# them together. The evidence above is kept, because it is real and it is about this cell; only the
+# duplicate ROW is gone.
+
+# AND ONE THING THAT LANDED WITHOUT CLAIMING A CELL, RECORDED SO THAT ITS ABSENCE HERE IS NOT READ
+# AS AN OVERSIGHT. `resources/subscribe`, `resources/unsubscribe`,
+# `notifications/tools/list_changed` and `notifications/resources/updated` now exist as real code on
+# the protocol x operation matrix, on the specification authors' own crate's types. That is the
+# CODEC: it reads those bytes and it writes them, in either direction, and its tests are the wire
+# contract. It is NOT the capability, and the difference is the whole reason a cell is claimed on an
+# instrument rather than on a diff:
+#
+#   * the served MCP endpoint still answers those four names -32601, because the deployed surface is
+#     stateless -- no session, no server-to-client stream -- and a subscription with no channel to be
+#     notified over is a promise that would never be kept. Advertising it would be worse for a
+#     customer than refusing it, because a client would wait rather than fall back;
+#   * so a customer cannot yet do this, and a cell says a customer can.
+#
+# The cell was therefore MISSING and its line stayed in qa/method-coverage.missing, which was the
+# correct state. What was left was the channel and the admission, not the vocabulary.
+#
+# ALL FOUR OF THOSE NAMES ARE NOW DECIDED, and the note above is kept rather than deleted because
+# what it describes -- a codec that reads and writes the right bytes over an endpoint that answers
+# -32601 -- is the exact shape a reader has to be able to recognise, and the shape this file exists
+# to stop being mistaken for coverage. The four went four different ways, which is itself the point:
+#
+#   * `resources/subscribe` and `resources/unsubscribe` are RECORDED IMPOSSIBILITIES, argued in
+#     qa/WAIVERS.md: the revision removed them and the official suite asserts they answer -32601,
+#     so serving them is the defect;
+#   * `notifications/tools/list_changed` is IMPLEMENTED, because the channel it needed --
+#     `subscriptions/listen` -- is now served and the notification reaches a client over it;
+#   * `notifications/resources/updated` is OWED WORK, pinned in qa/method-coverage.missing. Its old
+#     waiver argued a capability narrowing, and per the owner's 2026-08-14 ruling a narrowing is a
+#     decision, not an impossibility -- the client leg already handles an upstream's
+#     `notifications/resources/updated`, so an upstream-events relay is design work, not magic.
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+# MCP, busbar as SERVER, over STREAMABLE-HTTP — the whole column, decided cell by cell.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# THE ONE FACT THAT DECIDES HALF OF THIS COLUMN, and it is not a matter of taste: revision
+# `2026-07-28` (SEP-2575) is STATELESS. It deleted the `initialize` handshake, protocol sessions,
+# the standalone GET stream and `Last-Event-ID` resumability, and it deleted the methods that only
+# meant anything inside a session. The official suite does not merely tolerate their absence — it
+# REQUIRES it. `server-stateless` posts `initialize`, `ping`, `logging/setLevel`,
+# `resources/subscribe` and `resources/unsubscribe` and asserts each answers HTTP 404 with JSON-RPC
+# `-32601`, and `logging-set-level` and `ping` are scenarios marked `removedIn: 2026-07-28` and are
+# not run at this revision at all.
+#
+# So for those methods, on this transport, IMPLEMENTING THEM IS THE DEFECT. A busbar that answered
+# `initialize` would fail the conformance gate for doing it. They are waived below with that as the
+# reason, because "we chose not to build it" and "the specification removed it and the referee
+# checks that we did not build it" are different facts and only one of them is a gap.
+#
+# WHAT REPLACED THE CHANNEL, because "no GET stream" is not "no server-to-client messages" and
+# reading it that way is what left four notification names in the tree as a codec with nothing to
+# carry them. The revision MOVED the channel from a transport verb onto a method:
+# `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications.
+# That method is now built (`crates/busbar-mcp/src/mcp/subscribe.rs`), and it is what makes the
+# list-changed notifications below claimable rather than merely spellable.
+#
+# AND THE OTHER HALF OF THE SERVER-ORIGINATED SURFACE travels a second way that is also not a
+# stream: `elicitation/create`, `sampling/createMessage` and `roots/list` are asked by RETURNING an
+# `InputRequiredResult` whose `inputRequests` name them, which the caller answers by re-issuing the
+# request with `inputResponses`. busbar composes those from OPERATOR configuration alone
+# (`ask_caller:`), filters them by the capabilities the caller declared, and seals them with a
+# `requestState` busbar mints — see `crates/busbar-mcp/src/mcp/callerask.rs` for why an upstream's ask
+# can never become one of these.
+
+# ── THE CATALOGUE AND DISPATCH READS ───────────────────────────────────────────────────────────
+#
+# INSTRUMENT for all twelve: the official conformance suite, `--official-subject`, against a busbar
+# built from this commit and booted on loopback by `scripts/mcp-subject/boot.sh` with a real
+# audience-bound credential. Every one of these is the subject of at least one REQUIRED scenario of
+# revision `2026-07-28` — `tools-list`, the seven `tools-call-*`, `prompts-list`, the four
+# `prompts-get-*`, `resources-list`, `resources-read-text`, `resources-read-binary`,
+# `resources-templates-read`, `sep-2164-resource-not-found`, `completion-complete`,
+# `server-stateless` — and the leg is ARMED-OR-RED with set equality on the required scenario set,
+# so a run that quietly exercised fewer of them is a hard failure rather than a smaller number.
+mcp|streamable-http|server|client|server/discover = implemented
+mcp|streamable-http|server|client|tools/list = implemented
+mcp|streamable-http|server|client|tools/call = implemented
+mcp|streamable-http|server|client|prompts/list = implemented
+mcp|streamable-http|server|client|prompts/get = implemented
+mcp|streamable-http|server|client|resources/list = implemented
+mcp|streamable-http|server|client|resources/read = implemented
+mcp|streamable-http|server|client|resources/templates/list = implemented
+mcp|streamable-http|server|client|completion/complete = implemented
+
+# SEP-2663, the tasks extension: `tools/call` answered with a task, then polled and steered. THREE
+# methods and only three — `tasks/result` and `tasks/list` were REMOVED by the extension's v2 wire,
+# so their absence is what makes them answer `-32601`, which is conformant rather than a gap.
+# Advertised under `capabilities.extensions`, gated on the caller's own declaration (`-32021`, not
+# `-32601`: the surface exists, this caller has not asked for it).
+mcp|streamable-http|server|client|tasks/get = implemented
+mcp|streamable-http|server|client|tasks/update = implemented
+mcp|streamable-http|server|client|tasks/cancel = implemented
+
+# ── THE SERVER-TO-CLIENT CHANNEL ───────────────────────────────────────────────────────────────
+#
+# `subscriptions/listen`, and the four notifications that make it worth opening.
+#
+# WHAT THE VOCABULARY ALONE DOES NOT BUY. The wire types for these notifications existed while the
+# served endpoint answered `-32601` to every subscription verb, and that combination is worth naming
+# because it looks like coverage and is not: a subscription with no channel to be notified over is a
+# promise that would never be kept, and a client told it is subscribed will wait rather than fall
+# back. What makes these cells claimable is the CHANNEL and the ADMISSION, not the vocabulary.
+#
+# HOW IT WORKS, and the two properties that are security properties rather than features:
+#
+#   * THE ACKNOWLEDGEMENT IS A NARROWING. `notifications/subscriptions/acknowledged` carries the
+#     ACCEPTED subset of the requested filter, not a receipt for it. A client that asked for
+#     something busbar cannot deliver learns so on the first frame instead of waiting.
+#   * A CHANGE IS SCOPED TO THE CALLER WHO IS WATCHING. The pin generation moving is the cheap gate;
+#     what decides whether a stream is woken is a comparison of the catalogue THIS CALLER CAN SEE,
+#     under the same grant predicate that scopes `tools/list`. A registration this caller may not
+#     reach must not wake this caller's stream, because that leaks the existence of another tenant's
+#     inventory through timing.
+#
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/subscribe_tests.rs`, every case driven over a real socket
+# against a real router — the acknowledgement arriving first and carrying the subscription id, the
+# narrowing, the refusal of a subscription that could deliver nothing, a REAL catalogue change made
+# through `AppHandle::swap` (the same seam an admin apply and a config reload go through) waking an
+# OPEN stream, and a stream filtered to prompts not leaking a tool notification. Plus the official
+# suite's `server-stateless`, whose `ServerSendsSubscriptionAck`, `ServerTagsSubscriptionId` and
+# `ServerHonorsNotificationFilter` checks judge exactly these three properties and, before this
+# landed, could only skip themselves over a surface that answered `-32601`.
+mcp|streamable-http|server|client|subscriptions/listen = implemented
+mcp|streamable-http|server|server|notifications/subscriptions/acknowledged = implemented
+mcp|streamable-http|server|server|notifications/tools/list_changed = implemented
+mcp|streamable-http|server|server|notifications/prompts/list_changed = implemented
+mcp|streamable-http|server|server|notifications/resources/list_changed = implemented
+
+# ── `notifications/resources/updated`, EMITTED — the upstream-events relay (2026-08-15) ─────────
+#
+# The last queue item of the waivers-to-zero unit: "an upstream-events relay onto
+# subscriptions/listen's narrowed category." The category (`resourceSubscriptions`) was narrowed
+# away on the sentence "busbar fronts that upstream and is told nothing when a resource's contents
+# change", and that sentence stopped being true the day the client leg learned to read a peer's
+# `notifications/resources/updated` — busbar IS told, by the upstream's own announcement, with no
+# polling imposed on anybody. The two halves now meet on one bounded structure
+# (`mcp::client::pool::ResourceUpdates`): the HTTP and stdio client legs record `(server, uri)` —
+# the ONE payload field an untrusted peer's message gets to carry, length-capped and believed
+# nowhere — and every open listen stream reads it by its own cursor and relays.
+#
+# THREE GATES on every delivered event, each load-bearing: the subscriber ASKED for the uri (the
+# accepted list, itself narrowed at open to what the caller can see, so an acknowledgement never
+# confirms another tenant's inventory); the uri resolves under the subscriber's LIVE grant
+# (re-derived per poll, so a narrowed grant bites mid-stream); and the resolved resource belongs
+# to THE SERVER THAT ANNOUNCED it (an upstream cannot speak for another registration's inventory
+# by spelling its uri). `server/discover` flips `resources.subscribe` to `true` in the same
+# commit, because a declaration and a delivery must keep agreeing in both directions.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/subscribe_tests.rs` --
+#   an_upstream_resource_update_is_relayed_to_a_subscribed_stream (over a real socket),
+#   the_relay_filters_unasked_uris_and_refuses_another_servers_announcement,
+#   a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it (with control),
+#   an_unreachable_resource_subscription_is_narrowed_away_in_the_acknowledgement;
+# the client-leg recording halves are judged at THEIR carriers:
+#   http_peer_tests::only_the_catalogue_notifications_move_the_catalogue (exactly one of the nine
+#   notifications records, and it records the registered server id, not a peer-chosen name) and
+#   stdio_client_leg_tests::a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited.
+# Watched red first: with the relay short-circuited the central case fails on "the upstream
+# announced an update and the open subscription was not told".
+mcp|streamable-http|server|server|notifications/resources/updated = implemented
+
+# ── THE NOTIFICATIONS THAT RIDE A REQUEST'S OWN RESPONSE STREAM ────────────────────────────────
+#
+# Neither of these needs a subscription, and that is the revision's design rather than a shortcut:
+# with no session there is nowhere for a logging LEVEL to live and nowhere for a standing stream to
+# push over, so both became per-request. The level is named in the request's own `_meta` and the
+# records ride the response stream of the request they describe.
+#
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/sse_tests.rs` over a real socket, and the official
+# suite's `server-stateless` (`ServerNoLogWithoutLogLevel` asserts busbar emits NO
+# `notifications/message` for a request that named no level — the filter observed working rather
+# than asserted) and `tools-call-with-progress` (REQUIRED), which drives an upstream that reports
+# progress and reads what reached the caller. The progress frames are mapped back to the CALLER's
+# own token: busbar mints its own for the upstream leg, so relaying the upstream's spelling would be
+# uncorrelatable and relaying busbar's would leak an internal identifier.
+mcp|streamable-http|server|server|notifications/message = implemented
+mcp|streamable-http|server|server|notifications/progress = implemented
+
+# ── THE THREE ASKS BUSBAR MAKES OF ITS CALLER ──────────────────────────────────────────────────
+#
+# `elicitation/create`, `roots/list` and `sampling/createMessage`, issued as `inputRequests` on an
+# `InputRequiredResult`. Under a stateless revision that is HOW a server originates a request: there
+# is no standing stream to push one over, so the ask travels as a result and the answer travels as a
+# fresh request carrying `inputResponses` and the sealed `requestState`.
+#
+# `sampling/createMessage` IN THIS DIRECTION IS DELIBERATE AND IS NOT THE SAME QUESTION AS THE
+# CLIENT-DIRECTION ONE, which is claimed further down on its own instrument (the 2026-08-15
+# per-upstream-budget unit). Here busbar asks the CALLER's model to run a
+# completion on the CALLER's budget, in busbar's own name, from text an OPERATOR wrote — absent
+# unless the operator opted in, per capability, literal, and refused outright if filtering by the
+# caller's declared capabilities would empty the round (an ask that a caller could strip by
+# declaring no capabilities is a gate its own subject controls).
+#
+# INSTRUMENT: the official suite's `input-required-result-basic-elicitation`,
+# `-basic-sampling`, `-basic-list-roots` and the nine other `input-required-result-*` scenarios, all
+# REQUIRED at this revision and all driven against the `ask_caller:` registrations in
+# `scripts/mcp-subject/boot.sh`; plus `crates/busbar-mcp/src/mcp/tests/callerask_tests.rs`.
+mcp|streamable-http|server|server|elicitation/create = implemented
+mcp|streamable-http|server|server|roots/list = implemented
+mcp|streamable-http|server|server|sampling/createMessage = implemented
+
+# ── `notifications/roots/list_changed`, RECEIVED (2026-08-14, waiver-list-to-zero unit) ─────────
+#
+# The old waiver said "the answer is never stale enough to need invalidating", and that sentence
+# was one word too strong: inside a sealed `requestState`'s TTL window, a caller can redeem a roots
+# answer it gave BEFORE its roots changed. The notification is now the thing that ends that window
+# -- a per-principal roots epoch (`crate::mcp::roots`), bumped by the real ingress notification
+# arm, sealed into roots-bearing state at mint and compared at redemption. Scoped twice, and both
+# scopes are asserted: to the PRINCIPAL who announced (another tenant's announcement moves
+# nothing) and to ROOTS-BEARING state (a chatty client cannot void its own unrelated
+# confirmations).
+#
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/roots_changed_tests.rs` --
+#   roots_state_minted_before_a_roots_change_is_refused_after_it (with recovery: the restarted
+#   exchange dispatches on the caller's CURRENT roots),
+#   one_principals_roots_change_does_not_invalidate_anothers_state,
+#   a_roots_change_leaves_an_exchange_without_a_roots_ask_standing,
+#   the_same_name_with_an_id_is_a_request_and_moves_nothing.
+# Watched red first: with the epoch comparison disabled the central case fails on "a roots answer
+# the caller itself disavowed must not be redeemed".
+mcp|streamable-http|server|client|notifications/roots/list_changed = implemented
+
+# ── MCP, busbar as CLIENT, over STREAMABLE-HTTP — the legs that are built ──────────────────────
+#
+# The rest of this column is still MISSING and is still in the work queue; what is claimed here is
+# only what a customer can do today. busbar's outbound MCP leg exists to FRONT a registered tool
+# server, so `tools/call` and `tools/list` are the two verbs it issues, and progress is the one
+# message it accepts back and relays.
+#
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/upstream_join_tests.rs` and `deputy_pair_tests.rs` drive
+# a REAL fake MCP peer and a REAL fake RFC 8693 token endpoint and read every byte that reached
+# them — including that the outbound credential was selected under the INBOUND caller's grant, which
+# is the confused-deputy defence for this direction and is only provable with both directions
+# mounted. `connect_tests.rs` and `drift_dispatch_tests.rs` drive the catalogue read. The in-house
+# conformance battery's six `pr`-tier seam tests drive the same leg against a HOSTILE HTTP peer
+# through the same front door, with `MCP_NO_SKIPS=1` so a skipped seam is red.
+mcp|streamable-http|client|client|tools/call = implemented
+mcp|streamable-http|client|client|tools/list = implemented
+
+# ── `roots/list`, ASKED BY AN UPSTREAM AND ANSWERED (2026-08-14, waiver-list-to-zero unit) ──────
+#
+# The old waiver's own text named the gap: "There is no roots policy in 1.6.0 for an operator to
+# declare one from." There is now: `tools.<server>.roots` -- per registration, `file://` only,
+# vetted at boot, refused at boot if declared behind a closed `grants.roots` gate. A granted
+# upstream ask (`InputRequiredResult` naming `roots/list`) is satisfied from that declaration and
+# from nothing else -- never busbar's own container filesystem -- and the retry carries MRTR's own
+# `inputResponses`/`requestState` continuation, with the `roots` client capability declared from
+# the FIRST request exactly when the deployment can honour it. Deny-by-default did not move: no
+# grant refuses naming the grant, a grant with no declaration refuses naming the key
+# (`Unsatisfiable` vs `Ungranted`, two remedies), and the ask terminates at busbar in every arm.
+#
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/roots_satisfy_tests.rs`, judged at the RECEIVING end of
+# a real loopback peer --
+#   a_granted_roots_ask_is_answered_with_the_operators_declared_roots,
+#   an_ungranted_roots_ask_is_still_refused_and_names_the_grant,
+#   a_granted_ask_with_no_declaration_refuses_and_names_the_key,
+#   the_roots_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says.
+# Watched red first: with the satisfier short-circuited to its old refusal the central case fails
+# on "the satisfied exchange must complete".
+mcp|streamable-http|client|server|roots/list = implemented
+
+# ── `sampling/createMessage`, ASKED BY AN UPSTREAM AND ANSWERED (2026-08-15) ────────────────────
+#
+# The queue's own text named the block: "a per-upstream sampling budget an operator can cap." There
+# is now: `tools.<server>.sampling` -- per registration, the roots policy's shape on the other
+# grant, vetted at boot, refused at boot if declared behind a closed `grants.sampling` gate or with
+# a zero on either ceiling. Its three required fields are the three axes of the spend: `model` (the
+# OPERATOR'S pool, never the ask's `modelPreferences` -- the payload is attacker-controlled and must
+# not pick which provider to spend on), `max_tokens` (the ask's own number is clamped to it, which
+# the protocol permits), and `max_requests_per_minute` (the per-upstream budget, spent BEFORE the
+# model leg and carried across config applies on App, so an apply cannot refill a runaway).
+#
+# A granted, declared ask is satisfied by ONE governed completion PER MAP ENTRY through
+# `ingress::operation_resolved` -- the SAME resolved core every arriving chat request enters, under
+# the INBOUND caller's own key, budget, pool ACL and hooks; there is no thinner side channel, and
+# the pool-ACL half is asserted (a caller whose key does not reach the declared pool is refused at
+# admission with the provider untouched). The retry carries the protocol's `CreateMessageResult`
+# under MRTR's `inputResponses`/`requestState` continuation, with the `sampling` client capability
+# declared from the FIRST request exactly when the deployment can honour it. Deny-by-default did
+# not move: no grant refuses naming the grant, a grant with no policy refuses naming the key, the
+# budget past its cap refuses naming the budget key, and the ask terminates at busbar in every arm.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/sampling_satisfy_tests.rs`, judged at the RECEIVING end
+# of a real loopback peer AND a real recording fake provider --
+#   a_granted_sampling_ask_is_completed_on_the_operators_model_and_answered,
+#   the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs,
+#   an_ungranted_sampling_ask_is_still_refused_and_spends_nothing,
+#   a_granted_ask_with_no_policy_refuses_and_names_the_key,
+#   a_caller_whose_key_does_not_reach_the_pool_cannot_be_spent_through,
+#   the_sampling_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says;
+# plus `mcp/tests/sampling_spend_tests.rs` on the budget in isolation. Watched red first: with the
+# satisfier dispatch short-circuited to its old refusal the central case fails on "the satisfied
+# exchange must complete" (403 `ask_unsatisfiable` where 200 is owed).
+mcp|streamable-http|client|server|sampling/createMessage = implemented
+
+# ── THE STREAMABLE-HTTP CLIENT COLUMN, ISSUED (1.6.0) ───────────────────────────────────────────
+#
+# ONE verb enum and ONE governed send site serve BOTH client transports. `mcp/client/verb.rs`'s
+# `UpstreamVerb` and `mcp/client/issue.rs`'s `issue` landed with the stdio leg; this transport adds
+# no second copy of either, which is the point — `Transport::mcp_wire()` is the only place in the
+# tree that asks the axis which variant it is, and from there down the leg is bytes out and bytes
+# back identically for an HTTPS POST and a write to a child's stdin.
+#
+# WHAT THIS TRANSPORT ADDED, because a child process has no analogue for any of it:
+#   * `upstream::authorise_verb` — the SERVER-SCOPED gate. `Authorised` now carries its own `server`
+#     and an OPTIONAL `key`, because a verb names no tool. Before that the only constructor of the
+#     value the send site needs resolved a TOOL, so issuing a `prompts/list` required an `mcp_tool`
+#     grant while `egress::ServerVerb`, the subject it is actually gated on, correctly requires one.
+#     A deployment fronting an upstream for its prompts and no tools could not reach it.
+#   * The ordered validator on that path: identity, the `mcp_server` grant, whether the registration
+#     is serving at all, then the snapshot generation. `capability: None` is a statement — a verb has
+#     no per-capability fingerprint — and the REGISTRATION-level half still runs, so a quarantined
+#     upstream serves no `prompts/list` either.
+#   * `client::argguard` on the verb's OWN params, inside `issue`, for every verb however the leg was
+#     authorised. A `resources/read` carries a caller-chosen URI, and the routing rule makes the
+#     DESTINATION immune to attacker-chosen text and does nothing whatever for the PAYLOAD.
+#   * The `Mcp-Name` rule unified with `mcp::ingress::name_source_of`. The builder had its own copy
+#     and the two DISAGREED about the three tasks methods, so a `tasks/get` went out with no
+#     `Mcp-Name` — the exact header busbar's own front door answers `-32020` to. Invisible on stdio,
+#     which has no headers.
+#
+# EVIDENCE: `mcp/tests/http_client_leg_tests.rs`. THE DENOMINATOR IS DERIVED — it reads this column
+# out of qa/method-inventory.json, subtracts the waivers out of this file, and fails if the set it
+# drives is not equal in both directions. No count is written down anywhere in it. Every owed method
+# is issued at a real peer on a real loopback socket and asserted at the RECEIVING end: the method,
+# `id` present exactly when there is an answer to correlate, the three mirrored headers, the RFC 8693
+# EXCHANGED bearer, and one per-call record each. Controls: an ungranted caller leaves the upstream's
+# AND the authorization server's own hit counters at zero; a link-local URI in a verb's params is
+# refused before the exchange; an unpinned registration issues nothing; an upstream's ask terminates
+# and its text never reaches busbar's caller; a wildcard principal's exchange asks for no tool scope.
+mcp|streamable-http|client|client|server/discover = implemented
+mcp|streamable-http|client|client|prompts/list = implemented
+mcp|streamable-http|client|client|prompts/get = implemented
+mcp|streamable-http|client|client|resources/list = implemented
+mcp|streamable-http|client|client|resources/read = implemented
+mcp|streamable-http|client|client|resources/templates/list = implemented
+mcp|streamable-http|client|client|completion/complete = implemented
+mcp|streamable-http|client|client|tasks/get = implemented
+mcp|streamable-http|client|client|tasks/update = implemented
+mcp|streamable-http|client|client|tasks/cancel = implemented
+mcp|streamable-http|client|client|subscriptions/listen = implemented
+mcp|streamable-http|client|client|notifications/cancelled = implemented
+mcp|streamable-http|client|client|notifications/progress = implemented
+mcp|streamable-http|client|client|notifications/roots/list_changed = implemented
+mcp|streamable-http|client|client|notifications/elicitation/response = implemented
+
+# ── WHAT AN UPSTREAM SAYS BACK OVER STREAMABLE HTTP, HANDLED (1.6.0) ────────────────────────────
+#
+# SEP-2575 removed the standalone GET stream; it did not remove server-to-client messages. They ride
+# the SSE response of a POST busbar made, and that response is this leg's whole inbound surface.
+# Everything on it except `notifications/progress` was DROPPED by `last_sse_data`, and a dropped
+# frame is not a handled frame: a `…/list_changed` nobody saw is a rug-pull signal nobody acted on.
+#
+# THE CLASSIFIER IS `mcp/client/peer.rs`'s, shared with the stdio leg, which reads the same messages
+# off a child's stdout. Two carriers, one meaning — `peer::classify` decides what a message IS and
+# `ServerNotification::effect` decides what busbar DOES, and this transport supplies only the SSE
+# reader and the effect application. A second table here would be a second answer to "may this
+# notification move busbar's catalogue", and the copy that got fixed would not be the one that was
+# wrong. The four catalogue triggers bring a re-pull FORWARD through the `RefreshGate` already on the
+# pool; the notification's CONTENTS are never read.
+#
+# THE ONE GENUINE CARRIER DIFFERENCE, and it is why `ping` is claimed here rather than waived: stdio
+# ANSWERS a peer's request, because a child's stdin is a channel and a child left waiting hangs. An
+# SSE response body is not a channel — it is the answer to a POST already sent — so a request
+# arriving here CANNOT be answered. It is recognised, recorded and dropped, and never adopted as the
+# answer to what busbar actually asked. Over this carrier the three authority asks are refused by the
+# absence of any way to satisfy them, which is stronger than the grant gate: busbar cannot say yes
+# even where an operator granted it.
+#
+# EVIDENCE: `mcp/client/tests/http_peer_tests.rs`. All nine notifications, all four peer requests and
+# two unrecognised frames arrive on ONE real SSE stream from a real loopback socket. The returned
+# body is asserted to be the POST's own answer, to carry no `method`, and to contain none of a
+# notification's attacker-chosen payload; the progress channel is asserted to have received exactly
+# one frame; a flood of twenty-five `…/list_changed` brings exactly one re-pull forward and a second
+# flood inside the floor brings none; and every notification is asserted to move the catalogue
+# exactly when `peer`'s own effect table says it does. All three authority grants are GRANTED on the
+# leg under test, so the request refusals are not the grant gate answering.
+mcp|streamable-http|client|server|notifications/message = implemented
+mcp|streamable-http|client|server|notifications/cancelled = implemented
+mcp|streamable-http|client|server|notifications/prompts/list_changed = implemented
+mcp|streamable-http|client|server|notifications/resources/list_changed = implemented
+mcp|streamable-http|client|server|notifications/resources/updated = implemented
+mcp|streamable-http|client|server|notifications/subscriptions/acknowledged = implemented
+mcp|streamable-http|client|server|notifications/tasks = implemented
+mcp|streamable-http|client|server|notifications/tools/list_changed = implemented
+mcp|streamable-http|client|server|ping = implemented
+
+# The upstream's progress, relayed to busbar's own caller. ONLY that method is taken off the
+# upstream's stream — a stream may carry anything, and relaying whatever happened to be on it would
+# put an upstream's messages in front of busbar's caller under busbar's name. The frames are
+# re-tokened on the way out: busbar mints its own progress token for the upstream leg, so relaying
+# the upstream's spelling would be uncorrelatable to the caller and relaying busbar's would leak an
+# internal identifier. Instrument: the official suite's `tools-call-with-progress`, REQUIRED at this
+# revision, which drives an upstream that reports progress and reads what reached the caller.
+mcp|streamable-http|client|server|notifications/progress = implemented
+
+# ── A2A, busbar as SERVER, over gRPC ────────────────────────────────────────────────────────────
+#
+# A2A over gRPC, busbar answering. Ten of the service's eleven rpcs, each watched green on the
+# publisher's own instrument: `scripts/a2a-subject/boot.sh --tck` against a busbar built from this
+# commit, TCK pinned at 5996b79f9cefa6fc390980e383e358a66fb9e49e. The suite's own per-transport
+# table read `grpc: 0/72 (72 skipped)` before this leg armed and reads `grpc: 62/72 (4 skipped)`
+# after it, and the requirement behind each line below is recorded beside it.
+#
+# GetExtendedAgentCard IS DELIBERATELY ABSENT from this block, and the reason CHANGED IN THE MERGE
+# rather than survived it. On the branch that armed this binding the eleventh rpc answered
+# UNIMPLEMENTED, because busbar served no extended agent card at all. It serves one now -- the
+# JSON-RPC cell above is this release's, landed on the other branch -- and this rpc is wired to the
+# same single ingress as the other ten, so the merged tree really does answer it here.
+#
+# It stays MISSING because NO INSTRUMENT HAS WATCHED IT DO SO. The gRPC leg was scored before the
+# extended card existed, and the suite records CARD-EXT-001/002 as SKIPPED on every transport, so
+# there is no run to read. That is exactly the bar the header sets: a cell is claimed when its leg
+# has been watched green, not when the code that should make it green is in the tree.
+a2a|grpc|server|client|SendMessage = implemented                      # CORE-SEND-001/002/003
+a2a|grpc|server|client|SendStreamingMessage = implemented             # STREAM-ORDER-001..004
+a2a|grpc|server|client|GetTask = implemented                          # CORE-GET-001/002
+a2a|grpc|server|client|ListTasks = implemented                        # CORE-LIST-001..005
+a2a|grpc|server|client|CancelTask = implemented                       # CORE-CANCEL-001/002/003
+a2a|grpc|server|client|SubscribeToTask = implemented                  # STREAM-SUB-001..004
+a2a|grpc|server|client|CreateTaskPushNotificationConfig = implemented  # PUSH-CREATE-001/002
+a2a|grpc|server|client|GetTaskPushNotificationConfig = implemented     # PUSH-GET-001/002
+a2a|grpc|server|client|ListTaskPushNotificationConfigs = implemented   # PUSH-LIST-001
+a2a|grpc|server|client|DeleteTaskPushNotificationConfig = implemented  # PUSH-DEL-001/002
+# MCP CLIENT DIRECTION, STDIO TRANSPORT. An authenticated inbound `tools/call` on
+# busbar's own front door reaches a SUPERVISED CHILD PROCESS: spawn, newline-delimited
+# JSON-RPC on its stdin/stdout, capped backoff on a crash and a five-crashes-in-a-window
+# quarantine. Watched green on the instrument, not inferred:
+#   mcp::upstream::stdio_dispatch_tests::a_tools_call_reaches_a_child_process_and_returns_its_result
+#   mcp::upstream::stdio_dispatch_tests::a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch_path
+# The second one goes RED if the supervisor is bypassed, which is what makes the first
+# one a claim about a transport rather than about a fork.
+mcp|stdio|client|client|tools/call = implemented
+
+# MCP CLIENT DIRECTION, STDIO TRANSPORT, `tools/list`. The drift re-check asks a CHILD PROCESS for
+# its tool list over the same vtable the call rides, so an operator's approved digests are compared
+# against what the child is actually serving. Watched green on the instrument:
+#   mcp::upstream::stdio_dispatch_tests::a_refresh_re_observes_a_child_process_tool_list
+# It is claimed rather than left in the queue because the alternative was worse than absent: the
+# refresh used to send through the HTTP transport unconditionally, which on a stdio registration
+# would have POSTed to an empty string and DEMOTED a healthy server for failing a contact busbar
+# addressed to nowhere.
+mcp|stdio|client|client|tools/list = implemented
+
+# ── MCP, busbar as SERVER, over STDIO — the serve mode, 2026-08-15 (`busbar --mcp-stdio`) ──────
+#
+# THE WHOLE 36-CELL FAMILY, landed as the one unit its old waiver text said it was. busbar runs as
+# an MCP host's CHILD PROCESS: newline-delimited JSON-RPC on its own stdin/stdout, EOF is
+# shutdown, and NO listener is bound. ONE PATHWAY, enforced by construction: every frame runs
+# crate::ingress::protocol::serve with the SAME McpWords and the SAME envelope::rpc_dispatch the
+# HTTP endpoint runs — there is no stdio method table and no stdio refusal shaper, and the
+# mirrored routing headers are derived from the body exactly as the battery's own
+# stdio-http-bridge derives them, so a body defect stays a body defect. GOVERNANCE is a BOOT-TIME
+# credential (BUSBAR_MCP_STDIO_CREDENTIAL): the same audience pre-filter, the same auth chain and
+# the same verdict resolution (auth::resolve_data_plane_identity, now shared with the HTTP
+# middleware) bind the WHOLE session to one key, so budgets, audit attribution and hooks apply to
+# every frame; a configured chain with no credential, or a refused one, is a nonzero exit before a
+# single frame is served. The design argument in full: crates/busbar/src/mcp/stdio_serve.rs.
+#
+# WHAT THE PERSISTENT CHANNEL MAKES REAL, per direction. Client-direction: the HTTP table's twelve
+# catalogue/dispatch verbs plus subscriptions/listen unchanged; initialize (the dual-era trigger
+# the revision scopes to stdio, answered with the ONE revision this server speaks) with
+# notifications/initialized accepted silently; ping; logging/setLevel as a SESSION floor feeding
+# the per-request slot; resources/subscribe|unsubscribe with baselines taken at subscribe time;
+# notifications/cancelled aborting the in-flight dispatch (no further messages);
+# notifications/progress correlated to a pending busbar-originated ask; and SEP-1036's
+# notifications/elicitation/response, admissible HERE because the one authenticated single-caller
+# channel is the binding the HTTP waiver said was impossible. Server-direction: an operator's
+# ask_caller travels as LIVE elicitation/create / roots/list / sampling/createMessage REQUESTS
+# (the sealed requestState, capability filter and round charges all still run — the retry
+# re-enters the full sequence); response-stream frames (notifications/message, /progress, the
+# subscription acknowledgement and the three list_changed kinds) are unwrapped one JSON-RPC line
+# each; the idle subscription's keepalive becomes a server→client ping; an EARLY-closed
+# subscription is announced with notifications/cancelled (the one purpose the revision permits);
+# a subscribed resource's registration change is pushed as notifications/resources/updated; and a
+# task's registry transitions are pushed as notifications/tasks.
+#
+# INSTRUMENTS, each watched green — the real serve loop over real pipes, never a mock of it:
+#   in-process (mcp::stdio_serve::stdio_serve_tests — serve_io over duplex pipes, real Apps, a
+#   real fake upstream peer, a real GovState with a minted key in a one-request group):
+#     the_http_method_table_serves_the_stdio_channel_unchanged
+#     initialize_negotiates_the_one_revision_and_eof_ends_the_session
+#     logging_set_level_makes_the_sessions_records_ride_the_channel
+#     a_cancelled_request_is_aborted_and_never_answered
+#     a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes
+#     each_of_the_three_asks_is_issued_as_its_own_request
+#     an_out_of_band_elicitation_response_redeems_the_pending_ask
+#     a_budgeted_key_is_refused_over_budget_through_the_stdio_binding
+#     subscriptions_and_resource_watches_ride_the_channel
+#     unsubscribe_stops_the_resource_updates
+#     an_early_closed_subscription_is_announced_with_cancelled
+#     a_tasks_transition_is_pushed_over_the_channel
+#     an_idle_subscriptions_keepalive_becomes_a_server_ping
+#   end-to-end, the REAL binary spawned as a child over real OS pipes
+#   (crates/busbar/tests/mcp_stdio_serve.rs):
+#     an_mcp_deployment_with_an_empty_chain_refuses_to_boot
+#     a_governed_deployment_refuses_an_uncredentialed_stdio_session
+#     a_governed_deployment_refuses_a_wrong_audience_credential
+#     a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it
+#     a_roleless_session_serves_ungoverned_and_eof_with_a_live_subscription_exits_promptly
+mcp|stdio|server|client|completion/complete = implemented
+mcp|stdio|server|client|initialize = implemented
+mcp|stdio|server|client|logging/setLevel = implemented
+mcp|stdio|server|client|notifications/cancelled = implemented
+mcp|stdio|server|client|notifications/elicitation/response = implemented
+mcp|stdio|server|client|notifications/initialized = implemented
+mcp|stdio|server|client|notifications/progress = implemented
+mcp|stdio|server|client|notifications/roots/list_changed = implemented
+mcp|stdio|server|client|ping = implemented
+mcp|stdio|server|client|prompts/get = implemented
+mcp|stdio|server|client|prompts/list = implemented
+mcp|stdio|server|client|resources/list = implemented
+mcp|stdio|server|client|resources/read = implemented
+mcp|stdio|server|client|resources/subscribe = implemented
+mcp|stdio|server|client|resources/templates/list = implemented
+mcp|stdio|server|client|resources/unsubscribe = implemented
+mcp|stdio|server|client|server/discover = implemented
+mcp|stdio|server|client|subscriptions/listen = implemented
+mcp|stdio|server|client|tasks/cancel = implemented
+mcp|stdio|server|client|tasks/get = implemented
+mcp|stdio|server|client|tasks/update = implemented
+mcp|stdio|server|client|tools/call = implemented
+mcp|stdio|server|client|tools/list = implemented
+mcp|stdio|server|server|elicitation/create = implemented
+mcp|stdio|server|server|notifications/cancelled = implemented
+mcp|stdio|server|server|notifications/message = implemented
+mcp|stdio|server|server|notifications/progress = implemented
+mcp|stdio|server|server|notifications/prompts/list_changed = implemented
+mcp|stdio|server|server|notifications/resources/list_changed = implemented
+mcp|stdio|server|server|notifications/resources/updated = implemented
+mcp|stdio|server|server|notifications/subscriptions/acknowledged = implemented
+mcp|stdio|server|server|notifications/tasks = implemented
+mcp|stdio|server|server|notifications/tools/list_changed = implemented
+mcp|stdio|server|server|ping = implemented
+mcp|stdio|server|server|roots/list = implemented
+mcp|stdio|server|server|sampling/createMessage = implemented
+
+# ---------------------------------------------------------------------------
+# waived
+# ---------------------------------------------------------------------------
+#
+# EMPTY, BY RULING, AND KEPT EMPTY BY THE GATE. Owner, 2026-08-14: "100%, and the waiver list
+# should stay empty." The 63 waivers this section carried on 2026-08-12 went three ways, and none
+# of the three is a line here:
+#
+#   * PRODUCT DECISIONS went back to the WORK QUEUE. A waiver whose own text says "a product
+#     decision, not a technical block. Reversible." is not a waiver -- it is owed work wearing a
+#     waiver's clothes. The 36-cell mcp|stdio SERVER family (busbar itself launched as a child
+#     process), the upstream-directed `sampling/createMessage` satisfier ("design work rather than
+#     plumbing"), and `notifications/resources/updated` (a capability narrowing) are pinned in
+#     qa/method-coverage.missing, which is and remains the 1.6.0 work queue.
+#   * MISSING POLICIES got their policy and got BUILT. `roots/list` asked by an upstream is
+#     satisfied from operator-declared `tools.<server>.roots`, and a caller's
+#     `notifications/roots/list_changed` invalidates the caller's own outstanding roots-bearing
+#     `requestState`. Both are claimed `implemented` above, each on an instrument, each watched
+#     red before green.
+#   * GENUINE IMPOSSIBILITIES are RECORDED IN qa/WAIVERS.md, one paragraph of argument each: the
+#     23 cells where the specification removed the method and the official suite asserts the
+#     absence (16), where the revision provides no carrier a conformant message could ride (5), or
+#     where satisfying the ask is itself the defect a security property exists to prevent (2).
+#     `crates/busbar/tests/method_coverage.rs::recorded_impossibilities_are_exact_and_argued`
+#     holds that file to the same discipline this one is held to -- exact ids, no globs, no
+#     staleness, no overlap with a claim or with the queue, and a real argument -- and an
+#     impossibility whose argument stops holding moves to the queue, not back here.
+
+a2a|grpc|client|client|CancelTask = implemented                         # grpc_client_issues_cancel_task
+a2a|grpc|client|client|CreateTaskPushNotificationConfig = implemented   # grpc_client_issues_create_task_push_notification_config
+a2a|grpc|client|client|DeleteTaskPushNotificationConfig = implemented   # grpc_client_issues_delete_task_push_notification_config
+# GetExtendedAgentCard, busbar as CLIENT, on all three outbound bindings. A caller that addresses one
+# agent (`POST /a2a/agents/{id}`) and asks for its extended card makes busbar ISSUE the hop to fetch
+# it -- the client twin of the server cell above (which answers busbar's OWN card on the plane's
+# endpoint, `Target::FromCatalogue`). The hop is TASK-LESS: a card read opens no durable task row and
+# writes no journal, and its identity rewrite is deliberately skipped so the backend's card is not
+# stamped with busbar's task id. A card fetch to a POOLED agent is refused, not relayed: a pool's
+# members are distinct backends with distinct cards, so there is no one card to relay and no member a
+# read may silently pick. INSTRUMENT: the three `*_client_issues_get_extended_agent_card` tests drive
+# a real hop through busbar's router and read the recorded outbound request off `RecordingTransport`.
+a2a|grpc|client|client|GetExtendedAgentCard = implemented               # grpc_client_issues_get_extended_agent_card
+a2a|grpc|client|client|GetTask = implemented                            # grpc_client_issues_get_task
+a2a|grpc|client|client|GetTaskPushNotificationConfig = implemented      # grpc_client_issues_get_task_push_notification_config
+a2a|grpc|client|client|ListTaskPushNotificationConfigs = implemented    # grpc_client_issues_list_task_push_notification_configs
+a2a|grpc|client|client|ListTasks = implemented                          # grpc_client_issues_list_tasks
+a2a|grpc|client|client|SendMessage = implemented                        # grpc_client_issues_send_message
+a2a|grpc|client|client|SendStreamingMessage = implemented               # grpc_client_issues_send_streaming_message
+a2a|grpc|client|client|SubscribeToTask = implemented                    # grpc_client_issues_subscribe_to_task
+a2a|grpc|server|client|GetExtendedAgentCard = implemented
+a2a|http+json|client|client|CancelTask = implemented                    # http_json_client_issues_cancel_task
+a2a|http+json|client|client|CreateTaskPushNotificationConfig = implemented# http_json_client_issues_create_task_push_notification_config
+a2a|http+json|client|client|DeleteTaskPushNotificationConfig = implemented# http_json_client_issues_delete_task_push_notification_config
+a2a|http+json|client|client|GetExtendedAgentCard = implemented          # http_json_client_issues_get_extended_agent_card
+a2a|http+json|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+a2a|http+json|client|client|GetTask = implemented                       # http_json_client_issues_get_task
+a2a|http+json|client|client|GetTaskPushNotificationConfig = implemented # http_json_client_issues_get_task_push_notification_config
+a2a|http+json|client|client|ListTaskPushNotificationConfigs = implemented# http_json_client_issues_list_task_push_notification_configs
+a2a|http+json|client|client|ListTasks = implemented                     # http_json_client_issues_list_tasks
+a2a|http+json|client|client|SendMessage = implemented                   # http_json_client_issues_send_message
+a2a|http+json|client|client|SendStreamingMessage = implemented          # http_json_client_issues_send_streaming_message
+a2a|http+json|client|client|SubscribeToTask = implemented               # http_json_client_issues_subscribe_to_task
+a2a|http+json|client|server|PushNotificationDelivery = implemented      # pushdeliver_tests::a_completed_task_with_a_callback_is_delivered
+a2a|http+json|server|client|GET /.well-known/agent-card.json = implemented
+a2a|http+json|server|client|GetExtendedAgentCard = implemented
+a2a|jsonrpc|client|client|CancelTask = implemented                      # jsonrpc_client_issues_cancel_task
+a2a|jsonrpc|client|client|CreateTaskPushNotificationConfig = implemented# jsonrpc_client_issues_create_task_push_notification_config
+a2a|jsonrpc|client|client|DeleteTaskPushNotificationConfig = implemented# jsonrpc_client_issues_delete_task_push_notification_config
+a2a|jsonrpc|client|client|GetExtendedAgentCard = implemented            # jsonrpc_client_issues_get_extended_agent_card
+a2a|jsonrpc|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+a2a|jsonrpc|client|client|GetTask = implemented                         # jsonrpc_client_issues_get_task
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig = implemented   # jsonrpc_client_issues_get_task_push_notification_config
+a2a|jsonrpc|client|client|ListTaskPushNotificationConfigs = implemented # jsonrpc_client_issues_list_task_push_notification_configs
+a2a|jsonrpc|client|client|ListTasks = implemented                       # jsonrpc_client_issues_list_tasks
+a2a|jsonrpc|client|client|SendMessage = implemented                     # jsonrpc_client_issues_send_message
+a2a|jsonrpc|client|client|SendStreamingMessage = implemented            # jsonrpc_client_issues_send_streaming_message
+a2a|jsonrpc|client|client|SubscribeToTask = implemented                 # jsonrpc_client_issues_subscribe_to_task
+a2a|jsonrpc|server|client|CancelTask = implemented
+a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|DeleteTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|GET /.well-known/agent-card.json = implemented
+a2a|jsonrpc|server|client|GetTask = implemented
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs = implemented
+a2a|jsonrpc|server|client|ListTasks = implemented
+a2a|jsonrpc|server|client|SendMessage = implemented
+a2a|jsonrpc|server|client|SendStreamingMessage = implemented
+a2a|jsonrpc|server|client|SubscribeToTask = implemented
+mcp|stdio|client|client|completion/complete = implemented
+mcp|stdio|client|client|initialize = implemented
+mcp|stdio|client|client|logging/setLevel = implemented
+mcp|stdio|client|client|notifications/cancelled = implemented
+mcp|stdio|client|client|notifications/elicitation/response = implemented
+mcp|stdio|client|client|notifications/initialized = implemented
+mcp|stdio|client|client|notifications/progress = implemented
+mcp|stdio|client|client|notifications/roots/list_changed = implemented
+mcp|stdio|client|client|ping = implemented
+mcp|stdio|client|client|prompts/get = implemented
+mcp|stdio|client|client|prompts/list = implemented
+mcp|stdio|client|client|resources/list = implemented
+mcp|stdio|client|client|resources/read = implemented
+mcp|stdio|client|client|resources/subscribe = implemented
+mcp|stdio|client|client|resources/templates/list = implemented
+mcp|stdio|client|client|resources/unsubscribe = implemented
+mcp|stdio|client|client|server/discover = implemented
+mcp|stdio|client|client|subscriptions/listen = implemented
+mcp|stdio|client|client|tasks/cancel = implemented
+mcp|stdio|client|client|tasks/get = implemented
+mcp|stdio|client|client|tasks/update = implemented
+mcp|stdio|client|server|elicitation/create = implemented
+mcp|stdio|client|server|notifications/cancelled = implemented
+mcp|stdio|client|server|notifications/message = implemented
+mcp|stdio|client|server|notifications/progress = implemented
+mcp|stdio|client|server|notifications/prompts/list_changed = implemented
+mcp|stdio|client|server|notifications/resources/list_changed = implemented
+mcp|stdio|client|server|notifications/resources/updated = implemented
+mcp|stdio|client|server|notifications/subscriptions/acknowledged = implemented
+mcp|stdio|client|server|notifications/tasks = implemented
+mcp|stdio|client|server|notifications/tools/list_changed = implemented
+mcp|stdio|client|server|ping = implemented
+mcp|stdio|client|server|roots/list = implemented
+mcp|stdio|client|server|sampling/createMessage = implemented

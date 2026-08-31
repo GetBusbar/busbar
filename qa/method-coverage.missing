@@ -1,0 +1,64 @@
+# PINNED MISSING SET -- every cell of qa/method-inventory.json that is owed an implementation
+# and does not have one. RECORDED ON PURPOSE, exactly as testing/a2a-tck/check-baseline.py pins the
+# TCK's full per-requirement map: a suite whose result is UNCHANGING is still a gate, because the
+# thing a gate has to catch is a CHANGE.
+#
+# crates/busbar/tests/method_coverage.rs asserts the computed MISSING set EQUALS this file, byte
+# for byte, in both directions:
+#
+#   a cell that appears here and is now implemented  -> UNEXPECTED COVERAGE, red. Delete the line
+#                                                       in the same commit that implements it, so
+#                                                       the work queue shrinks visibly.
+#   a cell that regresses into MISSING               -> red, because it is not listed here.
+#
+# So this file is the 1.6.0 work queue, and it is not possible to land a cell without editing it.
+#
+# THIS FILE IS NOT A WAIVER LIST. A line here says "owed and not built". A waiver says "not owed,
+# and here is why" and lives in qa/method-coverage.status with a date and a reason. Do not move a
+# line from here to there to make a number go green -- a documented security decision is never
+# reversed to make a number go green, and neither is an undocumented gap laundered into a waiver.
+#
+# Regenerate deliberately (read the diff -- a new line is a new gap):
+#   BUSBAR_PIN_MISSING_CELLS=1 cargo test -p busbar --test method_coverage
+#
+# 2026-08-14, WAIVER LIST TO ZERO: 38 cells arrived here FROM the status file's waiver list, and
+# that direction of travel is the honest one, not a regression. Each was waived on reasoning its
+# own text admitted was a product decision ("a product decision, not a technical block.
+# Reversible." on all 36 mcp|stdio|server cells; "design work rather than plumbing" on the
+# upstream-directed sampling satisfier; a capability narrowing on notifications/resources/updated),
+# and the owner's ruling -- "100%, and the waiver list should stay empty" -- makes a product
+# decision owed work. The genuine impossibilities went to qa/WAIVERS.md with arguments; the
+# roots/list pair got built. Ordered queue for what remains: (1) the mcp|stdio SERVER family as
+# one unit -- busbar itself launched as a child process speaking MCP on stdin, which is a serve
+# mode with real design questions (what governance means for a single-caller child) that its old
+# waiver text already sketches; (2) mcp|streamable-http|client|server|sampling/createMessage,
+# blocked on a per-upstream sampling budget an operator can cap; (3)
+# mcp|streamable-http|server|server|notifications/resources/updated, an upstream-events relay onto
+# subscriptions/listen's narrowed category.
+#
+# 2026-08-15: queue item (2) LANDED -- mcp|streamable-http|client|server|sampling/createMessage is
+# the `tools.<server>.sampling` policy (model + max_tokens + max_requests_per_minute, boot-vetted,
+# refused behind a closed grant) satisfying a granted ask through the SAME governed pipeline an
+# arriving chat request rides (`ingress::operation_resolved`, the caller's key/budget/pool-ACL/
+# hooks), capped by the per-upstream budget the old waiver said was missing. Claimed in the status
+# file on `mcp/tests/sampling_satisfy_tests.rs`.
+#
+# 2026-08-15: queue item (3) LANDED -- mcp|streamable-http|server|server|notifications/resources/
+# updated is the upstream-events relay: the client legs record a peer's own announcement (the one
+# payload field an untrusted message gets to carry, bounded and believed nowhere) and
+# `subscriptions/listen` delivers it onto the `resourceSubscriptions` category it used to narrow
+# away, gated per event on the subscription, the subscriber's live grant, and the announcing
+# server's own inventory. Claimed in the status file on `mcp/tests/subscribe_tests.rs`.
+#
+# 2026-08-15: queue item (1) LANDED -- all 36 mcp|stdio|server cells are `busbar --mcp-stdio`
+# (crates/busbar/src/mcp/stdio_serve.rs: the SAME ingress sequence and the SAME dispatch as the
+# HTTP door, a boot-time session credential for governance), claimed in the status file on the
+# instruments named there. All three queue items are done; what remained here was the three A2A
+# GetExtendedAgentCard client legs.
+#
+# 2026-08-30: the last three -- a2a|{grpc,http+json,jsonrpc}|client|client|GetExtendedAgentCard --
+# LANDED. busbar as an A2A client issues GetExtendedAgentCard to a named backend as a task-less
+# relay (crates/busbar-a2a/src/a2a/receive.rs; the `card_fetch` path), claimed in the status file on
+# the three `*_client_issues_get_extended_agent_card` instruments. THE QUEUE IS NOW EMPTY: every
+# cell of qa/method-inventory.json is implemented or is a recorded impossibility in qa/WAIVERS.md.
+#
