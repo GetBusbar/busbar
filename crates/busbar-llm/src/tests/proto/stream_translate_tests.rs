@@ -133,7 +133,9 @@ fn encode_wire_frame(
 ) {
     if is_eventstream {
         let payload = serde_json::to_vec(data).unwrap_or_default();
-        out.extend_from_slice(&crate::eventstream::encode_frame(event_type, &payload));
+        out.extend_from_slice(&busbar_substrate::eventstream::encode_frame(
+            event_type, &payload,
+        ));
     } else {
         write_sse_frame(out, event_type, data);
     }
@@ -217,7 +219,7 @@ fn encode_ir_events_as_wire(proto: &Protocol, events: &[crate::ir::IrStreamEvent
 fn decode_wire_frames(is_eventstream: bool, bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
     if is_eventstream {
         let mut buf = bytes.to_vec();
-        crate::eventstream::drain_frames(&mut buf)
+        busbar_substrate::eventstream::drain_frames(&mut buf)
             .into_iter()
             .filter_map(|(et, payload)| {
                 serde_json::from_slice::<serde_json::Value>(&payload)
@@ -1161,8 +1163,10 @@ fn same_proto_bedrock_malformed_prelude_emits_only_valid_frames_not_garbage() {
     let mut st = StreamTranslate::new_same_proto("bedrock").expect("same-proto translator");
     // One VALID bedrock eventstream frame, then a MALFORMED prelude (out-of-range total_len) with
     // a distinctive garbage tail that must NEVER reach the client.
-    let valid =
-        crate::eventstream::encode_frame("contentBlockDelta", br#"{"delta":{"text":"hi"}}"#);
+    let valid = busbar_substrate::eventstream::encode_frame(
+        "contentBlockDelta",
+        br#"{"delta":{"text":"hi"}}"#,
+    );
     let mut bytes = valid.clone();
     bytes.extend_from_slice(&u32::MAX.to_be_bytes()); // total_len ~4 GiB — malformed prelude
     bytes.extend_from_slice(&0u32.to_be_bytes()); // headers_len
@@ -1451,7 +1455,7 @@ fn test_translate_bedrock_egress_exception_frame_surfaces_error_to_ingress() {
     // carries `:message-type: exception` + `:exception-type: ThrottlingException` and no
     // `:event-type`. `drain_frames` must normalize it to `throttlingException` so the reader's
     // exception arm fires and emits an IR Error → the Anthropic ingress writes an error event.
-    bytes.extend(crate::eventstream::encode_exception_frame(
+    bytes.extend(busbar_substrate::eventstream::encode_exception_frame(
         "ThrottlingException",
         "rate exceeded mid-stream",
     ));
@@ -1722,7 +1726,7 @@ fn openai_egress_without_include_usage_emits_no_usage_chunk() {
             continue;
         }
         let v: serde_json::Value =
-            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+            busbar_substrate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
         assert!(
             v.get("usage").is_none(),
             "an opted-out client must receive NO usage object; got:\n{data}"
@@ -1790,7 +1794,7 @@ fn openai_egress_multi_tool_stream_uses_0_based_tool_call_indices() {
     let mut opens: Vec<(String, i64)> = Vec::new();
     let mut all_indices: Vec<i64> = Vec::new();
     for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
-        let Ok(v) = crate::json::parse::<serde_json::Value>(data.as_bytes()) else {
+        let Ok(v) = busbar_substrate::json::parse::<serde_json::Value>(data.as_bytes()) else {
             continue;
         };
         let Some(calls) = v
@@ -1861,7 +1865,7 @@ fn bedrock_egress_emits_exactly_one_metadata_frame() {
         }
     raw_a.extend(a.finish());
     let mut buf_a = raw_a;
-    let frames_a = crate::eventstream::drain_frames(&mut buf_a);
+    let frames_a = busbar_substrate::eventstream::drain_frames(&mut buf_a);
     assert!(
         buf_a.is_empty(),
         "case A frames must decode cleanly; {} left",
@@ -1887,7 +1891,7 @@ fn bedrock_egress_emits_exactly_one_metadata_frame() {
         }
     raw_b.extend(b.finish());
     let mut buf_b = raw_b;
-    let frames_b = crate::eventstream::drain_frames(&mut buf_b);
+    let frames_b = busbar_substrate::eventstream::drain_frames(&mut buf_b);
     assert!(
         buf_b.is_empty(),
         "case B frames must decode cleanly; {} left",
@@ -1933,7 +1937,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_binary_frames() {
     );
 
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all emitted frames must decode cleanly (valid CRC + lengths); {} bytes left",
@@ -2038,7 +2042,7 @@ fn test_translate_anthropic_text_to_bedrock_ingress_has_no_content_block_start()
             raw.extend(t.feed(frame.as_bytes()));
         }
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all frames decode cleanly; {} bytes left",
@@ -2094,7 +2098,7 @@ fn test_translate_anthropic_reasoning_to_bedrock_ingress_uses_delta_not_start() 
             raw.extend(t.feed(frame.as_bytes()));
         }
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all frames decode cleanly; {} bytes left",
@@ -2165,7 +2169,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_tool_call() {
         }
 
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all emitted frames decode cleanly; {} bytes left",
@@ -2547,7 +2551,7 @@ fn anthropic_image_stream_to_bedrock_ingress_has_no_orphan_content_block_stop() 
     t.finish();
 
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all emitted frames must decode cleanly; {} bytes left",
@@ -3048,7 +3052,7 @@ fn test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata
 
     // Decode the binary eventstream frames.
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(buf.is_empty(), "all frames must decode cleanly");
 
     // Exactly ONE `metadata` frame (a native ConverseStream emits exactly one), carrying the
@@ -3144,7 +3148,7 @@ fn test_translate_openai_no_include_usage_egress_to_bedrock_ingress_emits_metada
     raw.extend_from_slice(&t.finish());
 
     let mut buf = raw.clone();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(buf.is_empty(), "all frames must decode cleanly");
 
     // EXACTLY ONE metadata frame — present (the fix), never the pre-fix total absence.
@@ -3499,7 +3503,7 @@ fn test_bedrock_ingress_overflow_abort_emits_exception_frame() {
         !tail.is_empty(),
         "aborted bedrock-ingress finish must emit a terminal exception frame, not a bare close"
     );
-    let frames = crate::eventstream::drain_frames(&mut tail);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut tail);
     let names: Vec<&str> = frames.iter().map(|(ty, _)| ty.as_str()).collect();
     assert_eq!(
             names.as_slice(),
@@ -4256,7 +4260,7 @@ fn test_gemini_protocol_resolves() {
         writer.upstream_path_for("gemini-pro"),
         "/v1beta/models/gemini-pro:generateContent"
     );
-    let headers = crate::egress_auth::api_key_headers("x-goog-api-key", "test-key");
+    let headers = busbar_core::egress_auth::api_key_headers("x-goog-api-key", "test-key");
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
 
@@ -4273,11 +4277,11 @@ fn test_gemini_protocol_resolves() {
 fn test_bedrock_and_responses_register() {
     // Both 0.10 protocols resolve via the registry and the ingress resolver.
     assert!(
-        crate::proto::protocol_for("bedrock").is_some(),
+        crate::proto_codec::protocol_for("bedrock").is_some(),
         "bedrock in registry"
     );
     assert!(
-        crate::proto::protocol_for("responses").is_some(),
+        crate::proto_codec::protocol_for("responses").is_some(),
         "responses in registry"
     );
     assert!(
@@ -4293,7 +4297,7 @@ fn test_bedrock_and_responses_register() {
     let responses = Protocol::responses();
     assert_eq!(responses.name(), "responses");
     assert_eq!(responses.writer().upstream_path(), "/v1/responses");
-    let headers = crate::proto::bearer_auth_headers("responses", "sk-test");
+    let headers = busbar_core::proto::bearer_auth_headers("responses", "sk-test");
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "authorization");
     assert_eq!(headers[0].1.to_str().unwrap(), "Bearer sk-test");
@@ -4371,7 +4375,7 @@ fn same_proto_openai_opted_out_strips_trailing_usage_chunk() {
             continue;
         }
         let v: serde_json::Value =
-            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+            busbar_substrate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
         let usage_obj = v.get("usage").is_some_and(|u| u.is_object());
         let choices_empty = v
             .get("choices")
@@ -4419,7 +4423,8 @@ fn same_proto_openai_opted_in_keeps_trailing_usage_chunk() {
             if data.trim() == "[DONE]" {
                 return false;
             }
-            let v: serde_json::Value = crate::json::parse(data.as_bytes()).expect("valid JSON");
+            let v: serde_json::Value =
+                busbar_substrate::json::parse(data.as_bytes()).expect("valid JSON");
             v.get("usage").is_some_and(|u| u.is_object())
                 && v.get("choices")
                     .and_then(|c| c.as_array())
@@ -4470,7 +4475,7 @@ fn same_proto_openai_opted_out_strips_usage_from_every_chunk() {
             continue;
         }
         let v: serde_json::Value =
-            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+            busbar_substrate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
         assert!(
             v.get("usage").is_none(),
             "opted-out client must see NO `usage` key on any chunk; got:\n{data}"
@@ -4568,7 +4573,8 @@ fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
         if data.trim() == "[DONE]" {
             continue;
         }
-        let v: serde_json::Value = crate::json::parse(data.as_bytes()).expect("valid JSON");
+        let v: serde_json::Value =
+            busbar_substrate::json::parse(data.as_bytes()).expect("valid JSON");
         // No TOP-LEVEL usage key on any client chunk.
         assert!(
             v.get("usage").is_none(),
@@ -4611,7 +4617,7 @@ fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
 }
 
 /// On the Anthropic same-proto verbatim path, only the two usage-bearing event types
-/// (`message_start`, `message_delta`) plus `error` may reach the `crate::json::parse_str` DOM parse —
+/// (`message_start`, `message_delta`) plus `error` may reach the `busbar_substrate::json::parse_str` DOM parse —
 /// every other frame (here, five `content_block_delta`s and a `content_block_start`/`_stop` pair) must
 /// skip it entirely, because the Anthropic reader is stateless and the framing seams it would feed are
 /// constant-false defaults for this egress. Bytes must still round-trip verbatim regardless.

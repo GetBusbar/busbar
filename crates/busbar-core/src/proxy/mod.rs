@@ -72,11 +72,11 @@ pub use busbar_substrate::proxy::{
 /// `error.status`). Values shared with the OpenAI-family/anthropic/admin vocabularies alias their
 /// canonical home in `proto::openai_family`; only the two forward-specific tokens (`overloaded`,
 /// `timeout`) are defined here.
-pub(crate) const KIND_AUTHENTICATION: &str = openai_family::ERR_TYPE_AUTHENTICATION;
-pub(crate) const KIND_PERMISSION: &str = openai_family::ERR_TYPE_PERMISSION;
-pub(crate) const KIND_RATE_LIMIT: &str = openai_family::ERR_TYPE_RATE_LIMIT;
-pub(crate) const KIND_INVALID_REQUEST: &str = openai_family::ERR_TYPE_INVALID_REQUEST;
-pub(crate) const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
+pub const KIND_AUTHENTICATION: &str = openai_family::ERR_TYPE_AUTHENTICATION;
+pub const KIND_PERMISSION: &str = openai_family::ERR_TYPE_PERMISSION;
+pub const KIND_RATE_LIMIT: &str = openai_family::ERR_TYPE_RATE_LIMIT;
+pub const KIND_INVALID_REQUEST: &str = openai_family::ERR_TYPE_INVALID_REQUEST;
+pub const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
 // The four PUBLIC forward-kind tokens the `busbar-llm` dialect writers name are RELOCATED DOWN to the
 // neutral `busbar_substrate::proxy` leaf (so the plane names them without reaching into `busbar-core`)
 // and re-exported here at their historical `crate::proxy::KIND_*` paths; the values are byte-identical
@@ -84,7 +84,7 @@ pub(crate) const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
 pub use busbar_substrate::proxy::{
     KIND_API_ERROR, KIND_OVERLOADED, KIND_SERVER_ERROR, KIND_TIMEOUT,
 };
-pub(crate) const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
+pub const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
 pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from

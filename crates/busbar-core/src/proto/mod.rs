@@ -197,21 +197,21 @@ pub use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 /// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
 /// folded once at boot from `ProtocolDecl::streaming_content_type` — where it used to be an
 /// `OnceLock` sweep that built a `Protocol` per known name to read one `&'static` off its writer.
-pub(crate) fn streaming_content_types() -> &'static [&'static str] {
+pub fn streaming_content_types() -> &'static [&'static str] {
     registry::registry().streaming_content_types()
 }
 
 /// The set of array-stream shim keys across every declared protocol (only Gemini declares one).
 /// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
 /// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
-pub(crate) fn array_stream_shim_keys() -> &'static [&'static str] {
+pub fn array_stream_shim_keys() -> &'static [&'static str] {
     registry::registry().array_stream_shim_keys()
 }
 
 /// The array-stream shim key the NAMED protocol declares, or `None` if it declares none (most
 /// don't) or is not registered. The INJECTION site (`ingress::ingress_path_model`) reads it by name
 /// so it names no protocol submodule: delete a protocol and the marker is simply never injected.
-pub(crate) fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
+pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
     registry::decl_for(protocol_name).and_then(|d| d.array_stream_shim_key)
 }
 
@@ -397,12 +397,15 @@ pub mod leaf_handles;
 // The extracted dialect's codec structs, in scope for the same test surface that predates the
 // extraction (the proto test modules construct them bare via `use super::*`). Present only in the
 // builds that compile the dialect back in; production core has no such names.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(unused_imports)]
+// test-surface scaffolding for the netted dialect fixtures (suites relocated to busbar-llm)
 use anthropic::{AnthropicReader, AnthropicWriter};
 // `synth_anthropic_request_id` lives in `anthropic.rs`; mod.rs references it only from its own test
 // module (production callers use `crate::proto::anthropic::synth_anthropic_request_id`). Private,
 // test-gated import — NOT a re-export.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(unused_imports)] // test-surface scaffolding (suites relocated to busbar-llm)
 use anthropic::synth_anthropic_request_id;
 // The extracted Bedrock and Cohere codec structs, in scope for the same test surface that predates
 // the extraction. Present only in the builds that compile the dialects back in.
@@ -420,7 +423,8 @@ use gemini::{GeminiReader, GeminiWriter};
 // `GeminiJsonArrayFramer` lives in `gemini.rs`; mod.rs references it only from its own test module
 // (production callers use `crate::proto::gemini::GeminiJsonArrayFramer`). Private, test-gated import
 // — NOT a re-export.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(unused_imports)] // test-surface scaffolding (suites relocated to busbar-llm)
 use gemini::GeminiJsonArrayFramer;
 // The extracted OpenAI Chat dialect's codec structs, in scope for the same test surface that
 // predates the extraction. Present only in the builds that compile the dialect back in — and on the
@@ -503,7 +507,7 @@ pub fn known_protocols() -> &'static [&'static str] {
 /// lane protocols). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
 /// codec lives in the plugin and core reaches it via `decl_for(name).dialect()`), so the old
 /// `ProtocolRegistry` `Arc<Protocol>` cache is gone — this is the whole of what lane-build needed from it.
-pub(crate) fn lane_protocol_name(name: &str) -> Option<&'static str> {
+pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
     registry::decl_for(name)
         .filter(|d| d.codec.is_some())
         .map(|d| d.name)
@@ -517,82 +521,11 @@ pub(crate) fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::
     map
 }
 
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;
-
-/// THE REGISTRY'S OWN TESTS, including the acceptance test for the whole step: a protocol nobody
-/// wrote resolves, dispatches and is observable with no edit to core.
-#[cfg(test)]
-#[path = "tests/registry_tests.rs"]
-mod registry_tests;
-
-#[cfg(test)]
-#[path = "tests/stream_fanout_tests.rs"]
-mod stream_fanout_tests;
-
-#[cfg(test)]
-#[path = "tests/stream_translate_tests.rs"]
-mod stream_translate_tests;
-
-/// Change B step 2 — SAME-PROTOCOL FIDELITY PROOF. For each of the 6 protocols, replay captured
-/// native streaming frames through a `StreamTranslate::new_same_proto` translator and assert the
-/// concatenated `feed` + `finish` output is BYTE-FOR-BYTE identical to the input frames (the verbatim
-/// short-circuit must never re-serialize). Also asserts the IR-derived `usage()` (the A-tap billing
-/// value) matches the token counts embedded in the captured frames. The three HIGHEST-RISK paths
-/// (bedrock binary eventstream, gemini non-`?alt=sse` JSON-array source frames, openai bare `data:`)
-/// get dedicated frame-for-frame assertions.
-#[cfg(test)]
-#[path = "tests/same_proto_fidelity_tests.rs"]
-mod same_proto_fidelity_tests;
-
-#[cfg(test)]
-#[path = "tests/gemini_tests.rs"]
-mod gemini_tests;
-
-#[cfg(test)]
-#[path = "tests/context_length_tests.rs"]
-mod context_length_tests;
-
-#[cfg(test)]
-#[path = "tests/gemini_integration_tests.rs"]
-mod gemini_integration_tests;
-
-#[cfg(test)]
-#[path = "tests/response_format_matrix_tests.rs"]
-mod response_format_matrix_tests;
-
-#[cfg(test)]
-#[path = "tests/stop_reason_matrix_tests.rs"]
-mod stop_reason_matrix_tests;
-
-#[cfg(test)]
-#[path = "tests/image_source_matrix_tests.rs"]
-mod image_source_matrix_tests;
-
-#[cfg(test)]
-#[path = "tests/translate_parity_golden_tests.rs"]
-mod translate_parity_golden_tests;
-
-/// Cross-protocol translate-path byte-parity goldens for the OTHER high-traffic dialect pairs
-/// (anthropic/openai/gemini/responses), extending the single anthropic⇄openai pair above with the
-/// same bless-mode generation and id-normalization discipline.
-#[cfg(test)]
-#[path = "tests/translate_parity_cross_pairs_tests.rs"]
-mod translate_parity_cross_pairs_tests;
-
-/// READ → WRITE round-trip fidelity per protocol, with an EXACT allow-list of accepted divergences.
-/// The complement to `same_proto_fidelity_tests` (which covers the byte-verbatim short-circuit that
-/// never enters the IR at all); this one drives the readers and writers that CAN lose.
-#[cfg(test)]
-#[path = "tests/roundtrip_fidelity_tests.rs"]
-mod roundtrip_fidelity_tests;
-
-/// ADVERSARIAL / HOSTILE-BODY matrix for the LLM cross-protocol path: drives all six readers (and
-/// the `StreamTranslate` seam) through non-object bodies, wrong-typed structural arrays, unknown
-/// terminal enums, hostile stream events (u64::MAX index / wrong-typed delta+usage / empty-type
-/// frames), over-deep nesting, truncated + garbage SSE, and oversized-but-valid bodies — asserting
-/// the CURRENT post-hardening contract of clean refusal or clean degrade, never a panic/hang/leak.
-#[cfg(test)]
-#[path = "tests/adversarial_tests.rs"]
-mod adversarial_tests;
+// THE CODEC/IR TEST SUITES that used to live here (`tests/tests.rs`, `registry_tests`,
+// `stream_fanout_tests`, `stream_translate_tests`, `same_proto_fidelity_tests`, `gemini_tests`,
+// `context_length_tests`, `gemini_integration_tests`, `response_format_matrix_tests`,
+// `stop_reason_matrix_tests`, `image_source_matrix_tests`, `translate_parity_golden_tests`,
+// `translate_parity_cross_pairs_tests`, `roundtrip_fidelity_tests`, `adversarial_tests`) were
+// RELOCATED to `busbar-llm/src/tests/proto/` (plane-extraction §5, Phase 1): they name the dialects
+// and the concrete wire codecs, which a neutral crate's tests must not, so they live beside the
+// types they exercise. The dialect/IR SOURCE `#[path]` witnesses above remain until Phase 2's flip.

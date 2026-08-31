@@ -52,7 +52,7 @@ const LANE_MODEL: &str = "gpt-4o-mini";
 const FIXED_NOW: u64 = 1_752_000_000;
 
 fn golden_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/proto/tests/golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/proto/golden")
 }
 
 fn bless() -> bool {
@@ -82,13 +82,13 @@ fn check_golden(name: &str, actual: &[u8]) {
 /// The production REQUEST translate steps for an arbitrary `ingress`→`egress` lane, byte-for-byte.
 /// Mirrors `translate_request_a2o` in the sibling file exactly, parameterized on the two protocols.
 fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8> {
-    let ingress_p = crate::proto::protocol_for(ingress).expect("ingress protocol");
-    let egress_p = crate::proto::protocol_for(egress).expect("egress protocol");
-    let v: Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
+    let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
+    let v: Value = busbar_substrate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut req = ingress_p.reader().read_request(&v).expect("reads");
-    crate::proto::chat_handle::chat_prepare_for_egress(
+    crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &crate::ir::egress_prep::EgressPrep {
+        &busbar_substrate::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
@@ -101,11 +101,11 @@ fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8>
         },
     );
     let mut out = egress_p.writer().write_request(&req);
-    crate::proxy::strip_router_shim_keys(&mut out, egress);
+    busbar_core::proxy::strip_router_shim_keys(&mut out, egress);
     egress_p
         .writer()
         .rewrite_model_if_needed(&mut out, LANE_MODEL);
-    crate::json::to_vec(&out).expect("serializes")
+    busbar_substrate::json::to_vec(&out).expect("serializes")
 }
 
 /// Shape-assert an ingress-synthesized id at `obj[key]` (`<prefix><base62 tail>`) and normalize it to
@@ -213,17 +213,17 @@ fn normalize_ingress_ids(ingress: &str, out: &mut Value) {
 /// The production RESPONSE translate steps for an arbitrary `egress`→`ingress` lane, byte-for-byte,
 /// with the ingress writer's synthesized id(s) normalized. Mirrors `translate_response_o2a`.
 fn translate_response(egress: &str, ingress: &'static str, body: &str) -> Vec<u8> {
-    let egress_p = crate::proto::protocol_for(egress).expect("egress protocol");
-    let ingress_p = crate::proto::protocol_for(ingress).expect("ingress protocol");
-    let v: Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let egress_p = crate::proto_codec::protocol_for(egress).expect("egress protocol");
+    let ingress_p = crate::proto_codec::protocol_for(ingress).expect("ingress protocol");
+    let v: Value = busbar_substrate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let mut resp = egress_p.reader().read_response(&v).expect("reads");
-    crate::proto::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, FIXED_NOW);
+    crate::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, FIXED_NOW);
     let mut out = ingress_p.writer().write_response(&resp);
     ingress_p
         .writer()
         .inject_response_metrics(&mut out, Some(123));
     normalize_ingress_ids(ingress, &mut out);
-    crate::json::to_vec(&out).expect("serializes")
+    busbar_substrate::json::to_vec(&out).expect("serializes")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -293,7 +293,7 @@ pub(crate) fn shape_cross_protocol_error(
 /// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
 /// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
 /// short-circuit to its retained original bytes.
-pub(crate) fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
+pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
     let mut changed = false;
     if let Some(obj) = v.as_object_mut() {
         // A protocol's array-stream shim key is never native to ANY backend wire → strip every

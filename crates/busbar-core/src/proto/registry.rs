@@ -129,14 +129,14 @@ static BUILTIN_DECLS: &[&ProtocolDecl] = &[
 /// registry's own tests to build a registry with ONE MORE declaration in it — which is the whole of
 /// what a loader will do differently.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn builtin_decls() -> &'static [&'static ProtocolDecl] {
+pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
     BUILTIN_DECLS
 }
 
 /// THE REGISTRY: the declarations, plus the aggregates that used to be three separate `OnceLock`
 /// sweeps. Built once; every field is derived from the declarations and from nothing else, so there
 /// is no second place a protocol fact can be stated.
-pub(crate) struct Registry {
+pub struct Registry {
     decls: Vec<&'static ProtocolDecl>,
     /// Absorbed `proxy::lazy_body::captured_head_keys()`: every declared head key, plus every
     /// declared shim key (the shim marker is point-read on the pre-materialized path exactly like a
@@ -165,7 +165,7 @@ impl Registry {
     /// Build a registry from declarations. Production hands it the built-ins plus anything loaded;
     /// a test hands it the built-ins plus a protocol nobody wrote. THE CONSTRUCTOR IS THE SAME ONE,
     /// which is the property being claimed: joining costs a declaration and nothing else.
-    pub(crate) fn new(decls: impl IntoIterator<Item = &'static ProtocolDecl>) -> Self {
+    pub fn new(decls: impl IntoIterator<Item = &'static ProtocolDecl>) -> Self {
         let decls: Vec<&'static ProtocolDecl> = decls.into_iter().collect();
         let mut head_keys: Vec<&'static str> = Vec::new();
         let mut streaming_content_types: Vec<&'static str> = Vec::new();
@@ -223,7 +223,7 @@ impl Registry {
 
     /// Resolve a declaration by name. A linear scan over a handful of interned `&'static str`s —
     /// the same comparison chain the `match` compiled to, with the arms as data.
-    pub(crate) fn decl(&self, name: &str) -> Option<&'static ProtocolDecl> {
+    pub fn decl(&self, name: &str) -> Option<&'static ProtocolDecl> {
         // Interned-name fast path: hot callers hold the registry's own `&'static` name
         // (`Lane.protocol`, the route table), so pointer identity settles the row without a byte
         // compare; a foreign string (config parse, a test literal) falls through to the equality
@@ -236,33 +236,33 @@ impl Registry {
 
     /// Every declaration, in declaration order.
     #[allow(dead_code)] // used by the netted dialect test crates; unused in the core target
-    pub(crate) fn decls(&self) -> &[&'static ProtocolDecl] {
+    pub fn decls(&self) -> &[&'static ProtocolDecl] {
         &self.decls
     }
 
     /// The complete set of top-level body keys the head projection captures.
-    pub(crate) fn head_keys(&self) -> &'static [&'static str] {
+    pub fn head_keys(&self) -> &'static [&'static str] {
         self.head_keys
     }
 
     /// The streaming `Content-Type` set across every declared protocol.
-    pub(crate) fn streaming_content_types(&self) -> &'static [&'static str] {
+    pub fn streaming_content_types(&self) -> &'static [&'static str] {
         self.streaming_content_types
     }
 
     /// The array-stream shim keys across every declared protocol.
-    pub(crate) fn array_stream_shim_keys(&self) -> &'static [&'static str] {
+    pub fn array_stream_shim_keys(&self) -> &'static [&'static str] {
         self.array_stream_shim_keys
     }
 
     /// The names of every protocol that ships a wire codec.
-    pub(crate) fn codec_protocols(&self) -> &'static [&'static str] {
+    pub fn codec_protocols(&self) -> &'static [&'static str] {
         self.codec_protocols
     }
 
     /// Every verb any declared protocol serves, in declaration order, deduped. See the field doc.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn declared_verbs(&self) -> &'static [crate::operation::Operation] {
+    pub fn declared_verbs(&self) -> &'static [crate::operation::Operation] {
         self.declared_verbs
     }
 }
@@ -270,8 +270,8 @@ impl Registry {
 /// THE VERBS THE REGISTERED PROTOCOLS DECLARE — the declared half of the operation vocabulary
 /// (`Operation::ALL`, the six shape verbs, is the core-owned half). Together they are the closed
 /// metric-label surface `operation.rs`'s header promises; separately they say WHO owns each word.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn declared_verbs() -> &'static [crate::operation::Operation] {
+#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+pub fn declared_verbs() -> &'static [crate::operation::Operation] {
     registry().declared_verbs()
 }
 
@@ -371,7 +371,7 @@ pub fn install_protocols_with_path_ingress(
 /// the invariant [`install_protocols_with_path_ingress`] asserts at boot — the guard that a
 /// path-model protocol installed without its arrival cannot silently 404 (see the module header and
 /// `crate::ingress::path_ingress`).
-pub(crate) fn first_path_model_without_arrival(
+pub fn first_path_model_without_arrival(
     decls: &[&'static ProtocolDecl],
     path_ingress_names: &[&str],
 ) -> Option<&'static str> {
@@ -386,7 +386,7 @@ pub(crate) fn first_path_model_without_arrival(
 /// asserted). Split from [`registry`]'s `OnceLock` so its order and skip semantics are a function a
 /// test can drive — the process singleton can only ever be initialized once per test binary, which
 /// would leave these rules provable only by booting binaries.
-pub(crate) fn merged_boot_decls(
+pub fn merged_boot_decls(
     installed: &[&'static ProtocolDecl],
     builtins: &[&'static ProtocolDecl],
 ) -> Vec<&'static ProtocolDecl> {

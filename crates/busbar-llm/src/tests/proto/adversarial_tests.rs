@@ -376,7 +376,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
         s.push(']');
     }
     s.push('}');
-    let parsed = crate::json::parse::<serde_json::Value>(s.as_bytes());
+    let parsed = busbar_substrate::json::parse::<serde_json::Value>(s.as_bytes());
     assert!(
         parsed.is_err(),
         "a body nested past MAX_JSON_DEPTH must be rejected at the parse boundary, before any Value/reader"
@@ -385,7 +385,8 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
     // not over-reject normal traffic).
     let ok_body =
         br#"{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
-    let value = crate::json::parse::<serde_json::Value>(ok_body).expect("shallow body parses");
+    let value =
+        busbar_substrate::json::parse::<serde_json::Value>(ok_body).expect("shallow body parses");
     for name in DIALECTS {
         // Read must not panic; Ok or a typed reject are both acceptable per-dialect (shape differs),
         // but never a panic.

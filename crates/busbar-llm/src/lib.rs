@@ -221,3 +221,11 @@ mod decode_native_tool_id_tests;
 #[cfg(test)]
 #[path = "tests/leaf_write_dispatch_tests.rs"]
 mod leaf_write_dispatch_tests;
+
+/// THE CODEC/IR TEST SUITES relocated from `busbar-core`'s `proto/tests/*` (plane-extraction §5,
+/// Phase 1): the detection / translate-parity / streaming / round-trip / IR goldens that name the
+/// dialects and the concrete wire codecs, now living beside the types they exercise. See the module
+/// header for the `super::*` prelude reconstruction.
+#[cfg(test)]
+#[path = "tests/proto/mod.rs"]
+mod relocated_proto_tests;

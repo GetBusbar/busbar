@@ -20,7 +20,7 @@ fn test_streaming_content_types_cached_set() {
 fn test_array_stream_shim_keys_cached_set() {
     assert_eq!(
         array_stream_shim_keys(),
-        [crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY],
+        [crate::gemini::GEMINI_JSON_ARRAY_SHIM_KEY],
         "cached shim-key set must be exactly the gemini json-array key"
     );
 }
@@ -161,7 +161,7 @@ fn synth_anthropic_request_id_msd_is_uniform() {
         let bytes = token.as_bytes();
         for &msd in &[bytes[0], bytes[12]] {
             total += 1;
-            if crate::proto::BASE62_ALPHABET[..29].contains(&msd) {
+            if busbar_core::proto::BASE62_ALPHABET[..29].contains(&msd) {
                 low += 1;
             }
         }
@@ -239,7 +239,7 @@ fn test_requires_max_tokens_per_protocol() {
         ("cohere", false),
     ] {
         assert_eq!(
-            crate::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
+            busbar_core::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
             want,
             "{name}: requires_max_tokens mismatch"
         );
@@ -435,7 +435,7 @@ fn test_openai_tool_schema_translates_to_anthropic() {
 
 #[test]
 fn test_roundtrip_identity() {
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -451,7 +451,7 @@ fn test_roundtrip_identity() {
 
 #[test]
 fn test_signature_verbatim() {
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -494,7 +494,7 @@ fn test_signature_verbatim() {
 
 #[test]
 fn test_cache_control_preserved() {
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -531,10 +531,10 @@ fn test_cache_control_preserved() {
 /// `reasoning` gate. With the flag, the marker flows (Claude-on-Bedrock keeps its caching).
 #[test]
 fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
-    let anthropic = crate::proto::protocol_for("anthropic").unwrap();
-    let bedrock = crate::proto::protocol_for("bedrock").unwrap();
-    assert!(crate::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
-    assert!(crate::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
+    let anthropic = crate::proto_codec::protocol_for("anthropic").unwrap();
+    let bedrock = crate::proto_codec::protocol_for("bedrock").unwrap();
+    assert!(busbar_core::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
+    assert!(busbar_core::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
 
     let body = serde_json::json!({
         "model": "claude", "max_tokens": 64,
@@ -546,7 +546,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
                    "cache_control": {"type": "ephemeral"}}]
     });
 
-    let prep = |allowed: bool| crate::ir::egress_prep::EgressPrep {
+    let prep = |allowed: bool| busbar_substrate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: false,
@@ -563,7 +563,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     // Lane WITHOUT the capability: every breakpoint cleared, no cachePoint on the wire.
     let ir = anthropic.reader().read_request(&body).unwrap();
     let mut req = ir;
-    crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(false));
+    crate::chat_handle::chat_prepare_for_egress(&mut req, &prep(false));
     let ir = req;
     let wire = bedrock.writer().write_request(&ir);
     assert!(
@@ -574,7 +574,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     // Lane WITH `prompt_caching: true`: the breakpoints project (Claude on Bedrock).
     let ir = anthropic.reader().read_request(&body).unwrap();
     let mut req = ir;
-    crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(true));
+    crate::chat_handle::chat_prepare_for_egress(&mut req, &prep(true));
     let ir = req;
     let wire = bedrock.writer().write_request(&ir);
     assert!(
@@ -585,7 +585,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
 
 #[test]
 fn test_extra_passthrough() {
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -690,17 +690,17 @@ fn test_cross_protocol_top_k_dropped_for_openai_target() {
 #[test]
 fn test_registry_resolves_anthropic() {
     // Anthropic should be present
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     assert_eq!(protocol.name(), "anthropic");
     assert_eq!(protocol.writer().upstream_path(), "/v1/messages");
 
     // Non-existent should return None
-    assert!(crate::proto::protocol_for("nonexistent").is_none());
+    assert!(crate::proto_codec::protocol_for("nonexistent").is_none());
 }
 
 #[test]
 fn test_reader_classify_behavior() {
-    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
 
     // Test 429 → RateLimit
@@ -718,7 +718,7 @@ fn test_reader_classify_behavior() {
 
 #[test]
 fn test_writer_auth_headers() {
-    let headers = crate::proto::anthropic::anthropic_auth_headers("k", None);
+    let headers = crate::anthropic::anthropic_auth_headers("k", None);
     let header_names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
 
     assert!(header_names.contains(&"x-api-key"));
@@ -737,8 +737,8 @@ fn test_irerror_bridge() {
 
     // Billing is a hard, non-retryable failure for the breaker.
     assert_eq!(
-        crate::breaker::classify(&ir_error),
-        crate::breaker::Disposition::HardDown
+        busbar_substrate::breaker::classify(&ir_error),
+        busbar_substrate::breaker::Disposition::HardDown
     );
 }
 
@@ -1070,7 +1070,7 @@ fn test_ping_returns_none() {
 
 #[test]
 fn test_openai_request_roundtrip_identity() {
-    let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
+    let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
 
@@ -1156,7 +1156,7 @@ fn test_openai_request_roundtrip_identity() {
 
 #[test]
 fn test_openai_tool_call_arguments_string_to_value() {
-    let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
+    let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
 
@@ -1225,20 +1225,20 @@ fn test_openai_tool_call_arguments_string_to_value() {
 fn test_registry_has_both_protocols() {
     // Both should exist
     assert!(
-        crate::proto::protocol_for("anthropic").is_some(),
+        crate::proto_codec::protocol_for("anthropic").is_some(),
         "anthropic should exist"
     );
     assert!(
-        crate::proto::protocol_for("openai").is_some(),
+        crate::proto_codec::protocol_for("openai").is_some(),
         "openai should exist"
     );
 
     // Verify openai writer path
-    let openai = crate::proto::protocol_for("openai").expect("openai should exist");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai should exist");
     assert_eq!(openai.writer().upstream_path(), "/v1/chat/completions");
 
     // Verify anthropic writer path
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
     assert_eq!(anthropic.writer().upstream_path(), "/v1/messages");
 }
 
@@ -1376,14 +1376,14 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
 }
 
 /// Regression: Cohere is a free-form-tool-id
-/// ingress with NO canonical prefix, so `crate::proto::native_tool_id_prefix("cohere")` must be `None` (like
+/// ingress with NO canonical prefix, so `crate::proto_codec::native_tool_id_prefix("cohere")` must be `None` (like
 /// Gemini). An empty prefix would make the bare `bb1` marker the only distinguishing signal and
 /// silently hex-decode a legitimate client-authored id of shape `bb1<even-len-hex-UTF8>`,
 /// corrupting tool_use/tool_result correlation on a Cohere-ingress cross-protocol hop.
 #[test]
 fn cohere_tool_ids_pass_through_verbatim_no_decode() {
     // No prefix for Cohere — the encode never reshapes a Cohere-ingress tool id.
-    assert_eq!(crate::proto::native_tool_id_prefix("cohere"), None);
+    assert_eq!(crate::proto_codec::native_tool_id_prefix("cohere"), None);
 
     // A client-authored Cohere id that matches the colliding `bb1<even-hex-UTF8>` shape
     // (`bb161626364` → `bb1` + hex("abcd")) must NOT be decoded — it passes through unchanged.
@@ -1408,11 +1408,11 @@ fn write_sse_frame_pins_both_framings_byte_for_byte() {
     let data = serde_json::json!({"a": 1});
 
     let mut out = Vec::new();
-    crate::proto::write_sse_frame(&mut out, "x", &data);
+    busbar_core::proto::write_sse_frame(&mut out, "x", &data);
     assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
 
     let mut out = Vec::new();
-    crate::proto::write_sse_frame(&mut out, "", &data);
+    busbar_core::proto::write_sse_frame(&mut out, "", &data);
     assert_eq!(out, b"data: {\"a\":1}\n\n");
 }
 
@@ -1499,7 +1499,8 @@ mod ir_property_tests {
     fn test_anthropic_request_decode_assertions() {
         // DECODE assertions on rich canonical fixture - exact field values that a doctored
         // fixture cannot fake
-        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+        let protocol =
+            crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let j = anthropic_rich_fixture();
 
@@ -1630,7 +1631,8 @@ mod ir_property_tests {
         // serializer adds is_error:false for tool_result blocks that had no is_error field in input.
         // This is documented semantic equivalence per anti-fab spec - assert on DECODED IR directly
         // which is the ground truth that a doctored fixture cannot fake.
-        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+        let protocol =
+            crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
         let j = anthropic_rich_fixture();
@@ -1655,7 +1657,8 @@ mod ir_property_tests {
         let j = serde_json::json!({
             "messages": [{"role": "user", "content": "hi"}]
         });
-        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
+        let protocol =
+            crate::proto_codec::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
 
@@ -1743,7 +1746,7 @@ mod ir_property_tests {
     fn test_openai_request_decode_assertions() {
         // DECODE assertions on canonical OpenAI fixture - exact field values that a doctored
         // fixture cannot fake
-        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
+        let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let j = openai_rich_fixture();
 
@@ -1820,7 +1823,7 @@ mod ir_property_tests {
     fn test_openai_tool_call_id_correlation_survives_write() {
         // tool_call id correlation survives write: after write_request, the assistant
         // tool_calls[0].id == "call_123" AND the tool message tool_call_id == "call_123" (same id)
-        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
+        let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
         let j = openai_rich_fixture();
@@ -1865,7 +1868,7 @@ mod ir_property_tests {
     fn test_openai_arguments_string_to_value_roundtrip() {
         // arguments string↔Value: OpenAI function `arguments` (JSON string) → ToolUse.input
         // (Value/Object) on read, re-serialized to a string on write that re-parses equal
-        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
+        let protocol = crate::proto_codec::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
 
@@ -2442,8 +2445,8 @@ mod ir_property_tests {
     #[test]
     fn test_openai_write_response_event_error() {
         let writer = OpenAiWriter;
-        let err = crate::proto::IrError {
-            class: crate::breaker::StatusClass::ClientError,
+        let err = busbar_core::proto::IrError {
+            class: busbar_substrate::breaker::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
         };
@@ -2468,7 +2471,7 @@ mod ir_property_tests {
     // Re-parse both sides and assert JSON equality with `usage` gone, plus assert the raw output has no
     // top-level `usage` key. Parsing both proves the splice stayed well-formed.
     fn assert_stripped_ok(input: &str) -> String {
-        let out = crate::proto::strip_top_level_usage_member(input)
+        let out = busbar_core::proto::strip_top_level_usage_member(input)
             .unwrap_or_else(|| panic!("expected a byte-level strip for: {input}"));
         let parsed: serde_json::Value = serde_json::from_str(&out)
             .unwrap_or_else(|e| panic!("stripped output invalid: {e}: {out}"));
@@ -2538,7 +2541,7 @@ mod ir_property_tests {
         let input =
             r#"{"id":"x","choices":[{"delta":{"content":"the json \"usage\":null tell"}}]}"#;
         assert!(
-            crate::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
             "must not match `usage` inside a string value"
         );
     }
@@ -2563,7 +2566,7 @@ mod ir_property_tests {
         // and with no TOP-LEVEL usage it returns None.
         let input = r#"{"id":"x","meta":{"usage":null},"choices":[]}"#;
         assert!(
-            crate::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
             "nested usage must not be treated as the top-level member"
         );
     }
@@ -2572,6 +2575,6 @@ mod ir_property_tests {
     fn strip_usage_no_usage_key_returns_none() {
         // A content chunk with no `usage` key at all - nothing to do.
         let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#;
-        assert!(crate::proto::strip_top_level_usage_member(input).is_none());
+        assert!(busbar_core::proto::strip_top_level_usage_member(input).is_none());
     }
 }

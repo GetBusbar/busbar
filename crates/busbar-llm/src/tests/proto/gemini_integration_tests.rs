@@ -22,13 +22,13 @@ fn test_gemini_upstream_path_for_embeds_model() {
 // gemini is now a registered, buildable protocol.
 #[test]
 fn test_gemini_registered_in_builtins() {
-    let g = crate::proto::protocol_for("gemini").expect("gemini should be registered");
+    let g = crate::proto_codec::protocol_for("gemini").expect("gemini should be registered");
     assert_eq!(g.name(), "gemini");
     assert_eq!(
         g.writer().upstream_path_for("m"),
         "/v1beta/models/m:generateContent"
     );
     // x-goog-api-key auth header.
-    let headers = crate::egress_auth::api_key_headers("x-goog-api-key", "k");
+    let headers = busbar_core::egress_auth::api_key_headers("x-goog-api-key", "k");
     assert!(headers.iter().any(|(n, _)| n.as_str() == "x-goog-api-key"));
 }

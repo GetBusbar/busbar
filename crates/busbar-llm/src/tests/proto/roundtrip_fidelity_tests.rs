@@ -96,7 +96,7 @@ fn diff(path: &str, want: &Value, got: &Value, out: &mut Vec<Divergence>) {
 
 /// Run one protocol's request round trip and assert the divergence set EXACTLY equals `allowed`.
 fn assert_request_roundtrip(proto: &str, body: Value, allowed: &[&str]) {
-    let entry = crate::proto::protocol_for(proto).expect("protocol registered");
+    let entry = crate::proto_codec::protocol_for(proto).expect("protocol registered");
     let ir = entry
         .reader
         .read_request(&body)
@@ -107,7 +107,7 @@ fn assert_request_roundtrip(proto: &str, body: Value, allowed: &[&str]) {
 
 /// Run one protocol's response round trip and assert the divergence set EXACTLY equals `allowed`.
 fn assert_response_roundtrip(proto: &str, body: Value, allowed: &[&str]) {
-    let entry = crate::proto::protocol_for(proto).expect("protocol registered");
+    let entry = crate::proto_codec::protocol_for(proto).expect("protocol registered");
     let ir = entry
         .reader
         .read_response(&body)
@@ -130,7 +130,7 @@ fn assert_divergences(proto: &str, dir: &str, want: &Value, got: &Value, allowed
         unexpected.is_empty(),
         "{proto} {dir}: NEW round-trip divergence(s) this protocol did not have before.\n  \
          {unexpected:#?}\nRound-tripped body:\n{}",
-        crate::json::to_string(got).unwrap_or_default()
+        busbar_substrate::json::to_string(got).unwrap_or_default()
     );
     assert!(
         fixed.is_empty(),
@@ -226,7 +226,7 @@ fn roundtrip_anthropic_response() {
 /// cannot be reconciled per line. Before `IrUsageDetail` there was nowhere to put them.
 #[test]
 fn anthropic_cache_tier_split_survives_the_ir() {
-    let entry = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let entry = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -296,7 +296,7 @@ fn roundtrip_openai_request() {
 /// audio never reached the model and nothing in the logs said why.
 #[test]
 fn openai_attachments_survive_the_ir_rather_than_becoming_empty_text() {
-    let entry = crate::proto::protocol_for("openai").expect("openai");
+    let entry = crate::proto_codec::protocol_for("openai").expect("openai");
     let ir = entry
         .reader
         .read_request(&json!({
@@ -365,7 +365,7 @@ fn openai_attachments_survive_the_ir_rather_than_becoming_empty_text() {
 /// The OpenAI `reasoning_tokens` sub-bucket reaches the IR instead of being reported as a hard `0`.
 #[test]
 fn openai_reasoning_tokens_reach_the_ir() {
-    let entry = crate::proto::protocol_for("openai").expect("openai");
+    let entry = crate::proto_codec::protocol_for("openai").expect("openai");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -402,7 +402,7 @@ fn openai_reasoning_tokens_reach_the_ir() {
 /// losslessness definition that says the backend never rejects the request.
 #[test]
 fn gemini_non_image_inline_data_is_not_an_image_block() {
-    let entry = crate::proto::protocol_for("gemini").expect("gemini");
+    let entry = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = entry
         .reader
         .read_request(&json!({
@@ -443,7 +443,7 @@ fn gemini_non_image_inline_data_is_not_an_image_block() {
     );
 
     // ...and the Anthropic egress must not put any of it on the wire as an `image`.
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let out = anthropic.writer.write_request(&ir);
     let parts = out["messages"][0]["content"].as_array().expect("content");
     for p in parts {
@@ -469,7 +469,7 @@ fn gemini_non_image_inline_data_is_not_an_image_block() {
 /// untranslatable-concept problem: the target had a slot the whole time.
 #[test]
 fn attachments_reach_gemini_as_inline_data() {
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let ir = openai
         .reader
         .read_request(&json!({
@@ -479,7 +479,7 @@ fn attachments_reach_gemini_as_inline_data() {
             ]}]
         }))
         .expect("read");
-    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let gemini = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let out = gemini.writer.write_request(&ir);
     let parts = out["contents"][0]["parts"].as_array().expect("parts");
     assert_eq!(parts[0]["inlineData"]["mimeType"], "audio/wav");
@@ -518,7 +518,7 @@ fn roundtrip_bedrock_request() {
 /// upstream twice.
 #[test]
 fn bedrock_document_is_modelled_without_double_emitting() {
-    let entry = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let entry = crate::proto_codec::protocol_for("bedrock").expect("bedrock");
     let body = json!({
         "messages": [{"role": "user", "content": [
             {"text": "hi"},
@@ -558,7 +558,7 @@ fn bedrock_document_is_modelled_without_double_emitting() {
 /// reasoning carrier, which is also what lets the Cohere writer put it back in its native slot.
 #[test]
 fn cohere_tool_plan_is_reasoning_not_visible_text() {
-    let entry = crate::proto::protocol_for("cohere").expect("cohere");
+    let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -593,7 +593,7 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
     assert_eq!(out["message"]["content"][0]["text"], "hi");
 
     // Cross-protocol: an Anthropic client sees it as a `thinking` block, not as the answer.
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let a = anthropic.writer.write_response(&ir);
     assert_eq!(a["content"][0]["type"], "thinking");
     assert_eq!(a["content"][1]["text"], "hi");
@@ -603,7 +603,7 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
 /// into a literal JSON blob the model reads as escaped syntax.
 #[test]
 fn cohere_tool_result_document_is_not_stringified() {
-    let entry = crate::proto::protocol_for("cohere").expect("cohere");
+    let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = entry
         .reader
         .read_request(&json!({
@@ -657,7 +657,7 @@ fn cohere_tool_result_document_is_not_stringified() {
 /// its loss is invisible in a token total that reconciles perfectly.
 #[test]
 fn cohere_search_units_reach_the_ir() {
-    let entry = crate::proto::protocol_for("cohere").expect("cohere");
+    let entry = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -682,7 +682,7 @@ fn cohere_search_units_reach_the_ir() {
 /// A Responses `input_file` survives read → write instead of becoming an empty `input_text` part.
 #[test]
 fn responses_input_file_survives_the_ir() {
-    let entry = crate::proto::protocol_for("responses").expect("responses");
+    let entry = crate::proto_codec::protocol_for("responses").expect("responses");
     let ir = entry
         .reader
         .read_request(&json!({
@@ -721,7 +721,7 @@ fn responses_input_file_survives_the_ir() {
 /// Responses `output_tokens_details.reasoning_tokens` no longer arrives as a hard `0`.
 #[test]
 fn responses_reasoning_tokens_are_not_zeroed() {
-    let entry = crate::proto::protocol_for("responses").expect("responses");
+    let entry = crate::proto_codec::protocol_for("responses").expect("responses");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -748,7 +748,7 @@ fn responses_reasoning_tokens_are_not_zeroed() {
 /// double-counting.
 #[test]
 fn gemini_thoughts_token_count_is_the_reasoning_sub_bucket() {
-    let entry = crate::proto::protocol_for("gemini").expect("gemini");
+    let entry = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = entry
         .reader
         .read_response(&json!({
@@ -792,7 +792,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
         delta: crate::ir::IrDelta::CitationsDelta(vec![citation]),
     };
 
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let (_, chunk) = openai
         .writer
         .write_response_event(&ev)
@@ -802,7 +802,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
     assert_eq!(ann["url_citation"]["url"], "https://x");
     assert_eq!(ann["url_citation"]["start_index"], 0);
 
-    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let cohere = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let (_, frame) = cohere
         .writer
         .write_response_event(&ev)
@@ -841,7 +841,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
 /// is a compliance problem, not a cosmetic one.
 #[test]
 fn cohere_response_citations_reach_a_foreign_client() {
-    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let cohere = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = cohere
         .reader
         .read_response(&json!({
@@ -867,7 +867,7 @@ fn cohere_response_citations_reach_a_foreign_client() {
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
 
     // Cross-protocol: an Anthropic-dialect client sees the grounding rather than a bare assertion.
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let out = anthropic.writer.write_response(&ir);
     assert!(
         out["content"][0]["citations"]
@@ -907,7 +907,7 @@ fn cohere_response_citations_reach_a_foreign_client() {
 /// must not have cost the verbatim round trip).
 #[test]
 fn anthropic_search_result_reaches_a_foreign_client() {
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let body = json!({
         "model": "claude-x",
         "max_tokens": 64,
@@ -948,7 +948,7 @@ fn anthropic_search_result_reaches_a_foreign_client() {
     );
 
     // CROSS-PROTOCOL, the direction that was broken: an OpenAI backend must receive the passage.
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let out = openai.writer.write_request(&ir);
     let rendered = out["messages"][0]["content"].to_string();
     assert!(
@@ -957,7 +957,7 @@ fn anthropic_search_result_reaches_a_foreign_client() {
     );
 
     // ... and a Gemini backend, whose content shape is different again.
-    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let gemini = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let out = gemini.writer.write_request(&ir);
     assert!(
         out.to_string()
@@ -996,7 +996,7 @@ fn streamed_citations_reach_a_bedrock_client() {
             raw: None,
         }]),
     };
-    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let bedrock = crate::proto_codec::protocol_for("bedrock").expect("bedrock");
     let (et, frame) = bedrock
         .writer
         .write_response_event(&ev)
@@ -1032,7 +1032,7 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
             raw: None,
         }]),
     };
-    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let bedrock = crate::proto_codec::protocol_for("bedrock").expect("bedrock");
     let (_, frame) = bedrock.writer.write_response_event(&ev).expect("frame");
     let c = &frame["delta"]["citation"];
     assert_eq!(c["title"], "Contract");
@@ -1051,7 +1051,7 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
 /// citation.
 #[test]
 fn gemini_grounding_metadata_reaches_a_foreign_client() {
-    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let gemini = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = gemini
         .reader
         .read_response(&json!({
@@ -1078,7 +1078,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
 
     // CROSS-PROTOCOL both ways out: an OpenAI client sees an annotation, an Anthropic client a
     // citation. Neither receives a bare unattributed paragraph.
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let out = openai.writer.write_response(&ir);
     // NOTE the shape: the BUFFERED writer emits the flat `url_annotations` entry
     // (`{type,url,title,start_index,end_index}`) while the STREAMING arm emits the nested
@@ -1088,7 +1088,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
         out["choices"][0]["message"]["annotations"][0]["url"], "https://atlas",
         "the grounding source must reach an OpenAI client: {out}"
     );
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let out = anthropic.writer.write_response(&ir);
     assert!(
         out["content"][0]["citations"]
@@ -1104,7 +1104,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
 /// re-created the exact gap this closes for that subset of responses.
 #[test]
 fn gemini_grounding_chunks_cross_without_support_spans() {
-    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let gemini = crate::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = gemini
         .reader
         .read_response(&json!({
@@ -1132,8 +1132,8 @@ fn gemini_grounding_chunks_cross_without_support_spans() {
 /// dialects that model it must carry it between themselves.
 #[test]
 fn tool_strict_crosses_the_openai_responses_pair() {
-    let openai = crate::proto::protocol_for("openai").expect("openai");
-    let responses = crate::proto::protocol_for("responses").expect("responses");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
+    let responses = crate::proto_codec::protocol_for("responses").expect("responses");
 
     // Chat → Responses.
     let ir = openai
@@ -1189,7 +1189,7 @@ fn tool_strict_crosses_the_openai_responses_pair() {
 /// the cross-protocol seam.
 #[test]
 fn openai_message_name_survives_a_same_protocol_reserialize() {
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let ir = openai
         .reader
         .read_request(&json!({
@@ -1221,7 +1221,7 @@ fn openai_message_name_survives_a_same_protocol_reserialize() {
 /// `stream:true` — the identical asymmetry that made the streamed-citation gap the worst-shaped one.
 #[test]
 fn streamed_usage_sub_buckets_are_not_zeroed() {
-    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let mut state = crate::ir::StreamDecodeState::default();
     let events = openai.reader.read_response_events(
         "",
@@ -1273,7 +1273,7 @@ fn streamed_usage_sub_buckets_are_not_zeroed() {
 /// Anthropic's separately-priced 5m/1h cache tiers survive a STREAM.
 #[test]
 fn streamed_anthropic_cache_tiers_survive() {
-    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let mut state = crate::ir::StreamDecodeState::default();
     let events = anthropic.reader.read_response_events(
         "message_start",
@@ -1333,7 +1333,7 @@ fn streamed_anthropic_cache_tiers_survive() {
 /// reconciles perfectly — which is exactly why it needs a test rather than a reviewer.
 #[test]
 fn streamed_cohere_search_units_survive() {
-    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let cohere = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let mut state = crate::ir::StreamDecodeState::default();
     let events = cohere.reader.read_response_events(
         "message-end",
@@ -1384,7 +1384,7 @@ fn streamed_cohere_search_units_survive() {
 /// caller streams and none when it does not.
 #[test]
 fn buffered_citations_reach_a_bedrock_client() {
-    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let cohere = crate::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = cohere
         .reader
         .read_response(&json!({
@@ -1402,7 +1402,7 @@ fn buffered_citations_reach_a_bedrock_client() {
         }))
         .expect("read");
 
-    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let bedrock = crate::proto_codec::protocol_for("bedrock").expect("bedrock");
     let out = bedrock.writer.write_response(&ir);
     let block = &out["output"]["message"]["content"][0];
     assert_eq!(
@@ -1422,7 +1422,7 @@ fn buffered_citations_reach_a_bedrock_client() {
 /// in exchange for nothing.
 #[test]
 fn bedrock_uncited_text_keeps_the_plain_shape() {
-    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let bedrock = crate::proto_codec::protocol_for("bedrock").expect("bedrock");
     let out = bedrock.writer.write_response(&crate::ir::IrResponse {
         role: crate::ir::IrRole::Assistant,
         content: vec![crate::ir::IrBlock::Text {

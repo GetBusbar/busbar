@@ -205,6 +205,6 @@ pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 // `busbar_core::proto::openai_family::tool_arguments_to_string` path so any in-core caller is unchanged.
 pub use busbar_substrate::proto::tool_arguments_to_string;
 
-#[cfg(test)]
-#[path = "tests/openai_family_tests.rs"]
-mod tests;
+// `tests/openai_family_tests.rs` RELOCATED to `busbar-llm/src/tests/proto/openai_family_tests.rs`
+// (plane-extraction §5, Phase 1): it drives `protocol_for("openai")` — a witnessed codec item — so
+// it moved to the plugin beside the codec it exercises.
