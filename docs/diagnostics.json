@@ -736,10 +736,10 @@
     "number": 4026,
     "class": "auth",
     "slug": "admin-auth-chain-empty",
-    "title": "Admin API admin_auth chain set EMPTY (open, anonymous, full-authority posture)",
+    "title": "admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)",
     "severity": "actionable",
-    "summary": "A PUT to `/api/v1/admin/admin-auth` applied an EMPTY admin_auth chain, so the admin API now has NO credential gating it — every admin request is admitted anonymously with full authority. This is the open dev posture; it is a deliberate security-posture change, not a per-request event.",
-    "action": "Configure a non-empty `admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network. Leave it empty only for local development.",
+    "summary": "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned grant, never full), so this posture can only be entered deliberately via config.yaml at boot — never flipped open by one unnoticed API call.",
+    "action": "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network.",
     "since": "1.6.0",
     "retired": false
   },

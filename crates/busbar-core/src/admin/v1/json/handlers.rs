@@ -2176,11 +2176,26 @@ pub(crate) async fn put_auth(
             }
         }
         if req.admin_auth.is_empty() {
+            // FAIL-CLOSED: opening the admin API to the anonymous, full-authority dev posture is a
+            // config.yaml + restart decision (which fires the loud boot banner), NOT a thing the
+            // live admin API flips on. Applying `[]` here would swing the door open to the whole
+            // network on this one call — and the dry-run lock-out guard below can no longer catch it
+            // for us (an empty chain now truthfully earns THIS caller no full grant, so it would
+            // 409 with a misleading "would lock you out" message). Refuse it here with the honest
+            // reason and route the operator to the explicit, boot-warned opt-in.
             diag_warn!(
                 ADMIN_AUTH_CHAIN_EMPTY,
-                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
-                 now the open (anonymous, full-authority) dev posture"
+                "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
+                 (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
+                 restart, not through the live admin API"
             );
+            return Err(AdminError::Validation(
+                "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
+                 cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
+                 and restart to opt in. Otherwise name at least one admin module (e.g. \
+                 `admin-tokens`)"
+                    .to_string(),
+            ));
         }
         // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
         // mutation that landed while this request was parsing cannot be clobbered by a candidate

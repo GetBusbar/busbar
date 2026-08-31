@@ -1692,6 +1692,53 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
+/// AF1 (security-visibility): `PUT /api/v1/admin/admin-auth` must REFUSE an EMPTY admin_auth chain.
+/// An empty chain is the anonymous, full-authority OPEN dev posture; letting the live admin API
+/// apply it would swing the door open to the whole network on one call. Before the fix the handler
+/// warned-and-applied (and the dry-run lock-out guard was fooled because an empty chain reported
+/// Full for the caller); now it is a `400` and nothing changes — the open posture is a config.yaml +
+/// restart opt-in only.
+#[tokio::test]
+async fn test_admin_v1_put_auth_refuses_empty_chain() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // An operator credential that DOES authenticate today asks to blank the chain: refused 400.
+    let r = client
+        .put(format!("http://{addr}/api/v1/admin/admin-auth"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"admin_auth": []}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "an empty admin_auth chain (the open dev posture) cannot be applied through the live API"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    // Nothing changed: the operator credential still authenticates.
+    let r = client
+        .get(format!("http://{addr}/api/v1/admin/info"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "the refused PUT changed nothing");
+
+    handle.abort();
+}
+
 /// 1.5.3 LOCKED invariant for `PUT /api/v1/admin/admin-auth`: a locked (no-overlay) config REFUSES the
 /// admin_auth chain mutation with `400`, matching the documented guarantee that "every config-mutating
 /// admin call is refused" on a locked deployment. Without the guard this endpoint went straight to a

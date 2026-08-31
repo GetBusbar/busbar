@@ -684,15 +684,15 @@ The oauth_as authorization server has no `signing_key` configured, so busbar gen
 **What to do:** Set `oauth_as.signing_key` to a durable key reference before relying on issued tokens across restarts. Until then, every restart invalidates all outstanding oauth_as tokens.
 
 <a id="admin-auth-chain-empty"></a>
-### BUSBAR-4026 — Admin API admin_auth chain set EMPTY (open, anonymous, full-authority posture)
+### BUSBAR-4026 — admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `admin-auth-chain-empty`
 
-A PUT to `/api/v1/admin/admin-auth` applied an EMPTY admin_auth chain, so the admin API now has NO credential gating it — every admin request is admitted anonymously with full authority. This is the open dev posture; it is a deliberate security-posture change, not a per-request event.
+An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned grant, never full), so this posture can only be entered deliberately via config.yaml at boot — never flipped open by one unnoticed API call.
 
-**What to do:** Configure a non-empty `admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network. Leave it empty only for local development.
+**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network.
 
 <a id="admin-createkey-malformed-body"></a>
 ### BUSBAR-4027 — create_key request body failed to parse (client 400)

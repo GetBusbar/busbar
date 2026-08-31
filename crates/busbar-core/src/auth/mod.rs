@@ -12,9 +12,10 @@ use axum::{
 
 use crate::config::AuthCfg;
 use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ADMIN_CHAIN_STALLED, ADMIN_FORBIDDEN_SUPPRESSED,
-    ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED, AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED,
-    AUTH_OFFLOAD_SATURATED, KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
+    diag_debug, diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED,
+    ADMIN_FORBIDDEN_SUPPRESSED, ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED,
+    AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED, AUTH_OFFLOAD_SATURATED,
+    KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
 use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 
@@ -1148,12 +1149,32 @@ pub(crate) fn dry_run_admin_scope(
     bearer: Option<&str>,
     header: Option<&str>,
 ) -> crate::admin::v1::contract::Grants {
+    // An EMPTY admin chain is the anonymous, full-authority OPEN posture — a property of the CHAIN,
+    // not a grant THIS caller earned. Letting it fall through (`run_admin_chain` → `Open` → the
+    // `None`-principal arm of `admin_scope_for`) would report `Grants::of(Full)`, INDISTINGUISHABLE
+    // from a genuine full-scope credential — which MASKS the fail-open: the lock-out guard on
+    // `PUT /api/v1/admin/admin-auth` reads "you keep full scope" and would swing the admin API open
+    // to the whole network on one unnoticed call. Surface it truthfully instead — a loud coded
+    // diagnostic and NO earned grant — so the open posture stays a config.yaml + restart opt-in
+    // (which carries its own loud boot warning), never a thing the live admin API flips on unseen.
+    if app.admin_chain.is_empty() {
+        diag_warn!(
+            ADMIN_AUTH_CHAIN_EMPTY,
+            "admin-scope dry-run evaluated an EMPTY admin_auth chain: the open (anonymous, \
+             full-authority) dev posture earns THIS caller no credential-based scope and is \
+             reported as no-grant, never full"
+        );
+        return crate::admin::v1::contract::Grants::default();
+    }
     let (verdict, cap) = run_admin_chain(app, bearer, header);
     let (module, principal) = match verdict {
         ChainVerdict::Identified {
             module, principal, ..
         } => (Some(module), Some(principal)),
-        ChainVerdict::Open => (None, None),
+        // Unreachable given the empty-chain early return above (an empty chain is `run_admin_chain`'s
+        // ONLY producer of `Open`), but were it ever reached it is the open posture — no earned
+        // grant, never Full, so it can never mask a fail-open here.
+        ChainVerdict::Open => return crate::admin::v1::contract::Grants::default(),
         ChainVerdict::Denied => return crate::admin::v1::contract::Grants::default(),
     };
     let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);

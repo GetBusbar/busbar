@@ -3713,6 +3713,43 @@ fn test_admin_scope_cap_ceilings_external_module() {
     assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
 }
 
+/// AF1 (security-visibility): an EMPTY admin chain is the anonymous OPEN dev posture — a property of
+/// the CHAIN, not a grant any caller earned. `dry_run_admin_scope` MUST NOT report it as `Full`
+/// (letting it fall through to `admin_scope_for(None, None)` would): that masks the fail-open from
+/// the `PUT /api/v1/admin/admin-auth` lock-out guard (`survives = dry_run(..).contains(Full)`) and
+/// would let the admin API be swung open to the whole network on one unnoticed call. The dry-run
+/// reports NO earned grant instead, so the guard refuses and the open posture stays a config.yaml +
+/// restart opt-in.
+#[test]
+fn test_dry_run_empty_admin_chain_is_not_full() {
+    use crate::admin::v1::contract::{Grants, Scope};
+    crate::metrics::init();
+
+    let mut app = crate::test_support::TestApp::new().build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+    a.admin_chain = vec![]; // the empty / open posture
+
+    // No admin credential presented: an empty chain earns nothing (NOT Full).
+    let g = dry_run_admin_scope(&app, None, None);
+    assert!(
+        !g.contains(Scope::Full),
+        "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
+         PUT /admin/admin-auth lock-out guard reads"
+    );
+    assert_eq!(
+        g,
+        Grants::default(),
+        "an empty chain is reported as no earned grant, never full"
+    );
+
+    // ...and even WITH an arbitrary credential waved, the empty chain still earns no Full: the
+    // (absent) chain is what decides, not what the caller presented.
+    assert!(
+        !dry_run_admin_scope(&app, Some("anything"), Some("x-admin-token")).contains(Scope::Full),
+        "an empty chain must not grant Full to any presented credential"
+    );
+}
+
 /// The structural SigV4 gate rejects a malformed `AWS4-HMAC-SHA256` Authorization header
 /// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
 /// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
