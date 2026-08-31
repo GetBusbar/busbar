@@ -569,31 +569,57 @@ fn anthropic_drops_penalties_seed_n_observably() {
     }
 }
 
-// Chat#5: a streamed REDACTED (encrypted) reasoning delta has no Anthropic streaming-delta analog and
-// is dropped on cross-protocol egress — but the drop must be OBSERVABLE (a `warn!`) rather than the
-// prior silent `return None`, so the lost reasoning-reuse blob is visible to an operator. (Full
-// preservation is deferred: it needs the bytes on the block-start meta.)
+// Chat#5: a streamed REDACTED (encrypted) reasoning block must be PRESERVED on Anthropic egress, not
+// dropped. The IR carries `BlockStart{RedactedThinking}` + `RedactedReasoningDelta(bytes)` + BlockStop;
+// the writer re-emits the native redacted shape — a `redacted_thinking` content_block_start carrying
+// the opaque `data` INLINE (native Anthropic streams redacted bytes on the start, not a delta), with
+// NO plaintext `thinking` seed, closed by content_block_stop. This is the encrypted reasoning-reuse
+// blob a later turn must replay for extended-thinking continuity.
 #[test]
-fn streamed_redacted_reasoning_drop_is_observable() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
+    let w = AnthropicWriter;
 
-    let ev = crate::ir::IrStreamEvent::BlockDelta {
+    // 1. The redacted BlockStart emits NO wire event (the plaintext thinking seed is suppressed; the
+    //    native start is emitted from the delta below).
+    let start = w.write_response_event(&crate::ir::IrStreamEvent::BlockStart {
         index: 0,
-        delta: crate::ir::IrDelta::RedactedReasoningDelta("ENCRYPTED_BLOB".to_string()),
-    };
-
-    let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(sub, || AnthropicWriter.write_response_event(&ev));
-
+        block: crate::ir::IrBlockMeta::RedactedThinking,
+    });
     assert!(
-        out.is_none(),
-        "the redacted-reasoning delta has no Anthropic streaming analog and emits no wire event"
+        start.is_none(),
+        "a RedactedThinking BlockStart must emit no plaintext thinking seed: {start:?}"
     );
+
+    // 2. The delta emits the native redacted_thinking content_block_start carrying the opaque bytes.
+    let (evt, body) = w
+        .write_response_event(&crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::RedactedReasoningDelta("ENCRYPTED_BLOB".to_string()),
+        })
+        .expect("the redacted delta must emit the native redacted_thinking start");
+    assert_eq!(
+        evt, "content_block_start",
+        "redacted bytes re-emit as a content_block_start, not a delta"
+    );
+    assert_eq!(
+        body.pointer("/content_block/type").and_then(|v| v.as_str()),
+        Some("redacted_thinking"),
+        "the block must be typed redacted_thinking, never plaintext thinking: {body}"
+    );
+    assert_eq!(
+        body.pointer("/content_block/data").and_then(|v| v.as_str()),
+        Some("ENCRYPTED_BLOB"),
+        "the opaque encrypted bytes must ride under `data` intact: {body}"
+    );
+    // The bytes must NOT leak as visible plaintext thinking anywhere in the frame.
     assert!(
-        cap.contains("redacted"),
-        "dropping streamed redacted reasoning on Anthropic egress must warn: {:?}",
-        cap.messages()
+        !body.to_string().contains("\"thinking\""),
+        "a redacted block must never emit a plaintext `thinking` field: {body}"
     );
+
+    // 3. The BlockStop closes the block with content_block_stop.
+    let (stop_evt, _) = w
+        .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
+        .expect("the redacted block must close");
+    assert_eq!(stop_evt, "content_block_stop");
 }

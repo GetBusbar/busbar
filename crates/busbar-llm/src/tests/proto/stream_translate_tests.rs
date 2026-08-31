@@ -1535,6 +1535,60 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
     );
 }
 
+/// Chat#5 (end-to-end): a STREAMING Bedrock-backend → Anthropic-client turn carrying REDACTED
+/// (encrypted) extended-thinking must PRESERVE the opaque bytes end-to-end. Bedrock streams the
+/// redacted reasoning as a `contentBlockDelta.reasoningContent.redactedContent`; the Anthropic client
+/// must receive a native `redacted_thinking` `content_block_start` carrying the SAME opaque `data`
+/// (the reasoning-reuse blob a later turn replays for extended-thinking continuity), never a plaintext
+/// `thinking` block and never a dropped block. FAILS before the fix (the bytes were dropped on the
+/// Anthropic streaming writer); PASSES after (the writer re-emits the native redacted shape).
+#[test]
+fn test_bedrock_egress_redacted_reasoning_preserved_to_anthropic_ingress() {
+    let mut st = StreamTranslate::new("anthropic", "bedrock").expect("bedrock egress translator");
+    let mut bytes = es_frame("messageStart", br#"{"role":"assistant"}"#);
+    // The redacted reasoning block: Bedrock streams the opaque bytes under `redactedContent`.
+    bytes.extend(es_frame(
+        "contentBlockDelta",
+        br#"{"contentBlockIndex":0,"delta":{"reasoningContent":{"redactedContent":"OPAQUE_CIPHERTEXT_BYTES"}}}"#,
+    ));
+    bytes.extend(es_frame("contentBlockStop", br#"{"contentBlockIndex":0}"#));
+    // A trailing visible answer at the next block, so the turn is a realistic reasoning-then-answer.
+    bytes.extend(es_frame(
+        "contentBlockDelta",
+        br#"{"contentBlockIndex":1,"delta":{"text":"Done."}}"#,
+    ));
+    bytes.extend(es_frame("contentBlockStop", br#"{"contentBlockIndex":1}"#));
+    bytes.extend(es_frame("messageStop", br#"{"stopReason":"end_turn"}"#));
+    bytes.extend(es_frame(
+        "metadata",
+        br#"{"usage":{"inputTokens":5,"outputTokens":2}}"#,
+    ));
+
+    let mut out = String::from_utf8(st.feed(&bytes)).unwrap();
+    out.push_str(&String::from_utf8(st.finish()).unwrap());
+
+    // The Anthropic client receives a native redacted_thinking block carrying the opaque bytes intact.
+    assert!(
+        out.contains("\"type\":\"redacted_thinking\""),
+        "the client must receive a native redacted_thinking block; got:\n{out}"
+    );
+    assert!(
+        out.contains("OPAQUE_CIPHERTEXT_BYTES"),
+        "the opaque encrypted reasoning bytes must be PRESERVED end-to-end (the reasoning-reuse blob); \
+         got:\n{out}"
+    );
+    // …and never leaked or downgraded to a plaintext `thinking` block.
+    assert!(
+        !out.contains("\"type\":\"thinking\""),
+        "a redacted block must never be emitted as a plaintext thinking block; got:\n{out}"
+    );
+    // The visible answer still comes through.
+    assert!(
+        out.contains("Done."),
+        "the visible answer must survive; got:\n{out}"
+    );
+}
+
 /// Delta-before-stop regression at the reader→writer level (independent of eventstream framing): the
 /// Bedrock reader must emit the combined `MessageDelta` BEFORE the terminal `MessageStop`, so the
 /// Anthropic writer maps them to `message_delta` then `message_stop` — the native order. Guards
@@ -2429,6 +2483,7 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
     let witnesses = vec![
         IrBlockMeta::Text,
         IrBlockMeta::Thinking,
+        IrBlockMeta::RedactedThinking,
         IrBlockMeta::Image,
         IrBlockMeta::ToolUse {
             id: "toolu_x".into(),
@@ -2439,6 +2494,7 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
         match w {
             IrBlockMeta::Text
             | IrBlockMeta::Thinking
+            | IrBlockMeta::RedactedThinking
             | IrBlockMeta::Image
             | IrBlockMeta::ToolUse { .. } => {}
         }
@@ -2501,14 +2557,23 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
                 .is_some();
 
             // The declared exceptions (suppressed start, REQUIRED stop): gemini's ToolUse
-            // (buffered-flush-on-stop idiom), and bedrock's Text / Thinking (open IMPLICITLY on the
-            // first delta — the ConverseStream `ContentBlockStart$start` union has no text/reasoning
-            // member — but MUST still emit `contentBlockStop`). Every other (writer, meta) pair must
-            // agree: suppressed start implies suppressed stop.
+            // (buffered-flush-on-stop idiom); bedrock's Text / Thinking / RedactedThinking (open
+            // IMPLICITLY on the first `contentBlockDelta` — the ConverseStream
+            // `ContentBlockStart$start` union has no text/reasoning member — but MUST still emit
+            // `contentBlockStop`); and anthropic's RedactedThinking (its `BlockStart` is suppressed
+            // because native Anthropic streams a `redacted_thinking` block's opaque `data` INLINE on a
+            // content_block_start the writer emits from the FOLLOWING `RedactedReasoningDelta`, not from
+            // the BlockStart — so the block DOES open on the wire, just at the delta, and its
+            // content_block_stop close is mandatory). Every other (writer, meta) pair must agree:
+            // suppressed start implies suppressed stop.
             let is_declared_exception = (name == PROTO_GEMINI
                 && matches!(meta, IrBlockMeta::ToolUse { .. }))
                 || (name == PROTO_BEDROCK
-                    && matches!(meta, IrBlockMeta::Text | IrBlockMeta::Thinking));
+                    && matches!(
+                        meta,
+                        IrBlockMeta::Text | IrBlockMeta::Thinking | IrBlockMeta::RedactedThinking
+                    ))
+                || (name == PROTO_ANTHROPIC && matches!(meta, IrBlockMeta::RedactedThinking));
 
             if is_declared_exception {
                 assert!(

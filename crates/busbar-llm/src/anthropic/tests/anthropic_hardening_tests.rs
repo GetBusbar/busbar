@@ -1513,7 +1513,8 @@ fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
 
 /// The STREAMING reader must not drop a `redacted_thinking` block. The
 /// opaque `data` rides inline on `content_block_start` (no deltas follow), so the reader emits a
-/// `Thinking` BlockStart + a `RedactedReasoningDelta` carrying the bytes; the later
+/// `RedactedThinking` BlockStart (the redacted-typed carrier, so a cross-protocol writer emits the
+/// native redacted shape) + a `RedactedReasoningDelta` carrying the bytes; the later
 /// `content_block_stop` yields the BlockStop. Before the fix the block hit `_ => None` and the
 /// encrypted reasoning was silently lost on an any→Anthropic streaming passthrough.
 #[test]
@@ -1536,10 +1537,10 @@ fn streaming_redacted_thinking_is_not_dropped() {
             &evs[0],
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking
+                block: IrBlockMeta::RedactedThinking
             }
         ),
-        "first event is a Thinking BlockStart: {:?}",
+        "first event is a RedactedThinking BlockStart: {:?}",
         evs[0]
     );
     match &evs[1] {

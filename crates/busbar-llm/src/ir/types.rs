@@ -1027,7 +1027,23 @@ impl IrUsage {
 pub enum IrBlockMeta {
     Text,
     Thinking,
-    ToolUse { id: String, name: String },
+    /// A streaming REDACTED (encrypted/opaque) reasoning block — the streaming counterpart of a
+    /// buffered `IrBlock::Thinking { redacted: true }` (Anthropic `redacted_thinking`, Bedrock
+    /// `reasoningContent.redactedContent`). Distinguished from plaintext `Thinking` at BLOCK-START
+    /// time so a writer can emit the correct native shape without waiting for the delta: the block's
+    /// opaque bytes arrive on the following [`IrDelta::RedactedReasoningDelta`] (the readers always
+    /// emit the pair). The Anthropic writer suppresses the plaintext `thinking` seed on this start and
+    /// emits a native `redacted_thinking` `content_block_start` — WITH the bytes — from that delta
+    /// (native Anthropic carries a redacted block's `data` inline on the start, not via a delta), so
+    /// the encrypted reasoning-reuse blob survives a cross-protocol stream (e.g. Bedrock→Anthropic).
+    /// The Bedrock writer treats it exactly like `Thinking` (no `contentBlockStart` for reasoning; the
+    /// `redactedContent` delta carries the bytes). Writers with no redacted-reasoning shape drop it,
+    /// same as they drop plaintext `Thinking`.
+    RedactedThinking,
+    ToolUse {
+        id: String,
+        name: String,
+    },
     Image,
 }
 

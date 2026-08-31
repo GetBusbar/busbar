@@ -809,7 +809,13 @@ impl ProtocolWriter for BedrockWriter {
                 // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`, but emit NO
                 // start frame. (Image likewise has no streaming-start projection on Bedrock, so it
                 // stays None — but is NOT marked open, so it emits no orphan stop either.)
-                crate::ir::IrBlockMeta::Thinking => {
+                // Plaintext AND redacted reasoning: Bedrock streams BOTH through
+                // `contentBlockDelta.reasoningContent` (plaintext `text`/`signature`, or opaque
+                // `redactedContent`) with NO dedicated `contentBlockStart`. So a `RedactedThinking`
+                // start behaves exactly like a `Thinking` start — emit no start frame but STILL
+                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`; the opaque
+                // bytes ride the following `RedactedReasoningDelta`, re-emitted under `redactedContent`.
+                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::RedactedThinking => {
                     self.mark_block_open(*index);
                     None
                 }

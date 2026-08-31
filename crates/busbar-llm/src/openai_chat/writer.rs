@@ -580,7 +580,11 @@ impl ProtocolWriter for OpenAiWriter {
                     });
                     Some(("".to_string(), chunk_obj))
                 }
-                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::Image => None,
+                // OpenAI Chat has no streamed thinking/redacted-thinking/image start; a redacted block
+                // is dropped exactly like plaintext thinking (no encrypted-reasoning output shape).
+                crate::ir::IrBlockMeta::Thinking
+                | crate::ir::IrBlockMeta::RedactedThinking
+                | crate::ir::IrBlockMeta::Image => None,
             },
             IrStreamEvent::BlockDelta { index, delta } => match delta {
                 crate::ir::IrDelta::TextDelta(text) => {

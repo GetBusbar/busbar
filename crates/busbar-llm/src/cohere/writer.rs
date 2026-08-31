@@ -619,9 +619,12 @@ impl ProtocolWriter for CohereWriter {
                         }),
                     ))
                 }
-                // Cohere v2 has no streamed thinking/image block shape. Emitting a fabricated frame
-                // would be a non-native proxy tell, so these IR block kinds carry no opening frame.
-                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::Image => None,
+                // Cohere v2 has no streamed thinking/redacted-thinking/image block shape. Emitting a
+                // fabricated frame would be a non-native proxy tell, so these IR block kinds carry no
+                // opening frame (a redacted block is dropped exactly like plaintext thinking).
+                crate::ir::IrBlockMeta::Thinking
+                | crate::ir::IrBlockMeta::RedactedThinking
+                | crate::ir::IrBlockMeta::Image => None,
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {

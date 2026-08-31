@@ -4782,16 +4782,17 @@ fn test_stream_reasoning_redacted_round_trips() {
         .flat_map(|f| reader.read_response_events("", &f, &mut state))
         .collect();
 
-    // A Thinking block is opened and the redacted bytes ride on a sentinel-prefixed SignatureDelta.
+    // A RedactedThinking block is opened (the redacted-typed carrier, so a cross-protocol writer
+    // re-emits the native redacted shape) and the redacted bytes ride on a typed RedactedReasoningDelta.
     assert!(
         events.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: IrBlockMeta::Thinking
+                block: IrBlockMeta::RedactedThinking
             }
         )),
-        "a Thinking BlockStart must open for a streamed redactedContent delta; got {events:?}"
+        "a RedactedThinking BlockStart must open for a streamed redactedContent delta; got {events:?}"
     );
     let redacted_delta = events.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {

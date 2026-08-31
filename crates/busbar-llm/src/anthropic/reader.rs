@@ -620,9 +620,12 @@ impl ProtocolReader for AnthropicReader {
                             .unwrap_or("")
                             .to_string();
                         return vec![
+                            // A REDACTED start (not plaintext `Thinking`): the writer needs to know at
+                            // block-start time so it emits the native `redacted_thinking` start (with
+                            // the bytes from the delta), never a plaintext `thinking` seed.
                             IrStreamEvent::BlockStart {
                                 index,
-                                block: IrBlockMeta::Thinking,
+                                block: IrBlockMeta::RedactedThinking,
                             },
                             IrStreamEvent::BlockDelta {
                                 index,

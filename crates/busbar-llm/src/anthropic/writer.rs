@@ -528,6 +528,14 @@ impl ProtocolWriter for AnthropicWriter {
                     IrBlockMeta::Thinking => {
                         serde_json::json!({ "type": "thinking", "thinking": "", "signature": "" })
                     }
+                    // A REDACTED thinking block emits NO content_block_start HERE. Native Anthropic
+                    // carries a redacted block's opaque `data` INLINE on its content_block_start (with
+                    // NO thinking seed and NO delta), so the writer emits that full start — WITH the
+                    // bytes — from the `RedactedReasoningDelta` that follows (which is where the data
+                    // is). Emitting a plaintext `thinking` seed here would both MIS-TYPE the block and
+                    // duplicate the start. The paired `BlockStop` still emits content_block_stop, so the
+                    // wire is content_block_start{redacted_thinking,data}+content_block_stop = native.
+                    IrBlockMeta::RedactedThinking => return None,
                     IrBlockMeta::ToolUse { id, name } => {
                         serde_json::json!({ "type": STOP_TOOL_USE, "id": id, "name": name, "input": {} })
                     }
@@ -561,27 +569,34 @@ impl ProtocolWriter for AnthropicWriter {
                     IrDelta::SignatureDelta(sig) => {
                         serde_json::json!({ "type": DELTA_TYPE_SIGNATURE, "signature": sig })
                     }
-                    // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Anthropic
-                    // streaming-delta analog: native Anthropic carries `redacted_thinking` bytes INLINE
-                    // on the `content_block_start` and sends NO deltas for a redacted block, so a
-                    // stateless one-event-in/one-event-out writer that has already emitted the block
-                    // start cannot faithfully relocate the bytes onto it. The bytes are therefore
-                    // dropped on this cross-protocol egress (e.g. Bedrock/Responses→Anthropic streaming)
-                    // — but that drop must be OBSERVABLE rather than the prior silent `return None`, so
-                    // an operator can see the reasoning-reuse blob was lost. Full preservation needs the
-                    // bytes carried on the block-start meta (an `IrBlockMeta` change touching every
-                    // protocol writer + both redacted stream readers), deferred as out of this
-                    // minimal-safe fix's scope. The non-stream path (`write_block`) preserves it.
+                    // A streamed redacted-reasoning delta (opaque encrypted bytes). Native Anthropic
+                    // carries a `redacted_thinking` block's `data` INLINE on its content_block_start
+                    // (there is NO redacted delta type on the wire), and the paired `BlockStart`
+                    // (`IrBlockMeta::RedactedThinking`) was SUPPRESSED for exactly this reason — so this
+                    // delta emits the block's SOLE start: a native `redacted_thinking` content_block_start
+                    // carrying the opaque bytes. The following `BlockStop` emits content_block_stop, so
+                    // the wire is content_block_start{redacted_thinking,data}+content_block_stop = the
+                    // native redacted shape. This PRESERVES the encrypted reasoning-reuse blob
+                    // end-to-end on a cross-protocol stream (e.g. Bedrock-backend→Anthropic-client), the
+                    // blob a later turn must replay for extended-thinking continuity.
                     IrDelta::RedactedReasoningDelta(bytes) => {
-                        tracing::warn!(
-                            byte_len = bytes.len(),
-                            "dropping streamed redacted (encrypted) reasoning on Anthropic egress: the \
-                             Messages streaming API carries redacted_thinking bytes only on \
-                             content_block_start (no delta), which a stateless streaming writer cannot \
-                             reconstruct after the block has opened; the opaque reasoning-reuse blob is \
-                             NOT forwarded on this cross-protocol stream"
+                        let mut data_obj = serde_json::Map::new();
+                        data_obj.insert(
+                            "type".to_string(),
+                            serde_json::json!(EVT_CONTENT_BLOCK_START),
                         );
-                        return None;
+                        data_obj.insert("index".to_string(), serde_json::json!(index));
+                        data_obj.insert(
+                            "content_block".to_string(),
+                            serde_json::json!({
+                                "type": BLOCK_TYPE_REDACTED_THINKING,
+                                "data": bytes,
+                            }),
+                        );
+                        return Some((
+                            EVT_CONTENT_BLOCK_START.to_string(),
+                            serde_json::Value::Object(data_obj),
+                        ));
                     }
                     // Anthropic has no logprobs concept at all — lossy-by-target, emit nothing.
                     IrDelta::LogprobsDelta(_) => return None,

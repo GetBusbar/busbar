@@ -961,10 +961,19 @@ impl ProtocolReader for BedrockReader {
                         //                         plaintext `text` leak; non-Bedrock writers drop it.
                         if state.started && !state.thinking_block_open {
                             state.thinking_block_open = true;
-                            out.push(IrStreamEvent::BlockStart {
-                                index: idx,
-                                block: crate::ir::IrBlockMeta::Thinking,
-                            });
+                            // A redacted reasoning block's ONLY `reasoningContent` member is
+                            // `redactedContent`, so peek it HERE (at open time) to open with the
+                            // `RedactedThinking` meta rather than plaintext `Thinking`. That lets a
+                            // cross-protocol writer (e.g. Anthropic) emit the correct native
+                            // `redacted_thinking` start instead of a plaintext `thinking` seed — the
+                            // faithful inverse of how this reader synthesizes the pair. The opaque bytes
+                            // still ride the `RedactedReasoningDelta` emitted just below.
+                            let block = if reasoning.contains_key("redactedContent") {
+                                crate::ir::IrBlockMeta::RedactedThinking
+                            } else {
+                                crate::ir::IrBlockMeta::Thinking
+                            };
+                            out.push(IrStreamEvent::BlockStart { index: idx, block });
                         }
                         if state.thinking_block_open {
                             if let Some(text) = reasoning.get("text").and_then(|t| t.as_str()) {

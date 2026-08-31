@@ -814,6 +814,12 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     )]
                 }
+                // A REDACTED thinking block has no Responses OUTPUT shape (the Responses writer drops
+                // redacted reasoning on both request and response paths — there is no encrypted-
+                // reasoning output item). Do NOT open a reasoning item: the following
+                // `RedactedReasoningDelta` is dropped (`Vec::new()`), and the matching `BlockStop`
+                // finds no open reasoning index and emits nothing — a clean, event-balanced drop.
+                crate::ir::IrBlockMeta::RedactedThinking => Vec::new(),
                 crate::ir::IrBlockMeta::Thinking => {
                     // REASONING (stream): open a native Responses `reasoning` output item. The IR
                     // Thinking BlockStart carries only the index; emit `output_item.added` typed
