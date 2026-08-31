@@ -1,82 +1,68 @@
-use crate::ir::IrRequest;
-use crate::state::Lane;
-use std::collections::HashMap;
-use std::sync::Arc;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
 
-// An Anthropic lane (its writer `requires_max_tokens()` is true) with a given per-model default.
-fn anthropic_lane(default_max_tokens: Option<u32>) -> Lane {
-    Lane {
-        prebuilt_auth: None,
-        egress_targets: std::collections::HashMap::new(),
-        reasoning: false,
-        prompt_caching: false,
-        default_max_tokens,
-        model: "claude".to_string(),
-        provider: "anthropic".to_string(),
-        signing_host: "api.anthropic.com".to_string(),
-        base_url: "https://api.anthropic.com".to_string(),
-        api_key: busbar_api::Redacted::new("k".to_string()),
-        credential: crate::egress_auth::resolve("anthropic", None),
-        protocol: "anthropic",
-        max: 1,
-        error_map: Arc::new(HashMap::new()),
-        context_max: None,
-        path: None,
-        path_base: None,
-        health: None,
-        upstream_model: None,
-        attempt_timeout_ms: None,
-    }
-}
+//! `default_max_tokens` precedence and `cache_control` clamping on the IR egress-prep seam,
+//! RELOCATED here from `busbar-core`'s `proxy/tests/` (plane-extraction §5 Phase 1.5). They drive
+//! the witnessed `chat_handle::chat_prepare_for_egress` over a concrete `IrRequest`, which a neutral
+//! crate's tests must not name — so they live beside the IR/codec they exercise.
+//!
+//! Byte-identical to the pre-relocation suite, save one mechanical fixture change: the core version
+//! built a `crate::state::Lane` (a `pub(crate)` core type) purely to read its `protocol` and
+//! `default_max_tokens` into the `EgressPrep`. Here those two values are passed directly — the
+//! `EgressPrep` built, the seam driven, and every assertion are unchanged.
+
+use super::*;
+use crate::ir::IrRequest;
 
 /// `default_max_tokens` resolution precedence on the translation seam (only fires when the source
 /// omitted `max_tokens` AND the egress protocol REQUIRES it): per-model lane default wins → else
 /// the global `limits.default_max_tokens` (the `global` arg) → else the historical 4096 (which is
-/// just the value the global itself defaults to). This pins all three rungs.
+/// just the value the global itself defaults to). This pins all three rungs. The egress protocol is
+/// Anthropic (its writer `requires_max_tokens()` is true).
 #[test]
 fn per_model_then_global_then_4096() {
     let global = 8192; // a non-4096 global to prove it is consulted distinctly.
-                       // The defaulting now lives on the IR (`IrReq::prepare_for_egress`) — the engine passes the
+                       // The defaulting lives on the IR (`IrReq::prepare_for_egress`) — the engine passes the
                        // lane's resolved primitives. Drive it exactly as the translate seam does.
-    let prep = |lane: &Lane, global: u32| crate::ir::egress_prep::EgressPrep {
-        thought_signature_fill: false,
-        ingress_protocol: "openai",
-        egress_requires_max_tokens: crate::proto::decl_for(lane.protocol)
-            .is_some_and(|d| d.requires_max_tokens),
-        lane_default_max_tokens: lane.default_max_tokens,
-        global_default_max_tokens: global,
-        reasoning_allowed: true,
-        reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
+    let prep = |proto: &'static str, lane_default: Option<u32>, global: u32| {
+        busbar_substrate::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: "openai",
+            egress_requires_max_tokens: decl_for(proto).is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: lane_default,
+            global_default_max_tokens: global,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        }
     };
-    let apply = |ir: IrRequest, lane: &Lane, global: u32| -> Option<u32> {
+    let apply = |ir: IrRequest, lane_default: Option<u32>, global: u32| -> Option<u32> {
         let mut req = ir;
-        crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(lane, global));
+        crate::chat_handle::chat_prepare_for_egress(
+            &mut req,
+            &prep("anthropic", lane_default, global),
+        );
         req.max_tokens
     };
 
     // 1. Per-model set → per-model wins over the global.
     assert_eq!(
-        apply(IrRequest::default(), &anthropic_lane(Some(1234)), global),
+        apply(IrRequest::default(), Some(1234), global),
         Some(1234),
         "per-model default must win"
     );
 
     // 2. Per-model unset → fall back to the global.
     assert_eq!(
-        apply(IrRequest::default(), &anthropic_lane(None), global),
+        apply(IrRequest::default(), None, global),
         Some(global),
         "with no per-model default, the global limit must be used"
     );
 
     // 3. Per-model unset AND global left at its historical default → 4096.
     assert_eq!(
-        apply(
-            IrRequest::default(),
-            &anthropic_lane(None),
-            crate::proto::DEFAULT_MAX_TOKENS
-        ),
+        apply(IrRequest::default(), None, DEFAULT_MAX_TOKENS),
         Some(4096),
         "with neither per-model nor a custom global, the 4096 fallback must be used"
     );
@@ -88,7 +74,7 @@ fn per_model_then_global_then_4096() {
                 max_tokens: Some(7),
                 ..IrRequest::default()
             },
-            &anthropic_lane(Some(1234)),
+            Some(1234),
             global
         ),
         Some(7),
@@ -104,7 +90,7 @@ fn per_model_then_global_then_4096() {
 #[test]
 fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     use crate::ir::{CacheControl, CacheKind, IrBlock, IrMessage, IrRole};
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let bp = || {
@@ -168,7 +154,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     };
     assert_eq!(count_breakpoints(&ir), 6, "fixture carries 6 breakpoints");
 
-    let prep = crate::ir::egress_prep::EgressPrep {
+    let prep = busbar_substrate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "bedrock",
         egress_requires_max_tokens: true,
@@ -187,7 +173,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let mut req = ir;
     tracing::subscriber::with_default(subscriber, || {
-        crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+        crate::chat_handle::chat_prepare_for_egress(&mut req, &prep)
     });
     let clamped = req;
 

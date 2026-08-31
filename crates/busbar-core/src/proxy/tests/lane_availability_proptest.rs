@@ -280,8 +280,7 @@ async fn run_world(world: World) -> Disposition {
         .collect();
     for (i, m) in all.iter().enumerate() {
         let model = format!("m{i}");
-        let mut spec =
-            LaneSpec::new(&model, crate::proto::PROTO_ANTHROPIC, &url).provider("p");
+        let mut spec = LaneSpec::new(&model, crate::proto::PROTO_ANTHROPIC, &url).provider("p");
         match m.cap {
             Cap::Unbounded => spec = spec.max(tokio::sync::Semaphore::MAX_PERMITS),
             Cap::BoundedFree(c) => spec = spec.max(c),
@@ -602,22 +601,13 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "primary",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .provider("p")
-            .max(1)
-            .sem(sem.clone()),
+            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .provider("p")
+                .max(1)
+                .sem(sem.clone()),
         ) // idx 0 — breaker-healthy but saturated
         .lane(
-            LaneSpec::new(
-                "spare",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .provider("p"),
+            LaneSpec::new("spare", crate::proto::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
         ) // idx 1 — eligible fallback
         .pool("primary", &[(0, 1)])
         .failover(FailoverCfg {
@@ -674,14 +664,10 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
         let is_fallback = matches!(policy, OnExhausted::FallbackPool(_));
         let mut builder = TestApp::new()
             .lane(
-                LaneSpec::new(
-                    "busy",
-                    crate::proto::PROTO_ANTHROPIC,
-                    &server.base_url(),
-                )
-                .provider("p")
-                .max(1)
-                .sem(sem_a.clone()),
+                LaneSpec::new("busy", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                    .provider("p")
+                    .max(1)
+                    .sem(sem_a.clone()),
             )
             .lane(
                 LaneSpec::new(

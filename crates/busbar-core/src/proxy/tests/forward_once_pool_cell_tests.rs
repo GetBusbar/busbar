@@ -27,12 +27,8 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     // Lane 1 = the fallback-pool member that actually serves.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "primary",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .dead("administratively down for test"),
+            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
@@ -196,12 +192,8 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "primary",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .dead("administratively down for test"),
+            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
@@ -402,14 +394,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
             )
             .dead("administratively down for test"),
         )
-        .lane(
-            LaneSpec::new(
-                "fbmember",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .budget(1),
-        )
+        .lane(LaneSpec::new("fbmember", crate::proto::PROTO_OPENAI, &server.base_url()).budget(1))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(

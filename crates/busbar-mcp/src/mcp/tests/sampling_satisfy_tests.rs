@@ -91,7 +91,7 @@ async fn app_with_provider(
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
-            busbar_core::proto::Protocol::openai(),
+            busbar_core::proto::PROTO_OPENAI,
             &provider.base_url(),
         ))
         .mcp(&mcp_cfg(CANONICAL))
@@ -285,7 +285,7 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
-            busbar_core::proto::Protocol::openai(),
+            busbar_core::proto::PROTO_OPENAI,
             &provider.base_url(),
         ))
         .mcp(&mcp_cfg(CANONICAL))

@@ -144,9 +144,13 @@ async fn test_probe_skips_lane_without_key() {
     // The lane must stay Closed even though no upstream is reachable.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
-                .api_key("")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .api_key("")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -314,10 +318,14 @@ async fn test_probe_uses_upstream_model_override() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", crate::proto::PROTO_BEDROCK, &server.base_url())
-                .api_key("sk-test")
-                .upstream_model("anthropic.claude-3-5-sonnet-20241022-v2:0")
-                .health(health_active()),
+            LaneSpec::new(
+                "config-key",
+                crate::proto::PROTO_BEDROCK,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .upstream_model("anthropic.claude-3-5-sonnet-20241022-v2:0")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -345,9 +353,13 @@ async fn test_probe_uses_upstream_model_override() {
 async fn test_spawn_probers_retains_no_strong_app_ref() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
-                .api_key("k")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .api_key("k")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();

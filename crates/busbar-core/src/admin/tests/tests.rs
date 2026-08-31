@@ -306,12 +306,7 @@ async fn test_admin_v1_pool_detail_live_status() {
     let app = TestApp::new()
         .governance(gov)
         .lane(
-            LaneSpec::new(
-                "m1",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1/",
-            )
-            .provider("p"),
+            LaneSpec::new("m1", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
         )
         .pool("mypool", &[(0, 5)])
         .build();
@@ -418,12 +413,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let mut app = TestApp::new()
         .governance(gov)
         .lane(
-            LaneSpec::new(
-                "m1",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1/",
-            )
-            .provider("p"),
+            LaneSpec::new("m1", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/").provider("p"),
         )
         .pool("fast", &[(0, 1)])
         .pool("cheap", &[(0, 1)])
@@ -4125,12 +4115,8 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     let app = TestApp::new()
         .governance(gov)
         .lane(
-            LaneSpec::new(
-                "m",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1/",
-            )
-            .provider("prov"),
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1/")
+                .provider("prov"),
         )
         .pool("p", &[(0, 1)])
         .hook("g", gate)

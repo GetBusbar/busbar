@@ -102,12 +102,7 @@ async fn a_governed_deployment(
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new(
-                "B",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])

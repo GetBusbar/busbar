@@ -84,8 +84,12 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // Body-model protocol: rewrite_model_if_needed installs `upstream_model`.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", crate::proto::PROTO_OPENAI, "http://unused.local")
-                .upstream_model("upstream-real"),
+            LaneSpec::new(
+                "config-key",
+                crate::proto::PROTO_OPENAI,
+                "http://unused.local",
+            )
+            .upstream_model("upstream-real"),
         )
         .build();
     let body = json!({"model":"client-alias","messages":[]});
@@ -112,8 +116,12 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // URL-model protocol: upstream_path_for_stream embeds upstream_model in the path.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", crate::proto::PROTO_BEDROCK, "http://unused.local")
-                .upstream_model("upstream.real/model"),
+            LaneSpec::new(
+                "config-key",
+                crate::proto::PROTO_BEDROCK,
+                "http://unused.local",
+            )
+            .upstream_model("upstream.real/model"),
         )
         .build();
     let proto = crate::proto::protocol_for(app.lanes[0].protocol).expect("lane protocol resolves");

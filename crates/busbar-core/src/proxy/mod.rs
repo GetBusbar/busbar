@@ -206,9 +206,9 @@ mod translate_offload_tests;
 #[path = "tests/attempt_timeout_precedence_tests.rs"]
 mod attempt_timeout_precedence_tests;
 
-#[cfg(test)]
-#[path = "tests/max_tokens_precedence_tests.rs"]
-mod max_tokens_precedence_tests;
+// `max_tokens_precedence_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
+// Phase 1.5): it drove the witnessed `chat_handle::chat_prepare_for_egress` over a concrete
+// `IrRequest` (max_tokens defaulting + cache_control clamping), so it lives beside that codec/IR.
 
 #[cfg(test)]
 #[path = "tests/on_exhausted_tests.rs"]
@@ -278,9 +278,9 @@ mod hook_opt_in_projection_tests;
 // behaviour that SHIPPED — which is where the sibling characterisation suite's content went when it
 // was retired: a file that pinned "both sides, including where today's behaviour is wrong" has
 // nothing left to pin once there is one side.
-#[cfg(test)]
-#[path = "tests/hook_ir_differential_tests.rs"]
-mod hook_ir_differential_tests;
+// `hook_ir_differential_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
+// Phase 1.5): the projection differential names the concrete IR (`IrRequest`, `ir::project`,
+// `IrFacts`) and drives every dialect's reader, so it now lives beside the codec/IR it exercises.
 
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]

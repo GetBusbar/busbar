@@ -669,12 +669,8 @@ async fn test_cohere_ingress_to_openai_backend() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("zai"),
+            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
         )
         .pool("co", &[(0, 1)])
         .build();
@@ -779,10 +775,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 
     // The lane MODEL is "foo" so that resolution via the path model proves the path parse.
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -899,10 +892,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -999,10 +989,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // Bedrock ingress → OpenAI backend (cross-protocol) so the upstream SSE stream is re-encoded
     // into the client's native binary eventstream framing.
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1443,10 +1430,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1504,12 +1488,8 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "gpt-4o",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("openai"),
+            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
@@ -1699,10 +1679,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1787,10 +1764,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1868,12 +1842,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
     // `app.pools` and `app.by_model` miss and the 404 path runs.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -1940,12 +1909,7 @@ async fn test_body_model_parse_error_is_observable() {
     // No backend needed: the request never gets past the body parse.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -1983,12 +1947,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     crate::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -2038,10 +1997,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new(MODEL, crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new(MODEL, crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool(POOL, &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2287,12 +2243,7 @@ async fn test_body_model_missing_model_is_observable() {
     crate::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -2328,12 +2279,7 @@ async fn test_path_model_non_object_body_is_observable() {
     crate::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -2370,12 +2316,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     crate::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::PROTO_OPENAI,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -2451,10 +2392,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2519,10 +2457,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2593,10 +2528,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2652,10 +2584,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     // Anthropic ingress → OpenAI backend (cross-protocol): StreamTranslate reframes the upstream
     // OpenAI SSE into Anthropic SSE via the writer's `write_response_event`.
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2719,10 +2648,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .build();
@@ -4141,12 +4067,8 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "gpt-4o",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("openai"),
+            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
@@ -4232,10 +4154,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4320,10 +4239,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4472,10 +4388,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4546,10 +4459,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5227,12 +5137,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new(
-                "B",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
@@ -5317,12 +5222,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new(
-                "B",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
+            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
@@ -5626,10 +5526,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5703,10 +5600,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -6088,10 +5982,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     // Lane registered in by_model ONLY (no `.pool(...)`), so the universal ingress resolves it
     // through `forward_resolved`'s by_model arm — the site under test.
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new(model, crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
+        .lane(LaneSpec::new(model, crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .build();
     // Hold a handle to the same App the router serves so the breaker op_handler can be inspected after
     // the request (`serve` only needs a clone of the Arc).

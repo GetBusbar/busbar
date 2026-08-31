@@ -439,12 +439,8 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
 async fn base_policy_restrict_persists_across_fallback_pool_hop() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "primary",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://localhost",
-            )
-            .dead("down for test"),
+            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, "http://localhost")
+                .dead("down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",

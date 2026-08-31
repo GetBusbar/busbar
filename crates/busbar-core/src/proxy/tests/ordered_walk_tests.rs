@@ -329,14 +329,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
 async fn excluded_reasons_records_at_capacity() {
     use crate::store::Unavailable;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "m0",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://localhost",
-            )
-            .max(1),
-        )
+        .lane(LaneSpec::new("m0", crate::proto::PROTO_ANTHROPIC, "http://localhost").max(1))
         .pool("p", &[(0, 1)])
         .build();
     // Occupy the lane's only permit so admission fails at capacity.
@@ -366,14 +359,7 @@ async fn excluded_reasons_records_at_capacity() {
 async fn sticky_fall_through_records_reason() {
     use crate::store::Unavailable;
     let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "m0",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://localhost",
-            )
-            .max(1),
-        )
+        .lane(LaneSpec::new("m0", crate::proto::PROTO_ANTHROPIC, "http://localhost").max(1))
         .pool("p", &[(0, 1)])
         .build();
     let _held = app.store.try_acquire(0).expect("occupy the only permit");

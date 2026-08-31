@@ -318,12 +318,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
     // Lane speaks the OpenAI protocol; ingress below is Anthropic → cross-protocol translation.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("zai"),
+            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -425,12 +421,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("zai"),
+            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
@@ -559,12 +551,8 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     // Lane speaks OpenAI; ingress below is Anthropic streaming → cross-protocol SSE reframe.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("zai"),
+            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
         )
         .pool("pas", &[(0, 1)])
         .keys_chain()
@@ -644,13 +632,9 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     // limited lane: max_requests=2 lifetime cap (sets limited=true, budget=2).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.6",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .provider("z")
-            .budget(2),
+            LaneSpec::new("glm-4.6", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .provider("z")
+                .budget(2),
         )
         .pool("pc", &[(0, 1)])
         .build();
@@ -744,20 +728,12 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "alpha",
-                crate::proto::PROTO_ANTHROPIC,
-                &server_a.base_url(),
-            )
-            .provider("p"),
+            LaneSpec::new("alpha", crate::proto::PROTO_ANTHROPIC, &server_a.base_url())
+                .provider("p"),
         )
         .lane(
-            LaneSpec::new(
-                "beta",
-                crate::proto::PROTO_ANTHROPIC,
-                &server_b.base_url(),
-            )
-            .provider("p"),
+            LaneSpec::new("beta", crate::proto::PROTO_ANTHROPIC, &server_b.base_url())
+                .provider("p"),
         )
         .pool("pe", &[(0, 1), (1, 1)])
         .pool_runtime(
@@ -3656,20 +3632,12 @@ mod disposition_matrix_tests {
 
         let app = TestApp::new()
             .lane(
-                LaneSpec::new(
-                    "lane0",
-                    crate::proto::PROTO_ANTHROPIC,
-                    &server0.base_url(),
-                )
-                .provider("anthropic"),
+                LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server0.base_url())
+                    .provider("anthropic"),
             )
             .lane(
-                LaneSpec::new(
-                    "lane1",
-                    crate::proto::PROTO_ANTHROPIC,
-                    &server1.base_url(),
-                )
-                .provider("anthropic"),
+                LaneSpec::new("lane1", crate::proto::PROTO_ANTHROPIC, &server1.base_url())
+                    .provider("anthropic"),
             )
             .pool("default", &[(0, 1), (1, 1)])
             .build();
@@ -3822,24 +3790,16 @@ async fn test_exhaustion_least_bad_selects_soonest() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "lane0",
-                crate::proto::PROTO_ANTHROPIC,
-                &server0.base_url(),
-            )
-            .cooldown_until(t0 + 600) // far expiry
-            .streak(3)
-            .err(5),
+            LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server0.base_url())
+                .cooldown_until(t0 + 600) // far expiry
+                .streak(3)
+                .err(5),
         )
         .lane(
-            LaneSpec::new(
-                "lane1",
-                crate::proto::PROTO_ANTHROPIC,
-                &server1.base_url(),
-            )
-            .cooldown_until(t0 + 5) // SOONEST expiry → least-bad should pick this one
-            .streak(3)
-            .err(5),
+            LaneSpec::new("lane1", crate::proto::PROTO_ANTHROPIC, &server1.base_url())
+                .cooldown_until(t0 + 5) // SOONEST expiry → least-bad should pick this one
+                .streak(3)
+                .err(5),
         )
         .pool("leastbad", &[(0, 1), (1, 1)])
         .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
@@ -3916,15 +3876,11 @@ async fn test_forward_once_records_success_and_spends_budget() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "lane0",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .cooldown_until(t0 + 600) // Open → normal selection finds nothing → LeastBad path
-            .streak(3)
-            .err(5)
-            .budget(2), // limited lane: 2 lifetime requests remaining
+            LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .cooldown_until(t0 + 600) // Open → normal selection finds nothing → LeastBad path
+                .streak(3)
+                .err(5)
+                .budget(2), // limited lane: 2 lifetime requests remaining
         )
         .pool("leastbad", &[(0, 1)])
         .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
@@ -3987,8 +3943,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt", crate::proto::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new("gpt", crate::proto::PROTO_OPENAI, &server.base_url()).provider("openai"),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -4065,15 +4020,11 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
         // normal selection finds nothing and LeastBad serves via forward_once.
         let app = TestApp::new()
             .lane(
-                LaneSpec::new(
-                    "lane0",
-                    crate::proto::PROTO_OPENAI,
-                    &server.base_url(),
-                )
-                .provider("zai")
-                .cooldown_until(t0 + 600)
-                .streak(3)
-                .err(5),
+                LaneSpec::new("lane0", crate::proto::PROTO_OPENAI, &server.base_url())
+                    .provider("zai")
+                    .cooldown_until(t0 + 600)
+                    .streak(3)
+                    .err(5),
             )
             .pool("leastbad", &[(0, 1)])
             .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
@@ -4887,13 +4838,9 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     // Build a lane with OpenAI protocol (upstream_path = /v1/chat/completions)
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("openai-mock")
-            .api_key("test-key"),
+            LaneSpec::new("test-model", crate::proto::PROTO_OPENAI, &server.base_url())
+                .provider("openai-mock")
+                .api_key("test-key"),
         )
         .build();
 
@@ -5187,12 +5134,8 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     // Model is in by_model but NOT in any pool — the branch the bug lived in.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .provider("z.ai"),
+            LaneSpec::new("glm-4.5", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .provider("z.ai"),
         )
         .build();
 
@@ -5247,12 +5190,8 @@ async fn forwarded_openai_to_anthropic(
     });
     let server = MockServer::new(state.clone()).await;
 
-    let mut spec = LaneSpec::new(
-        "glm-4.5",
-        crate::proto::PROTO_ANTHROPIC,
-        &server.base_url(),
-    )
-    .provider("z.ai");
+    let mut spec = LaneSpec::new("glm-4.5", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+        .provider("z.ai");
     if let Some(d) = lane_default {
         spec = spec.default_max_tokens(d);
     }
@@ -6072,13 +6011,9 @@ fn test_lanespec_sem_override_is_shared() {
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "m",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:0",
-            )
-            .max(1)
-            .sem(sem.clone()),
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:0")
+                .max(1)
+                .sem(sem.clone()),
         )
         .build();
 
@@ -6108,16 +6043,12 @@ fn test_lanespec_sem_override_is_shared() {
 fn test_lanespec_runtime_state_setters_land_in_built_app() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "m",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:0",
-            )
-            .cooldown_until(now() + 600)
-            .streak(3)
-            .err(5)
-            .context_max(8000)
-            .default_max_tokens(1234),
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:0")
+                .cooldown_until(now() + 600)
+                .streak(3)
+                .err(5)
+                .context_max(8000)
+                .default_max_tokens(1234),
         )
         .build();
 

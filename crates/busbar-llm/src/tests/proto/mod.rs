@@ -64,8 +64,6 @@ pub(crate) use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 
 #[path = "adversarial_tests.rs"]
 mod adversarial_tests;
-#[path = "phase1_5_relocated_tests.rs"]
-mod phase1_5_relocated_tests;
 #[path = "context_length_tests.rs"]
 mod context_length_tests;
 #[path = "cross_protocol_extra_tests.rs"]
@@ -74,10 +72,16 @@ mod cross_protocol_extra_tests;
 mod gemini_integration_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
+#[path = "hook_ir_differential_tests.rs"]
+mod hook_ir_differential_tests;
 #[path = "image_source_matrix_tests.rs"]
 mod image_source_matrix_tests;
+#[path = "max_tokens_precedence_tests.rs"]
+mod max_tokens_precedence_tests;
 #[path = "openai_family_tests.rs"]
 mod openai_family_tests;
+#[path = "phase1_5_relocated_tests.rs"]
+mod phase1_5_relocated_tests;
 #[path = "registry_tests.rs"]
 mod registry_tests;
 #[path = "response_format_matrix_tests.rs"]
