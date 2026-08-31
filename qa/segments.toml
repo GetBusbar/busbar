@@ -220,7 +220,7 @@ run    = "cargo test -p busbar --test qa_smart_router"
 
 [[segment]]
 id     = "plane-purity"
-status = "reserved"   # -> active in 1.7.x once the plane extraction drains the neutral crates (design P5)
+status = "active"   # ARMED: the plane extraction drained the neutral crates to 0 (design P5 complete)
 tier   = "fast"
 # THE NEUTRAL-PURITY GATE (plane-extraction §6.2/§6.3) as an independently-reported release verdict —
 # the plane-boundary analogue of field-coverage/config-stability above. The plane ABI (PlaneDecl /
@@ -229,14 +229,12 @@ tier   = "fast"
 # crate — a `#[path=…/busbar-<plane>/…]` witness include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete
 # plane key/dialect/record-type, or a plane crate reaching BACK into busbar_core:: implementation.
 #
-# RESERVED, RED-BY-DESIGN-UNTIL-DRAINED (the field-coverage discipline). The tree is DIRTY today — the
-# deletion test fails for all three planes and §3 is the residual ledger (the current baseline is
-# ~1236 side channels, surfaced non-blocking on every push by the `--baseline` step in ci.yml's
-# structure-lint job). An `active` segment whose `--check` cannot pass would be a hollow-red that
-# breaks the honesty rule, so this slot is `reserved` — INERT, excluded from the green claim, named in
-# the umbrella's scope line — exactly like method-coverage-acceptance was red-by-design while its queue
-# was owed. Arming it is a one-line reserved→active flip the day the baseline reaches 0; the `--check`
-# form then passes green and stays a permanent gate, so the boundary can never erode unwatched again.
-# The self-test (which proves the scanner catches the four planted side channels) is ALREADY green and
-# already runs per-push in ci.yml — only the tree VERDICT is deferred, never the scanner's proof.
+# ACTIVE, PERMANENT GATE. The extraction is COMPLETE: the baseline drained from ~1236 side channels to
+# 0, the deletion test passes strong-form for all three planes (each crate physically removable with the
+# neutral crates + bin still compiling), and `--check` passes green. This slot is now `active` — a real
+# release verdict, no longer red-by-design — so the plane boundary can never erode unwatched again: any
+# future `#[path=…/busbar-<plane>/…]` witness, `busbar_{llm,mcp,a2a}::` symbol in a neutral crate,
+# concrete plane key/dialect/record-type, or plane→busbar_core:: back-reach fails this gate RED.
+# The self-test (proving the scanner catches the four planted side channels) also runs per-push in
+# ci.yml, so the scanner's own honesty is continuously verified alongside the tree verdict.
 run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"

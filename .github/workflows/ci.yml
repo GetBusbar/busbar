@@ -284,15 +284,17 @@ jobs:
       # neutral crate, or a plane crate reaching BACK into busbar_core:: implementation) is what let
       # the boundary drift when nothing watched it. Self-test runs FIRST (never trust the scanner's
       # verdict before it re-proves it flags the four planted side channels and passes the allow-listed
-      # / comment / test fixtures). Then the tree is scanned in `--baseline` (INFORMATIONAL) mode: it
-      # PRINTS the categorized violation count on every push but ALWAYS exits 0, so it never reds the
-      # dirty pre-extraction tree — exactly as field_coverage.rs keeps its acceptance #[ignore]d until
-      # the queue is drained. The BLOCKING form (`--check`) is wired as the RESERVED `plane-purity`
-      # qa segment, armed (reserved→active) the day the baseline reaches 0.
+      # / comment / test fixtures). Then the tree is scanned in `--check` (BLOCKING) mode: the extraction
+      # is COMPLETE (the baseline drained from ~1236 to 0), the `plane-purity` qa segment is now ARMED
+      # (reserved→active), so this step fails RED on ANY side channel — the boundary can never drift
+      # unwatched again. The deletion test then proves the strong form: each plane crate is physically
+      # removable (`git rm -r`) with the neutral crates + bin still compiling — no neutral→plane edge.
       - name: Plane-purity lint self-test (the side-channel scanner cannot be lied to)
         run: scripts/plane-purity-lint.sh --selftest
-      - name: Plane-purity baseline (informational — the ledger the extraction drives to zero)
-        run: scripts/plane-purity-lint.sh --baseline
+      - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
+        run: scripts/plane-purity-lint.sh --check
+      - name: Plane deletion test (each plane crate is strong-form removable)
+        run: scripts/plane-delete-test.sh --all
 
   check:
     name: fmt · clippy · build · test
