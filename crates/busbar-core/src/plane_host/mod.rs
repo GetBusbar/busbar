@@ -342,11 +342,18 @@ pub async fn drive_openai_completion_over(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
-    let op = crate::handlers::chat("openai", crate::transport::Transport::Http);
+    // THE DEFAULT CHAT PROTOCOL — the wire dialect an extracted plane's synthesized completion is
+    // driven as — is the registry's residual-default protocol (openai_chat declares
+    // `residual_default: true`), read by name so this neutral core spells no dialect. `None` is the
+    // all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect to
+    // drive, and the caller gets that as an error rather than a hard-coded protocol identity.
+    let proto = crate::proto::residual_default_dialect()
+        .ok_or_else(|| "no default chat protocol is installed".to_string())?;
+    let op = crate::handlers::chat(proto, crate::transport::Transport::Http);
     let response = crate::ingress::operation_resolved(
         &app,
         gov,
-        "openai",
+        proto,
         op.operation,
         op.op_handler,
         model,
