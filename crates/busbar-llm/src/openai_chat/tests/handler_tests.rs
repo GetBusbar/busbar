@@ -145,8 +145,8 @@ fn egress_multipart_sanitizes_mime_from_any_ingress() {
     // bytes carry no injected header.
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
-        audio: Some(busbar_core::media::MediaBlob {
-            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+        audio: Some(busbar_substrate::media::MediaBlob {
+            payload: busbar_substrate::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
             mime_type: "audio/mp3\r\nX-Injected: evil".into(),
             pcm: None,
         }),
@@ -406,7 +406,7 @@ fn speech_write_response_decodes_b64_payload_to_raw_bytes() {
     // A Speech response whose audio rides as base64 must be decoded to the raw bytes on egress
     // (routed through decode_ir_b64), not emitted as the base64 string.
     let raw = b"\xff\xfb\x90\x00some-audio";
-    let b64 = busbar_core::media::base64_encode(raw);
+    let b64 = busbar_substrate::media::base64_encode(raw);
     let ir = crate::ir::audio::SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::B64(b64),
@@ -654,8 +654,8 @@ fn transcription_temperature_round_trips_openai_multipart() {
     let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         temperature: Some(0.5),
-        audio: Some(busbar_core::media::MediaBlob {
-            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+        audio: Some(busbar_substrate::media::MediaBlob {
+            payload: busbar_substrate::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

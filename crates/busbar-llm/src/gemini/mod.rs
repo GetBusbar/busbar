@@ -616,7 +616,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     // Resolve the candidate value: a string is a serialized payload — parse it, falling back to the
     // string itself (a scalar) when it does not parse as JSON. Any non-string value is used as-is.
     let candidate: serde_json::Value = match input.as_str() {
-        Some(s) => busbar_core::json::parse_str(s).unwrap_or_else(|_| input.clone()),
+        Some(s) => busbar_substrate::json::parse_str(s).unwrap_or_else(|_| input.clone()),
         None => input.clone(),
     };
     if candidate.is_object() {
@@ -1676,7 +1676,7 @@ pub(crate) struct GeminiJsonArrayFramer {
 impl GeminiJsonArrayFramer {
     // `pub(crate)` so the framer's tests in `mod.rs` (which exercise the buffer-overflow abort path)
     // can size a payload off the cap; it stays an internal cap, not part of the wire surface.
-    pub(crate) const MAX_BUF: usize = busbar_core::eventstream::MAX_FRAME_BYTES;
+    pub(crate) const MAX_BUF: usize = busbar_substrate::eventstream::MAX_FRAME_BYTES;
 
     pub(crate) fn new() -> Self {
         Self {
@@ -1723,7 +1723,8 @@ impl GeminiJsonArrayFramer {
                     }
                     // Validate the payload is JSON before forwarding so a malformed frame cannot
                     // corrupt the array; re-serialize from the parsed Value to normalize whitespace.
-                    let Ok(data) = busbar_core::json::parse_str::<serde_json::Value>(&data_str)
+                    let Ok(data) =
+                        busbar_substrate::json::parse_str::<serde_json::Value>(&data_str)
                     else {
                         continue;
                     };

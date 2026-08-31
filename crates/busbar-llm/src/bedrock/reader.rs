@@ -30,7 +30,7 @@ impl ProtocolReader for BedrockReader {
         // type is what the breaker's error_map keys on for fine-grained routing,
         // so it must come from `__type`, not from `message`.
         let (provider_code, structured_type) =
-            match busbar_core::json::parse::<serde_json::Value>(body) {
+            match busbar_substrate::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let provider_code = json
                         .get("message")

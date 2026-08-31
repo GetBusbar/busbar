@@ -33,7 +33,7 @@ impl ProtocolReader for OpenAiReader {
         // Parse the error body exactly once and derive both fields from the single tree, mirroring
         // the single-parse pattern in AnthropicReader::extract_error. The previous code parsed the
         // same bytes twice (once per field), doubling alloc/CPU on every non-2xx response.
-        let json = busbar_core::json::parse::<serde_json::Value>(body).ok();
+        let json = busbar_substrate::json::parse::<serde_json::Value>(body).ok();
         let error_obj = json
             .as_ref()
             .and_then(|j| j.get("error"))
@@ -312,9 +312,10 @@ impl ProtocolReader for OpenAiReader {
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("{}");
-                                    let input = busbar_core::json::parse_str(arguments).unwrap_or(
-                                        serde_json::Value::String(arguments.to_string()),
-                                    );
+                                    let input = busbar_substrate::json::parse_str(arguments)
+                                        .unwrap_or(serde_json::Value::String(
+                                            arguments.to_string(),
+                                        ));
 
                                     msg_content.push(crate::ir::IrBlock::ToolUse {
                                         id,
@@ -1098,7 +1099,7 @@ impl ProtocolReader for OpenAiReader {
                         .get("arguments")
                         .and_then(|v| v.as_str())
                         .unwrap_or("{}");
-                    let input = busbar_core::json::parse_str(arguments)
+                    let input = busbar_substrate::json::parse_str(arguments)
                         .unwrap_or(serde_json::Value::String(arguments.to_string()));
 
                     content.push(crate::ir::IrBlock::ToolUse {

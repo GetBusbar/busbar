@@ -31,6 +31,24 @@ pub mod auth {
 pub mod detached;
 pub mod diagnostics;
 pub mod net_guard;
+// wt2/neutral-utils: the five NEUTRAL transport/crypto utility leaves relocated down from
+// busbar-core so a plane crate (busbar-llm) names them via the ABI instead of reaching back into
+// `busbar_core::`. Each is pure (no plane/`App`/`Store` knowledge): JSON canonicalization + the
+// depth-guarded parser seam (`sonic-rs`), the base64/media-type helper, the AWS EventStream (SSE)
+// framing codec, the source-scoped lossless-extras namespace, and the hand-rolled SigV4 signer.
+// Core re-exports each from its old `busbar_core::<mod>` path so its own call sites are unchanged.
+pub mod eventstream;
+pub mod json;
+pub mod lossless;
+pub mod media;
+pub mod sigv4;
+// A test-only tracing Layer that captures WARN/ERROR (and, lowered, DEBUG) events so the relocated
+// `eventstream` framing tests can assert a `diag_*!` fired without a global subscriber. Copied with
+// the module it serves; core keeps its own copy for its remaining test sites.
+#[cfg(test)]
+mod test_support {
+    pub mod warn_capture;
+}
 pub mod audit {
     pub mod vocab;
 

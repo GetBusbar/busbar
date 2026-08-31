@@ -589,8 +589,8 @@ fn gemini_transcription_forwards_caller_prompt_and_temperature() {
         model: "gemini-2.0-flash".into(),
         prompt: Some("Spell Busbar correctly.".into()),
         temperature: Some(0.5),
-        audio: Some(busbar_core::media::MediaBlob {
-            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+        audio: Some(busbar_substrate::media::MediaBlob {
+            payload: busbar_substrate::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

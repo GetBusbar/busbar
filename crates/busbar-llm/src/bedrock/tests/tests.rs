@@ -51,7 +51,7 @@ fn synth_response_id() -> String {
 fn test_bedrock_sigv4_sign_request_structure() {
     // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
     // verified against AWS's published vector in sigv4::tests.)
-    let canonical = busbar_core::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
+    let canonical = busbar_substrate::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
     let ctx = busbar_substrate::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: &canonical,
@@ -2057,7 +2057,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         stop_sequence: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = busbar_core::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
     // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
     // opens implicitly with its first `contentBlockDelta`. So the contiguity check keys off that
     // delta: the Text block is the only one that emits frames, so its delta must land at index 0,
@@ -2146,7 +2146,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         stop_sequence: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = busbar_core::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut bytes);
 
     let mut starts: Vec<u64> = Vec::new();
     let mut stops: Vec<u64> = Vec::new();

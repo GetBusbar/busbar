@@ -28,7 +28,7 @@ impl ProtocolReader for AnthropicReader {
         // re-parsing the same bytes per field (error paths are already degraded; avoid the extra
         // parse+alloc on every non-2xx response).
         let (provider_code, structured_type) =
-            match busbar_core::json::parse::<serde_json::Value>(body) {
+            match busbar_substrate::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let error = json.get("error");
                     let provider_code = error
@@ -105,7 +105,7 @@ impl ProtocolReader for AnthropicReader {
         // message-substring billing/auth checks must fire even when the structured `code` field is
         // absent (some Anthropic error shapes carry a 200/non-401-403 body with only a message), so
         // they live OUTSIDE the `if let Some(code_val)` guard rather than nested inside it.
-        if let Ok(json) = busbar_core::json::parse::<serde_json::Value>(body) {
+        if let Ok(json) = busbar_substrate::json::parse::<serde_json::Value>(body) {
             let error = json.get("error");
 
             if let Some(code_val) = error.and_then(|e| e.get("code")) {

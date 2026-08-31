@@ -598,10 +598,11 @@ fn test_sign_v4_matches_aws_published_example() {
     );
 }
 
-// Reference the canonical dummy secret from `crate::auth` (the single source of truth) rather
-// than maintaining a separate copy that could drift. Used to prove the unknown-key path produces
-// an ordinary SignatureMismatch, not a distinct variant.
-use crate::auth::DUMMY_SECRET;
+// The canonical constant-time-reject dummy secret. In busbar-core this lives at
+// `crate::auth::DUMMY_SECRET` (the reject path there uses it); the sigv4 signer now lives in the
+// neutral substrate below auth, so this test pins the SAME byte string locally. Used to prove the
+// unknown-key path produces an ordinary SignatureMismatch, not a distinct variant.
+const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 
 #[test]
 fn test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch() {

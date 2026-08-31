@@ -34,7 +34,7 @@ impl ProtocolReader for ResponsesReader {
         // re-parsing the same bytes per field (matches the anthropic.rs pattern; error paths are
         // already degraded — avoid the extra parse+alloc on every non-2xx response).
         let (provider_code, structured_type) =
-            match busbar_core::json::parse::<serde_json::Value>(body) {
+            match busbar_substrate::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let error = json.get("error").and_then(|e| e.as_object());
                     let provider_code = error
@@ -232,8 +232,8 @@ impl ProtocolReader for ResponsesReader {
                             // On malformed argument JSON, preserve the raw string rather than
                             // discarding the caller's tool arguments to Null (mirrors the OpenAI
                             // reader). Losing arguments entirely is a lossy cross-protocol bug.
-                            let input =
-                                busbar_core::json::parse_str(arguments).unwrap_or_else(|_| {
+                            let input = busbar_substrate::json::parse_str(arguments)
+                                .unwrap_or_else(|_| {
                                     serde_json::Value::String(arguments.to_string())
                                 });
 
@@ -1377,7 +1377,7 @@ impl ProtocolReader for ResponsesReader {
                             .unwrap_or("{}");
                         // Preserve the raw string on malformed JSON rather than dropping the tool
                         // arguments to Null (mirrors the OpenAI reader; avoids lossy translation).
-                        let input = busbar_core::json::parse_str(arguments)
+                        let input = busbar_substrate::json::parse_str(arguments)
                             .unwrap_or_else(|_| serde_json::Value::String(arguments.to_string()));
 
                         content.push(crate::ir::IrBlock::ToolUse {

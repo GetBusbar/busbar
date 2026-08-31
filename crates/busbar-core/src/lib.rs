@@ -152,7 +152,10 @@ pub use busbar_api::durable;
 pub mod egress;
 pub mod egress_auth;
 pub mod endpoints;
-pub mod eventstream;
+// wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate busbar-llm may name) so
+// the LLM plane reaches the AWS EventStream framing codec via the ABI, not `busbar_core::`. Core
+// re-exports it here so `crate::eventstream::…` call sites are unchanged.
+pub use busbar_substrate::eventstream;
 pub mod export;
 pub mod failover;
 pub mod governance;
@@ -161,11 +164,15 @@ pub mod health;
 pub mod hooks;
 pub mod ingress;
 pub mod ir;
-pub mod json;
+// wt2/neutral-utils: relocated DOWN to busbar-substrate. The depth-guarded JSON parse/serialize seam
+// (sonic-rs) is a neutral utility; core re-exports it so `crate::json::{parse,to_vec,…}` are unchanged.
+pub use busbar_substrate::json;
 pub mod limits;
 pub mod lineage;
-pub mod lossless;
-pub mod media;
+// wt2/neutral-utils: both relocated DOWN to busbar-substrate (neutral value/util leaves). Core
+// re-exports them so `crate::lossless`/`crate::media` and any `busbar_core::{lossless,media}` are unchanged.
+pub use busbar_substrate::lossless;
+pub use busbar_substrate::media;
 pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
@@ -186,7 +193,9 @@ pub mod profile;
 pub mod proto;
 pub mod proxy;
 pub mod session;
-pub mod sigv4;
+// wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
+// verifies via `busbar_api::constant_time_eq`). Core re-exports it so `crate::sigv4::…` is unchanged.
+pub use busbar_substrate::sigv4;
 pub mod state;
 pub mod store;
 pub mod telemetry;

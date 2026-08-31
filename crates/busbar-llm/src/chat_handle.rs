@@ -469,7 +469,7 @@ impl OperationHandler for ChatOperation {
             }
             return None;
         };
-        let v = match busbar_core::json::parse::<Value>(body) {
+        let v = match busbar_substrate::json::parse::<Value>(body) {
             Ok(v) => v,
             Err(_e) => {
                 if busbar_substrate::handlers::usage_tap_decode_fail_should_warn(
@@ -478,14 +478,14 @@ impl OperationHandler for ChatOperation {
                 ) {
                     ::tracing::warn!(diag = %busbar_substrate::diagnostics::USAGE_TAP_BAD_JSON.banner(),
                         protocol = ingress_protocol,
-                        error = %busbar_core::json::parse_err_log(body.len()),
+                        error = %busbar_substrate::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
                          billing 0 tokens for this request"
                     );
                 } else {
                     ::tracing::debug!(diag = %busbar_substrate::diagnostics::USAGE_TAP_BAD_JSON.banner(),
                         protocol = ingress_protocol,
-                        error = %busbar_core::json::parse_err_log(body.len()),
+                        error = %busbar_substrate::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
                          billing 0 tokens for this request"
                     );

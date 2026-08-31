@@ -8,9 +8,9 @@ use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use busbar_api::operation::Operation;
-use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_substrate::ir::handle::IrHandle;
+use busbar_substrate::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -556,7 +556,7 @@ pub(crate) fn read_transcription_request(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                if busbar_core::media::base64_decode(&data).is_none() {
+                if busbar_substrate::media::base64_decode(&data).is_none() {
                     return Err(IngressReject::BadRequest(
                         "inline_data.data is not valid base64".into(),
                     ));
@@ -711,7 +711,7 @@ pub(crate) fn read_speech_response(
                 .to_string();
             let pcm = mime
                 .contains("pcm")
-                .then_some(busbar_core::media::PcmParams {
+                .then_some(busbar_substrate::media::PcmParams {
                     sample_rate: 24000,
                     channels: 1,
                     bit_depth: 16,
@@ -720,7 +720,7 @@ pub(crate) fn read_speech_response(
             // loud here (CodecError) rather than reach the egress writer, where a decode failure
             // would silently become an empty 200 audio body. This is the response-side twin of
             // the ingress inline_data validation.
-            if busbar_core::media::base64_decode(data).is_none() {
+            if busbar_substrate::media::base64_decode(data).is_none() {
                 return Err(CodecError::Malformed(
                     "gemini speech inlineData.data is not valid base64".into(),
                 ));
@@ -802,12 +802,12 @@ pub(crate) fn read_image_request(
 pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_core::media::ImageOutput> = v
+    let images: Vec<busbar_substrate::media::ImageOutput> = v
         .get("predictions")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .map(|p| busbar_core::media::ImageOutput {
+                .map(|p| busbar_substrate::media::ImageOutput {
                     b64: p
                         .get("bytesBase64Encoded")
                         .and_then(Value::as_str)

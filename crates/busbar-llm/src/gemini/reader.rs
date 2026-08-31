@@ -48,7 +48,7 @@ impl ProtocolReader for GeminiReader {
     ) -> busbar_substrate::breaker::RawUpstreamError {
         // Parse the body once; both `provider_code` and `structured_type` are derived from the
         // same parsed value to avoid deserializing the JSON twice on every error response.
-        let json = busbar_core::json::parse::<serde_json::Value>(body).ok();
+        let json = busbar_substrate::json::parse::<serde_json::Value>(body).ok();
         let error_obj = json
             .as_ref()
             .and_then(|j| j.get("error"))
@@ -425,7 +425,7 @@ impl ProtocolReader for GeminiReader {
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
                             // Convert response to string representation for content
-                            let response_text = busbar_core::json::to_string(&response_val)
+                            let response_text = busbar_substrate::json::to_string(&response_val)
                                 .unwrap_or_else(|_| "unknown".to_string());
                             // ACCEPTED GEMINI-PROTOCOL LIMITATION: a Gemini `functionResponse`
                             // carries only a `name` (no call id). We set `tool_use_id` to the
@@ -1125,8 +1125,8 @@ impl ProtocolReader for GeminiReader {
                                     // the `thoughtSignature` Gemini needs on that next turn. Do not
                                     // "fix" this as a gap without re-reading that control flow.
                                     // Emit the whole args as InputJsonDelta (Gemini doesn't stream functionCall)
-                                    let args_str =
-                                        busbar_core::json::to_string(&args).unwrap_or_default();
+                                    let args_str = busbar_substrate::json::to_string(&args)
+                                        .unwrap_or_default();
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ir_idx,
                                         delta: crate::ir::IrDelta::InputJsonDelta(args_str),

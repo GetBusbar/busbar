@@ -1475,8 +1475,11 @@ pub(crate) fn bedrock_response_to_eventstream(
                     );
                 }
             }
-            if let Ok(bytes) = busbar_core::json::to_vec(&payload) {
-                out.extend_from_slice(&busbar_core::eventstream::encode_frame(&event_type, &bytes));
+            if let Ok(bytes) = busbar_substrate::json::to_vec(&payload) {
+                out.extend_from_slice(&busbar_substrate::eventstream::encode_frame(
+                    &event_type,
+                    &bytes,
+                ));
             }
         }
     };

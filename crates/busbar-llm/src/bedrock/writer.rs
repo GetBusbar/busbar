@@ -21,8 +21,8 @@ pub fn sigv4_sign_headers(
         }
     };
     let service = "bedrock";
-    let (amzdate, datestamp) = busbar_core::sigv4::format_amz_time(ctx.timestamp_epoch);
-    let payload_hash = busbar_core::sigv4::sha256_hex(ctx.body);
+    let (amzdate, datestamp) = busbar_substrate::sigv4::format_amz_time(ctx.timestamp_epoch);
+    let payload_hash = busbar_substrate::sigv4::sha256_hex(ctx.body);
     let token_header = match token {
         Some(t) => match HeaderValue::from_str(t) {
             Ok(v) => Some(v),
@@ -40,18 +40,21 @@ pub fn sigv4_sign_headers(
         ),
         ("host".to_string(), ctx.host.to_string()),
         (
-            busbar_core::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
+            busbar_substrate::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
             payload_hash.clone(),
         ),
-        (busbar_core::sigv4::X_AMZ_DATE.to_string(), amzdate.clone()),
+        (
+            busbar_substrate::sigv4::X_AMZ_DATE.to_string(),
+            amzdate.clone(),
+        ),
     ];
     if let Some(t) = token {
         signed.push((
-            busbar_core::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
+            busbar_substrate::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
             t.to_string(),
         ));
     }
-    let (signature, signed_headers) = busbar_core::sigv4::sign_v4(
+    let (signature, signed_headers) = busbar_substrate::sigv4::sign_v4(
         secret,
         region,
         service,
@@ -64,7 +67,7 @@ pub fn sigv4_sign_headers(
         &datestamp,
     );
     let authorization = {
-        use busbar_core::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
+        use busbar_substrate::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
         format!(
             "{SIGV4_ALGORITHM} Credential={access}/{datestamp}/{region}/{service}/{SIGV4_TERMINATION}, SignedHeaders={signed_headers}, Signature={signature}"
         )
@@ -82,17 +85,17 @@ pub fn sigv4_sign_headers(
             authorization_val,
         ),
         (
-            HeaderName::from_static(busbar_core::sigv4::X_AMZ_DATE),
+            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_DATE),
             amzdate_val,
         ),
         (
-            HeaderName::from_static(busbar_core::sigv4::X_AMZ_CONTENT_SHA256),
+            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_CONTENT_SHA256),
             payload_hash_val,
         ),
     ];
     if let Some(v) = token_header {
         out.push((
-            HeaderName::from_static(busbar_core::sigv4::X_AMZ_SECURITY_TOKEN),
+            HeaderName::from_static(busbar_substrate::sigv4::X_AMZ_SECURITY_TOKEN),
             v,
         ));
     }

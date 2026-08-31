@@ -273,7 +273,7 @@ impl ProtocolWriter for GeminiWriter {
                         // `null` becomes `{}` (an empty-but-valid response), and any other non-object
                         // scalar/array is wrapped under `{"output": <value>}` so its content survives.
                         let parsed: serde_json::Value =
-                            busbar_core::json::parse_str(&response_text)
+                            busbar_substrate::json::parse_str(&response_text)
                                 .unwrap_or_else(|_| serde_json::json!({ "output": response_text }));
                         let response_val: serde_json::Value = if parsed.is_object() {
                             parsed
@@ -1032,7 +1032,7 @@ impl ProtocolWriter for GeminiWriter {
                     let args: serde_json::Value = if args_str.is_empty() {
                         serde_json::json!({})
                     } else {
-                        busbar_core::json::parse_str(&args_str)
+                        busbar_substrate::json::parse_str(&args_str)
                             .unwrap_or_else(|_| serde_json::json!({}))
                     };
                     let mut fc_obj = serde_json::Map::new();

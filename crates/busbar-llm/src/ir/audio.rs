@@ -7,13 +7,13 @@
 //!   (not a third op). Billing is model-dependent: `Duration` (whisper-1) | `Tokens` (gpt-4o-transcribe).
 //! - **Speech** (TTS): text IN → binary audio OUT. Billing: `Characters` (tts-1) | `Tokens` (gpt-4o-mini-tts).
 //!
-//! Both share the [`busbar_core::media::MediaBlob`] payload (audio in / audio out). Split request/response
+//! Both share the [`busbar_substrate::media::MediaBlob`] payload (audio in / audio out). Split request/response
 //! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
 
-use busbar_core::lossless::SourceScopedExtra;
-use busbar_core::media::MediaBlob;
 use busbar_substrate::billing::Billing;
+use busbar_substrate::lossless::SourceScopedExtra;
+use busbar_substrate::media::MediaBlob;
 
 /// Timestamp detail requested on a transcription (whisper-1 only; requires verbose_json).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

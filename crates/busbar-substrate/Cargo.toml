@@ -22,6 +22,11 @@ busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 axum = { workspace = true }
 serde_json = { workspace = true }
+# wt2/neutral-utils: the relocated `json` seam funnels every parse/serialize through sonic-rs (SIMD
+# on the large string-heavy LLM bodies) in ONE place; the `eventstream` framing codec CRC32s each
+# AWS EventStream prelude/message via crc32fast. Both are neutral leaves the LLM plane names here.
+sonic-rs = { workspace = true }
+crc32fast = { workspace = true }
 # The differential harness's REFERENCE stack only (`egress::build_pinned_client` + the reqwest
 # resolver seams + the fixture resolver doubles): optional, enabled by `test-support` for the
 # dependent test binaries; this crate's own tests reach it through [dev-dependencies]. A shipped
@@ -133,6 +138,9 @@ schemars = { workspace = true, optional = true }
 # `test-support` edge. Same workspace-pinned version as the optional production entry above.
 reqwest = { workspace = true }
 hex = { workspace = true }
+# wt2/neutral-utils: the relocated `eventstream` framing tests capture WARN/ERROR events through a
+# `tracing_subscriber::Layer` (WarnCapture) to assert a `diag_*!` fired without a global subscriber.
+tracing-subscriber = { workspace = true }
 # The relocated `plane_host::identity`/`plane_host::trust_anchor` registry tests build throw-away
 # self-signed client identities and roots (the way the a2a boot resolver builds one) with `rcgen`;
 # it is used only by those moved tests, so it is a dev edge here.

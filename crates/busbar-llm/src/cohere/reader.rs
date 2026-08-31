@@ -33,7 +33,7 @@ impl ProtocolReader for CohereReader {
         // Parse the body exactly once and derive both fields from the single binding — the Gemini
         // and Bedrock readers do the same, preserving the "parse once" invariant. Parsing twice
         // paid a pointless 2x CPU cost on every error response.
-        let json = busbar_core::json::parse::<serde_json::Value>(body).ok();
+        let json = busbar_substrate::json::parse::<serde_json::Value>(body).ok();
         let provider_code = json
             .as_ref()
             .and_then(|j| j.get("message"))
@@ -378,9 +378,10 @@ impl ProtocolReader for CohereReader {
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("{}");
-                                    let input = busbar_core::json::parse_str(arguments).unwrap_or(
-                                        serde_json::Value::String(arguments.to_string()),
-                                    );
+                                    let input = busbar_substrate::json::parse_str(arguments)
+                                        .unwrap_or(serde_json::Value::String(
+                                            arguments.to_string(),
+                                        ));
                                     msg_content.push(crate::ir::IrBlock::ToolUse {
                                         id,
                                         name,
@@ -429,12 +430,12 @@ impl ProtocolReader for CohereReader {
                                         } else {
                                             // Preserve any OTHER non-text typed block verbatim
                                             // rather than dropping it.
-                                            busbar_core::json::to_string(b).ok()
+                                            busbar_substrate::json::to_string(b).ok()
                                         }
                                     } else {
                                         // Non-string, non-object array element: serialize it so no
                                         // content is lost.
-                                        busbar_core::json::to_string(b).ok()
+                                        busbar_substrate::json::to_string(b).ok()
                                     }
                                 })
                                 .collect::<Vec<_>>()
@@ -447,7 +448,7 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(s) = content_val.as_str() {
                             s.to_string()
                         } else {
-                            busbar_core::json::to_string(content_val).unwrap_or_default()
+                            busbar_substrate::json::to_string(content_val).unwrap_or_default()
                         }
                     } else {
                         String::new()
@@ -1152,7 +1153,7 @@ impl ProtocolReader for CohereReader {
                         .get("arguments")
                         .and_then(|v| v.as_str())
                         .unwrap_or("{}");
-                    let input = busbar_core::json::parse_str(arguments)
+                    let input = busbar_substrate::json::parse_str(arguments)
                         .unwrap_or(serde_json::Value::String(arguments.to_string()));
                     content.push(crate::ir::IrBlock::ToolUse {
                         id,

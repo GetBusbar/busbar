@@ -6,7 +6,7 @@
 //! OpenAI's shape exactly. Split request/response per. Flat-fee: no `Billing` on the response
 //! (`IrResp::usage()` returns `Billing::Flat` for moderation).
 
-use busbar_core::lossless::SourceScopedExtra;
+use busbar_substrate::lossless::SourceScopedExtra;
 use std::collections::BTreeMap;
 
 /// A moderation input item — text or an image reference (omni-moderation accepts both).

@@ -6,7 +6,8 @@
 //! verified against AWS's published worked example (GET iam ListUsers, 20150830) in the tests, so
 //! the canonical-request → string-to-sign → signature chain is known-correct.
 
-use crate::diagnostics::{diag_error, SIGV4_HMAC_INIT_FAILED};
+use crate::diag_error;
+use crate::diagnostics::SIGV4_HMAC_INIT_FAILED;
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -223,7 +224,7 @@ pub fn sign_v4(
 /// AWS itself uses a 5-minute window; matching it rejects replay of a signature captured more than
 /// `±CLOCK_SKEW_SECS` ago while tolerating ordinary client/server clock drift. Bounding the age of an
 /// accepted signature is the replay defense (busbar does not track nonces).
-pub(crate) const CLOCK_SKEW_SECS: u64 = 300;
+pub const CLOCK_SKEW_SECS: u64 = 300;
 
 /// Why an inbound SigV4 verification was rejected. The auth layer maps EVERY variant to the SAME
 /// native-vendor auth-failure response (a 403 AccessDenied with no reason prose) — the distinction is
@@ -231,7 +232,7 @@ pub(crate) const CLOCK_SKEW_SECS: u64 = 300;
 /// distinguishing "unknown AccessKeyId" from "bad signature" would let an attacker enumerate valid
 /// AccessKeyIds). The variants carry NO secret material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VerifyError {
+pub enum VerifyError {
     /// No `Authorization` header, or it is not an `AWS4-HMAC-SHA256` credential.
     MissingAuthorization,
     /// The `Authorization` header is present but structurally malformed (bad Credential/SignedHeaders/
@@ -253,15 +254,15 @@ pub(crate) enum VerifyError {
 /// The parsed components of an inbound SigV4 `Authorization` header. All fields are non-secret (the
 /// AccessKeyId and signature both travel in plaintext on the wire).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedAuthHeader {
-    pub(crate) access_key_id: String,
-    pub(crate) datestamp: String,
-    pub(crate) region: String,
-    pub(crate) service: String,
+pub struct ParsedAuthHeader {
+    pub access_key_id: String,
+    pub datestamp: String,
+    pub region: String,
+    pub service: String,
     /// The lowercase, `;`-joined SignedHeaders list, e.g. `host;x-amz-content-sha256;x-amz-date`.
-    pub(crate) signed_headers: String,
+    pub signed_headers: String,
     /// The hex signature the client computed.
-    pub(crate) signature: String,
+    pub signature: String,
 }
 
 /// Parse an inbound `Authorization: AWS4-HMAC-SHA256 Credential=.../..., SignedHeaders=..., Signature=...`
@@ -272,7 +273,7 @@ pub(crate) struct ParsedAuthHeader {
 /// The `Credential` field is `AccessKeyId/datestamp/region/service/aws4_request` — five `/`-separated
 /// parts, the last of which MUST be `aws4_request`. The three comma-separated sections
 /// (Credential / SignedHeaders / Signature) may carry optional surrounding whitespace, which we trim.
-pub(crate) fn parse_authorization_header(value: &str) -> Result<ParsedAuthHeader, VerifyError> {
+pub fn parse_authorization_header(value: &str) -> Result<ParsedAuthHeader, VerifyError> {
     // The algorithm token and the rest are split on the FIRST space. Match the algorithm
     // case-sensitively against the single spelling AWS uses; anything else is "not SigV4".
     let value = value.trim();
@@ -389,16 +390,16 @@ fn parse_amz_date(amzdate: &str) -> Option<u64> {
 /// (use [`uri_encode_path`]); `canonical_querystring` MUST be the sorted+encoded query string (or
 /// empty). `headers` carries the ACTUAL request header values for (at least) every name in the parsed
 /// `SignedHeaders` list; extra headers are ignored (only the signed ones enter the canonical request).
-pub(crate) struct InboundRequest<'a> {
-    pub(crate) method: &'a str,
-    pub(crate) canonical_uri: &'a str,
-    pub(crate) canonical_querystring: &'a str,
+pub struct InboundRequest<'a> {
+    pub method: &'a str,
+    pub canonical_uri: &'a str,
+    pub canonical_querystring: &'a str,
     /// (name, value) pairs from the request; names case-insensitive. Must include every signed header.
-    pub(crate) headers: &'a [(String, String)],
+    pub headers: &'a [(String, String)],
     /// The hex SHA-256 payload hash the client signed (its `x-amz-content-sha256` header value).
-    pub(crate) payload_hash: &'a str,
+    pub payload_hash: &'a str,
     /// The request's `x-amz-date` (`YYYYMMDDTHHMMSSZ`).
-    pub(crate) amzdate: &'a str,
+    pub amzdate: &'a str,
 }
 
 /// Verify an inbound SigV4 signature against a candidate `secret`, at wall-clock `now` (Unix seconds).
@@ -414,11 +415,11 @@ pub(crate) struct InboundRequest<'a> {
 ///      the recomputed SignedHeaders string to the client's claimed one.
 ///
 /// Returns `Ok(())` only when every check passes. The comparison uses
-/// `crate::auth::AuthMiddleware::constant_time_eq` (the single constant-time primitive) so a partial
-/// match cannot be recovered by timing. The caller MUST invoke this even for an UNKNOWN AccessKeyId
+/// `busbar_api::constant_time_eq` (the single constant-time primitive the engine and plugins share)
+/// so a partial match cannot be recovered by timing. The caller MUST invoke this even for an UNKNOWN AccessKeyId
 /// (with a dummy secret) so the unknown-key and bad-signature paths are timing/response
 /// indistinguishable (no AccessKeyId-enumeration oracle).
-pub(crate) fn verify_inbound_sigv4(
+pub fn verify_inbound_sigv4(
     parsed: &ParsedAuthHeader,
     req: &InboundRequest<'_>,
     secret: &str,
@@ -483,11 +484,8 @@ pub(crate) fn verify_inbound_sigv4(
     // reconstruction would diverge from theirs. Run BOTH compares unconditionally (no `&&`
     // short-circuit) and fold with bitwise-OR-of-inverses so the work — and thus the timing — does not
     // depend on WHICH check failed; only the final all-pass boolean is observable.
-    let headers_ok = crate::auth::AuthMiddleware::constant_time_eq(
-        &computed_signed_headers,
-        &parsed.signed_headers,
-    );
-    let sig_ok = crate::auth::AuthMiddleware::constant_time_eq(&computed_sig, &parsed.signature);
+    let headers_ok = busbar_api::constant_time_eq(&computed_signed_headers, &parsed.signed_headers);
+    let sig_ok = busbar_api::constant_time_eq(&computed_sig, &parsed.signature);
     if std::hint::black_box(u8::from(headers_ok) & u8::from(sig_ok)) == 1 {
         Ok(())
     } else {

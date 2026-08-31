@@ -126,7 +126,7 @@ pub(crate) struct StreamTranslate {
     /// text). Synthesized closes are routed back through `emit_ir_event`, so each ingress writer applies
     /// its OWN projection and no wire shape is named here.
     open_blocks: std::collections::BTreeSet<usize>,
-    /// Test-only instrumentation: counts frames that reached the `busbar_core::json::parse_str` DOM parse
+    /// Test-only instrumentation: counts frames that reached the `busbar_substrate::json::parse_str` DOM parse
     /// in the SSE loop. Proves the same-proto Anthropic event-type gate actually elides the parse
     /// for non-usage-bearing frames, rather than asserting a tautology about the diff. Compiled out
     /// entirely in non-test builds — zero production cost.
@@ -339,9 +339,11 @@ impl StreamTranslate {
                     if let Some((exc_name, message)) =
                         self.ingress.writer().write_response_exception(err)
                     {
-                        out.extend_from_slice(&busbar_core::eventstream::encode_exception_frame(
-                            &exc_name, &message,
-                        ));
+                        out.extend_from_slice(
+                            &busbar_substrate::eventstream::encode_exception_frame(
+                                &exc_name, &message,
+                            ),
+                        );
                         continue;
                     }
                 }
@@ -628,12 +630,14 @@ impl StreamTranslate {
                 // agnostic emitter names no wire event-type of its own.
                 self.framing
                     .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
-                let payload = busbar_core::json::to_vec(&out_data).unwrap_or_default();
+                let payload = busbar_substrate::json::to_vec(&out_data).unwrap_or_default();
                 // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
                 // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
                 // BEFORE this writer ran — so billing reads `usage()` and no longer needs the pre-encode
                 // JSON side-channel the deleted byte-scanner consumed. Just encode the binary frame.
-                out.extend_from_slice(&busbar_core::eventstream::encode_frame(&out_et, &payload));
+                out.extend_from_slice(&busbar_substrate::eventstream::encode_frame(
+                    &out_et, &payload,
+                ));
             } else {
                 // EGRESS-CHUNK framing seam: the OpenAI per-chunk identity replay AND the
                 // include_usage trailing-usage un-fold now live behind the framing vtable. The framing
@@ -669,7 +673,7 @@ impl StreamTranslate {
     /// divergence between the two literals (the previous hand-copied `16 * 1024 * 1024`) would
     /// reintroduce that bug with no compile-time signal. Far larger than any legitimate single SSE /
     /// event-stream frame from a chat completion.
-    pub(super) const MAX_BUF: usize = busbar_core::eventstream::MAX_FRAME_BYTES;
+    pub(super) const MAX_BUF: usize = busbar_substrate::eventstream::MAX_FRAME_BYTES;
 
     /// Feed a chunk of EGRESS SSE bytes; return translated INGRESS SSE bytes for whatever
     /// COMPLETE frames are now available (empty if only a partial frame is buffered). Once the
@@ -711,14 +715,15 @@ impl StreamTranslate {
             // malformed branch breaks before the push), so the client never gets undecodable garbage
             // ahead of the synthesized exception frame. On the cross-proto path the sink is `None`
             // (the bytes are re-encoded by `translate_event`).
-            let (frames, status, _valid_consumed) = busbar_core::eventstream::drain_frames_checked(
-                &mut self.buf,
-                if self.same_proto {
-                    Some(&mut out)
-                } else {
-                    None
-                },
-            );
+            let (frames, status, _valid_consumed) =
+                busbar_substrate::eventstream::drain_frames_checked(
+                    &mut self.buf,
+                    if self.same_proto {
+                        Some(&mut out)
+                    } else {
+                        None
+                    },
+                );
             for (event_type, payload) in frames {
                 let Ok(mut data) = serde_json::from_slice::<serde_json::Value>(&payload) else {
                     continue; // non-JSON payload — skip the frame
@@ -741,7 +746,7 @@ impl StreamTranslate {
             // A malformed prelude is unrecoverable: abandon the stream exactly like the MAX_BUF
             // overflow path so the terminal exception frame is emitted by `finish()` (the `aborted`
             // flag drives that branch). Without this the stream would silently truncate.
-            if status == busbar_core::eventstream::DrainStatus::MalformedPrelude
+            if status == busbar_substrate::eventstream::DrainStatus::MalformedPrelude
                 || self.buf.len() > Self::MAX_BUF
             {
                 self.abort();
@@ -828,7 +833,8 @@ impl StreamTranslate {
                     }
                     #[cfg(test)]
                     self.decode_calls.set(self.decode_calls.get() + 1);
-                    let Ok(data) = busbar_core::json::parse_str::<serde_json::Value>(&data_str)
+                    let Ok(data) =
+                        busbar_substrate::json::parse_str::<serde_json::Value>(&data_str)
                     else {
                         continue; // malformed data JSON — skip the frame rather than abort
                     };
@@ -950,7 +956,7 @@ impl StreamTranslate {
     /// subsequent `feed()` is a no-op, and let `finish()` emit the ingress-native terminal error
     /// frame. The two abandonment triggers are a reassembly buffer that grew past [`Self::MAX_BUF`]
     /// without a frame terminator, and a malformed egress event-stream prelude
-    /// ([`busbar_core::eventstream::DrainStatus::MalformedPrelude`]); both must surface an error, never a
+    /// ([`busbar_substrate::eventstream::DrainStatus::MalformedPrelude`]); both must surface an error, never a
     /// silent truncation.
     fn abort(&mut self) {
         self.aborted = true;
@@ -982,7 +988,7 @@ impl StreamTranslate {
                 // `InternalServerException`); this agnostic translator names none. `Some` here is the
                 // eventstream-ingress abort signal (equivalent to the prior `ingress_eventstream` gate,
                 // which only Bedrock sets).
-                out.extend_from_slice(&busbar_core::eventstream::encode_exception_frame(
+                out.extend_from_slice(&busbar_substrate::eventstream::encode_exception_frame(
                     exc_type,
                     ABORT_DETAIL,
                 ));

@@ -428,7 +428,7 @@ pub trait ProtocolWriter: Send + Sync {
     fn probe_body(&self, model: &str) -> Vec<u8> {
         let mut body = self.probe_request();
         let _ = self.rewrite_model_if_needed(&mut body, model);
-        busbar_core::json::to_vec(&body).unwrap_or_default()
+        busbar_substrate::json::to_vec(&body).unwrap_or_default()
     }
 
     /// Build the per-stream framing state for THIS protocol as an INGRESS (client-facing) writer.

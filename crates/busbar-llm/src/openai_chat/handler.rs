@@ -99,8 +99,8 @@ impl RequestHandler for OpenAiRequestHandler {
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
 use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use busbar_core::media::{base64_decode, MediaBlob, MediaPayload};
 use busbar_substrate::billing::Billing;
+use busbar_substrate::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
 struct MultipartField<'a> {
@@ -581,7 +581,7 @@ pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
 use crate::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
-use busbar_core::media::ImageOutput;
+use busbar_substrate::media::ImageOutput;
 
 struct OpenAiImage;
 

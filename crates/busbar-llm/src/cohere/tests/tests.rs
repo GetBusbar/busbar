@@ -2737,7 +2737,7 @@ fn test_read_request_tool_content_object_array_preserved() {
                 kind: crate::ir::IrMediaKind::Document,
                 source: crate::ir::IrImageSource::Vendor { value, .. },
                 ..
-            } if busbar_core::json::to_string(value).unwrap_or_default().contains("doc body")
+            } if busbar_substrate::json::to_string(value).unwrap_or_default().contains("doc body")
         )),
         "the document must be preserved as a structured Media block: {tool_result:?}"
     );

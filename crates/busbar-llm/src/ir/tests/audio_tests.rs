@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar/src/ir/audio.rs`.
 
 use super::*;
-use busbar_core::media::{MediaBlob, MediaPayload};
+use busbar_substrate::media::{MediaBlob, MediaPayload};
 
 #[test]
 fn transcription_translation_folds_via_target_language() {
@@ -71,8 +71,8 @@ fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
 #[test]
 fn transcription_projects_prompt_as_text_and_audio_as_opaque() {
     let req = TranscriptionReq {
-        audio: Some(busbar_core::media::MediaBlob {
-            payload: busbar_core::media::MediaPayload::B64("AAAA".into()),
+        audio: Some(busbar_substrate::media::MediaBlob {
+            payload: busbar_substrate::media::MediaPayload::B64("AAAA".into()),
             mime_type: "audio/mp3".into(),
             pcm: None,
         }),
