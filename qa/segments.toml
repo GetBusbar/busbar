@@ -222,7 +222,7 @@ run    = "cargo test -p busbar --test qa_smart_router"
 id     = "plane-purity"
 status = "active"   # ARMED: the plane extraction drained the neutral crates to 0 (design P5 complete)
 tier   = "fast"
-# THE NEUTRAL-PURITY GATE (plane-extraction §6.2/§6.3) as an independently-reported release verdict —
+# THE NEUTRAL-PURITY GATE, an independently-reported release verdict —
 # the plane-boundary analogue of field-coverage/config-stability above. The plane ABI (PlaneDecl /
 # ProtocolDecl / install_* / the opaque PlaneRecord / plane_slots / the PLANE_* diagnostics namespace)
 # is the ONE surface between core and a plane; this segment fails RED on any SIDE CHANNEL in a neutral

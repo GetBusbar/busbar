@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `default_max_tokens` precedence and `cache_control` clamping on the IR egress-prep seam,
-//! RELOCATED here from `busbar-core`'s `proxy/tests/` (plane-extraction §5 Phase 1.5). They drive
+//! RELOCATED here from `busbar-core`'s `proxy/tests/`. They drive
 //! the witnessed `chat_handle::chat_prepare_for_egress` over a concrete `IrRequest`, which a neutral
 //! crate's tests must not name — so they live beside the IR/codec they exercise.
 //!

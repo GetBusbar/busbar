@@ -16,8 +16,8 @@
 //! declared in the protocol's OWN module — and [`Registry::new`] takes an ITERATOR of declarations,
 //! so a protocol that is not in that slice joins by being handed to the same constructor.
 //!
-//! THE REGISTRY RUNTIME RELOCATED DOWN to the neutral `busbar_substrate::proto` (plane-extraction
-//! §6.2, the reverse-edge rule): `Registry`, the process singleton, `decl_for`, the detection folds
+//! THE REGISTRY RUNTIME RELOCATED DOWN to the neutral `busbar_substrate::proto` (the reverse-edge
+//! rule): `Registry`, the process singleton, `decl_for`, the detection folds
 //! and `known_protocols` now live on the substrate so an extracted protocol crate (`busbar-llm`)
 //! resolves them through the neutral ABI rather than reaching BACK into `busbar-core`. This module
 //! re-exports every one of them at its historical `busbar_core::proto::registry::…` path so every

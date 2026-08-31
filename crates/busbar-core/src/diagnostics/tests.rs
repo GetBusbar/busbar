@@ -45,7 +45,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/config_validate/mod.rs",
     // The A2A and MCP plane sources moved to the sibling `busbar-a2a` / `busbar-mcp` crates (the plane
     // extraction). Core does NOT scan a plane crate's tree — a neutral crate must name no plane path
-    // (plane-purity §2.1); each plane crate enforces its own uncoded-diagnostic floor. So neither the
+    // (the plane-purity lint enforces this); each plane crate enforces its own uncoded-diagnostic floor. So neither the
     // A2A nor the MCP sources are listed here.
     "src/export/webhook.rs",
     "src/export/file.rs",

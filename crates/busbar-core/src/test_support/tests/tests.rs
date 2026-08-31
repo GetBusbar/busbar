@@ -2683,7 +2683,7 @@ async fn test_failover_deadline() {
 ///
 /// The `StreamTranslate` A-tap unit checks this test used to carry (usage extraction from
 /// message_start/message_delta, `terminal_error()` on an SSE error frame) RELOCATED to
-/// `busbar-llm` (`src/tests/proto/stream_tap_usage_tests.rs`, plane-extraction §5 / Phase 1.6):
+/// `busbar-llm` (`src/tests/proto/stream_tap_usage_tests.rs`):
 /// they name the witnessed `StreamTranslate`, which a neutral crate's tests must not. What remains
 /// here is the CORE-subject half — that `forward()` delivers a byte-identical stream to the client
 /// — which names no codec type. Byte-identical assertion.

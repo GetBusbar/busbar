@@ -176,8 +176,8 @@ impl fmt::Display for Banner {
 // plane's codes resolve through [`by_code`] once registered, and a build with a plane compiled out
 // never sees (or renders) that plane's diagnostics. Everything crosses the ABI: substrate names no
 // plane const; a plane never edits this file. Numbering/identity is preserved on the move — a plane
-// const keeps its `BUSBAR-NNNN`, so an operator's old logs stay resolvable (design §8 Q1: REGISTER,
-// do not renumber).
+// const keeps its `BUSBAR-NNNN`, so an operator's old logs stay resolvable — codes are REGISTERED,
+// never renumbered.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Plane-contributed diagnostics installed by the COMPOSITION ROOT before the catalog is first read.

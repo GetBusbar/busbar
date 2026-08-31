@@ -3,7 +3,7 @@
 Status: **DRAFT for owner review** · Author: engineering · Target: 1.7.x · Scope: `busbar-core`, `busbar-substrate`, `busbar-api`, `busbar-{llm,mcp,a2a}`, `busbar` (bin), store plugins
 
 > This document is design-only. No production code changes until the owner signs off on the
-> mechanisms and the phase plan.
+> mechanisms and the implementation plan.
 
 ---
 
@@ -129,7 +129,7 @@ this: no plane-crate path include, no plane-crate symbol reference, anywhere in 
 ## 3. Coupling inventory (the residual ledger)
 
 Grouped by mechanism class. "Gated?" = whether it already drops with the plane feature off.
-Counts/paths verified first-hand on `dev` (faf71feb).
+Counts/paths verified first-hand on the `dev` branch.
 
 ### 3A. Contract types in `busbar-api` (medium — the trait is generic, the *types* leaked)
 - `McpCallRecord` (`store.rs:877`), `McpDemotionRow` (`:934`), `TaskRow` (`:783`), `TaskEventRow`
@@ -310,7 +310,7 @@ plane boundary becomes an independently-reported release-gating verdict — not 
 
 ## 7. Blast radius, migration, compatibility
 
-- **Store-plugin contract (P4) is the only breaking change.** `store-example-plugin`,
+- **Store-plugin contract (phase P4) is the only breaking change.** `store-example-plugin`,
   `plugin-loader`, `plugin-testkit`, and any external store plugin reference `McpCallRecord`/`TaskRow`
   today. After P4 they operate on opaque `PlaneRecord` bytes. Migration: (a) provide a transitional
   `busbar-plugin` re-export/adapter for one minor version, (b) bump the plugin ABI/interface-version
@@ -351,7 +351,7 @@ here. We are making planes *removable/relocatable at build time*, matching `auth
 hot-loadable.
 
 **Risks:** P4's store-plugin break is the highest; mitigated by versioning + the adapter. The
-declared-detection registry (P1) changes a hot path (ingress protocol resolution) — it must be
+declared-detection registry (phase P1) changes a hot path (ingress protocol resolution) — it must be
 byte-for-byte behavior-preserving, proven by the existing detection tests. The diagnostics snapshot
 drift guard will (correctly) fire on every move in P2 — expected, regenerated per its own command.
 

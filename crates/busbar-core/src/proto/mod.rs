@@ -20,8 +20,8 @@ pub(crate) use crate::breaker::StatusClass;
 // production moved out with the anthropic extraction.
 
 // Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_substrate::proto`) so the
-// `busbar-llm` dialect crate names them without reaching into `busbar-core` (reverse-edge rule,
-// plane-extraction §6.2). Re-exported here at their historical `busbar_core::proto::…` paths so every
+// `busbar-llm` dialect crate names them without reaching into `busbar-core` (the reverse-edge rule).
+// Re-exported here at their historical `busbar_core::proto::…` paths so every
 // in-core / plugin / witness-build caller compiles unchanged; the values are byte-identical.
 //
 // - `SIGNAL_IR_PARSE`     — busbar-internal IR-parse `provider_signal` label.
@@ -387,6 +387,6 @@ pub(crate) fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::
 // `context_length_tests`, `gemini_integration_tests`, `response_format_matrix_tests`,
 // `stop_reason_matrix_tests`, `image_source_matrix_tests`, `translate_parity_golden_tests`,
 // `translate_parity_cross_pairs_tests`, `roundtrip_fidelity_tests`, `adversarial_tests`) were
-// RELOCATED to `busbar-llm/src/tests/proto/` (plane-extraction §5, Phase 1): they name the dialects
+// RELOCATED to `busbar-llm/src/tests/proto/`: they name the dialects
 // and the concrete wire codecs, which a neutral crate's tests must not, so they live beside the
 // types they exercise. The dialect/IR SOURCE `#[path]` witnesses above remain until Phase 2's flip.

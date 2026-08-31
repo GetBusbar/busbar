@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The same-proto `StreamTranslate` A-tap unit checks RELOCATED HERE from `busbar-core`'s
-//! `test_support/tests/tests.rs::test_stream_inspection_tap_usage_parsing` (plane-extraction §5 /
-//! Phase 1.6). They drive the witnessed `StreamTranslate` directly — usage extraction and the
+//! `test_support/tests/tests.rs::test_stream_inspection_tap_usage_parsing`. They drive the
+//! witnessed `StreamTranslate` directly — usage extraction and the
 //! terminal-error abnormal-end signal — which names codec vocabulary a neutral crate's tests must
 //! not, so they live beside the codec. The core-subject half (that `forward()` delivers a
 //! byte-identical stream) stays in `busbar-core`. Byte-identical assertions.

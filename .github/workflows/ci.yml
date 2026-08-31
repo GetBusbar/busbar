@@ -278,7 +278,7 @@ jobs:
       # Same "prove the gate before you trust its verdict" discipline as the lints above.
       - name: qa-gate segmentation self-test
         run: scripts/qa-segments.sh --selftest
-      # NEUTRAL-PURITY lint (plane-extraction §6.2 — the enforcement gate). The plane ABI is the ONE
+      # NEUTRAL-PURITY lint — the enforcement gate for the plane ABI. The plane ABI is the ONE
       # surface between core and a plane; every side channel (a `#[path=…/busbar-<plane>/…]` witness
       # include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete plane key/dialect/record-type in a
       # neutral crate, or a plane crate reaching BACK into busbar_core:: implementation) is what let
@@ -788,9 +788,9 @@ jobs:
       - name: Protocol deletion gate
         run: scripts/proto-deletion-gate.sh
 
-  # THE DELETION-TEST BUILD MATRIX (plane-extraction §6.1 — the enforcement gate, weak form).
+  # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
-  # THE DELETION TEST (design §1): for each plane P, with busbar-<P> absent the NEUTRAL crates —
+  # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
   # busbar-core, busbar-substrate, busbar-api — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
   # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
@@ -803,16 +803,16 @@ jobs:
   # leg that goes red names exactly which plane the neutral crates still can't compile without.
   #
   # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into core
-  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live (design §3E). So the
-  # per-plane "llm off" leg cannot be expressed until design P1 lands `plane-llm`; TODO(P1): add an
+  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live. So the
+  # per-plane "llm off" leg cannot be expressed until a `plane-llm` feature lands; TODO: add an
   # `llm` matrix leg (features "plane-mcp,plane-a2a") the moment that feature exists. Until then the
   # ALL-PLANES-OFF leg (`--no-default-features`) is the closest expressible "serves no protocols"
   # neutral build, and it is the owner's literal requirement ("core serving no protocols is valid").
   #
-  # STRONG FORM — TODO(§6.1): the crate PHYSICALLY REMOVED from the workspace members + `dep:` lines in
-  # a scratch checkout, then build the neutral crates + bin and boot-smoke that the plane reports
-  # absent. That needs a scratch-checkout harness (a sibling of proto-deletion-gate.sh's scratch build)
-  # and is a follow-up; this weak form is the permanent asserted floor it will build on.
+  # STRONG FORM: scripts/plane-delete-test.sh PHYSICALLY REMOVES the crate from the workspace members +
+  # `dep:` lines in a scratch checkout, then builds the neutral crates + bin and boot-smokes that the
+  # plane reports absent. It is wired as its own gate (`plane-delete-test.sh --all`) and passes for all
+  # three planes; this weak form is the per-plane compile-level complement, asserted on every matrix leg.
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
     runs-on: ubuntu-latest

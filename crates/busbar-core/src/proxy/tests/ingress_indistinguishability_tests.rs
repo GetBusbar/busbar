@@ -258,7 +258,7 @@ fn test_ingress_error_bedrock_amzn_headers() {
         .and_then(|h| h.to_str().ok());
     // `KIND_RATE_LIMIT` maps to `ThrottlingException`, pinned as a literal so this core test names no
     // dialect module; the mapping's identity is proven beside the bedrock codec in `busbar-llm`
-    // (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5).
+    // (`src/tests/proto/phase1_5_relocated_tests.rs`).
     assert_eq!(
         errtype,
         Some("ThrottlingException"),

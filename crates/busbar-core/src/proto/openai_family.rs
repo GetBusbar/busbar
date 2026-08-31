@@ -47,5 +47,5 @@ pub use busbar_substrate::proto::{
 pub use busbar_substrate::proto::tool_arguments_to_string;
 
 // `tests/openai_family_tests.rs` RELOCATED to `busbar-llm/src/tests/proto/openai_family_tests.rs`
-// (plane-extraction §5, Phase 1): it drives `protocol_for("openai")` — a witnessed codec item — so
+// it drives `protocol_for("openai")` — a witnessed codec item — so
 // it moved to the plugin beside the codec it exercises.

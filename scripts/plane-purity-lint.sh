@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# plane-purity-lint.sh — THE NEUTRAL-PURITY LINT (plane-extraction §6.2, the enforcement gate).
+# plane-purity-lint.sh — THE NEUTRAL-PURITY LINT: the enforcement gate for the plane ABI.
 #
 # WHY THIS EXISTS (docs/design/plane-extraction-design.md §1 — the honest post-mortem):
 #   A protocol plane (LLM / MCP / A2A) must be a self-contained plugin merely compiled in for
@@ -13,7 +13,7 @@
 #   landing in the neutral crates unchallenged. "A boundary with no instrument watching it drifts."
 #   This lint is that instrument — the single most important artifact in the design.
 #
-# THE INVARIANT IT ENFORCES (§2.1 — EVERYTHING CROSSES THE ABI, NOTHING AROUND IT):
+# THE INVARIANT IT ENFORCES — EVERYTHING CROSSES THE ABI, NOTHING AROUND IT:
 #   The plane ABI (PlaneDecl / ProtocolDecl / install_* / the opaque PlaneRecord / the plane_slots
 #   type-erased runtime map / the PLANE_* diagnostics namespace) is the ONE AND ONLY surface across
 #   which core and a plane communicate. Every SIDE CHANNEL is a violation to be removed, not "gated".
@@ -37,7 +37,7 @@
 #       plane_slots  plane_slot  plane_host   install_planes  install_protocols
 #       install_diagnostics  install_path_ingress  BUILTIN_PLANE_DECLS  BUILTIN_DECLS
 #       PLANE_*  (the neutral diagnostics namespace)
-#   These are the target pattern (§3F "acceptable neutral seams — keep"). Word-boundary and
+#   These are the target pattern (the acceptable neutral seams to keep). Word-boundary and
 #   Plane/Protocol-prefix construction of the scanner mean none of them can match a KEY/DIALECT/TYPE
 #   rule; the allow-list below is the defensive belt-and-braces and the thing the GREEN fixture proves.
 #
@@ -80,26 +80,19 @@
 #   fixtures (GREEN). The scanner cannot be lied to: its verdict on the tree is trusted only after it
 #   re-proves itself on known inputs.
 #
-# ── HOW THIS STAYS OFF CI'S RED UNTIL THE EXTRACTION LANDS (the field-coverage discipline) ──────────
-#   The tree is DIRTY today by design (§1: the deletion test fails for all three planes; §3 is the
-#   residual ledger the extraction must drive to zero). So this lint has TWO tree modes, exactly as
-#   field_coverage.rs keeps its acceptance `#[ignore]`d-until-drained:
+# ── THE TWO TREE MODES (baseline report vs. the enforcing gate) ─────────────────────────────────────
+#   The neutral crates are purity-clean: zero side channels remain, and this lint now ENFORCES that.
+#   It has two tree modes:
 #
-#     --baseline   INFORMATIONAL. Prints the full categorized violation report and ALWAYS exits 0.
-#                  This is what CI runs today (in the structure-lint job) so the baseline is surfaced
-#                  on every push WITHOUT going red. It is the field-coverage `pinned-missing` half:
-#                  visible, tracked, non-blocking.
+#     --baseline   INFORMATIONAL. Prints the full categorized violation report and ALWAYS exits 0, so
+#                  the current count is visible on every push without gating on it.
 #     --check      BLOCKING (fail-closed). Exits non-zero on ANY violation. This is the PERMANENT gate.
-#                  It is wired into a qa/segments.toml `plane-purity` segment that is `reserved` (inert,
-#                  excluded from the green claim, named in the scope line) until the extraction drains
-#                  the neutral crates to zero — at which point arming it is a one-line reserved→active
-#                  flip, and `--check` passes green and stays permanent. This is the field-coverage
-#                  `-- --ignored` acceptance half: red-by-design while the queue is non-empty, the gate
-#                  working rather than the gate broken.
+#                  It is wired into the qa/segments.toml `plane-purity` segment, now `active`: with the
+#                  neutral crates drained to zero, `--check` passes green, and any regression that
+#                  reintroduces a side channel fails it RED.
 #
-#   So: the SELF-TEST is green NOW (it must be — it proves the scanner), the tree verdict is DEFERRED
-#   (informational) NOW, and the same script becomes a permanent hard gate the day the tree is clean,
-#   with nothing to edit in this file.
+#   So: the SELF-TEST is green (it proves the scanner), the tree is clean, and `--check` is the
+#   permanent hard gate that keeps it that way — with nothing to edit in this file.
 #
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — the same bare-runner posture as the
 # sibling lints (structure-lint.sh, release-script-lint.sh, response-header-lint.sh).
@@ -417,7 +410,7 @@ run_report() {
   note "neutral roots: $NEUTRAL_ROOTS"
   note "plane roots:   $PLANE_ROOTS"
 
-  hdr "by category (the ledger the extraction must drive to zero — §3)"
+  hdr "by category (side channels by kind — a clean tree reports zero)"
   # Category order fixed so the report is stable; count each even when zero.
   local c n
   for c in PATH-INCLUDE SYMBOL TYPE KEY DIALECT BACKWARDS; do
@@ -444,12 +437,12 @@ case "${1:-}" in
     run_report
     hdr "verdict"
     if [ "$REPORT_TOTAL" -eq 0 ]; then
-      grn "plane-purity: the neutral crates are CLEAN (0 side channels). Arm the qa segment (reserved→active)."
+      grn "plane-purity: the neutral crates are CLEAN (0 side channels) — the \`--check\` gate enforces this."
     else
-      ylw "plane-purity: $REPORT_TOTAL side channel(s) — DEFERRED (informational) until the extraction lands."
-      note "This is the baseline the plane-extraction (design §3–§5) must drive to zero, NOT a red build."
-      note "The blocking gate is \`--check\`, wired as a RESERVED qa segment that arms (reserved→active)"
-      note "the day this count reaches 0 — exactly as field_coverage.rs's acceptance is #[ignore]d-until-drained."
+      ylw "plane-purity: $REPORT_TOTAL side channel(s) — a regression (this baseline mode is informational)."
+      note "The baseline is informational and never reddens CI; the blocking gate is \`--check\`."
+      note "\`--check\` is wired as the \`plane-purity\` qa segment, now \`active\`: with the neutral crates"
+      note "drained to zero it passes green, and any side channel that reappears here fails it RED."
     fi
     exit 0
     ;;
@@ -463,7 +456,7 @@ case "${1:-}" in
       exit 0
     fi
     red "plane-purity gate: FAIL — $REPORT_TOTAL side channel(s) cross AROUND the ABI (see report above)"
-    note "Every one is a violation to REMOVE, not to gate (design §2.1). Route it through the ABI:"
+    note "Every one is a violation to REMOVE, not to gate. Route it through the ABI:"
     note "  PATH-INCLUDE → the plane's tests live in the plane crate; core exercises it via the registry."
     note "  SYMBOL/TYPE  → cross the ABI as an opaque PlaneRecord / a registry capability lookup."
     note "  KEY/DIALECT  → read the opaque &str key the registry supplies; the registry is the truth."

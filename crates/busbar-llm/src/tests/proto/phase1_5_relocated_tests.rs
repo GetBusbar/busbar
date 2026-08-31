@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! PURE-DIALECT unit tests RELOCATED here from `busbar-core` (plane-extraction §5, Phase 1.5).
+//! PURE-DIALECT unit tests RELOCATED here from `busbar-core`.
 //!
 //! Each of these named a witnessed dialect codec fn directly (`bedrock::synth_amzn_request_id`,
 //! `openai_responses::read_reasoning_*`) inside a core test, which a neutral crate's tests must not.
@@ -110,7 +110,7 @@ fn responses_multi_part_reasoning_text_concatenates() {
 }
 
 /// The bedrock forward-kind → `x-amzn-errortype`/`__type` mapping, for the kinds the ingress error
-/// path emits. RELOCATED from core's `ingress` and `proxy` suites (plane-extraction §5 Phase 1.5),
+/// path emits. RELOCATED from core's `ingress` and `proxy` suites,
 /// which asserted the same mapping directly via `bedrock::error_kind_to_bedrock_type`; the CORE
 /// tests keep their neutral `hdr == expected` header-correctness check (driven through the neutral
 /// `ingress_error` seam), while the dialect mapping's identity is proven here beside the codec.
@@ -140,7 +140,7 @@ fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
 /// THE EXHAUSTIVENESS GUARD: every registered protocol has a reader that produces a readable IR, so
 /// a seventh protocol is covered by REGISTERING rather than by an arm added anywhere. Names the
 /// witnessed codec (`protocol_for(...).reader()`) and the concrete IR (`ir.shape()` / `ir::project`),
-/// so it lives beside them in the plugin (RELOCATED from core, plane-extraction §5 Phase 1.5).
+/// so it lives beside them in the plugin (RELOCATED from core).
 #[test]
 fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
     for &proto in known_protocols() {

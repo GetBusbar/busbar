@@ -3502,8 +3502,8 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
             .unwrap_or("");
         assert_eq!(hdr, expected, "x-amzn-errortype for kind {kind}");
         // The dialect mapping's identity (`error_kind_to_bedrock_type(kind) == expected`) is proven
-        // beside the bedrock codec in `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`,
-        // plane-extraction §5 Phase 1.5) so this core ingress test names no dialect module; the
+        // beside the bedrock codec in `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`) so
+        // this core ingress test names no dialect module; the
         // neutral `hdr == expected` above is the header-correctness proof this test owns.
     }
     // An OpenAI-ingress error must not carry the Bedrock-only headers.

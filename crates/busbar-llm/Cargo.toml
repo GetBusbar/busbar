@@ -54,7 +54,7 @@ openapi-schema = ["busbar-core/openapi-schema"]
 # and `busbar-core` remains only for the residual engine items not yet relocated to the ABI.
 busbar-core = { path = "../busbar-core", default-features = false }
 # The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY and names them
-# instead of reaching through `busbar_core::` (the reverse-edge rule, plane-extraction §6.2). `busbar-
+# instead of reaching through `busbar_core::` (the reverse-edge rule). `busbar-
 # core` re-exports these same items, so a repoint from `busbar_core::X` to `busbar_substrate::X` /
 # `busbar_api::X` is by-identity (the very same type/const), i.e. byte-identical behaviour.
 busbar-substrate = { path = "../busbar-substrate", default-features = false }

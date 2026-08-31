@@ -42,8 +42,8 @@ pub const ERR_TYPE_API_ERROR: &str = "api_error";
 pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 
 // ── Neutral protocol atoms relocated DOWN from `busbar-core` (`proto`) so the `busbar-llm` dialect
-//    crate names them WITHOUT reaching into `busbar-core` (the reverse-edge rule, plane-extraction
-//    §6.2). Each is dependency-free (a busbar-internal label, an SSE sentinel, a header name, a pure
+//    crate names them WITHOUT reaching into `busbar-core` (the reverse-edge rule). Each atom is
+//    dependency-free (a busbar-internal label, an SSE sentinel, a header name, a pure
 //    byte/JSON helper) or names only substrate types (`breaker::CanonicalSignal`, `axum::http`, the
 //    substrate diagnostics catalog). `busbar-core` re-exports each from its historical
 //    `proto::…` path so every in-core / plugin caller compiles unchanged; values are byte-identical
@@ -1155,8 +1155,8 @@ pub fn test_registered_protocols_len() -> usize {
 // ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_core::proto::registry` ───────────
 // The declarations, the boot-time aggregates, and the process singleton, moved onto the neutral
 // substrate so an extracted protocol crate (`busbar-llm`) resolves `decl_for` / `known_protocols`
-// through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the reverse-edge
-// rule, plane-extraction §6.2). `busbar-core` re-exports every item below at its historical
+// through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the
+// reverse-edge rule). `busbar-core` re-exports every item below at its historical
 // `busbar_core::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
 // values are byte-identical. The one item that could NOT travel is the built-in table: production
 // carries none (every protocol is a plugin the composition root installs through `install_protocols`),

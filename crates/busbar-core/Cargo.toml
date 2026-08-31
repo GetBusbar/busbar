@@ -163,7 +163,7 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-subst
 # substrate marker on with it.
 plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-a2a"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
-# The neutral crates must name NO plane token in source (plane-extraction §2.1 / the plane-purity
+# The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
 # guarded a CAPABILITY rather than a plane's mere presence, so the gated source names a capability, not
 # a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its

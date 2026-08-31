@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! BILLING PARITY GATE, RELOCATED HERE from `busbar-core`'s `proxy/tests/billing_parity_tests.rs`
-//! (plane-extraction §5 / Phase 1.6). It drives the witnessed `StreamTranslate` and the dialect
+//! It drives the witnessed `StreamTranslate` and the dialect
 //! readers directly to assert the IR-derived usage (`translate.usage()` / `reader().read_response()`)
 //! produces EXACTLY the billed (input, output) tokens for every {streaming, non-stream} ×
 //! {same-proto, cross-proto} path — so it names the codec vocabulary a neutral crate's tests must

@@ -163,7 +163,7 @@ fn assert_uuid_v4_shaped(id: &str) {
 }
 
 // `test_synth_amzn_request_id_is_uuid_v4` RELOCATED to `busbar-llm`
-// (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5): it named the
+// (`src/tests/proto/phase1_5_relocated_tests.rs`): it named the
 // witnessed `bedrock::synth_amzn_request_id` codec fn directly, so it now lives beside that codec.
 // `assert_uuid_v4_shaped` stays here — its other callers below still use it.
 

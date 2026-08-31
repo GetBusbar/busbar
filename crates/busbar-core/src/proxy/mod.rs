@@ -178,16 +178,16 @@ mod hook_non_chat_projection_tests;
 // metadata/exception), and the billing-parity tests below cover all four
 // {stream,non-stream}×{same,cross} combos end to end.
 
-// `cross_protocol_extra_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
-// Phase 1.5): it drove the witnessed codec (`Protocol::{openai,anthropic,gemini}().reader()/.writer()`
+// `cross_protocol_extra_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): it drove the witnessed
+// codec (`Protocol::{openai,anthropic,gemini}().reader()/.writer()`
 // over a concrete `IrRequest`), so it now lives beside the codecs it exercises.
 
 #[cfg(test)]
 #[path = "tests/response_model_fill_tests.rs"]
 mod response_model_fill_tests;
 
-// `tests/bedrock_eventstream_tests.rs` RELOCATED to `busbar-llm/src/tests/` (plane-extraction §5,
-// Phase 1): it drives `bedrock::bedrock_response_to_eventstream` — a witnessed codec fn — so it moved
+// `tests/bedrock_eventstream_tests.rs` RELOCATED to `busbar-llm/src/tests/`: it drives
+// `bedrock::bedrock_response_to_eventstream` — a witnessed codec fn — so it moved
 // to the plugin beside the codec it exercises.
 
 #[cfg(test)]
@@ -206,8 +206,8 @@ mod translate_offload_tests;
 #[path = "tests/attempt_timeout_precedence_tests.rs"]
 mod attempt_timeout_precedence_tests;
 
-// `max_tokens_precedence_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
-// Phase 1.5): it drove the witnessed `chat_handle::chat_prepare_for_egress` over a concrete
+// `max_tokens_precedence_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): it drove the
+// witnessed `chat_handle::chat_prepare_for_egress` over a concrete
 // `IrRequest` (max_tokens defaulting + cache_control clamping), so it lives beside that codec/IR.
 
 #[cfg(test)]
@@ -222,8 +222,8 @@ mod on_exhausted_tests;
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 
-// BILLING PARITY GATE relocated to `busbar-llm` (`src/tests/proto/billing_parity_tests.rs`,
-// plane-extraction §5 / Phase 1.6): it drives the witnessed `StreamTranslate` + dialect readers
+// BILLING PARITY GATE relocated to `busbar-llm` (`src/tests/proto/billing_parity_tests.rs`): it
+// drives the witnessed `StreamTranslate` + dialect readers
 // to assert the IR-derived usage (`translate.usage()` / `reader().read_response().usage`) equals
 // the billed (input, output) tokens for every {streaming, non-stream} × {same-proto, cross-proto}
 // path, so it lives beside the codec it exercises. Byte-identical assertions.
@@ -273,8 +273,8 @@ mod hook_opt_in_projection_tests;
 // behaviour that SHIPPED — which is where the sibling characterisation suite's content went when it
 // was retired: a file that pinned "both sides, including where today's behaviour is wrong" has
 // nothing left to pin once there is one side.
-// `hook_ir_differential_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
-// Phase 1.5): the projection differential names the concrete IR (`IrRequest`, `ir::project`,
+// `hook_ir_differential_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): the projection
+// differential names the concrete IR (`IrRequest`, `ir::project`,
 // `IrFacts`) and drives every dialect's reader, so it now lives beside the codec/IR it exercises.
 
 #[cfg(test)]

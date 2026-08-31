@@ -14,7 +14,7 @@
 //! only.
 
 use axum::http::StatusCode;
-// The protocol registry runtime relocated DOWN to `busbar_substrate::proto` (plane-extraction §6.2):
+// The protocol registry runtime relocated DOWN to `busbar_substrate::proto` (the reverse-edge rule):
 // this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
 use busbar_substrate::proto as registry;
 use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec, IrError};
@@ -863,8 +863,8 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// operation cell of a dialect answers [`OperationHandler::extract_error`] through this so the
 /// upstream error vocabulary is stated ONCE, in the protocol's reader. Byte-identical to the old core
 /// delegation (same `protocol_for(name).reader().extract_error` path, same status-only fallback) — it
-/// just no longer reaches back into the neutral crate to get there (reverse-edge rule,
-/// plane-extraction §6.2).
+/// just no longer reaches back into the neutral crate to get there (the reverse-edge
+/// rule).
 pub(crate) fn protocol_error(
     name: &str,
     status: u16,

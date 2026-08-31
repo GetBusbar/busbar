@@ -497,7 +497,7 @@ fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content
 fn responses_reasoning_reader_rejects_malformed_encrypted_content() {
     // The reader's own accept/skip rules (`read_reasoning_encrypted_content` rejecting an empty
     // string / non-string blob) are asserted directly beside that codec now — RELOCATED to
-    // `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5).
+    // `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`).
     // What stays here is the END-TO-END projection assertion, which is core hook behavior.
     // An item carrying neither text nor a usable blob contributes no content at all.
     let v: Value = serde_json::json!({"input": [{"type": "reasoning", "encrypted_content": ""}]});
@@ -528,8 +528,8 @@ fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
 }
 
 // `responses_single_part_reasoning_text_borrows` and `responses_multi_part_reasoning_text_concatenates`
-// RELOCATED to `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5
-// Phase 1.5): they named the witnessed `openai_responses::read_reasoning_text` codec fn directly and
+// RELOCATED to `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`): they named the
+// witnessed `openai_responses::read_reasoning_text` codec fn directly and
 // exercised nothing else, so they now live beside that codec.
 
 /// A Responses `reasoning` item is assistant-authored, and the READER already says so — it maps the
@@ -697,7 +697,7 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
 // THE EXHAUSTIVENESS GUARD (every registered protocol has a reader that produces a readable IR, so
 // a seventh protocol is covered by REGISTERING rather than by an arm added anywhere) —
 // `every_known_protocol_has_a_declared_reasoning_wire_shape` RELOCATED to `busbar-llm`
-// (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5): it drove the
+// (`src/tests/proto/phase1_5_relocated_tests.rs`): it drove the
 // witnessed codec (`protocol_for(...).reader()`) and named the concrete IR (`ir.shape()`,
 // `ir::project`), so it now lives beside the codec/IR it exercises.
 

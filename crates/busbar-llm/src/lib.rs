@@ -249,8 +249,8 @@ mod decode_native_tool_id_tests;
 #[path = "tests/leaf_write_dispatch_tests.rs"]
 mod leaf_write_dispatch_tests;
 
-/// THE CODEC/IR TEST SUITES relocated from `busbar-core`'s `proto/tests/*` (plane-extraction §5,
-/// Phase 1): the detection / translate-parity / streaming / round-trip / IR goldens that name the
+/// THE CODEC/IR TEST SUITES relocated from `busbar-core`'s `proto/tests/*`: the detection,
+/// translate-parity, streaming, round-trip and IR goldens that name the
 /// dialects and the concrete wire codecs, now living beside the types they exercise. See the module
 /// header for the `super::*` prelude reconstruction.
 #[cfg(test)]
@@ -258,7 +258,7 @@ mod leaf_write_dispatch_tests;
 mod relocated_proto_tests;
 
 /// The bedrock buffered-response → native ConverseStream eventstream synthesis suite, RELOCATED from
-/// `busbar-core`'s `proxy/tests/` (plane-extraction §5, Phase 1): it drives
+/// `busbar-core`'s `proxy/tests/`: it drives
 /// `bedrock::bedrock_response_to_eventstream`, a witnessed codec fn, so it lives beside that codec.
 #[cfg(test)]
 #[path = "tests/bedrock_eventstream_tests.rs"]

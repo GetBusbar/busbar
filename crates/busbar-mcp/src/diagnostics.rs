@@ -6,7 +6,7 @@
 //! These consts were plane-specific vocabulary living in the neutral
 //! `busbar_substrate::diagnostics` catalog; the plane extraction relocated them here so the neutral
 //! crate names no `MCP_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
-//! move preserves identity, it does not renumber (design §8 Q1: REGISTER, do not collapse).
+//! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
 //!
 //! [`DIAGNOSTICS`] is the slice the composition root hands to
 //! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics) so these codes join

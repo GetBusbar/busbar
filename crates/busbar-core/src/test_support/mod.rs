@@ -521,7 +521,7 @@ pub struct LaneSpec {
     model: String,
     provider: String,
     base_url: String,
-    // NEUTRAL FIXTURE (plane-extraction §5, Phase 1.5): a lane needs only its protocol's registry
+    // NEUTRAL FIXTURE: a lane needs only its protocol's registry
     // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
     // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
     // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the

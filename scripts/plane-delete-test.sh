@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# plane-delete-test.sh — THE STRONG-FORM DELETION TEST (plane-extraction §6.1).
+# plane-delete-test.sh — THE STRONG-FORM DELETION TEST.
 #
 # WHY THIS EXISTS (docs/design/plane-extraction-design.md §1, §6.1):
 #   The owner's literal requirement for a plane P ∈ {llm, mcp, a2a}: run `git rm -r crates/busbar-<P>`
@@ -173,7 +173,7 @@ neutralise_bin() {
 # before compiling a single line — so without this we would measure manifest hygiene, not source
 # coupling. Removing a now-dangling path dep is mechanical `git rm -r` cleanup, not a design change; the
 # crates that carried such an edge are RECORDED in EDGE_CRATES and reported as residual coupling (a bare
-# `git rm -r` would dangle them; the extraction must sever the back-edge — plane-purity §6.2 ledgers it).
+# `git rm -r` would dangle them, so the removal severs the back-edge too (the plane-purity lint ledgers it).
 EDGE_CRATES=""
 strip_workspace_edges() {
   local s="$1" p="$2" f t base
@@ -224,7 +224,7 @@ strong_form() {
   note "removed: crate dir=$ev_dir  members-refs=$ev_mem  bin-dep-lines=$ev_dep  (all must read GONE/0)"
   if [ -n "$EDGE_CRATES" ]; then
     ylw "  residual manifest back-edge: neutral/other crate(s) declared a path-dep on busbar-$p —${EDGE_CRATES}"
-    note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle it — extraction must sever it, §6.2)"
+    note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle it)"
   fi
 
   # Leg 1 — the NEUTRAL crates (the owner's literal requirement).
@@ -238,7 +238,7 @@ strong_form() {
     grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
   fi
 
-  # Leg 2 — the composition-root BIN with the plane's feature off (design §6.1: neutral crates + bin).
+  # Leg 2 — the composition-root BIN with the plane's feature off (neutral crates + bin).
   log="$CACHE_TARGET/.plane-delete-$p-bin.log"
   run_check "$s" "$log" -- -p busbar; rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -255,7 +255,7 @@ strong_form() {
     if [ "$rc" -eq 0 ]; then
       note "witness probe: test-support build ALSO compiles without busbar-$p (no #[path] dual-compile reaches it)"
     else
-      ylw "  witness probe: test-support build reaches AROUND the ABI into the removed busbar-$p (PATH-INCLUDE ledger, §6.2)"
+      ylw "  witness probe: test-support build reaches AROUND the ABI into the removed busbar-$p (PATH-INCLUDE ledger)"
       grep -m2 -E "couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
     fi
   fi
@@ -328,7 +328,7 @@ run_selftest() {
 
 # ── baseline (informational) ──────────────────────────────────────────────────────────────────────
 run_baseline() {
-  hdr "STRONG-FORM deletion test — per-plane (INFORMATIONAL: exit 0 until the extraction lands)"
+  hdr "STRONG-FORM deletion test — per-plane (INFORMATIONAL: always exits 0)"
   note "each plane: crates/busbar-<P> PHYSICALLY REMOVED, then neutral crates + bin cargo-checked"
   local p any_fail=0
   for p in $PLANES; do
@@ -339,8 +339,8 @@ run_baseline() {
   if [ "$any_fail" -eq 0 ]; then
     grn "plane-delete: all three planes are strong-form removable today. Arm the ci.yml matrix leg."
   else
-    ylw "plane-delete: at least one plane still couples — DEFERRED (informational) until the extraction lands."
-    note "This is the strong-form ledger the plane-extraction (design §3–§5) must drive to zero, NOT a red build."
+    ylw "plane-delete: at least one plane still couples — a regression (this baseline mode is informational)."
+    note "The baseline is informational and never reddens CI; a coupled plane here is a regression to fix."
     note "The blocking gate is \`plane-delete-test.sh <plane>\`, wired per-plane into the ci.yml deletion matrix."
   fi
   return 0

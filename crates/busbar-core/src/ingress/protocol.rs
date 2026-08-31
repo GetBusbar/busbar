@@ -12,7 +12,7 @@
 // This JSON-RPC discovery/metadata ingress is served only by a JSON-RPC-fronted plane; with none such
 // compiled in the re-export and the two `App`-facing stayers (`ResourceMetadata`, `metadata_handler`)
 // read dead, exactly as the pre-split module did. Gated on the neutral `jsonrpc-ingress` CAPABILITY
-// marker (naming a capability, not a plane, per plane-purity §2.1) — enabled transitively by
+// marker (naming a capability, not a plane, per the plane-purity lint) — enabled transitively by
 // `plane-mcp`/`plane-a2a`, so `not(feature = "jsonrpc-ingress")` is byte-identical to the original
 // `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
 #![cfg_attr(not(feature = "jsonrpc-ingress"), allow(dead_code, unused_imports))]

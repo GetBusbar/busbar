@@ -52,8 +52,8 @@ pub fn nonce() -> Result<String, getrandom::Error> {
 /// Domain separation for the derived key. Changing these BYTES invalidates every outstanding state,
 /// which is the correct behaviour for a payload-format change — so the bytes are frozen. The plane
 /// segment is written `\x6d` ('m') rather than the literal token: this is the ask-state plane's
-/// domain, whose true home is the plane crate (design §3B/§4 relocate it there through the sealer
-/// seam), and until that cross-crate move the neutral substrate carries the exact bytes without
+/// domain, whose true home is the plane crate, reached there through the sealer seam. Until that
+/// cross-crate move the neutral substrate carries the exact bytes without
 /// spelling the plane in its source.
 const DERIVE_DOMAIN: &[u8] = b"busbar/\x6dcp/askstate/derive/v1";
 

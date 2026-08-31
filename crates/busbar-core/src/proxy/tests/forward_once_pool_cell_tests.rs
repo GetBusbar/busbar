@@ -169,7 +169,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
 
 /// A fallback-pool member that returns a genuine upstream-fault NON-2xx (5xx)
 /// must leave its POOL cell USABLE, not wedged HalfOpen, AND must penalize the breaker. On the
-/// degraded (`forward_once`) same-protocol non-2xx branch a 5xx classifies (PX1) as
+/// degraded (`forward_once`) same-protocol non-2xx branch a 5xx classifies as
 /// `Disposition::TransientUpstream`, so it records a transient failure BEFORE releasing the
 /// single-flight HalfOpen probe the fallback dispatch CAS-won on the pool cell — bumping the
 /// cooldown via exponential backoff, exactly like the MAIN forward path's non-2xx branch. The

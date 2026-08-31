@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CODEC/IR TEST SUITES, RELOCATED HERE from `busbar-core`'s `proto/tests/*` (plane-extraction
-//! §5 / Phase 1). They NAME DIALECTS and the concrete wire codecs (`Protocol`/`protocol_for`/
+//! THE CODEC/IR TEST SUITES, RELOCATED HERE from `busbar-core`'s `proto/tests/*`. They NAME DIALECTS
+//! and the concrete wire codecs (`Protocol`/`protocol_for`/
 //! `StreamTranslate`/the six dialect modules), which a neutral crate's tests must not — so they live
 //! beside the types they exercise, in the LLM plugin, linking `busbar-core` as a `test-support`
 //! dev-dependency for the neutral seams (registry accessors, `proxy`/`handlers`/`egress_auth`,

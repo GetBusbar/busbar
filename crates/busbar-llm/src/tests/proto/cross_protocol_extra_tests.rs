@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! CROSS-PROTOCOL extra-key round-trip tests, RELOCATED here from `busbar-core`'s `proxy/tests/`
-//! (plane-extraction §5 Phase 1.5). They drive the witnessed codec directly (`Protocol::{openai,
+//! They drive the witnessed codec directly (`Protocol::{openai,
 //! anthropic,gemini}().reader()/.writer()` over a concrete `IrRequest`), which a neutral crate's
 //! tests must not name — so they live beside the codecs they exercise. Every assertion is
 //! BYTE-IDENTICAL to the pre-relocation suite; they mirror the `forward_with_pool` reader→clear→

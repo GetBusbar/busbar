@@ -533,7 +533,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     );
 }
 
-/// GOVERNANCE-CHAIN SEQ-1 FORK CLOSED (F-AUDIT1): an undecodable sibling row must NOT abort the whole
+/// GOVERNANCE-CHAIN SEQ-1 FORK CLOSED: an undecodable sibling row must NOT abort the whole
 /// admin-audit restore. Previously the ring-seed loop tolerated the bad row but the SEAM chain seed
 /// was still handed the FULL body set — including the undecodable one — so it faulted and `?`-aborted
 /// `restore_from_store`, leaving the host-side chain position UNSEEDED. The next mutation then minted
