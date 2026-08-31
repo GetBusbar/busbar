@@ -1142,7 +1142,7 @@ pub fn new_stream_translator(
 /// best-effort but the stream is never damaged.
 fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // Fast path: byte-level strip spliced back into the frame in place of the JSON substring.
-    if let Some(stripped) = busbar_core::proto::strip_top_level_usage_member(data_str) {
+    if let Some(stripped) = busbar_substrate::proto::strip_top_level_usage_member(data_str) {
         // Locate the exact JSON substring within the frame. For an OpenAI bare `data: {json}\n\n`
         // frame the JSON is present verbatim and unique, so a single-substring find is exact.
         if let Ok(frame_str) = std::str::from_utf8(frame) {
@@ -1180,7 +1180,7 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // only removes the `usage` member. This handles the "JSON not a clean single substring of the
     // frame" case (multi-`data:`-line frames) without reordering keys, reframed with the original
     // terminator so no wire-shape tell is introduced.
-    if let Some(stripped) = busbar_core::proto::strip_top_level_usage_member(data_str) {
+    if let Some(stripped) = busbar_substrate::proto::strip_top_level_usage_member(data_str) {
         return format!("data: {stripped}{terminator}").into_bytes();
     }
 
