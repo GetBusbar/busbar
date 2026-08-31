@@ -1,0 +1,5421 @@
+use super::*;
+
+use crate::config;
+
+fn make_root_cfg(
+    providers: HashMap<String, config::ProviderCfg>,
+    models: HashMap<String, config::ModelCfg>,
+    pools: HashMap<String, config::PoolCfg>,
+) -> RootCfg {
+    config::RootCfg {
+        tool_defs: crate::plane::config::ToolsSection::default().0,
+        agent_defs: crate::plane::config::AgentsSection::default().0,
+        tool_pools: Default::default(),
+        agent_pools: Default::default(),
+        listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        // No endpoint plane configured.
+        endpoint_resources: Default::default(),
+        oauth_as: None,
+        public_url: None,
+        tls: None,
+        admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+        admin_tls: None,
+        auth: None,
+        providers,
+        models,
+        pools,
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
+        hooks: HashMap::new(),
+        admin_auth: vec!["admin-tokens".to_string()],
+        groups: std::collections::BTreeMap::new(),
+        rate_card: None,
+        per_request_fee: 0,
+        store: None,
+        secrets: std::collections::BTreeMap::new(),
+        global_hooks: Vec::new(),
+        blocked_metadata_hosts: Vec::new(),
+        allow_metadata_hosts: Vec::new(),
+        allow_all_metadata: false,
+        limits: config::LimitsResolved::default(),
+        export: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
+    }
+}
+
+/// Like [`make_root_cfg`] but with operator-supplied `security.blocked_metadata_hosts` entries.
+fn make_root_cfg_with_blocked(
+    providers: HashMap<String, config::ProviderCfg>,
+    blocked_metadata_hosts: Vec<String>,
+) -> RootCfg {
+    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    cfg.blocked_metadata_hosts = blocked_metadata_hosts;
+    cfg
+}
+
+fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::ProviderCfg {
+    // Provide a minimal valid error_map to satisfy validation
+    let mut error_map = std::collections::HashMap::new();
+    error_map.insert("400".to_string(), "client_error".to_string());
+
+    config::ProviderCfg {
+        protocol: protocol.into(),
+        base_url: base_url.into(),
+        // The credential is a SECRET REFERENCE now; the env-var sugar keeps the old
+        // helper signature usable across every existing test.
+        api_key: config::SecretRef::env(api_key_env),
+        health: None,
+        error_map,
+        path: None,
+        path_base: None,
+        token_url: None,
+        scope: None,
+        subject: None,
+        auth: None,
+        allow_metadata_hosts: Vec::new(),
+    }
+}
+
+fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
+    // Existing callers pass a concrete cap; wrap it as `Some` now that the field is optional
+    // (None = unbounded). The omitted-cap case is covered by `make_model_unbounded`.
+    let mut m = make_model_unbounded(provider);
+    m.max_concurrent = Some(max_concurrent);
+    m
+}
+
+/// A model config with `max_concurrent` OMITTED (None = unbounded), exercising the opt-in-limiter
+/// default that mirrors `max_requests: -1`.
+fn make_model_unbounded(provider: &str) -> config::ModelCfg {
+    config::ModelCfg {
+        reasoning: None,
+        prompt_caching: None,
+        max_requests: -1,
+        provider: provider.into(),
+        max_concurrent: None,
+        default_max_tokens: None,
+        upstream_model: None,
+        attempt_timeout_ms: None,
+    }
+}
+
+fn make_pool(members: Vec<config::PoolMember>) -> config::PoolCfg {
+    config::PoolCfg {
+        upstream_credentials: None,
+        members,
+        breaker: None,
+        failover: None,
+        on_exhausted: None,
+        affinity: None,
+        policy: config::PoolPolicy::default(),
+        gates: Vec::new(),
+        base_named: false,
+        ..Default::default()
+    }
+}
+
+fn make_member(model: &str) -> config::PoolMember {
+    config::PoolMember {
+        reasoning: None,
+        model: model.into(),
+        weight: 1,
+        attempt_timeout_ms: None,
+        context_max: None,
+        tier: None,
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn test_provider_auth_style_is_a_closed_enum() {
+    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
+    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
+    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
+    assert_eq!(
+        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
+        config::ProviderAuth::Bearer
+    );
+    assert_eq!(
+        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
+        config::ProviderAuth::ApiKey
+    );
+    assert!(
+        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
+        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+    );
+}
+
+#[test]
+fn test_validate_rejects_bad_protocol() {
+    // An unknown `protocol` must be COLLECTED by validate() (alongside any other config error),
+    // not escape to a lone `die()` at lane construction in main.rs. Mirrors
+    // test_validate_rejects_bad_auth_style.
+    let mut providers = HashMap::new();
+    let bad = make_provider("nope", "https://api.example.com", "API_KEY");
+    providers.insert("bad".to_string(), bad);
+    // A provider on a real protocol must NOT trigger this error.
+    let ok = make_provider("anthropic", "https://api.anthropic.com", "ANTHROPIC_KEY");
+    providers.insert("good".to_string(), ok);
+
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("unknown protocol must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("unknown protocol 'nope'") && e.contains("'bad'")),
+        "expected an unknown-protocol error naming provider 'bad' and 'nope'; got: {errs:?}"
+    );
+    // The error must enumerate the allowed set so the operator can self-correct.
+    let msg = errs
+        .iter()
+        .find(|e| e.contains("unknown protocol 'nope'"))
+        .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
+    for proto in crate::proto::known_protocols() {
+        assert!(
+            msg.contains(proto),
+            "allowed-set list must include '{proto}'; got: {msg}"
+        );
+    }
+    // A real protocol ('anthropic') must not be flagged as unknown.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("unknown protocol 'anthropic'")),
+        "'anthropic' is a valid protocol and must not error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_error_map_invalid_class_message_lists_full_valid_set() {
+    // The invalid-StatusClass diagnostic must enumerate EVERY class that
+    // breaker::status_class_from_str accepts; `context_length` was historically
+    // omitted from the message even though it is a valid mapping target, so an
+    // operator who saw the error could not learn it was an allowed value.
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    // Replace the minimal valid map with one bad entry to force the diagnostic.
+    p.error_map.clear();
+    p.error_map
+        .insert("429".to_string(), "not_a_class".to_string());
+    providers.insert("bad".to_string(), p);
+
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("invalid StatusClass must fail validation");
+
+    let msg = errs
+        .iter()
+        .find(|e| e.contains("invalid StatusClass 'not_a_class'"))
+        .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
+    assert!(
+            msg.contains("context_length"),
+            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+        );
+
+    // Guard against drift in the other direction: every class the breaker accepts
+    // must appear in the message's valid-values list.
+    for class in [
+        "rate_limit",
+        "overloaded",
+        "server_error",
+        "timeout",
+        "network",
+        "auth",
+        "billing",
+        "client_error",
+        "context_length",
+    ] {
+        assert!(
+            crate::config::status_class_from_str(class).is_some(),
+            "test invariant: '{class}' should be a real StatusClass"
+        );
+        assert!(
+            msg.contains(class),
+            "valid-values list must include '{class}'; got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn test_error_map_context_length_is_a_valid_class() {
+    // `context_length` must be accepted as an error_map target without producing
+    // an invalid-StatusClass error (it is a real breaker StatusClass).
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.example.com", "API_KEY");
+    p.error_map.clear();
+    p.error_map
+        .insert("400".to_string(), "context_length".to_string());
+    providers.insert("ctx".to_string(), p);
+
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let result = validate(&cfg);
+    if let Err(errs) = result {
+        assert!(
+            !errs.iter().any(|e| e.contains("invalid StatusClass")),
+            "'context_length' is a valid StatusClass and must not error; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_rejects_zero_default_max_tokens() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    let mut m = make_model("myprovider", 10);
+    m.default_max_tokens = Some(0);
+    models.insert("mymodel".to_string(), m);
+    // A positive value (and the unset None default) must NOT error.
+    let mut ok = make_model("myprovider", 10);
+    ok.default_max_tokens = Some(4096);
+    models.insert("okmodel".to_string(), ok);
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("default_max_tokens: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("mymodel") && e.contains("default_max_tokens: 0")),
+        "expected a default_max_tokens:0 error for 'mymodel'; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("okmodel")),
+        "a positive default_max_tokens must not error; got: {errs:?}"
+    );
+}
+
+/// REGRESSION: `limits.request_body_read_timeout_secs` had NO zero-guard, unlike its siblings `tls_handshake_timeout_secs` /
+/// `webhook_delivery_timeout_secs`. A value of 0 makes the inter-frame body timer
+/// (`Duration::from_secs(0)`) fire immediately, tearing down EVERY request whose body is not
+/// instantly buffered. `validate()` must reject it; a positive value must validate.
+#[test]
+fn test_validate_rejects_zero_request_body_read_timeout() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("mymodel".to_string(), make_model("myprovider", 10));
+
+    let mut cfg = make_root_cfg(providers, models, HashMap::new());
+    cfg.limits.request_body_read_timeout_secs = 0;
+    let errs = validate(&cfg).expect_err("request_body_read_timeout_secs: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("request_body_read_timeout_secs")),
+        "expected a request_body_read_timeout_secs guard error; got: {errs:?}"
+    );
+
+    // A positive value (the production default) must NOT trip this guard.
+    cfg.limits.request_body_read_timeout_secs = 30;
+    let errs2 = validate(&cfg).err().unwrap_or_default();
+    assert!(
+        !errs2
+            .iter()
+            .any(|e| e.contains("request_body_read_timeout_secs")),
+        "a positive request_body_read_timeout_secs must not error; got: {errs2:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_empty_upstream_model() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    // Whitespace-only override → empty wire model id → must error.
+    let mut bad = make_model("myprovider", 10);
+    bad.upstream_model = Some("   ".to_string());
+    models.insert("badmodel".to_string(), bad);
+    // A real override (and the unset None default) must NOT error.
+    let mut ok = make_model("myprovider", 10);
+    ok.upstream_model = Some("anthropic.claude-3-5-sonnet-20241022-v2:0".to_string());
+    models.insert("okmodel".to_string(), ok);
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("empty upstream_model must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("badmodel") && e.contains("upstream_model")),
+        "expected an empty-upstream_model error for 'badmodel'; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("okmodel")),
+        "a non-empty upstream_model must not error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_pool_name_equals_provider_name() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    let mut models = HashMap::new();
+    models.insert("mymodel".to_string(), make_model("myprovider", 10));
+
+    let mut pools = HashMap::new();
+    pools.insert(
+        "myprovider".to_string(), // Same name as provider!
+        make_pool(vec![make_member("mymodel")]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].contains("myprovider"));
+    assert!(errs[0].contains("pool name") && errs[0].contains("conflicts with provider name"));
+}
+
+#[test]
+fn test_validate_rejects_unknown_member_ref() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    let models = HashMap::new();
+
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypoool".to_string(),
+        make_pool(vec![make_member("unknownmodel")]), // References non-existent model
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].contains("unknownmodel"));
+    assert!(errs[0].contains("references unknown model"));
+}
+
+#[test]
+fn test_validate_token_url_ssrf_and_scheme() {
+    // token_url carries the client secret in the POST body, so it must clear BOTH the https
+    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
+    let build = |token_url: &str| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
+        entra.token_url = Some(token_url.to_string());
+        entra.scope = Some("api://x/.default".into());
+        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        providers.insert("entra".to_string(), entra);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("entra", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        let cfg = make_root_cfg(providers, models, pools);
+        validate(&cfg).err().unwrap_or_default()
+    };
+
+    // A legitimate Entra token endpoint validates clean.
+    assert!(
+        build("https://login.microsoftonline.com/TENANT/oauth2/v2.0/token").is_empty(),
+        "a valid https token_url must pass"
+    );
+    // Case-insensitive scheme: uppercase HTTPS must NOT trip the scheme guard.
+    let up = build("HTTPS://login.microsoftonline.com/t/token");
+    assert!(
+        !up.iter()
+            .any(|e| e.contains("token_url") && e.contains("must use")),
+        "uppercase HTTPS token_url must not trip the scheme guard; got: {up:?}"
+    );
+    // Public http:// is rejected (cleartext secret) — and uppercase HTTP:// cannot bypass it.
+    for scheme in ["http", "HTTP"] {
+        let errs = build(&format!("{scheme}://token.example.com/oauth"));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("token_url") && e.contains("https")),
+            "{scheme}:// public token_url must be rejected; got: {errs:?}"
+        );
+    }
+    // SSRF: an https token_url pointed at cloud metadata is blocked (would leak the client secret).
+    for host in ["169.254.169.254", "metadata.google.internal"] {
+        let errs = build(&format!("https://{host}/token"));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("token_url") && e.contains("metadata")),
+            "token_url at {host} must be SSRF-blocked; got: {errs:?}"
+        );
+    }
+    // Whitespace-only token_url is treated as absent (trimmed), not a valid endpoint.
+    let ws = build("   ");
+    assert!(
+        ws.iter().any(|e| e.contains("token_url")),
+        "whitespace-only token_url must be rejected as missing; got: {ws:?}"
+    );
+}
+
+#[test]
+fn test_validate_conflicting_context_max_across_pools() {
+    // A model maps to one lane, so a DIFFERING context_max across pools must be a validate() error —
+    // not only a boot-time `die`. Else a clean --validate would still crash at real boot.
+    let build = |ca: Option<usize>, cb: Option<usize>| -> Vec<String> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "p".to_string(),
+            make_provider("openai", "https://api.example.com", "API_KEY"),
+        );
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("p", 10));
+        let mut a = make_member("m");
+        a.context_max = ca;
+        let mut b = make_member("m");
+        b.context_max = cb;
+        let mut pools = HashMap::new();
+        pools.insert("poolA".to_string(), make_pool(vec![a]));
+        pools.insert("poolB".to_string(), make_pool(vec![b]));
+        validate(&make_root_cfg(providers, models, pools))
+            .err()
+            .unwrap_or_default()
+    };
+    assert!(
+        build(Some(128000), Some(200000))
+            .iter()
+            .any(|e| e.contains("conflicting context_max")),
+        "differing context_max across pools must be a validate() error"
+    );
+    assert!(
+        !build(Some(128000), Some(128000))
+            .iter()
+            .any(|e| e.contains("conflicting context_max")),
+        "identical context_max must not conflict"
+    );
+    assert!(
+        !build(Some(128000), None)
+            .iter()
+            .any(|e| e.contains("conflicting context_max")),
+        "None must not conflict with an explicit value"
+    );
+}
+
+#[test]
+fn test_validate_collects_all_errors() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "conflict_provider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    let mut models = HashMap::new();
+    models.insert("model1".to_string(), make_model("conflict_provider", 10));
+
+    let mut pools = HashMap::new();
+    // Pool with same name as provider
+    pools.insert(
+        "conflict_provider".to_string(),
+        make_pool(vec![make_member("model1")]),
+    );
+    // Pool with unknown member
+    pools.insert(
+        "otherpool".to_string(),
+        make_pool(vec![make_member("nonexistent_model")]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+
+    // Should collect BOTH errors (pool-name conflict + unknown member)
+    assert_eq!(errs.len(), 2);
+
+    let err_text = errs.join(" | ");
+    assert!(err_text.contains("conflict_provider"));
+    assert!(err_text.contains("nonexistent_model"));
+}
+
+#[test]
+fn test_validate_heterogeneous_pool_is_ok() {
+    let mut providers = HashMap::new();
+    // Two different protocols.
+    providers.insert(
+        "anthropic_provider".to_string(),
+        make_provider("anthropic", "https://api.anthropic.com", "ANTHROPIC_KEY"),
+    );
+    providers.insert(
+        "openai_provider".to_string(),
+        make_provider("openai", "https://api.openai.com", "OPENAI_KEY"),
+    );
+
+    let mut models = HashMap::new();
+    models.insert(
+        "anthropic_model".to_string(),
+        make_model("anthropic_provider", 10),
+    );
+    models.insert(
+        "openai_model".to_string(),
+        make_model("openai_provider", 10),
+    );
+
+    let mut pools = HashMap::new();
+    // Pool with members from different protocols (heterogeneous)
+    pools.insert(
+        "mixedpool".to_string(),
+        make_pool(vec![
+            make_member("anthropic_model"),
+            make_member("openai_model"),
+        ]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    // Should return Ok (heterogeneous pool is a warning, not an error)
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_valid_config_succeeds() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    let mut models = HashMap::new();
+    models.insert("mymodel".to_string(), make_model("myprovider", 10));
+
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypool".to_string(), // Distinct from provider name
+        make_pool(vec![make_member("mymodel")]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_model_without_provider_error() {
+    // No providers defined - should error on orphan model reference
+    let providers = HashMap::new();
+
+    let mut models = HashMap::new();
+    models.insert(
+        "orphan_model".to_string(),
+        make_model("nonexistent_provider", 10),
+    );
+
+    let pools = HashMap::new();
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    // Should have exactly 1 error (orphan model), no error_map errors since providers is empty
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].contains("orphan_model"));
+    assert!(errs[0].contains("references unknown provider"));
+}
+
+/// An `AuthCfg` with the given DATA-PLANE chain provider names (bare built-in entries).
+/// The 1.4.x `make_auth(mode, client_tokens)` helper is gone with `client_tokens`/`modules`;
+/// chain semantics replace the mode string: `[keys]` = signed-key auth, `[]` = open front door.
+/// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section)
+/// — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
+/// dozens of call sites still read as "this chain, that egress posture".
+fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = modules
+        .iter()
+        .map(|m| config::AuthChainEntry::bare(*m))
+        .collect();
+    // 1.5.1: the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
+    // otherwise). 1.5.2: it also requires a USABLE ADMIN MINT PATH — a vkey can only be minted
+    // through an admin endpoint, so `[keys]` with nothing that can mint one is a boot error. Attach
+    // a signing-key ref and an explicit OPEN admin (`admin_auth: []`) — the one structural mint path
+    // that validates under BOTH the default build and `--no-default-features` (where the
+    // `admin-tokens` module is compiled out and a configured admin token would itself be rejected).
+    if modules.contains(&crate::config::KEYS_MODULE) {
+        auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+        auth.admin_auth = vec![];
+    }
+    auth
+}
+
+fn make_breaker(
+    base_cooldown_secs: u64,
+    max_cooldown_secs: u64,
+    trip: Option<config::BreakerTripConfig>,
+) -> config::BreakerCfg {
+    config::BreakerCfg {
+        base_cooldown_secs,
+        max_cooldown_secs,
+        trip,
+    }
+}
+
+fn make_trip(
+    mode: config::BreakerTripMode,
+    window_secs: u64,
+    threshold: f64,
+    min_requests: usize,
+    consecutive_n: u32,
+) -> config::BreakerTripConfig {
+    config::BreakerTripConfig {
+        mode,
+        window_secs,
+        threshold,
+        min_requests,
+        consecutive_n,
+    }
+}
+
+// A minimal valid single-provider/single-model/single-pool config, returned as its three maps
+// so individual tests can mutate one field and re-assemble via `make_root_cfg`.
+fn valid_maps() -> (
+    HashMap<String, config::ProviderCfg>,
+    HashMap<String, config::ModelCfg>,
+    HashMap<String, config::PoolCfg>,
+) {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("mymodel".to_string(), make_model("myprovider", 10));
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypool".to_string(),
+        make_pool(vec![make_member("mymodel")]),
+    );
+    (providers, models, pools)
+}
+
+#[test]
+fn test_validate_rejects_non_https_base_url() {
+    // A PUBLIC host over plaintext http leaks the key on the wire → rejected with the https rule.
+    for (bad, fragment) in [
+        ("http://api.example.com", "must use https for a public host"),
+        // A non-http(s) scheme (file://) or an empty url is not a valid upstream scheme at all.
+        ("file:///etc/shadow", "must use http or https"),
+        ("", "must use http or https"),
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider("anthropic", bad, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        let errs = validate(&cfg)
+            .unwrap_err_or_default(format!("non-https base_url '{bad}' must fail validation"));
+        assert!(
+            errs.iter().any(|e| e.contains(fragment) && e.contains('p')),
+            "expected a scheme error ('{fragment}') for '{bad}'; got: {errs:?}"
+        );
+    }
+    // An http:// IMDS literal passes the scheme rule (link-local ⇒ private/loopback) but is then
+    // rejected by the metadata denylist.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider(
+            "anthropic",
+            "http://169.254.169.254/latest/meta-data/",
+            "API_KEY",
+        ),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs =
+        validate(&cfg).unwrap_err_or_default("http IMDS base_url must fail validation".into());
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
+        "expected a metadata-host error for the http IMDS literal; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_https_base_url() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(validate(&cfg).is_ok(), "an https base_url must validate");
+}
+
+#[test]
+fn test_validate_rejects_zero_max_concurrent() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("zeromodel".to_string(), make_model("myprovider", 0));
+    // A positive max_concurrent must NOT error.
+    models.insert("okmodel".to_string(), make_model("myprovider", 1));
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("max_concurrent: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("zeromodel") && e.contains("max_concurrent: 0")),
+        "expected a max_concurrent:0 error for 'zeromodel'; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("okmodel")),
+        "a positive max_concurrent must not error; got: {errs:?}"
+    );
+}
+
+/// An operator-supplied `max_concurrent` above `Semaphore::MAX_PERMITS` must
+/// be REJECTED as a normal `400 invalid_request` validation error — not accepted and left to panic
+/// later inside `Semaphore::new` (`permits <= Semaphore::MAX_PERMITS`) in `build_app_from_config`.
+/// The bound is the exact panic precondition (`usize::MAX >> 3`), not an invented policy cap: this
+/// module's operational-limit checks are deliberately permissive (see `validate_limits`'s doc
+/// comment) and reject only what would actually break the gateway.
+#[test]
+fn test_validate_rejects_oversized_max_concurrent() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    // ONE past the exact panic precondition — the tightest possible "plausible but wrong" probe,
+    // and proof this is a hard ceiling, not an arbitrary round-number policy cap.
+    models.insert(
+        "hugemodel".to_string(),
+        make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS + 1),
+    );
+    // A value that boots/applies FINE today (5 million, far above any real deployment but nowhere
+    // near the panic ceiling) must keep validating cleanly — this is not a "sane limit" policy
+    // check, so it must not newly reject a config that never panicked.
+    models.insert("bigbutok".to_string(), make_model("myprovider", 5_000_000));
+    // The exact boundary value must NOT error either.
+    models.insert(
+        "boundarymodel".to_string(),
+        make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS),
+    );
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("an oversized max_concurrent must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("hugemodel") && e.contains("max_concurrent")),
+        "expected an oversized max_concurrent error for 'hugemodel'; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("bigbutok")),
+        "a large-but-not-panic-triggering max_concurrent must not newly become an error: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("boundarymodel")),
+        "a max_concurrent at the exact Semaphore::MAX_PERMITS boundary must not error; got: {errs:?}"
+    );
+}
+
+/// The exact same `Semaphore::new` panic precondition, on the two sibling
+/// operator-config values that feed a `Semaphore::new` with no bound of their own —
+/// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs) and
+/// `observability.max_inflight_webhook_deliveries` (observability.rs). Same class, same fix, one
+/// shared constant (`MAX_SEMAPHORE_PERMITS`) — this test exists so the class stays closed if either
+/// sibling's call site changes independently of `models.<m>.max_concurrent`.
+#[test]
+fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.max_inbound_concurrent = tokio::sync::Semaphore::MAX_PERMITS + 1;
+    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS + 1;
+
+    let errs = validate(&cfg).expect_err("both oversized limits must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("max_inbound_concurrent")),
+        "expected an oversized max_inbound_concurrent error; got: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("max_inflight_deliveries")),
+        "expected an oversized max_inflight_deliveries error; got: {errs:?}"
+    );
+
+    // The boundary value, and 0 (max_inbound_concurrent's explicit "disable the layer" posture),
+    // must both stay clean.
+    cfg.limits.max_inbound_concurrent = 0;
+    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS;
+    assert!(
+        validate(&cfg).is_ok(),
+        "0 (disabled) and the exact boundary value must not error"
+    );
+}
+
+/// `max_concurrent` OMITTED (None = unbounded) must VALIDATE cleanly — it is an opt-in limiter, not
+/// a required field. Only an explicit `Some(0)` is rejected; absence carries no requirement, exactly
+/// like `max_requests: -1`.
+#[test]
+fn test_validate_accepts_omitted_max_concurrent() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert(
+        "unbounded".to_string(),
+        make_model_unbounded("myprovider"), // max_concurrent: None
+    );
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    validate(&cfg)
+        .expect("a model omitting max_concurrent must validate (unbounded is the default)");
+}
+
+/// A minimal model config that OMITS max_concurrent must DESERIALIZE — proving the field is no
+/// longer mandatory at the serde layer (the config-load foot-gun this fix removes).
+#[test]
+fn test_minimal_model_config_without_max_concurrent_deserializes() {
+    // Only `provider` is required; every other ModelCfg field (max_requests, max_concurrent, …)
+    // defaults. Before the fix this failed with "missing field `max_concurrent`".
+    let m: config::ModelCfg = serde_yaml::from_str("provider: myprovider\n")
+        .expect("a model config with only `provider` must load (max_concurrent is optional)");
+    assert_eq!(m.provider, "myprovider");
+    assert_eq!(
+        m.max_concurrent, None,
+        "an omitted max_concurrent must be None (unbounded)"
+    );
+    assert_eq!(
+        m.max_requests, -1,
+        "an omitted max_requests must default to -1 (unlimited)"
+    );
+}
+
+#[test]
+fn test_validate_rejects_bad_reasoning_effort_budgets() {
+    let base = || {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "p".to_string(),
+            make_provider("anthropic", "https://api.example.com", "K"),
+        );
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("p", 10));
+        make_root_cfg(providers, models, HashMap::new())
+    };
+    // zero entry -> rejected
+    let mut cfg = base();
+    cfg.limits.reasoning_effort_budgets = crate::config::ReasoningEffortBudgets {
+        minimal: 0,
+        low: 4096,
+        medium: 8192,
+        high: 16384,
+    };
+    let errs = validate(&cfg).expect_err("zero budget must fail");
+    assert!(errs
+        .iter()
+        .any(|e| e.contains("reasoning_effort_budgets") && e.contains("> 0")));
+    // non-ascending -> rejected
+    let mut cfg2 = base();
+    cfg2.limits.reasoning_effort_budgets = crate::config::ReasoningEffortBudgets {
+        minimal: 4096,
+        low: 1024,
+        medium: 8192,
+        high: 16384,
+    };
+    let errs2 = validate(&cfg2).expect_err("non-ascending must fail");
+    assert!(errs2
+        .iter()
+        .any(|e| e.contains("reasoning_effort_budgets") && e.contains("ascending")));
+}
+
+#[test]
+fn test_validate_rejects_zero_attempt_timeout_ms() {
+    // attempt_timeout_ms: 0 races a zero-duration timer against req.send() — every attempt
+    // "times out" before the connection is tried, permanently poisoning the lane. Must fail
+    // loud at boot at BOTH levels (model default and pool-member override); omitted (None)
+    // and positive values must not error.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    let mut zero = make_model("myprovider", 10);
+    zero.attempt_timeout_ms = Some(0);
+    models.insert("zerocap".to_string(), zero);
+    let mut positive = make_model("myprovider", 10);
+    positive.attempt_timeout_ms = Some(5000);
+    models.insert("okcap".to_string(), positive);
+    models.insert("nocap".to_string(), make_model("myprovider", 10)); // None
+
+    // Pool with one zero-override member and one positive-override member.
+    let mut zero_member = make_member("okcap");
+    zero_member.attempt_timeout_ms = Some(0);
+    let mut ok_member = make_member("nocap");
+    ok_member.attempt_timeout_ms = Some(200);
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypool".to_string(),
+        make_pool(vec![zero_member, ok_member]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("attempt_timeout_ms: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("zerocap") && e.contains("attempt_timeout_ms: 0")),
+        "expected a model-level attempt_timeout_ms:0 error for 'zerocap'; got: {errs:?}"
+    );
+    assert!(
+            errs.iter().any(|e| e.contains("mypool")
+                && e.contains("okcap")
+                && e.contains("attempt_timeout_ms: 0")),
+            "expected a member-level attempt_timeout_ms:0 error for pool 'mypool' member 'okcap'; got: {errs:?}"
+        );
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("attempt_timeout_ms") && e.contains("nocap")),
+        "None / positive attempt_timeout_ms must not error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_zero_max_requests() {
+    // Twin of the max_concurrent:0 foot-gun on the lifetime-budget axis: max_requests:0 yields
+    // limited=true, budget=0, which store::usable() rejects forever — must fail loud at boot.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    let mut zero = make_model("myprovider", 10);
+    zero.max_requests = 0;
+    models.insert("zeroreq".to_string(), zero);
+    // -1 (unlimited, the default) and a positive cap must NOT error.
+    models.insert("unlimited".to_string(), make_model("myprovider", 10)); // max_requests = -1
+    let mut positive = make_model("myprovider", 10);
+    positive.max_requests = 100;
+    models.insert("capped".to_string(), positive);
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("max_requests: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("zeroreq") && e.contains("max_requests: 0")),
+        "expected a max_requests:0 error for 'zeroreq'; got: {errs:?}"
+    );
+    // Exactly one error, naming only the zero-budget model — the -1 and positive lanes are clean.
+    assert_eq!(
+        errs.len(),
+        1,
+        "only the zero lane must error; got: {errs:?}"
+    );
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("'unlimited'") || e.contains("'capped'")),
+        "a -1 (unlimited) or positive max_requests must not error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_localhost_is_allowed_by_default() {
+    // Under the metadata-denylist model, `localhost` is a legitimate LOCAL-MODEL upstream and is
+    // ALLOWED with NO flag — it is not a metadata endpoint. Both the bare name and the
+    // trailing-dot FQDN form, case-insensitively, are NOT flagged by the SSRF guard.
+    for ok in [
+        "https://localhost/",
+        "https://localhost:11434/",
+        "https://LOCALHOST/v1",
+        "https://localhost./",
+        "https://localhost.:443/api",
+        "http://localhost:11434/", // plaintext to loopback is fine
+    ] {
+        assert!(
+            ssrf_blocked_host(ok, &[], false, &[]).is_none(),
+            "expected '{ok}' to be allowed (localhost is a local-model target, not metadata)"
+        );
+    }
+    // A full validate() pass must ACCEPT an https localhost base_url with no flag.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://localhost:11434/", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "a localhost base_url must validate with no flag; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_validate_rejects_pool_name_equals_model_name() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    // Pool named identically to the model would shadow it on the `named` route.
+    pools.insert(
+        "mymodel".to_string(),
+        make_pool(vec![make_member("mymodel")]),
+    );
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("pool name == model name must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("conflicts with model name") && e.contains("mymodel")),
+        "expected a pool/model name-collision error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_pool_named_api() {
+    // A pool named `api` is reached at `/api/v1/messages`, whose first segment the auth middleware
+    // intercepts as the native-API operator surface — making the pool unreachable to clients and
+    // (in governance mode) bypassing per-pool enforcement. Must fail loud at boot. The name is
+    // `api`, not `admin`, because the admin boundary is `ADMIN_PATH = /api`; the validator derives
+    // the reserved segment from that constant, so this and the middleware cannot drift.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    pools.insert("api".to_string(), make_pool(vec![make_member("mymodel")]));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a pool named 'api' must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("pool name 'api' is reserved")),
+        "expected a reserved-admin-name error for the pool; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_provider_named_api() {
+    // A provider named `api` is reachable via the adhoc route `/api/<model>/v1/messages`, whose
+    // first segment the auth middleware likewise intercepts as the native-API surface. Symmetric.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "api".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("a provider named 'api' must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("provider name 'api' is reserved")),
+        "expected a reserved-admin-name error for the provider; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_model_named_api() {
+    // Regression: a MODEL named `api` is reached at `/api/v1/messages`, whose first segment the
+    // auth middleware intercepts as the native-API surface — unreachable to clients and (in
+    // governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() admin branch.
+    // The model loop previously skipped the reserved-name check the pool/provider loops run. Must
+    // fail loud at boot, symmetric with the pool and provider cases.
+    let (mut providers, mut models, pools) = valid_maps();
+    providers
+        .entry("myprovider".to_string())
+        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+    models.insert("api".to_string(), make_model("myprovider", 10));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a model named 'api' must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("model name 'api' is reserved")),
+        "expected a reserved-admin-name error for the model; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
+    // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
+    // the exact `api` segment collides. `apix` and friends are normal routes (proven by
+    // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `admin` is now a
+    // NORMAL lane too — the admin surface moved to `/api`, so `/admin/v1/messages` is an ordinary
+    // client route — which is exactly the drift the derive-from-ADMIN_PATH fix closes.
+    for name in ["apix", "api-pool", "api_portal", "admin", "adminx"] {
+        assert!(
+            !reserved_admin_name(name),
+            "'{name}' is a boundary-safe name and must not be treated as reserved"
+        );
+    }
+    assert!(reserved_admin_name("api"), "'api' must be reserved");
+
+    // A full validate() pass with an `apix` pool must succeed (no reserved-name error).
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    pools.insert("apix".to_string(), make_pool(vec![make_member("mymodel")]));
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "an 'apix' pool is boundary-safe and must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_bad_breaker_params() {
+    // (description, breaker, substring expected in the error)
+    let cases: Vec<(&str, config::BreakerCfg, &str)> = vec![
+        (
+            "min_requests 0",
+            make_breaker(
+                15,
+                120,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 0.5, 0, 3)),
+            ),
+            "trip.min_requests must be >= 1",
+        ),
+        (
+            "window_s 0",
+            make_breaker(
+                15,
+                120,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 0, 0.5, 5, 3)),
+            ),
+            "trip.window_secs must be >= 1",
+        ),
+        (
+            "threshold > 1.0",
+            make_breaker(
+                15,
+                120,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 1.5, 5, 3)),
+            ),
+            "trip.threshold must be in (0.0, 1.0]",
+        ),
+        (
+            "threshold 0.0",
+            make_breaker(
+                15,
+                120,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 0.0, 5, 3)),
+            ),
+            "trip.threshold must be in (0.0, 1.0]",
+        ),
+        (
+            "consecutive n 0",
+            make_breaker(
+                15,
+                120,
+                Some(make_trip(
+                    config::BreakerTripMode::Consecutive,
+                    30,
+                    0.5,
+                    5,
+                    0,
+                )),
+            ),
+            "trip.consecutive_n must be >= 1",
+        ),
+        (
+            "max_cooldown < base_cooldown",
+            make_breaker(
+                100,
+                50,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 0.5, 5, 3)),
+            ),
+            "max_cooldown_secs",
+        ),
+        (
+            // A zero base cooldown yields a degenerate breaker that re-admits
+            // a tripped backend immediately — must fail loud, mirroring the trip.* zero-floor guards.
+            "base_cooldown 0",
+            make_breaker(
+                0,
+                120,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 0.5, 5, 3)),
+            ),
+            "base_cooldown_secs must be >= 1",
+        ),
+        (
+            // The max-cooldown twin of the above.
+            "max_cooldown 0",
+            make_breaker(
+                0,
+                0,
+                Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 0.5, 5, 3)),
+            ),
+            "max_cooldown_secs must be >= 1",
+        ),
+    ];
+
+    for (desc, breaker, expected) in cases {
+        let (providers, models, _) = valid_maps();
+        let mut pools = HashMap::new();
+        let mut pool = make_pool(vec![make_member("mymodel")]);
+        pool.breaker = Some(breaker);
+        pools.insert("mypool".to_string(), pool);
+        let cfg = make_root_cfg(providers, models, pools);
+        let errs = validate(&cfg)
+            .unwrap_err_or_default(format!("breaker case '{desc}' must fail validation"));
+        assert!(
+            errs.iter().any(|e| e.contains(expected)),
+            "case '{desc}': expected error containing '{expected}'; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_accepts_good_breaker_params() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.breaker = Some(make_breaker(
+        15,
+        120,
+        Some(make_trip(
+            config::BreakerTripMode::ErrorRate,
+            30,
+            1.0, // boundary: rate-cap value is valid
+            1,   // boundary: minimum floor
+            3,
+        )),
+    ));
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a well-formed breaker config must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_zero_cooldown_breaker() {
+    // A breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
+    // passes the inversion check (0 <= 0) yet is degenerate — when it trips open it re-admits the
+    // failing backend immediately because the cooldown window is zero seconds, defeating the
+    // back-off the breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-
+    // floor guards and must fail loud at boot. The breaker has NO `trip` block here, proving the
+    // cooldown floor is enforced independently of trip validation.
+    for (base, max, expected) in [
+        (0u64, 120u64, "base_cooldown_secs must be >= 1"),
+        (15, 0, "max_cooldown_secs must be >= 1"),
+        (0, 0, "base_cooldown_secs must be >= 1"),
+    ] {
+        let (providers, models, _) = valid_maps();
+        let mut pools = HashMap::new();
+        let mut pool = make_pool(vec![make_member("mymodel")]);
+        pool.breaker = Some(make_breaker(base, max, None));
+        pools.insert("mypool".to_string(), pool);
+        let cfg = make_root_cfg(providers, models, pools);
+        let errs = validate(&cfg).unwrap_err_or_default(format!(
+            "breaker base={base} max={max} must fail validation"
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(expected) && e.contains("mypool")),
+            "base={base} max={max}: expected error containing '{expected}'; got: {errs:?}"
+        );
+    }
+
+    // The boundary (both fields == 1) is the minimum well-formed breaker and must validate.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.breaker = Some(make_breaker(1, 1, None));
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a breaker with base==max==1 is the minimum well-formed config and must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_zero_failover_deadline() {
+    // Twin of the breaker window_s:0 / max_concurrent:0 foot-guns on the failover-budget axis:
+    // RequestCtx::new(0) sets deadline == start, so the failover loop's first (primary) deadline
+    // check rejects with a 503 before the primary attempt runs — the pool serves ZERO requests
+    // with no boot diagnostic. Must fail loud at startup.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 0,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("failover.timeout_secs: 0 must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("failover.timeout_secs must be >= 1") && e.contains("mypool")),
+        "expected a zero-failover-deadline error for 'mypool'; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
+    // A positive deadline validates. cap == 0 is deliberately BENIGN (the `0..=cap` loop still
+    // runs the primary once), so it must NOT be rejected.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 30,
+        exclusions: None,
+        max_hops: 0,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a positive failover.timeout_secs with max_hops:0 must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_unknown_failover_exclusion() {
+    // A `failover.exclusions` entry is a member model name benched
+    // from the pool's candidate set at runtime; the runtime matches it against member targets. A
+    // misspelled / stale entry resolves to nothing and silently fails to bench the intended
+    // member, so it must fail loud at boot (mirroring the dangling-fallback-pool rule).
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 30,
+        exclusions: Some(vec!["mymodell".to_string()]), // typo: pool member is `mymodel`
+        max_hops: 3,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("an unknown failover exclusion must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("failover.exclusions references 'mymodell'")
+                && e.contains("not a member of the pool")),
+        "expected an unknown-exclusion error naming 'mymodell'; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
+    // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
+    // typo'd `role_bindings.<module>.<role>.admin_scope` each fail loud at boot, naming the
+    // offender. (The 1.4.x `auth.modules` caps map and `group_map.<g>.admin_scope` are GONE;
+    // these are their direct replacements.)
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare("keys");
+    entry.max_admin_scope = Some("superuser".to_string()); // typo
+    auth.chain = vec![entry];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([(
+            "viewers".to_string(),
+            config::RoleBindingCfg {
+                allowed_pools: None,
+                group: None,
+                admin_scope: Some("readonly".to_string()), // typo (it's read-only)
+            },
+        )]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("typo'd scope tokens must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("auth chain entry 'keys'")
+            && e.contains("unknown max_admin_scope 'superuser'")),
+        "expected the chain-entry max_admin_scope error; got: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("role_bindings.keys.viewers")
+            && e.contains("unknown admin_scope 'readonly'")),
+        "expected the role_bindings admin_scope error; got: {errs:?}"
+    );
+    // Both messages must teach the valid set so the operator can self-correct. After the 1.5.2
+    // scope collapse the valid set is exactly `read-only` and `full`.
+    assert!(
+        errs.iter()
+            .filter(|e| e.contains("superuser") || e.contains("readonly"))
+            .all(|e| e.contains("read-only") && e.contains("full")),
+        "scope errors must enumerate the valid scope tokens (read-only or full); got: {errs:?}"
+    );
+    // The retired tokens must NOT appear in the guidance any more.
+    assert!(
+        errs.iter()
+            .filter(|e| e.contains("superuser") || e.contains("readonly"))
+            .all(|e| !e.contains("hooks-register") && !e.contains("mint")),
+        "scope errors must not mention the retired hooks-register/mint tokens; got: {errs:?}"
+    );
+}
+
+/// 1.5.2 scope collapse: the delegated `mint` token (and its `hooks-register` sibling) are RETIRED —
+/// a `role_bindings.<m>.<role>.admin_scope: mint` (or a `max_admin_scope: mint`) is now an UNKNOWN
+/// scope token, failing validation with the two-rung guidance.
+#[test]
+fn validate_admin_scope_mint_now_errors() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare("keys");
+    entry.max_admin_scope = Some("mint".to_string());
+    auth.chain = vec![entry];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([(
+            "portal".to_string(),
+            config::RoleBindingCfg {
+                allowed_pools: None,
+                group: None,
+                admin_scope: Some("mint".to_string()),
+            },
+        )]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("`mint` is no longer a valid scope token");
+    assert!(
+        errs.iter().any(|e| e.contains("role_bindings.keys.portal")
+            && e.contains("unknown admin_scope 'mint'")
+            && e.contains("read-only or full")),
+        "expected the role_bindings mint error naming the two-rung set; got: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("auth chain entry 'keys'")
+            && e.contains("unknown max_admin_scope 'mint'")),
+        "expected the chain-entry mint error; got: {errs:?}"
+    );
+}
+
+/// 1.5.2: a NON-BUILTIN admin auth module name (an external `kind: auth` admin plugin) is no longer
+/// statically rejected by config_validate — it resolves at LOAD, exactly as a data-plane
+/// `auth.chain` plugin name does. So `admin_auth: [oidc-admin]` must NOT produce an "unknown module"
+/// error here.
+#[test]
+fn validate_admin_auth_plugin_name_no_longer_rejected() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.admin_auth = vec![
+        crate::config::ADMIN_TOKENS_MODULE.to_string(),
+        "oidc-admin".to_string(),
+    ];
+    let res = validate(&cfg);
+    if let Err(errs) = res {
+        assert!(
+            !errs
+                .iter()
+                .any(|e| e.contains("admin_auth names unknown module")),
+            "a non-builtin admin module name must not be statically rejected; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_accepts_known_failover_exclusion() {
+    // An exclusion that names a real member of the pool is the supported case and must validate.
+    let (mut providers, mut models, _) = valid_maps();
+    providers
+        .entry("myprovider".to_string())
+        .or_insert_with(|| make_provider("anthropic", "https://api.example.com", "API_KEY"));
+    models
+        .entry("secondmodel".to_string())
+        .or_insert_with(|| make_model("myprovider", 10));
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel"), make_member("secondmodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 30,
+        exclusions: Some(vec!["secondmodel".to_string()]), // a real member — benched on purpose
+        max_hops: 3,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a failover exclusion naming a real pool member must validate"
+    );
+}
+
+// ── admin-tokens token placement + secret-module resolvability (the 1.5.0 heirs of the
+// governance.admin_token validation family) ──────────────────────────────────────────────────────
+
+/// The `admin-tokens` operator credential is a SECRET REFERENCE now; `validate()` checks the
+/// MODULE resolves (env | file) without resolving the value, and a malformed built-in ref
+/// (env without settings.key) fails loud, replacing the 1.4.x blank-admin_token lockout guard.
+#[cfg(feature = "auth-admin-tokens")]
+#[test]
+fn test_validate_admin_tokens_secret_module_checked() {
+    let build = |token: config::SecretRef| -> Result<(), Vec<String>> {
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        let mut auth = config::AuthCfg::default_none();
+        let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
+        entry.token = Some(token);
+        auth.admin_auth = vec![entry];
+        cfg.auth = Some(auth);
+        validate(&cfg)
+    };
+
+    // A NON-built-in secret module (a `kind: secret` plugin reference, e.g. `vault`) is the marquee
+    // 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the plugin registry exists, so it
+    // can no longer distinguish an installed vault plugin from a typo — the module-EXISTENCE check is
+    // DEFERRED to the plugin pre-flight (`validate_secret_refs`, exercised by the main.rs integration
+    // tests). Here `validate` must NOT reject a plugin-backed module on structural grounds alone (the
+    // structural `env`/`file` shape checks below still fire); a real typo is caught downstream.
+    assert!(
+        build(config::SecretRef {
+            module: "vault".to_string(),
+            settings: serde_json::Map::new(),
+        })
+        .is_ok(),
+        "a plugin-backed secret module must not be rejected by `validate` (existence is checked \
+         against the registry at plugin pre-flight, not here)"
+    );
+
+    // env module WITHOUT settings.key: the ref can never resolve; must fail naming the shape.
+    let errs = build(config::SecretRef {
+        module: "env".to_string(),
+        settings: serde_json::Map::new(),
+    })
+    .expect_err("an env secret ref without settings.key must fail validation");
+    // The path is the DOTTED config path down to the individual chain entry
+    // (`auth.<plane>.<entry-name>.token`). It used to be the prose label "auth.admin_auth
+    // admin-tokens token", which could only ever describe ONE entry, because `secret_refs` only ever
+    // reported one: it called `AuthCfg::admin_token_ref`, which returns the FIRST `admin-tokens`
+    // entry it finds and stops. Every entry is enumerated now, so each one names itself.
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.admin_auth.admin-tokens.token")
+                && e.contains("requires settings.key")),
+        "expected the env-shape error; got: {errs:?}"
+    );
+
+    // A well-formed `{ env: VAR }` ref validates (the value is deliberately NOT resolved here:
+    // CI validates structure without secrets present).
+    #[cfg(feature = "auth-admin-tokens")]
+    assert!(
+        build(config::SecretRef::env("BUSBAR_ADMIN_TOKEN")).is_ok(),
+        "a well-formed env admin-token ref must validate"
+    );
+}
+
+/// FEATURELESS counterpart: a configured admin token in a binary WITHOUT the `admin-tokens`
+/// module is a loud boot error (a silently-disabled admin API is a lockout, never acceptable).
+#[cfg(not(feature = "auth-admin-tokens"))]
+#[test]
+fn test_validate_rejects_admin_token_without_module() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
+    entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+    auth.admin_auth = vec![entry];
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("must be a boot error");
+    assert!(
+        errs.iter().any(|e| e.contains("auth-admin-tokens")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_zero_rate_sweep_interval() {
+    // `advanced.rate_sweep_interval: 0` (formerly governance.rate_sweep_interval) is rejected
+    // fail-loud rather than silently disabling the rate-map eviction sweep (which would ride on
+    // the non-obvious `u32::is_multiple_of(0) == false`). The message names the NEW config path.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.limits.rate_sweep_interval = 0;
+    let err = validate(&cfg).expect_err("rate_sweep_interval: 0 must be rejected at validation");
+    assert!(
+        err.iter()
+            .any(|e| e.contains("advanced.rate_sweep_interval")),
+        "the error must name advanced.rate_sweep_interval, got: {err:?}"
+    );
+    // The default (non-zero) value carries no error.
+    cfg.limits.rate_sweep_interval = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("rate_sweep_interval")),
+            "the default sweep interval must not error; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_chain_tokens_module_removed_message() {
+    // The 1.4.x static-token allowlist modules (`tokens` / `static-tokens`) are GONE in 1.5.0. A
+    // chain still naming one must fail with the REMOVED-in-1.5.0 migration message pointing at
+    // `keys` - never a silently-dropped auth module (which would open the relay). This is the
+    // heir of the "token mode requires client tokens" family: the whole surface is removed.
+    for legacy in ["tokens", "static-tokens"] {
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        cfg.auth = Some(make_auth_chain(&[legacy], crate::auth::UpstreamCreds::Own));
+        let errs = validate(&cfg)
+            .unwrap_err_or_default(format!("chain module '{legacy}' must fail validation"));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("'{legacy}'"))
+                && e.contains("REMOVED")
+                && e.contains("1.5.0")
+                && e.contains("keys")),
+            "expected the REMOVED-in-1.5.0 message for '{legacy}' naming `keys`; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_chain_unknown_module_rejected_keys_accepted() {
+    // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
+    // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
+    // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
+    // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
+    // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
+    // be rejected at THIS layer -- an earlier version of this rule hard-rejected every non-`keys`
+    // name right here, which meant NO `kind: auth` plugin (including the real `auth-oidc` plugin)
+    // could ever pass config_validate, since this always-first check always lost before the
+    // plugin-aware one got a chance to run. See `crates/busbar/tests/cli_validate.rs`'s
+    // `validate_fails_on_unresolvable_auth_chain_plugin` for the regression test proving the LATER
+    // layer still catches a genuinely unresolvable name -- fail-closed is preserved end to end, just
+    // at the check that can actually tell.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&["okta"], crate::auth::UpstreamCreds::Own));
+    assert!(
+        validate(&cfg).is_ok(),
+        "a plugin-shaped (non-keys, non-removed-legacy) chain module must NOT be rejected at this \
+         pre-registry layer; got: {:?}",
+        validate(&cfg)
+    );
+
+    // The REMOVED 1.4.x names are still rejected here, precisely -- this layer CAN judge them
+    // without any registry access, so there's no reason to defer that one.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(
+        &["tokens"],
+        crate::auth::UpstreamCreds::Own,
+    ));
+    let errs = validate(&cfg).expect_err("the removed 'tokens' module must still fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("was REMOVED in 1.5.0")),
+        "expected the removed-module migration message; got: {errs:?}"
+    );
+
+    // `keys` (the built-in signed-key verifier) is accepted.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&["keys"], crate::auth::UpstreamCreds::Own));
+    assert!(
+        validate(&cfg).is_ok(),
+        "auth.chain: [keys] must validate; got: {:?}",
+        validate(&cfg)
+    );
+
+    // The empty chain (open front door) carries no requirement.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    assert!(
+        validate(&cfg).is_ok(),
+        "an empty auth chain must validate (open front door)"
+    );
+}
+
+/// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable admin MINT
+/// PATH (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
+/// only be minted through an admin endpoint, so nothing could ever mint one and the data plane
+/// would reject every request. Before 1.5.2 no mint-path rule existed, so this config validated
+/// clean (and booted as a silent sealed relay).
+#[test]
+fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    // default_none carries admin_auth: [admin-tokens] with NO token ref → no usable mint path.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    cfg.auth = Some(auth);
+    let errs =
+        validate(&cfg).expect_err("keys chain with no usable mint path must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no admin credential can mint")),
+        "expected the mint-path boot error; got: {errs:?}"
+    );
+}
+
+/// 1.5.1+: `auth.chain: [keys]` with a usable admin mint path but NO
+/// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
+/// built-in `keys` verifier has nothing to verify busbar-signed tokens with and the data plane
+/// would reject every request. Isolates the signing-key rule from the mint-path rule by supplying a
+/// usable mint path: an explicit OPEN admin (`admin_auth: []`), the one structural mint path that
+/// validates under BOTH the default build and `--no-default-features` (where the `admin-tokens`
+/// module is compiled out, so a configured admin token would itself be a second, unrelated error —
+/// see `make_auth_chain`). Setting `signing_key` clears the error. Before 1.5.1 busbar
+/// auto-generated a key at boot, so this config validated clean.
+#[test]
+fn test_keys_chain_without_signing_key_is_boot_error() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+
+    // RED: keys verifier + a usable mint path (open admin) but NO signing_key.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.admin_auth = vec![]; // explicit OPEN admin ⇒ usable mint path, so the mint-path rule stays quiet
+    assert!(
+        auth.signing_key.is_none(),
+        "the RED case sets no signing_key"
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("keys chain without a signing_key must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.signing_key is required")),
+        "expected the signing-key requirement boot error; got: {errs:?}"
+    );
+
+    // GREEN: setting auth.signing_key clears it (open-admin mint path already present).
+    let mut auth_ok = crate::config::AuthCfg::default_none();
+    auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth_ok.admin_auth = vec![];
+    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    cfg.auth = Some(auth_ok);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a keys chain WITH signing_key + a usable mint path must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+/// 1.5.2: an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
+/// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
+/// spurious mint-path error even when `admin_auth` grants no mint capability.
+#[test]
+fn test_1_5_2_oidc_chain_needs_no_mint_path() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&["oidc"], crate::auth::UpstreamCreds::Own));
+    let r = validate(&cfg);
+    assert!(
+        r.is_ok(),
+        "an oidc (externally-issued) chain must need no mint path; got: {r:?}"
+    );
+}
+
+/// 1.5.2, the github/ldap gap. `auth.chain: [keys]` whose ONLY admin path is an
+/// EXTERNAL admin IdP (github/ldap) is a usable mint path ONLY if that module declares
+/// `max_admin_scope: full`; otherwise nothing can mint a vkey through the admin API and the data
+/// plane rejects EVERY request. This is the exact config that cost a cycle: the gate's Phase B
+/// github/ldap arms named the admin module but did NOT grant it `max_admin_scope: full`, so `keys`
+/// failed to validate with "no admin credential can mint one" — deep in a phase, hard to read.
+/// This locks that in as a fast, obvious boot error. Isolates the EXTERNAL-module branch of
+/// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the `admin-tokens` branch);
+/// signing_key is supplied so the signing-key rule stays quiet and only the mint-path rule can fire.
+/// Feature-independent (the branch is purely structural), so it holds under `--no-default-features`.
+#[test]
+fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+
+    // RED: keys verifier + signing_key, but the only admin module (an external github/ldap IdP)
+    // does NOT declare max_admin_scope: full ⇒ NO usable mint path ⇒ boot error.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.admin_auth = vec![crate::config::AuthChainEntry::bare("github")]; // external IdP, no mint grant
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg)
+        .expect_err("a keys chain whose only admin module cannot mint must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no admin credential can mint")),
+        "expected the mint-path boot error for the github/ldap gap; got: {errs:?}"
+    );
+
+    // GREEN: the SAME external admin module, now declaring max_admin_scope: full, IS a usable mint
+    // path — an admin IdP can mint — so the config validates clean.
+    let mut auth_ok = crate::config::AuthCfg::default_none();
+    auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    let mut admin = crate::config::AuthChainEntry::bare("github");
+    admin.max_admin_scope = Some("full".to_string());
+    auth_ok.admin_auth = vec![admin];
+    cfg.auth = Some(auth_ok);
+    assert!(
+        validate(&cfg).is_ok(),
+        "an external admin module with max_admin_scope: full is a usable mint path; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_validate_token_on_non_admin_tokens_entry_rejected() {
+    // `token:` is the admin-tokens operator credential; on any other chain entry it is inert and
+    // almost certainly a misplaced secret. Fail loud, with the paste-ready relocation stub.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare("keys");
+    entry.token = Some(config::SecretRef::env("MISPLACED_SECRET"));
+    auth.chain = vec![entry];
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("token on a non-admin-tokens entry must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("auth chain entry 'keys'")
+            && e.contains("`token:`")
+            && e.contains("admin-tokens")),
+        "expected a misplaced-token error with the admin-tokens relocation hint; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_legacy_auth_keys_are_rejected_at_parse() {
+    // CLEAN BREAK: the removed 1.4.x auth keys (`mode:`, `token:`, `client_tokens:`, `modules:`)
+    // are rejected AT PARSE by `AuthCfg`'s deny_unknown_fields - never a silent credential drop
+    // and never a deferred validate-time check.
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+auth:
+  mode: token
+  token: "stale-legacy-secret"
+  client_tokens: ["real-secret"]
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_KEY }
+models:
+  claude:
+    provider: anthropic
+    max_concurrent: 10
+"#;
+    let err = serde_yaml::from_str::<crate::config::DeployCfg>(yaml)
+        .expect_err("a config setting the removed auth keys must fail to parse");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown field"),
+        "expected serde's unknown-field error at parse; got: {msg}"
+    );
+    // The rejected secret value is NEVER echoed back in the parse error.
+    assert!(
+        !msg.contains("stale-legacy-secret"),
+        "the parse error must not leak the configured token value; got: {msg}"
+    );
+
+    // The removed `api_key_env:` provider key is likewise a parse error (renamed to
+    // `api_key: { env: ... }`).
+    let yaml2 = r#"
+listen: "0.0.0.0:8080"
+providers:
+  anthropic:
+    api_key_env: ANTHROPIC_KEY
+models:
+  claude:
+    provider: anthropic
+"#;
+    let err2 = serde_yaml::from_str::<crate::config::DeployCfg>(yaml2)
+        .expect_err("the removed api_key_env key must fail to parse");
+    assert!(
+        err2.to_string().contains("unknown field"),
+        "expected an unknown-field error for api_key_env; got: {err2}"
+    );
+}
+
+use crate::test_support::warn_capture::WarnCapture;
+
+#[test]
+fn test_validate_passthrough_warns_on_nonempty_configured_key() {
+    // In passthrough mode the proxy engine selects the upstream key as
+    // `caller_token.unwrap_or("")` (NOT `lane.api_key` - that was hardened per LOW #15), so under
+    // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
+    // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
+    // passthrough. validate() must emit a prominent boot WARNING for any provider whose `api_key_env`
+    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit Bedrock-ingress passthrough
+    // provider authenticates per-request via SigV4 and resolves an EMPTY key, so it must NOT warn -
+    // that is the second half of this test.
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // Unique env-var names so parallel tests cannot clobber the values we set/read here.
+    let leak_env = "BUSBAR_T_R22_PASSTHROUGH_LEAK_KEY";
+    let bedrock_env = "BUSBAR_T_R22_PASSTHROUGH_BEDROCK_KEY";
+    std::env::set_var(leak_env, "sk-busbar-secret-should-not-leak");
+    std::env::remove_var(bedrock_env); // Bedrock passthrough: no static key (SigV4 per-request)
+
+    // Provider WITH a non-empty resolved key (the leak case) + Bedrock-style provider whose key
+    // env is unset (the legit case). Both providers need a model so validate() has full context.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "leaky".to_string(),
+        make_provider("anthropic", "https://api.example.com", leak_env),
+    );
+    providers.insert(
+        "bedrock".to_string(),
+        make_provider("bedrock", "https://bedrock.example.com", bedrock_env),
+    );
+    let mut models = HashMap::new();
+    models.insert("leakymodel".to_string(), make_model("leaky", 10));
+    models.insert("bedrockmodel".to_string(), make_model("bedrock", 10));
+    let mut cfg = make_root_cfg(providers, models, HashMap::new());
+    cfg.auth = Some(make_auth_chain(
+        &[],
+        crate::auth::UpstreamCreds::Passthrough,
+    ));
+    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // resolved onto `RootCfg` — not a field of `auth:`.
+    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+
+    std::env::remove_var(leak_env);
+
+    // The combo is a WARN, not a hard error: passthrough has no token-allowlist requirement, so
+    // validation still succeeds (the warning is the diagnostic, so a deliberate static-key
+    // fallback is not broken).
+    assert!(
+        result.is_ok(),
+        "passthrough + non-empty key is a warning, not a hard error; got: {result:?}"
+    );
+
+    let msgs = cap.messages();
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("inert dead config") && m.contains("leaky")),
+        "expected a passthrough inert-configured-key warning naming the 'leaky' provider; got: {msgs:?}"
+    );
+    // The Bedrock-style provider with an EMPTY resolved key must NOT trip the warning — otherwise
+    // a legit SigV4 passthrough deployment is spammed with a false-positive credential-leak alert.
+    assert!(
+            !msgs.iter().any(|m| m.contains("bedrock")),
+            "a provider whose api_key_env resolves empty must NOT warn (legit SigV4 passthrough); got: {msgs:?}"
+        );
+}
+
+#[test]
+fn test_validate_passthrough_no_warn_when_all_keys_empty() {
+    // Counter-case: with auth.mode=passthrough and EVERY provider's api_key_env unset, no
+    // credential-leak warning fires — the guard keys off the RESOLVED value, not merely the
+    // presence of the passthrough mode. This pins the false-positive boundary.
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let empty_env = "BUSBAR_T_R22_PASSTHROUGH_EMPTY_KEY";
+    std::env::remove_var(empty_env);
+
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://api.example.com", empty_env),
+    );
+    let mut models = HashMap::new();
+    models.insert("m".to_string(), make_model("p", 10));
+    let mut cfg = make_root_cfg(providers, models, HashMap::new());
+    cfg.auth = Some(make_auth_chain(
+        &[],
+        crate::auth::UpstreamCreds::Passthrough,
+    ));
+    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // resolved onto `RootCfg` — not a field of `auth:`.
+    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+
+    assert!(result.is_ok(), "passthrough with empty keys must validate");
+    let msgs = cap.messages();
+    assert!(
+        !msgs.iter().any(|m| m.contains("inert dead config")),
+        "no inert-configured-key warning may fire when every api_key_env resolves empty — the guard \
+         keys off the RESOLVED value, not the presence of passthrough mode; got: {msgs:?}"
+    );
+}
+
+#[test]
+fn test_validate_empty_chain_carries_no_requirement() {
+    // The 1.4.x "mode: none" posture is an EMPTY chain now: no auth module, no requirement.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    assert!(
+        validate(&cfg).is_ok(),
+        "an empty auth chain carries no token requirement"
+    );
+}
+
+#[test]
+fn test_ssrf_blocks_metadata_denylist_by_default() {
+    // Under the metadata-denylist model, ONLY cloud-metadata endpoints are blocked by default —
+    // and every obfuscation form of each metadata IP must be caught, not just the canonical
+    // spelling. The link-local /16 covers IMDS, ECS task-creds, Tencent, etc. in one range.
+    for blocked in [
+        // --- link-local /16 (IMDS, ECS, Tencent, …) ---
+        "https://169.254.169.254/latest/meta-data/", // IMDS
+        "https://169.254.169.254/",
+        "http://169.254.169.254/", // http form (link-local ⇒ scheme ok, then metadata-blocked)
+        "https://169.254.170.2/v2/credentials", // AWS ECS task-credentials
+        "https://169.254.0.23/",   // Tencent metadata (still link-local)
+        // --- non-link-local metadata literals ---
+        "https://100.100.100.200/latest/meta-data/", // Alibaba ECS (inside CGNAT /10)
+        "http://100.100.100.200/",
+        "https://168.63.129.16/",   // Azure WireServer/platform
+        "https://[fd00:ec2::254]/", // EC2 IMDSv6
+        // --- metadata hostnames (case-insensitive, trailing-dot stripped) ---
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://METADATA.INTERNAL/",
+        "https://metadata.tencentyun.com/",
+        "https://metadata.platformequinix.com/",
+        "https://instance-data/latest/meta-data/",
+        "https://instance-data.ec2.internal/",
+        "https://metadata.google.internal./", // trailing-dot FQDN form
+        // --- obfuscation forms of the metadata IPs (must apply to every literal) ---
+        "https://[::ffff:169.254.169.254]/", // IMDS via IPv4-mapped IPv6
+        "https://[::169.254.169.254]/",      // IMDS via IPv4-compatible IPv6
+        "https://[::ffff:169.254.170.2]/",   // ECS creds via mapped IPv6
+        "https://[::ffff:100.100.100.200]/", // Alibaba via mapped IPv6
+        "https://[::ffff:168.63.129.16]/",   // Azure via mapped IPv6
+        "https://2852039166/",               // IMDS via decimal-int (= 169.254.169.254)
+        "https://0xa9fea9fe/",               // IMDS via hex
+        "https://169.254.169.254./",         // IMDS, trailing dot
+        "https://169%2E254%2E169%2E254/",    // IMDS, percent-encoded dots
+        "https://169.254.169.254:8443/",     // IMDS with port
+        "https://user:pass@169.254.169.254/latest", // IMDS behind userinfo
+        // --- obfuscated inet_aton forms of IMDS (must be caught and canonicalized) ---
+        "https://169.254.43518/", // 3-part inet_aton of 169.254.169.254
+        "https://169.16689662/",  // 2-part inet_aton of 169.254.169.254
+    ] {
+        // Assert the ACTUAL returned host is a non-empty string (so a bug returning
+        // Some("") / Some("garbage") cannot pass). The returned host is the normalized authority.
+        let got = ssrf_blocked_host(blocked, &[], false, &[]);
+        let host = got.as_deref().unwrap_or_else(|| {
+            panic!("expected '{blocked}' to be flagged as a metadata SSRF target")
+        });
+        assert!(
+            !host.is_empty(),
+            "blocked '{blocked}' returned an EMPTY host string"
+        );
+    }
+}
+
+#[test]
+fn test_ssrf_blocked_returns_exact_host_string() {
+    // Pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
+    // regression returning `Some("")` / `Some("garbage")` (which `.is_some()` would accept) fails.
+    assert_eq!(
+        ssrf_blocked_host("https://169.254.169.254/latest", &[], false, &[]).as_deref(),
+        Some("169.254.169.254")
+    );
+    assert_eq!(
+        ssrf_blocked_host("https://user:pass@169.254.169.254:8443/x", &[], false, &[]).as_deref(),
+        Some("169.254.169.254"),
+        "userinfo and port must be stripped from the returned host"
+    );
+    assert_eq!(
+        ssrf_blocked_host("https://metadata.google.internal/", &[], false, &[]).as_deref(),
+        Some("metadata.google.internal")
+    );
+    assert_eq!(
+        ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).as_deref(),
+        Some("100.100.100.200")
+    );
+}
+
+#[test]
+fn test_expand_alternate_ipv4_imds_obfuscations() {
+    // DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
+    // forms of the IMDS address all canonicalize to 169.254.169.254. (0xA9FEA9FE = 2852039166.)
+    let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
+    assert_eq!(
+        expand_alternate_ipv4("2852039166"),
+        Some(imds),
+        "1-part decimal"
+    );
+    assert_eq!(
+        expand_alternate_ipv4("169.16689662"),
+        Some(imds),
+        "2-part inet_aton"
+    );
+    assert_eq!(
+        expand_alternate_ipv4("169.254.43518"),
+        Some(imds),
+        "3-part inet_aton"
+    );
+    // Don't-double-process invariant: an already-canonical dotted quad returns None (left to the
+    // IpAddr parse path), so the expander never re-canonicalizes a normal address.
+    assert_eq!(
+        expand_alternate_ipv4("169.254.169.254"),
+        None,
+        "an already-canonical dotted quad must return None from the expander"
+    );
+    assert_eq!(expand_alternate_ipv4("8.8.8.8"), None);
+    // And those obfuscated forms must be BLOCKED through the full guard.
+    for base in [
+        "https://2852039166/",
+        "https://169.16689662/",
+        "https://169.254.43518/",
+    ] {
+        assert!(
+            ssrf_blocked_host(base, &[], false, &[]).is_some(),
+            "obfuscated IMDS form '{base}' must be blocked"
+        );
+    }
+}
+
+#[test]
+fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
+    // Companion to `test_expand_alternate_ipv4_imds_obfuscations` (which covers the DECIMAL
+    // inet_aton forms): the canonicalizer must also collapse the HEX and OCTAL encodings of the
+    // IMDS address 169.254.169.254 (= 0xA9FEA9FE = 2852039166 = octal 025177524776) so the SSRF
+    // guard can't be bypassed by spelling the octets in base 16 or base 8.
+    let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
+
+    // HEX, single 32-bit integer (`0xA9FEA9FE`) and dotted per-octet hex (`0xA9.0xFE.0xA9.0xFE`).
+    assert_eq!(
+        expand_alternate_ipv4("0xA9FEA9FE"),
+        Some(imds),
+        "single-integer hex form of IMDS"
+    );
+    assert_eq!(
+        expand_alternate_ipv4("0xA9.0xFE.0xA9.0xFE"),
+        Some(imds),
+        "dotted per-octet hex form of IMDS"
+    );
+
+    // OCTAL: single 32-bit integer and dotted per-octet octal (leading-zero octets).
+    assert_eq!(
+        expand_alternate_ipv4("025177524776"),
+        Some(imds),
+        "single-integer octal form of IMDS"
+    );
+    assert_eq!(
+        expand_alternate_ipv4("0251.0376.0251.0376"),
+        Some(imds),
+        "dotted per-octet octal form of IMDS"
+    );
+
+    // Each form must be BLOCKED through the full guard (ssrf_blocked_host returns the host).
+    for base in [
+        "https://0xA9FEA9FE/",
+        "https://0xA9.0xFE.0xA9.0xFE/",
+        "https://025177524776/",
+        "https://0251.0376.0251.0376/",
+    ] {
+        assert!(
+            ssrf_blocked_host(base, &[], false, &[]).is_some(),
+            "hex/octal-obfuscated IMDS form '{base}' must be blocked"
+        );
+    }
+}
+
+#[test]
+fn test_reject_cidr_metadata_entries() {
+    // A `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
+    // IP/hostname), so validate() must REJECT it at boot with a clear, key+value-naming error.
+
+    // Global blocked list.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://api.openai.com", "API_KEY"),
+    );
+    let cfg = make_root_cfg_with_blocked(providers, vec!["169.254.0.0/16".to_string()]);
+    let errs =
+        validate(&cfg).expect_err("a CIDR blocked_metadata_hosts entry must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("security.blocked_metadata_hosts")
+                && e.contains("169.254.0.0/16")
+                && e.contains("CIDR")),
+        "expected a CIDR rejection naming the key+value; got: {errs:?}"
+    );
+
+    // Global allow list.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://api.openai.com", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
+    let errs = validate(&cfg).expect_err("a CIDR allow_metadata_hosts entry must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("security.allow_metadata_hosts") && e.contains("10.0.0.0/8")),
+        "expected a CIDR rejection naming security.allow_metadata_hosts; got: {errs:?}"
+    );
+
+    // Per-provider allow list.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider_allow_hosts("https://api.openai.com", &["169.254.169.254/32"]),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg)
+        .expect_err("a CIDR per-provider allow_metadata_hosts entry must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("provider 'prov' allow_metadata_hosts")
+                && e.contains("169.254.169.254/32")),
+        "expected a CIDR rejection naming the provider's allow_metadata_hosts; got: {errs:?}"
+    );
+
+    // Sanity: exact IPs/hostnames (no slash) do NOT trip the CIDR guard. (validate() may still
+    // error for other reasons — assert specifically that no CIDR error is produced.)
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://api.openai.com", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string()];
+    cfg.allow_metadata_hosts = vec!["metadata.example.com".to_string()];
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("CIDR")),
+            "exact IP/hostname entries must not trip the CIDR guard; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_global_allow_overrides_blocked_metadata_hosts() {
+    // global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
+    // (allow always wins) — both at the guard level and through full validate().
+    let blocked = vec!["10.77.77.77".to_string()];
+    let allow = vec!["10.77.77.77".to_string()];
+    assert!(
+        ssrf_blocked_host("https://10.77.77.77/", &allow, false, &blocked).is_none(),
+        "global allow_metadata_hosts must override blocked_metadata_hosts"
+    );
+    // Without the allow, it is blocked (proving the block entry is real).
+    assert!(
+        ssrf_blocked_host("https://10.77.77.77/", &[], false, &blocked).is_some(),
+        "the host must be blocked when not allow-listed"
+    );
+    // Full validate(): global allow overrides global blocked.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://10.77.77.77/", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.77.77.77".to_string()]);
+    cfg.allow_metadata_hosts = vec!["10.77.77.77".to_string()];
+    assert!(
+        validate(&cfg).is_ok(),
+        "global allow_metadata_hosts must override blocked_metadata_hosts in validate(); got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_allow_all_metadata_beats_nonempty_blocked_list() {
+    // allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
+    // override disables the guard wholesale.
+    let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
+    for base in [
+        "https://169.254.169.254/", // hardcoded denylist
+        "https://10.0.0.7/",        // operator-listed
+        "https://metadata.x.example/",
+    ] {
+        assert!(
+            ssrf_blocked_host(base, &[], true, &blocked).is_none(),
+            "allow_all_metadata must unblock '{base}' even with a non-empty blocked list"
+        );
+    }
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://10.0.0.7/", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg_with_blocked(providers, vec!["10.0.0.7".to_string()]);
+    cfg.allow_all_metadata = true;
+    assert!(
+        validate(&cfg).is_ok(),
+        "allow_all_metadata must win over a non-empty blocked_metadata_hosts; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_ssrf_allows_private_and_loopback_by_default() {
+    // Loopback / RFC-1918 / CGNAT / localhost are legitimate LOCAL-MODEL upstreams and are
+    // ALLOWED with no flag — they are NOT metadata endpoints. (The link-local /16 minus the
+    // metadata literals is still allowed too, but link-local is unusual for a model; the key
+    // cases are loopback/RFC-1918/CGNAT.)
+    for allowed in [
+        "https://127.0.0.1/",
+        "https://10.0.0.1/v1",
+        "https://172.16.0.1/",
+        "https://192.168.1.1:8443/",
+        "https://[::1]/",
+        "https://[::1]:443/",
+        "https://[fe80::1]/", // IPv6 link-local (not a metadata literal)
+        "https://[fc00::1]/", // IPv6 ULA
+        "https://0.0.0.0/",
+        "https://user:pass@10.0.0.5/path",
+        "https://100.64.0.1/", // CGNAT (Tailscale)
+        "https://100.127.255.255/",
+        "https://[::ffff:10.0.0.1]/",   // RFC-1918 via mapped IPv6
+        "https://[::ffff:100.64.0.1]/", // CGNAT via mapped IPv6
+        "https://[::127.0.0.1]/",       // loopback via compatible IPv6
+        "https://2130706433/",          // decimal int = 127.0.0.1 (private, allowed)
+        "https://127.1/",               // short dotted form = 127.0.0.1
+        "https://localhost/",
+        "https://api.localhost:11434/v1",
+        "https://service.internal.localhost/",
+        "https://API.LOCALHOST/",
+    ] {
+        assert!(
+                ssrf_blocked_host(allowed, &[], false, &[]).is_none(),
+                "expected '{allowed}' to be ALLOWED (private/loopback is a local-model target, not metadata)"
+            );
+    }
+}
+
+#[test]
+fn test_ssrf_blocks_backslash_authority_bypass() {
+    // `https` is a WHATWG special scheme, so reqwest's `url` crate
+    // rewrites every `\` to `/` while parsing — terminating the authority at the FIRST `\`. A
+    // hand-parser that split only on `['/', '?', '#']` saw the whole `10.0.0.1\x.allowed.com` as
+    // the host (passing every internal/metadata check) while reqwest connected to `10.0.0.1` /
+    // `169.254.169.254` with the lane API key attached — a credential-relay SSRF. The guard must
+    // normalize `\`→`/` BEFORE splitting so it sees the SAME authority boundary reqwest will.
+    // The real host before the `\` here is a METADATA endpoint; the trick tries to disguise it as
+    // a benign `allowed.com` suffix. The guard must still see the metadata target.
+    for blocked in [
+        "https://169.254.169.254\\a.b",
+        "https://169.254.169.254\\x.allowed.com/v1/messages",
+        "https://100.100.100.200\\evil.example.com/",
+        "https://metadata.google.internal\\x.allowed.com",
+        // Mixed delimiters: the backslash must still terminate the authority before the slash.
+        "https://169.254.169.254\\@allowed.com/path",
+    ] {
+        assert!(
+            ssrf_blocked_host(blocked, &[], false, &[]).is_some(),
+            "expected '{blocked}' to be flagged: the backslash terminates the authority \
+                 (reqwest rewrites \\ to /), so the real host is the metadata target before it"
+        );
+    }
+    // A full validate() pass must reject a base_url using the backslash-authority trick to reach
+    // a metadata host.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider(
+            "anthropic",
+            "https://169.254.169.254\\x.allowed.com",
+            "API_KEY",
+        ),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("backslash-authority base_url must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
+        "expected a metadata-host error naming the real metadata host; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_ssrf_blocks_embedded_tab_newline_bypass() {
+    // The WHATWG URL spec's basic parser strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D)
+    // bytes from the ENTIRE input as its very first step, before scheme/authority parsing even
+    // begins — not just leading/trailing whitespace. reqwest's `url` crate implements this. A tab
+    // is a legal byte inside a YAML double-quoted scalar, so an operator-editable `base_url` like
+    // `"https://169.254.169\t.254/"` is a real, reachable config shape. Without mirroring the
+    // strip, the guard sees the non-IP, non-metadata-matching host `169.254.169\t.254` (passes
+    // every check) while the connecting stack deletes the tab and connects to the actual IMDS
+    // address `169.254.169.254` — an SSRF bypass.
+    for blocked in [
+        "https://169.254.169\t.254/v1/messages",
+        "https://169.254.169.254\t/v1/messages",
+        "https://169.254\n.169.254/v1/messages",
+        "https://169.254.169\r.254/v1/messages",
+    ] {
+        assert!(
+            ssrf_blocked_host(blocked, &[], false, &[]).is_some(),
+            "expected '{blocked}' to be flagged: stripping the embedded tab/newline/CR (as \
+                 the WHATWG parser and reqwest's `url` crate do) reveals the real metadata host"
+        );
+    }
+    // A full validate() pass must reject a base_url using the embedded-tab trick to reach a
+    // metadata host.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://169.254.169\t.254", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("embedded-tab base_url must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
+        "expected a metadata-host error naming the real metadata host; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_path_override_host_fusion() {
+    // A provider `path` override is appended to base_url VERBATIM
+    // at request time (`format!("{base}{wire_path}")`), and the composed string chooses the
+    // connect host. base_url validation alone misses this: a path NOT starting with '/' fuses
+    // into the authority — base_url `https://api.example.com` + path `.evil.com/v1` connects to
+    // host `api.example.com.evil.com` with the lane API key attached (credential-relay SSRF).
+    let mut providers = HashMap::new();
+    let mut fused = make_provider("openai", "https://api.example.com", "API_KEY");
+    fused.path = Some(".evil.com/v1/chat/completions".to_string());
+    providers.insert("fused".to_string(), fused);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("a host-fusing path override must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("fused") && e.contains("must begin with '/'")),
+        "expected a leading-slash path error for 'fused'; got: {errs:?}"
+    );
+
+    // The host-fusion vector is symmetric for any non-slash leading char that extends the host
+    // label — a `@` (userinfo flip) or a bare label both fuse. base_url `https://api.example.com`
+    // + path `@169.254.169.254/x` composes to `https://api.example.com@169.254.169.254/x`, whose
+    // host is the IMDS endpoint with `api.example.com` demoted to userinfo. The leading-slash
+    // rule rejects it (it does not start with '/'), and as belt-and-suspenders the composed url
+    // is also an SSRF target — assert at minimum the leading-slash diagnostic fires.
+    let mut providers2 = HashMap::new();
+    let mut imds = make_provider("openai", "https://api.example.com", "API_KEY");
+    imds.path = Some("@169.254.169.254/latest/meta-data".to_string());
+    providers2.insert("imds".to_string(), imds);
+    let cfg2 = make_root_cfg(providers2, HashMap::new(), HashMap::new());
+    let errs2 = validate(&cfg2).expect_err("a userinfo-flip path override must fail validation");
+    assert!(
+        errs2
+            .iter()
+            .any(|e| e.contains("imds") && e.contains("must begin with '/'")),
+        "expected a leading-slash path error for the userinfo-flip override; got: {errs2:?}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_well_formed_path_override() {
+    // The shipped catalog form — a leading-slash path on a public host — must validate. Mirrors
+    // the `zai-payg` provider (`base_url: .../api/paas/v4` + `path: /chat/completions`).
+    let mut providers = HashMap::new();
+    let mut p = make_provider("openai", "https://api.example.com/api/paas/v4", "API_KEY");
+    p.path = Some("/chat/completions".to_string());
+    providers.insert("ok".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "a leading-slash path override on a public host must validate"
+    );
+}
+
+#[test]
+fn test_ssrf_cgnat_allowed_but_alibaba_literal_blocked() {
+    // CGNAT 100.64.0.0/10 is a legitimate local-model range (Tailscale) and is ALLOWED — EXCEPT
+    // the single Alibaba metadata literal 100.100.100.200 that lives inside it, which stays
+    // blocked. Addresses just outside the /10 are ordinary public addresses (also allowed).
+    assert!(ssrf_blocked_host("https://100.64.0.0/", &[], false, &[]).is_none());
+    assert!(ssrf_blocked_host("https://100.127.255.255/", &[], false, &[]).is_none());
+    assert!(ssrf_blocked_host("https://100.63.255.255/", &[], false, &[]).is_none());
+    assert!(ssrf_blocked_host("https://100.128.0.1/", &[], false, &[]).is_none());
+    // The Alibaba metadata literal inside the CGNAT range stays blocked.
+    assert!(
+            ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).is_some(),
+            "the Alibaba metadata literal 100.100.100.200 must stay blocked even though CGNAT is allowed"
+        );
+}
+
+#[test]
+fn test_validate_rejects_zero_weight_member() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut zero = make_member("mymodel");
+    zero.weight = 0;
+    pools.insert("mypool".to_string(), make_pool(vec![zero]));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a weight:0 pool member must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("weight must be >= 1") && e.contains("mymodel")),
+        "expected a weight:0 rejection for 'mymodel'; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_empty_pool_members() {
+    // A pool with an EMPTY member list parses fine but is permanently un-routable: every
+    // request to it exhausts immediately and 503s with a misleading "overloaded" message, with
+    // no boot diagnostic. This is the empty-set twin of the weight:0 / max_concurrent:0 /
+    // breaker n:0 fail-loud guards — reject it at startup. (Fails against old code, which had
+    // no empty-members check and let such a pool boot.)
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    pools.insert("emptypool".to_string(), make_pool(vec![]));
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("an empty-members pool must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("emptypool") && e.contains("no members")),
+        "expected a no-members rejection for 'emptypool'; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_pool_with_at_least_one_member() {
+    // A pool with one or more members must NOT trip the empty-members guard.
+    let (providers, models, pools) = valid_maps();
+    let cfg = make_root_cfg(providers, models, pools);
+    let result = validate(&cfg);
+    if let Err(errs) = &result {
+        assert!(
+            !errs.iter().any(|e| e.contains("no members")),
+            "a pool with a member must not trip the empty-members guard; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_validate_accepts_positive_weight_member() {
+    // The default weight (1) and any positive weight must validate.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut w = make_member("mymodel");
+    w.weight = 5;
+    pools.insert("mypool".to_string(), make_pool(vec![w]));
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a positive-weight pool member must validate"
+    );
+}
+
+#[test]
+fn test_ssrf_blocked_host_allows_public_targets() {
+    // Public hostnames and public IPs must NOT be flagged.
+    for ok in [
+        "https://api.anthropic.com/v1/messages",
+        "https://api.openai.com",
+        "https://example.com:8443/v1",
+        "https://8.8.8.8/",
+        "https://[2606:4700:4700::1111]/",
+        // Public hostnames whose right-most label merely CONTAINS "localhost" but is not the
+        // reserved `.localhost` TLD must NOT be flagged — only an exact right-most `localhost`
+        // label is loopback. These are ordinary public DNS names.
+        "https://mylocalhost.com/",
+        "https://notlocalhost.example.com/",
+        "https://localhost.example.com/", // `localhost` is a left label, TLD is `com`
+    ] {
+        assert!(
+            ssrf_blocked_host(ok, &[], false, &[]).is_none(),
+            "expected '{ok}' to be allowed (not an SSRF target)"
+        );
+    }
+}
+
+#[test]
+fn test_validate_rejects_https_internal_base_url() {
+    // A full validate() pass must reject an https:// base_url pointing at IMDS.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://169.254.169.254/", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("https IMDS base_url must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
+        "expected an SSRF/metadata-host error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_unknown_fallback_pool() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool(
+        "does_not_exist".to_string(),
+    ));
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("on_exhausted referencing an unknown pool must fail");
+    assert!(
+        errs.iter().any(
+            |e| e.contains("on_exhausted references unknown fallback pool")
+                && e.contains("does_not_exist")
+        ),
+        "expected a dangling-fallback-pool error; got: {errs:?}"
+    );
+}
+
+/// The 1.5.0 heir of the malformed-action drift test: `on_exhausted` is a STRUCTURED enum
+/// now, so a malformed action (`bogus`, or the retired `fallback_pool:name` string form) is
+/// rejected AT PARSE - it can never reach validate() or boot at all, closing the drift by
+/// construction. The three well-formed spellings parse to the expected variants.
+#[test]
+fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
+    assert!(
+        serde_yaml::from_str::<config::OnExhaustedCfg>("bogus").is_err(),
+        "an unknown on_exhausted keyword must fail to parse"
+    );
+    assert!(
+        serde_yaml::from_str::<config::OnExhaustedCfg>("\"fallback_pool:backup\"").is_err(),
+        "the retired string form 'fallback_pool:name' must fail to parse (structured form only)"
+    );
+    assert!(matches!(
+        serde_yaml::from_str::<config::OnExhaustedCfg>("reject").unwrap(),
+        config::OnExhaustedCfg::Reject
+    ));
+    assert!(matches!(
+        serde_yaml::from_str::<config::OnExhaustedCfg>("least_bad").unwrap(),
+        config::OnExhaustedCfg::LeastBad
+    ));
+    match serde_yaml::from_str::<config::OnExhaustedCfg>("{ fallback_pool: backup }").unwrap() {
+        config::OnExhaustedCfg::FallbackPool(name) => assert_eq!(name, "backup"),
+        other => panic!("expected FallbackPool, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_validate_accepts_existing_fallback_pool() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("backup".to_string()));
+    pools.insert("mypool".to_string(), pool);
+    // The referenced fallback pool exists → no error.
+    pools.insert(
+        "backup".to_string(),
+        make_pool(vec![make_member("mymodel")]),
+    );
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "on_exhausted referencing an existing pool must validate"
+    );
+}
+
+#[test]
+fn test_queue_config_parses_and_both_keys_conflict() {
+    // Disambiguation: a `queue` mapping parses to Queue{max_ms}; a mapping carrying BOTH
+    // `fallback_pool` and `queue` is an explicit "exactly one of" error, not a silent force-fit.
+    match serde_yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }").unwrap() {
+        config::OnExhaustedCfg::Queue { max_ms } => assert_eq!(max_ms, 250),
+        other => panic!("expected Queue, got {other:?}"),
+    }
+    let both = serde_yaml::from_str::<config::OnExhaustedCfg>(
+        "{ fallback_pool: cold, queue: { max_ms: 250 } }",
+    );
+    let err = format!("{}", both.expect_err("both keys must be a conflict error"));
+    assert!(
+        err.contains("exactly one of"),
+        "both-keys error must say exactly one of fallback_pool | queue; got: {err}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_queue_within_budget() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    // Default resolved failover budget is 120s = 120000ms; 250ms is well within it.
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 250 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a queue max_ms within the failover budget must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_queue_max_ms_zero() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 0 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a 0 max_ms queue must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("queue.max_ms must be > 0") && e.contains("mypool")),
+        "expected a max_ms>0 error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
+    // The budget is the RESOLVED per-pool failover timeout: set this pool's own timeout to 1s
+    // (1000ms) and ask for a 2000ms queue — it exceeds the pool's OWN budget and must be rejected.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 2000 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg)
+        .expect_err("a max_ms above the resolved failover budget must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("exceeds the resolved failover budget")
+            && e.contains("mypool")),
+        "expected a budget-exceeded error resolved against the pool's own 1s timeout; got: {errs:?}"
+    );
+}
+
+/// Boundary: `queue.max_ms` EXACTLY equal to the resolved failover budget is ACCEPTED (only a value
+/// strictly greater is rejected — the validator uses `max_ms > budget_ms`). Guards the `<` vs `<=`
+/// off-by-one the sibling reject test cannot catch.
+#[test]
+fn test_validate_accepts_queue_max_ms_equal_to_resolved_budget() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    // Resolved budget = 1s = 1000ms; ask for EXACTLY 1000ms.
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 1000 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "max_ms EXACTLY equal to the resolved failover budget must be accepted (only > is rejected)"
+    );
+}
+
+/// Rule 6b upper bound: a `failover.timeout_secs` beyond the 24h maximum is a fat-finger typo (an
+/// over-large value would otherwise feed `RequestCtx::new` an `Instant`-overflowing duration). It must
+/// be rejected at `--validate`/boot with an actionable message.
+#[test]
+fn test_validate_rejects_failover_timeout_secs_over_max() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: config::MAX_FAILOVER_DEADLINE_SECS + 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs =
+        validate(&cfg).expect_err("a failover.timeout_secs above the 24h maximum must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("exceeds the maximum") && e.contains("mypool")),
+        "expected a timeout_secs-too-large error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_self_referential_fallback_pool() {
+    // A pool whose on_exhausted fallback points at ITSELF (A -> A) never engages at runtime
+    // (the loop guard terminates on re-entry) — reject it at boot.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    // points at its own name
+    pool.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("mypool".to_string()));
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a self-referential fallback pool must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("references itself as its fallback pool") && e.contains("mypool")),
+        "expected a self-referential fallback-pool error; got: {errs:?}"
+    );
+    // It must NOT be misreported as a dangling/unknown fallback pool (the pool exists).
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("references unknown fallback pool")),
+        "a self-reference must not be reported as an unknown fallback pool; got: {errs:?}"
+    );
+    // Rule 7b (the multi-hop cycle detector) deliberately excludes the length-1 ring a self-loop
+    // produces (`ring.len() > 1`) — Rule 7 above already reports it, and Rule 7b re-reporting it
+    // would be a confusing duplicate diagnostic for the same misconfiguration. A mutated `> 1` ->
+    // `>= 1` would let Rule 7b's ring (len 1 for a self-loop) also fire here.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("fallback_pool cycle detected")),
+        "a self-loop must be reported once by Rule 7, not again by Rule 7b's cycle detector; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_two_pool_fallback_cycle() {
+    // A <-> B: pool A falls back to B and B falls back to A. The runtime loop guard collapses
+    // the ring into a 503, so startup must reject it. The cycle must be reported EXACTLY ONCE
+    // (not once per ring member).
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut a = make_pool(vec![make_member("mymodel")]);
+    a.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("pool_b".to_string()));
+    let mut b = make_pool(vec![make_member("mymodel")]);
+    b.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("pool_a".to_string()));
+    pools.insert("pool_a".to_string(), a);
+    pools.insert("pool_b".to_string(), b);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("an A<->B fallback cycle must fail validation");
+    let cycle_errs: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("fallback_pool cycle detected"))
+        .collect();
+    assert_eq!(
+        cycle_errs.len(),
+        1,
+        "an A<->B cycle must be reported exactly once; got: {errs:?}"
+    );
+    assert!(
+        cycle_errs[0].contains("pool_a") && cycle_errs[0].contains("pool_b"),
+        "the cycle diagnostic must name both ring members; got: {}",
+        cycle_errs[0]
+    );
+}
+
+#[test]
+fn test_validate_rejects_three_pool_fallback_cycle() {
+    // A -> B -> C -> A: a longer ring must also be rejected, and reported exactly once.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    for (name, next) in [("p1", "p2"), ("p2", "p3"), ("p3", "p1")] {
+        let mut p = make_pool(vec![make_member("mymodel")]);
+        p.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool(next.to_string()));
+        pools.insert(name.to_string(), p);
+    }
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a 3-pool fallback cycle must fail validation");
+    let cycle_errs: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("fallback_pool cycle detected"))
+        .collect();
+    assert_eq!(
+        cycle_errs.len(),
+        1,
+        "a 3-pool cycle must be reported exactly once; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_acyclic_fallback_chain() {
+    // A -> B -> C (no loop back) is a legitimate degraded-routing chain and must NOT be flagged
+    // as a cycle (guard against an over-broad cycle detector). C has no fallback.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut a = make_pool(vec![make_member("mymodel")]);
+    a.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("chain_b".to_string()));
+    let mut b = make_pool(vec![make_member("mymodel")]);
+    b.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("chain_c".to_string()));
+    let c = make_pool(vec![make_member("mymodel")]);
+    pools.insert("chain_a".to_string(), a);
+    pools.insert("chain_b".to_string(), b);
+    pools.insert("chain_c".to_string(), c);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "an acyclic A->B->C fallback chain must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_validate_accepts_diamond_fallback_no_cycle() {
+    // A->C and B->C (two pools share a downstream fallback) is NOT a cycle: C is visited from
+    // two distinct walks but neither walk loops. Guards the min-member dedup logic against a
+    // false positive on a converging (non-looping) graph.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut a = make_pool(vec![make_member("mymodel")]);
+    a.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("dia_c".to_string()));
+    let mut b = make_pool(vec![make_member("mymodel")]);
+    b.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("dia_c".to_string()));
+    let c = make_pool(vec![make_member("mymodel")]);
+    pools.insert("dia_a".to_string(), a);
+    pools.insert("dia_b".to_string(), b);
+    pools.insert("dia_c".to_string(), c);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a converging (diamond) fallback graph must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_affinity_mode_is_a_closed_enum() {
+    // `affinity.mode` is now an `AffinityMode` enum, so an unrecognized spelling ('sticky') is
+    // rejected at DESERIALIZE time rather than by a hand-check in validate(). The one accepted
+    // wire string ('session') is unchanged from the pre-enum `String` field.
+    assert_eq!(
+        serde_yaml::from_str::<config::AffinityMode>("session").unwrap(),
+        config::AffinityMode::Session
+    );
+    assert!(
+        serde_yaml::from_str::<config::AffinityMode>("sticky").is_err(),
+        "'sticky' is not a supported affinity mode and must fail to deserialize"
+    );
+}
+
+#[test]
+fn test_validate_accepts_session_affinity_mode() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.affinity = Some(config::AffinityCfg {
+        mode: config::AffinityMode::Session,
+        header_name: Some("x-session-id".to_string()),
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "the supported 'session' affinity mode must validate"
+    );
+}
+
+/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986 §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
+/// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
+#[test]
+fn test_validate_accepts_uppercase_url_scheme() {
+    let (mut providers, models, _) = valid_maps();
+    // Point an existing provider at an uppercase-scheme https URL.
+    if let Some((_, p)) = providers.iter_mut().next() {
+        p.base_url = "HTTPS://api.example.com".to_string();
+    }
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "an uppercase HTTPS:// scheme is RFC-valid and must not be rejected: {:?}",
+        validate(&cfg)
+    );
+    // The scheme helper itself is case-insensitive and anchored on `://`.
+    assert!(scheme_is("HTTPS://h", "https"));
+    assert!(scheme_is("Http://h", "http"));
+    assert!(!scheme_is("httpsx://h", "https"));
+}
+
+/// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
+/// the ASCII + length checks but silently disables session affinity at runtime
+/// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
+/// to catch.
+#[test]
+fn test_validate_rejects_empty_affinity_header_name() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.affinity = Some(config::AffinityCfg {
+        mode: config::AffinityMode::Session,
+        header_name: Some(String::new()),
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let err = validate(&cfg).expect_err("empty header_name must be rejected");
+    assert!(
+        err.iter().any(|e| e.contains("must not be empty")),
+        "the error must name the empty-header-name problem: {err:?}"
+    );
+}
+
+#[test]
+fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
+    // A pool member that names a model which IS defined, but whose provider does not resolve,
+    // must NOT be reported as an "unknown model" (the model exists). The model loop already
+    // emits a "references unknown provider" error for the model itself; the pool-member check
+    // must emit a distinct, accurate diagnostic pointing at the unresolvable provider rather
+    // than misleadingly claiming the model is undefined.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "realprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    // `definedmodel` is a real model entry, but its provider `ghostprovider` is not configured.
+    let mut models = HashMap::new();
+    models.insert("definedmodel".to_string(), make_model("ghostprovider", 10));
+
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypool".to_string(),
+        make_pool(vec![make_member("definedmodel")]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).unwrap_err_or_default(
+        "a model with an unresolvable provider must fail validation".to_string(),
+    );
+
+    // The model loop must still report the root cause on the model itself.
+    assert!(
+        errs.iter().any(|e| e.contains("definedmodel")
+            && e.contains("references unknown provider")
+            && e.contains("ghostprovider")),
+        "expected the model-level unknown-provider error; got: {errs:?}"
+    );
+
+    // The pool-member check must NOT call a DEFINED model "unknown".
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("references unknown model 'definedmodel'")),
+        "a defined model must not be reported as an unknown model; got: {errs:?}"
+    );
+
+    // It must instead emit the accurate provider-unresolvable diagnostic for the pool member.
+    assert!(
+        errs.iter().any(|e| e.contains("mypool")
+            && e.contains("definedmodel")
+            && e.contains("provider is unresolvable")),
+        "expected a pool-member 'provider is unresolvable' diagnostic; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_pool_member_truly_unknown_model_still_reports_unknown_model() {
+    // Guard the other side of the distinction: a member naming a model that is NOT defined at
+    // all must still get the "references unknown model" diagnostic (not the new
+    // provider-unresolvable one).
+    let mut providers = HashMap::new();
+    providers.insert(
+        "realprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+
+    let models = HashMap::new();
+
+    let mut pools = HashMap::new();
+    pools.insert(
+        "mypool".to_string(),
+        make_pool(vec![make_member("nosuchmodel")]),
+    );
+
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg)
+        .unwrap_err_or_default("an undefined member model must fail validation".to_string());
+
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("references unknown model") && e.contains("nosuchmodel")),
+        "a genuinely undefined model must still be reported as unknown; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("provider is unresolvable")),
+        "an undefined model must not get the provider-unresolvable message; got: {errs:?}"
+    );
+}
+
+/// Build a single-pool config whose pool's gate hook names the given `kind: hook` plugin (empty =
+/// no plugin ref). The pool has one member targeting a valid model+provider, so the ONLY thing under
+/// test is the hook plugin-reference validation rule.
+fn plugin_pool_cfg(plugin: &str) -> RootCfg {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("m1".to_string(), make_model("prov", 4));
+    let mut pool = make_pool(vec![make_member("m1")]);
+    pool.gates = vec!["h".to_string()];
+    let mut pools = HashMap::new();
+    pools.insert("p1".to_string(), pool);
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.hooks.insert("h".to_string(), gate_hook(plugin, 150));
+    cfg
+}
+
+/// A gate `HookCfg` backed by the given `kind: hook` plugin ref (test builder).
+fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
+    config::HookCfg {
+        kind: config::HookKind::Gate,
+        plugin: plugin.to_string(),
+        timeout_ms,
+        on_error: "weighted".to_string(),
+        prompt: config::PromptAccess::No,
+        user: config::UserAccess::No,
+        priority: 0,
+        settings: serde_json::Map::new(),
+        on_empty: None,
+        global: false,
+        default: false,
+        signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
+    }
+}
+
+/// A minimal valid RootCfg with an empty hooks registry (for on_error chain tests).
+fn hooks_test_cfg() -> RootCfg {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("m1".to_string(), make_model("prov", 4));
+    let pools = {
+        let mut p = HashMap::new();
+        p.insert("p1".to_string(), make_pool(vec![make_member("m1")]));
+        p
+    };
+    make_root_cfg(providers, models, pools)
+}
+
+/// 1.5.3: a pool referencing an UNDEFINED hook name (`pool.gates`) AND an undefined all-pools
+/// reference (`pools.hooks:` → runtime `global_hooks`) are both boot/validate errors that name the
+/// missing hook. A hook is DEFINED once under the top-level `hooks:` map and referenced by bare name.
+#[test]
+fn test_pool_and_all_pools_undefined_hook_ref_rejected() {
+    let mut cfg = hooks_test_cfg();
+    // A per-pool bare-name reference to a hook that is not defined.
+    cfg.pools
+        .get_mut("p1")
+        .unwrap()
+        .gates
+        .push("no-such-hook".to_string());
+    // An all-pools attach reference (runtime global_hooks) to another undefined hook.
+    cfg.global_hooks.push("also-missing".to_string());
+    let errs = validate(&cfg).expect_err("undefined hook references must fail validate");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("no-such-hook") && joined.contains("unknown hook"),
+        "the pool reference to an undefined hook must be named: {joined}"
+    );
+    assert!(
+        joined.contains("also-missing"),
+        "the all-pools reference to an undefined hook must be named: {joined}"
+    );
+}
+
+/// `on_error` naming an unknown fallback is a boot error (chains resolve against the registry).
+#[test]
+fn test_hook_on_error_unknown_name_rejected() {
+    let mut cfg = hooks_test_cfg();
+    let mut h = gate_hook("test-hook", 150);
+    h.on_error = "nonexistent".to_string();
+    cfg.hooks.insert("a".to_string(), h);
+    let errs = validate(&cfg).expect_err("an unknown on_error name must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("unknown fallback 'nonexistent'")),
+        "{errs:?}"
+    );
+}
+
+/// `on_error` naming a TAP is a boot error (a fallback must decide; a tap only observes).
+#[test]
+fn test_hook_on_error_tap_fallback_rejected() {
+    let mut cfg = hooks_test_cfg();
+    let mut gate = gate_hook("test-hook", 150);
+    gate.on_error = "watcher".to_string();
+    let mut tap = gate_hook("test-hook", 150);
+    tap.kind = config::HookKind::Tap;
+    cfg.hooks.insert("a".to_string(), gate);
+    cfg.hooks.insert("watcher".to_string(), tap);
+    let errs = validate(&cfg).expect_err("a tap fallback must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("fallback 'watcher' is a tap")),
+        "{errs:?}"
+    );
+}
+
+/// An on_error CYCLE (including a self-reference) is a boot error — every chain must terminate.
+#[test]
+fn test_hook_on_error_cycle_rejected() {
+    // a -> b -> a
+    let mut cfg = hooks_test_cfg();
+    let mut a = gate_hook("test-hook", 150);
+    a.on_error = "b".to_string();
+    let mut b = gate_hook("test-hook", 150);
+    b.on_error = "a".to_string();
+    cfg.hooks.insert("a".to_string(), a);
+    cfg.hooks.insert("b".to_string(), b);
+    let errs = validate(&cfg).expect_err("an on_error cycle must be rejected");
+    assert!(
+        errs.iter().any(|e| e.contains("does not terminate")),
+        "{errs:?}"
+    );
+
+    // self-reference
+    let mut cfg = hooks_test_cfg();
+    let mut selfy = gate_hook("test-hook", 150);
+    selfy.on_error = "s".to_string();
+    cfg.hooks.insert("s".to_string(), selfy);
+    let errs = validate(&cfg).expect_err("a self-referencing on_error must be rejected");
+    assert!(
+        errs.iter().any(|e| e.contains("does not terminate")),
+        "{errs:?}"
+    );
+}
+
+/// A terminating gate chain (a -> b -> weighted) and a strategy fallback are both accepted.
+#[test]
+fn test_hook_on_error_terminating_chain_ok() {
+    let mut cfg = hooks_test_cfg();
+    let mut a = gate_hook("test-hook", 150);
+    a.on_error = "b".to_string();
+    let b = gate_hook("test-hook", 150); // on_error: weighted
+    cfg.hooks.insert("a".to_string(), a);
+    cfg.hooks.insert("b".to_string(), b);
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("on_error")),
+            "a terminating chain must not trip the on_error rule; got: {errs:?}"
+        );
+    }
+
+    // A ranking-strategy fallback terminates the chain when the plugin is compiled in; when it
+    // is compiled out, naming one is a boot error (compliance-by-compilation).
+    let mut cfg = hooks_test_cfg();
+    let mut c = gate_hook("test-hook", 150);
+    c.on_error = "cheapest".to_string();
+    cfg.hooks.insert("c".to_string(), c);
+    let result = validate(&cfg);
+    #[cfg(feature = "hooks-ranking")]
+    if let Err(errs) = result {
+        assert!(
+            !errs.iter().any(|e| e.contains("on_error")),
+            "a strategy fallback must be accepted when compiled in; got: {errs:?}"
+        );
+    }
+    #[cfg(not(feature = "hooks-ranking"))]
+    {
+        let errs = result.expect_err("a strategy fallback without the plugin must be rejected");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("WITHOUT the `hooks-ranking` feature")),
+            "{errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_hook_reserved_name_rejected() {
+    // A hook cannot reuse a built-in's name (ranking strategy or auth module) — registry name
+    // uniqueness. Each reserved name, defined as a valid gate hook, must be rejected by name.
+    for reserved in [
+        "weighted",
+        "cheapest",
+        "fastest",
+        "least_busy",
+        "usage",
+        "tokens",
+        "admin-tokens",
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "prov".to_string(),
+            make_provider("anthropic", "https://api.example.com", "API_KEY"),
+        );
+        let mut models = HashMap::new();
+        models.insert("m1".to_string(), make_model("prov", 4));
+        let pools = {
+            let mut p = HashMap::new();
+            p.insert("p1".to_string(), make_pool(vec![make_member("m1")]));
+            p
+        };
+        let mut cfg = make_root_cfg(providers, models, pools);
+        cfg.hooks
+            .insert(reserved.to_string(), gate_hook("test-hook", 150));
+        let errs = validate(&cfg).expect_err("a reserved hook name must be rejected");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(&format!("hook '{reserved}'")) && e.contains("reserved")),
+            "reserved hook name '{reserved}' must be rejected by name; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_hook_at_most_one_default() {
+    // Two hooks claiming `default: true` is a boot error naming both; one (or zero) is fine.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("m1".to_string(), make_model("prov", 4));
+    let pools = {
+        let mut p = HashMap::new();
+        p.insert("p1".to_string(), make_pool(vec![make_member("m1")]));
+        p
+    };
+    let mut two = gate_hook("test-hook", 150);
+    two.default = true;
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.hooks.insert("rank_a".to_string(), two.clone());
+    cfg.hooks.insert("rank_b".to_string(), two);
+    let errs = validate(&cfg).expect_err("two defaults must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("default: true") && e.contains("rank_a") && e.contains("rank_b")),
+        "the error must name both offending defaults; got: {errs:?}"
+    );
+
+    // Exactly one default is accepted (no default-rule error).
+    cfg.hooks.remove("rank_b");
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("more than one hook sets")),
+            "a single default must not trip the at-most-one rule; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_hook_default_on_tap_rejected() {
+    // `default: true` on a tap is meaningless (a tap never orders) → boot error.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("m1".to_string(), make_model("prov", 4));
+    let pools = {
+        let mut p = HashMap::new();
+        p.insert("p1".to_string(), make_pool(vec![make_member("m1")]));
+        p
+    };
+    let mut tap = gate_hook("test-hook", 150);
+    tap.kind = config::HookKind::Tap;
+    tap.default = true;
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.hooks.insert("watcher".to_string(), tap);
+    let errs = validate(&cfg).expect_err("default tap must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("watcher") && e.contains("default") && e.contains("tap")),
+        "error must name the default tap; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_hook_nonreserved_name_ok() {
+    // A normal hook name is NOT flagged by the reserved-name rule.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    models.insert("m1".to_string(), make_model("prov", 4));
+    let pools = {
+        let mut p = HashMap::new();
+        p.insert("p1".to_string(), make_pool(vec![make_member("m1")]));
+        p
+    };
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.hooks
+        .insert("headroom".to_string(), gate_hook("test-hook", 150));
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("reserved")),
+            "a non-reserved hook name must not trip the reserved-name rule; got: {errs:?}"
+        );
+    }
+}
+
+/// A hook naming a NON-EMPTY plugin passes the structural hook rule (the plugin's real existence +
+/// `kind: hook` is resolved against the registry at the plugin pre-flight, not here). The retired
+/// webhook/socket SSRF-URL validation is gone — a hook's egress (if any) now lives inside its plugin.
+#[test]
+fn test_hook_with_plugin_ref_passes_structural_rule() {
+    let cfg = plugin_pool_cfg("my-hook-plugin");
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs
+                .iter()
+                .any(|e| e.contains("hook 'h'") && e.contains("names no plugin")),
+            "a hook naming a plugin must pass the structural hook rule; got: {errs:?}"
+        );
+    }
+}
+
+/// A hook with an EMPTY `plugin:` reference is a startup error (it names no `kind: hook` plugin).
+#[test]
+fn test_hook_requires_plugin_ref() {
+    let cfg = plugin_pool_cfg("   ");
+    let errs = validate(&cfg)
+        .unwrap_err_or_default("a hook with no plugin ref must fail validation".to_string());
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("hook 'h'") && e.contains("names no plugin")),
+        "an empty plugin ref must be reported; got: {errs:?}"
+    );
+}
+
+// Small ergonomic helper: like `expect_err` but with a custom message and returning the Vec.
+trait UnwrapErrOrDefault {
+    fn unwrap_err_or_default(self, msg: String) -> Vec<String>;
+}
+impl UnwrapErrOrDefault for Result<(), Vec<String>> {
+    fn unwrap_err_or_default(self, msg: String) -> Vec<String> {
+        self.err().unwrap_or_else(|| panic!("{msg}"))
+    }
+}
+
+// ---- metadata-denylist model: local upstreams allowed by default; metadata blocked ----
+
+/// Build a provider whose per-provider `allow_metadata_hosts` lists the given entries.
+fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::ProviderCfg {
+    let mut p = make_provider("openai", base_url, "API_KEY");
+    p.allow_metadata_hosts = hosts.iter().map(|s| s.to_string()).collect();
+    p
+}
+
+#[test]
+fn test_local_upstreams_allowed_by_default_no_flag() {
+    // The core use case: an operator fronts a local Ollama / vLLM / LM Studio. Under the
+    // metadata-denylist model this validates with NO flag — plain http:// is allowed because the
+    // host is private/loopback, and the SSRF guard allows everything that is not metadata.
+    for base in [
+        "http://localhost:11434",
+        "http://127.0.0.1",
+        "http://127.0.0.1:11434",
+        "http://10.0.0.5:8000",     // RFC-1918
+        "http://192.168.1.50:1234", // RFC-1918 (LM Studio)
+        "http://172.16.3.4:8000",   // RFC-1918
+        "http://100.64.0.5:8000",   // CGNAT (Tailscale)
+        "http://[::1]:11434",       // IPv6 loopback
+        "https://localhost",        // https local also fine
+        "https://localhost:11434",
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "local".to_string(),
+            make_provider("openai", base, "API_KEY"),
+        );
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "local base_url '{base}' should validate with no flag, got: {:?}",
+            validate(&cfg)
+        );
+    }
+}
+
+#[test]
+fn test_scheme_rule_public_http_rejected_https_allowed() {
+    // PUBLIC http:// is rejected (cleartext would leak the API key on the wire); public https://
+    // is allowed; local http:// is allowed (no off-box wiretap, local models are plaintext).
+    // public http → rejected with the https-for-public-host diagnostic.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "pub".to_string(),
+        make_provider("openai", "http://api.example.com", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("public http base_url must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("must use https for a public host")),
+        "expected the public-host https diagnostic; got: {errs:?}"
+    );
+
+    // public https → allowed; local http → allowed.
+    for ok in ["https://api.example.com", "http://10.0.0.5:8000"] {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider("openai", ok, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "'{ok}' must validate (public https / local http); got: {:?}",
+            validate(&cfg)
+        );
+    }
+}
+
+#[test]
+fn test_metadata_blocked_by_default_every_form() {
+    // SECURITY INVARIANT: every metadata form stays blocked by default (no flag). Covers the
+    // canonical literals, the link-local /16 (IMDS, ECS), the non-link-local literals (Alibaba,
+    // Azure), IMDSv6, the metadata hostnames, and the obfuscated encodings.
+    for base in [
+        "http://169.254.169.254/latest/meta-data/", // IMDSv4, plain http
+        "https://169.254.169.254/",                 // IMDSv4, https
+        "https://169.254.170.2/v2/credentials",     // AWS ECS task-credentials
+        "https://100.100.100.200/",                 // Alibaba (CGNAT range)
+        "https://168.63.129.16/",                   // Azure WireServer
+        "http://[fd00:ec2::254]/latest/meta-data/", // EC2 IMDSv6
+        "https://[fd00:ec2::254]/",
+        // Metadata DNS names over https (a DNS name is not classed private/loopback, so an http
+        // scheme rule would preempt the SSRF check; https reaches the metadata denylist directly).
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://metadata.tencentyun.com/",
+        "https://instance-data/latest/meta-data/",
+        "http://[::ffff:169.254.169.254]/", // IMDS via IPv4-mapped IPv6
+        "http://[::169.254.169.254]/",      // IMDS via IPv4-compatible IPv6
+        "http://2852039166/",               // IMDS via decimal-int encoding
+        "https://169%2E254%2E169%2E254/",   // IMDS via percent-encoded dots
+        "https://169.254.169.254./",        // IMDS, trailing dot
+    ] {
+        // Direct guard call (no flag, no extra entries).
+        assert!(
+            ssrf_blocked_host(base, &[], false, &[]).is_some(),
+            "metadata target '{base}' must be blocked by default"
+        );
+        // And full validate() pass.
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider("openai", base, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        let errs =
+            validate(&cfg).expect_err(&format!("metadata base_url '{base}' must fail validation"));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("blocked cloud-metadata host")),
+            "expected a metadata-host error for '{base}'; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
+    // Per-provider `allow_metadata_hosts: ["169.254.169.254"]` unblocks ONLY that host for ONLY
+    // that provider: a DIFFERENT metadata IP stays blocked, and another provider still blocks the
+    // same IP. (https so the scheme rule passes — the override governs the SSRF denylist only.)
+    let allow = vec!["169.254.169.254".to_string()];
+
+    // Direct guard: the listed host is unblocked; a different metadata IP is still blocked.
+    assert!(
+        ssrf_blocked_host("https://169.254.169.254/", &allow, false, &[]).is_none(),
+        "the listed host must be unblocked by the override"
+    );
+    assert!(
+        ssrf_blocked_host("https://100.100.100.200/", &allow, false, &[]).is_some(),
+        "a DIFFERENT metadata IP must stay blocked"
+    );
+    assert!(
+        ssrf_blocked_host("https://169.254.170.2/", &allow, false, &[]).is_some(),
+        "another link-local metadata IP must stay blocked (override is exact, not the /16)"
+    );
+
+    // Full validate(): provider `surgical` allows IMDS; provider `other` (no override) targeting a
+    // different metadata IP must still fail.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "surgical".to_string(),
+        make_provider_allow_hosts("https://169.254.169.254/", &["169.254.169.254"]),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "the provider's own allow_metadata_hosts must let its IMDS base_url validate; got: {:?}",
+        validate(&cfg)
+    );
+
+    // Another provider WITHOUT the override still blocks the same IP (scope is per-provider).
+    let mut providers = HashMap::new();
+    providers.insert(
+        "other".to_string(),
+        make_provider("openai", "https://169.254.169.254/", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    validate(&cfg).expect_err("a provider without the override must still block IMDS");
+}
+
+#[test]
+fn test_global_allow_metadata_hosts_unblocks_all_providers() {
+    // security.allow_metadata_hosts unblocks the listed host for EVERY provider.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "a".to_string(),
+        make_provider("openai", "https://100.100.100.200/", "API_KEY"),
+    );
+    providers.insert(
+        "b".to_string(),
+        make_provider("openai", "https://100.100.100.200/", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
+    assert!(
+        validate(&cfg).is_ok(),
+        "security.allow_metadata_hosts must unblock the host for ALL providers; got: {:?}",
+        validate(&cfg)
+    );
+
+    // A metadata host NOT in the global allow-list is still blocked.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "c".to_string(),
+        make_provider("openai", "https://169.254.169.254/", "API_KEY"),
+    );
+    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    cfg.allow_metadata_hosts = vec!["100.100.100.200".to_string()];
+    validate(&cfg).expect_err("a host not in the global allow-list must stay blocked");
+}
+
+#[test]
+fn test_allow_all_metadata_disables_guard_entirely() {
+    // security.allow_all_metadata: true disables the metadata guard for everything.
+    for base in [
+        "https://169.254.169.254/",
+        "https://metadata.google.internal/",
+        "https://100.100.100.200/",
+        "https://168.63.129.16/",
+        "https://[fd00:ec2::254]/",
+    ] {
+        // Direct guard: allow_all=true ⇒ never blocked.
+        assert!(
+            ssrf_blocked_host(base, &[], true, &[]).is_none(),
+            "allow_all_metadata must unblock '{base}'"
+        );
+        let mut providers = HashMap::new();
+        providers.insert("meta".to_string(), make_provider("openai", base, "API_KEY"));
+        let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        cfg.allow_all_metadata = true;
+        assert!(
+            validate(&cfg).is_ok(),
+            "allow_all_metadata must let '{base}' validate; got: {:?}",
+            validate(&cfg)
+        );
+    }
+}
+
+#[test]
+fn test_allow_override_matches_obfuscated_spellings() {
+    // An allow entry written as the canonical IP also unblocks that IP's obfuscated spellings
+    // (mirroring how a block entry blocks all spellings). Allow `169.254.169.254` and confirm its
+    // decimal-int, IPv4-mapped-IPv6, and trailing-dot forms are all permitted too.
+    let allow = vec!["169.254.169.254".to_string()];
+    for base in [
+        "https://169.254.169.254/",         // canonical
+        "http://2852039166/",               // decimal-int
+        "http://[::ffff:169.254.169.254]/", // IPv4-mapped IPv6
+        "https://169.254.169.254./",        // trailing dot
+    ] {
+        assert!(
+            ssrf_blocked_host(base, &allow, false, &[]).is_none(),
+            "an allow entry must unblock the obfuscated spelling '{base}'"
+        );
+    }
+    // A DIFFERENT metadata IP's obfuscated form is still blocked.
+    assert!(
+        ssrf_blocked_host("https://168.63.129.16/", &allow, false, &[]).is_some(),
+        "a non-allowed metadata IP must stay blocked"
+    );
+}
+
+#[test]
+fn test_blocked_metadata_hosts_extends_denylist() {
+    // security.blocked_metadata_hosts appends to the hardcoded denylist. An RFC-1918 address that
+    // is normally ALLOWED becomes blocked once listed; a DNS hostname likewise; and an obfuscated
+    // spelling of a listed IP is caught too. An UN-listed RFC-1918 host stays allowed.
+    // IP entry blocks the literal AND its mapped-IPv6 form.
+    for base in [
+        "https://10.99.99.99/",
+        "https://[::ffff:10.99.99.99]/", // mapped form of the listed IP
+    ] {
+        assert!(
+            ssrf_blocked_host(base, &[], false, &["10.99.99.99".to_string()]).is_some(),
+            "'{base}' must be blocked once 10.99.99.99 is in blocked_metadata_hosts"
+        );
+    }
+    // A different RFC-1918 host (not listed) stays allowed.
+    assert!(
+        ssrf_blocked_host(
+            "https://10.0.0.1/",
+            &[],
+            false,
+            &["10.99.99.99".to_string()]
+        )
+        .is_none(),
+        "an un-listed private host must stay allowed"
+    );
+    // Hostname entry (case-insensitive).
+    assert!(
+        ssrf_blocked_host(
+            "https://metadata.mycloud.example/",
+            &[],
+            false,
+            &["metadata.mycloud.example".to_string()]
+        )
+        .is_some(),
+        "a listed metadata hostname must be blocked"
+    );
+
+    // Full validate() pass: the provider base_url is RFC-1918 (normally allowed) but listed.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("openai", "https://10.99.99.99/", "API_KEY"),
+    );
+    let cfg = make_root_cfg_with_blocked(providers, vec!["10.99.99.99".to_string()]);
+    let errs = validate(&cfg)
+        .expect_err("a base_url listed in blocked_metadata_hosts must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("10.99.99.99")),
+        "expected a metadata-host error for the listed host; got: {errs:?}"
+    );
+
+    // An allow-override beats even an operator-listed blocked host (allow always wins).
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider_allow_hosts("https://10.99.99.99/", &["10.99.99.99"]),
+    );
+    let cfg = make_root_cfg_with_blocked(providers, vec!["10.99.99.99".to_string()]);
+    assert!(
+        validate(&cfg).is_ok(),
+        "allow_metadata_hosts must override an operator-listed blocked host; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+#[test]
+fn test_public_targets_unaffected() {
+    // A normal public https provider validates and the guard allows it regardless of the flag.
+    for base in [
+        "https://api.openai.com",
+        "https://api.anthropic.com/v1/messages",
+        "https://8.8.8.8/",
+    ] {
+        assert!(ssrf_blocked_host(base, &[], false, &[]).is_none());
+        assert!(ssrf_blocked_host(base, &[], true, &[]).is_none());
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider("openai", base, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "public https '{base}' must validate"
+        );
+    }
+}
+
+#[test]
+fn test_path_override_composition_under_metadata_rules() {
+    // A leading-slash path on a local http base_url validates (composed url re-checked, allowed).
+    let mut ok = make_provider("openai", "http://localhost:11434", "API_KEY");
+    ok.path = Some("/v1/chat/completions".to_string());
+    let mut providers = HashMap::new();
+    providers.insert("local".to_string(), ok);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "local http base_url + leading-slash path should validate, got: {:?}",
+        validate(&cfg)
+    );
+
+    // A path that fuses into the authority to re-home at IMDS is rejected by the leading-slash
+    // rule (and the composed url is a metadata target).
+    let mut evil = make_provider("openai", "https://api.example.com", "API_KEY");
+    evil.path = Some(".169.254.169.254/latest".to_string()); // no leading slash → host fusion
+    let mut providers = HashMap::new();
+    providers.insert("evil".to_string(), evil);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    validate(&cfg).expect_err("authority-fusing path must be rejected");
+
+    // A leading-slash path whose composition still lands on a metadata host (base already
+    // metadata-ish via an allowed-by-scheme local host, path extends to nothing risky) — verify
+    // the composed-url metadata recheck fires when base is a benign public host but allow_metadata
+    // is off and a path cannot smuggle a host (leading slash) — so this should PASS.
+    let mut p = make_provider("openai", "https://api.example.com/api/paas/v4", "API_KEY");
+    p.path = Some("/chat/completions".to_string());
+    let mut providers = HashMap::new();
+    providers.insert("ok".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    assert!(
+        validate(&cfg).is_ok(),
+        "well-formed leading-slash path on a public host must validate"
+    );
+}
+// ---- Cost-model validation (1.5.0): rate_card completeness + groups tree + store + secrets ----
+// The dissolved 1.4.x governance block's checks live in validate_cost_model(&RootCfg) now and run
+// inside the ONE shared validate() that boot and --validate both call.
+
+/// A valid single-provider/model/pool RootCfg for the cost-surface tests (provider `p`, models as
+/// named, pool `pool1` over the first model).
+fn cost_cfg(model_names: &[&str]) -> RootCfg {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    for name in model_names {
+        models.insert(name.to_string(), make_model("p", 10));
+    }
+    let mut pools = HashMap::new();
+    if let Some(first) = model_names.first() {
+        pools.insert("pool1".to_string(), make_pool(vec![make_member(first)]));
+    }
+    make_root_cfg(providers, models, pools)
+}
+
+/// A zeroed rate card over the given CONFIG model names.
+fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
+    entries
+        .iter()
+        .map(|m| (m.to_string(), config::RateEntryCfg::default()))
+        .collect()
+}
+
+/// ALL-OR-NOTHING completeness: `rate_card` present with a configured model missing FAILS, and the
+/// error carries a COPY-PASTEABLE zeroed YAML stub of exactly the missing CONFIG model name. A card
+/// entry naming a model that does not exist is dead config and errors too. The absent-card config
+/// passes (token pricing 0), and a complete card passes.
+#[test]
+fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
+    let mut cfg = cost_cfg(&["claude-opus-4"]);
+    cfg.rate_card = Some(rate_card_of(&["some-other-model"]));
+    let errs =
+        validate(&cfg).expect_err("a configured model without a rate entry must fail validation");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("rate_card is present but 1 configured model has no rate entry"),
+        "must state the completeness rule: {joined}"
+    );
+    assert!(
+        joined.contains(
+            "claude-opus-4: { input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }"
+        ),
+        "must print the paste-ready zeroed stub for exactly the missing model: {joined}"
+    );
+    // The card entry naming a NON-EXISTENT model is dead config (almost always a typo).
+    assert!(
+        joined.contains("rate_card names model 'some-other-model'")
+            && joined.contains("not defined under models:"),
+        "a card entry for an unknown model must error: {joined}"
+    );
+
+    // Complete card passes.
+    let mut cfg_ok = cost_cfg(&["claude-opus-4"]);
+    cfg_ok.rate_card = Some(rate_card_of(&["claude-opus-4"]));
+    assert!(
+        validate(&cfg_ok).is_ok(),
+        "a complete rate card passes; got: {:?}",
+        validate(&cfg_ok)
+    );
+
+    // Absent card passes regardless (token pricing is 0 for every model - the OFF arm).
+    let cfg_absent = cost_cfg(&["claude-opus-4"]);
+    assert!(validate(&cfg_absent).is_ok());
+}
+
+/// EVERY missing model is stubbed (sorted), not just the first - the operator pastes once.
+#[test]
+fn test_validate_rate_card_stubs_every_missing_model() {
+    let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
+    // rate_card {} with two configured models: both missing.
+    cfg.rate_card = Some(rate_card_of(&[]));
+    let errs = validate(&cfg).expect_err("two unpriced models must fail validation");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("2 configured models have no rate entry"),
+        "the count must be plural and exact: {joined}"
+    );
+    for m in ["alpha:", "long-model-name:"] {
+        assert!(
+            joined.contains(m),
+            "the stub must name missing model '{m}': {joined}"
+        );
+    }
+}
+
+/// The card is keyed by CONFIG model name: two providers serving one upstream are two
+/// `models:` entries with two card entries, and `upstream_model` does NOT change the rate key.
+/// (The 1.4.x behavior priced the resolved upstream name; that resolution is identity now.)
+#[test]
+fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
+    let mut cfg = cost_cfg(&["smart"]);
+    cfg.models.get_mut("smart").unwrap().upstream_model = Some("gpt-5".to_string());
+
+    // Pricing the CONFIG name passes.
+    cfg.rate_card = Some(rate_card_of(&["smart"]));
+    assert!(
+        validate(&cfg).is_ok(),
+        "the card is keyed by config model name; got: {:?}",
+        validate(&cfg)
+    );
+
+    // Pricing the UPSTREAM name fails both ways: `smart` is unpriced and `gpt-5` is unknown.
+    cfg.rate_card = Some(rate_card_of(&["gpt-5"]));
+    let errs = validate(&cfg).expect_err("pricing the upstream name must fail");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("smart:"),
+        "stub names the config model: {joined}"
+    );
+    assert!(
+        joined.contains("rate_card names model 'gpt-5'"),
+        "the upstream-keyed entry is flagged unknown: {joined}"
+    );
+}
+
+/// Malformed rates (NaN / negative / infinite) are rejected naming the exact config path + tier.
+#[test]
+fn test_validate_rate_card_rejects_nan_and_negative_rates() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: f64::NAN,
+            output_utok: -1.0,
+            cache_read_utok: f64::INFINITY,
+            cache_write_utok: 0.0,
+        },
+    )]));
+    let errs = validate(&cfg).expect_err("NaN/negative/infinite rates must fail");
+    let joined = errs.join("\n");
+    assert!(joined.contains("rate_card['m'].input_utok"), "{joined}");
+    assert!(joined.contains("rate_card['m'].output_utok"), "{joined}");
+    assert!(
+        joined.contains("rate_card['m'].cache_read_utok"),
+        "{joined}"
+    );
+    assert!(
+        !joined.contains("rate_card['m'].cache_write_utok"),
+        "a well-formed tier (0) must not error: {joined}"
+    );
+}
+
+/// A negative `per_request_fee` would CREDIT every request - rejected; 0 (default) and positive
+/// values pass.
+#[test]
+fn test_validate_rejects_negative_per_request_fee() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.per_request_fee = -1;
+    let errs = validate(&cfg).expect_err("a negative per_request_fee must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("per_request_fee must be >= 0") && e.contains("-1")),
+        "expected the negative-fee error naming the value; got: {errs:?}"
+    );
+    for ok in [0, 1, 250] {
+        let mut cfg = cost_cfg(&["m"]);
+        cfg.per_request_fee = ok;
+        assert!(validate(&cfg).is_ok(), "per_request_fee {ok} must validate");
+    }
+}
+
+/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module and
+/// an ABSENT store block (ephemeral RAM store) both pass.
+#[test]
+fn test_validate_rejects_empty_store_module() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.store = Some(config::StoreCfg {
+        module: "   ".to_string(),
+        settings: serde_json::Map::new(),
+    });
+    let errs = validate(&cfg).expect_err("an empty store.module must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("store.module must be non-empty")),
+        "expected the empty-store-module error; got: {errs:?}"
+    );
+
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.store = Some(config::StoreCfg::default()); // module: memory
+    assert!(validate(&cfg).is_ok(), "store.module: memory must validate");
+
+    let cfg = cost_cfg(&["m"]); // store: None (block absent)
+    assert!(
+        validate(&cfg).is_ok(),
+        "an absent store block must validate"
+    );
+}
+
+// ---- groups: the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----
+
+/// Build a GroupCfg with the given parent and limits.
+fn group(parent: Option<&str>, limits: Vec<crate::config::groups::LimitCfg>) -> config::GroupCfg {
+    config::GroupCfg {
+        parent: parent.map(String::from),
+        enabled: true,
+        limits,
+        ..Default::default()
+    }
+}
+
+fn limit_requests_per_minute(amount: u64) -> crate::config::groups::LimitCfg {
+    crate::config::groups::LimitCfg {
+        metric: crate::config::groups::LimitMetric::Requests,
+        amount,
+        per: Some(crate::config::groups::LimitWindow::Minute),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+    }
+}
+
+/// groups faults are named with fixes: a missing parent gets a PASTE-READY stub; a cycle names
+/// the exact path; a zero-amount limit is rejected (it rejects every request); a valid nested
+/// hierarchy passes, at ANY depth (no arbitrary depth ceiling - the cycle check is what bounds
+/// the walk). (Heir of the budget_groups validation family.)
+#[test]
+fn test_validate_groups_faults_are_named_with_fixes() {
+    // Missing parent -> paste-ready stub of the missing group.
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.groups.insert(
+        "bob".to_string(),
+        group(Some("growth"), vec![limit_requests_per_minute(500)]),
+    );
+    let errs = validate(&cfg).expect_err("missing parent must fail");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("groups.bob names parent 'growth', which does not exist"),
+        "missing parent is named: {joined}"
+    );
+    assert!(
+        joined.contains("Paste this under groups")
+            && joined.contains("growth:")
+            && joined.contains("- { requests: 0, per: minute }"),
+        "missing parent gets a paste-ready stub: {joined}"
+    );
+
+    // Cycle -> detected and the diagnostic names the path.
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.groups.insert("a".to_string(), group(Some("b"), vec![]));
+    cfg.groups.insert("b".to_string(), group(Some("a"), vec![]));
+    let errs = validate(&cfg).expect_err("a groups cycle must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("CYCLIC") && e.contains("a -> b")),
+        "the cycle diagnostic must name the path: {errs:?}"
+    );
+
+    // Deep chains are LEGAL: hierarchy depth is the operator's structure, not our policy (only a
+    // cycle is a fault). A 10-deep acyclic chain validates clean.
+    let mut cfg = cost_cfg(&["m"]);
+    for i in 0..10 {
+        let parent = if i == 9 {
+            None
+        } else {
+            Some(format!("g{}", i + 1))
+        };
+        cfg.groups.insert(
+            format!("g{i}"),
+            config::GroupCfg {
+                parent,
+                enabled: true,
+                limits: vec![],
+                ..Default::default()
+            },
+        );
+    }
+    validate(&cfg).expect("an acyclic chain of any depth must validate");
+
+    // A `pool:` qualifier must name a real pool - a dangling one is an unenforced budget and
+    // fails loud, naming the group, the field, and the bogus pool. Both the group's own limits
+    // and its child_default template are covered; a valid pool passes.
+    let mut cfg = cost_cfg(&["m"]);
+    let mut bad = limit_requests_per_minute(5);
+    bad.scope = Some(busbar_api::ScopeRef::pool("nope"));
+    cfg.groups
+        .insert("team".to_string(), group(None, vec![bad]));
+    let errs = validate(&cfg).expect_err("a dangling pool qualifier must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("groups.team.limits") && e.contains("`pool: nope`")),
+        "the dangling pool is named: {errs:?}"
+    );
+    let mut cfg = cost_cfg(&["m"]);
+    let mut tmpl = limit_requests_per_minute(5);
+    tmpl.scope = Some(busbar_api::ScopeRef::pool("nope"));
+    let mut g = group(None, vec![limit_requests_per_minute(5)]);
+    g.child_default = Some(config::groups::ChildDefault { limits: vec![tmpl] });
+    cfg.groups.insert("team".to_string(), g);
+    let errs = validate(&cfg).expect_err("a dangling pool in child_default must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("groups.team.child_default.limits") && e.contains("`pool: nope`")),
+        "the dangling child_default pool is named: {errs:?}"
+    );
+    let mut cfg = cost_cfg(&["m"]);
+    let mut ok = limit_requests_per_minute(5);
+    ok.scope = Some(busbar_api::ScopeRef::pool("pool1"));
+    cfg.groups.insert("team".to_string(), group(None, vec![ok]));
+    validate(&cfg).expect("a pool qualifier naming a real pool must pass");
+
+    // Zero-amount limit -> rejects every request through the group; must fail loud, and the
+    // message must name the metric and teach the `enabled: false` freeze alternative.
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.groups.insert(
+        "team".to_string(),
+        group(None, vec![limit_requests_per_minute(0)]),
+    );
+    let errs = validate(&cfg).expect_err("a zero-amount limit must fail");
+    assert!(
+        errs.iter().any(|e| e.contains("groups.team")
+            && e.contains("`requests` limit of 0")
+            && e.contains("enabled:")),
+        "expected the zero-amount limit error with the freeze hint; got: {errs:?}"
+    );
+
+    // A valid nested hierarchy passes.
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.groups.insert(
+        "acme".to_string(),
+        group(None, vec![limit_requests_per_minute(10_000)]),
+    );
+    cfg.groups.insert(
+        "growth".to_string(),
+        group(Some("acme"), vec![limit_requests_per_minute(2_000)]),
+    );
+    cfg.groups.insert(
+        "bob".to_string(),
+        group(Some("growth"), vec![limit_requests_per_minute(500)]),
+    );
+    assert!(
+        validate(&cfg).is_ok(),
+        "a valid nested groups tree must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+/// CLEAN BREAK: the 1.4.x pool-member keys are GONE - `cost_per_mtok:` (rate_card is the
+/// only cost source) and `target:` (renamed `model:`) both fail AT PARSE via deny_unknown_fields.
+#[test]
+fn test_removed_member_keys_rejected_at_parse() {
+    let legacy_cost =
+        "members:\n  - model: m\n    cost_per_mtok: { input_utok: 1.0, output_utok: 2.0 }\n";
+    let err = serde_yaml::from_str::<config::PoolCfg>(legacy_cost)
+        .expect_err("the removed cost_per_mtok member key must fail to parse");
+    assert!(
+        err.to_string().contains("unknown field"),
+        "expected an unknown-field error for cost_per_mtok; got: {err}"
+    );
+
+    let legacy_target = "members:\n  - target: m\n";
+    let err = serde_yaml::from_str::<config::PoolCfg>(legacy_target)
+        .expect_err("the retired target: member key must fail to parse");
+    assert!(
+        err.to_string().contains("unknown field"),
+        "expected an unknown-field error for target; got: {err}"
+    );
+
+    // The 1.5.0 spelling parses.
+    let ok = serde_yaml::from_str::<config::PoolCfg>("members:\n  - model: m\n").unwrap();
+    assert_eq!(ok.members[0].model, "m");
+}
+
+// ---- role_bindings: nested by module; module active; scopes parse; groups exist ----
+
+/// One binding under `module` for `role`, in an AuthCfg whose data-plane chain is `chain`.
+fn auth_with_binding(
+    chain: &[&str],
+    module: &str,
+    role: &str,
+    binding: config::RoleBindingCfg,
+) -> config::AuthCfg {
+    let mut auth = make_auth_chain(chain, crate::auth::UpstreamCreds::Own);
+    auth.role_bindings.insert(
+        module.to_string(),
+        std::collections::BTreeMap::from([(role.to_string(), binding)]),
+    );
+    auth
+}
+
+/// A binding under a module that appears in NO chain is dead config (grants nothing) - fail loud
+/// with the paste-ready chain stub; the same binding under an active module passes.
+#[test]
+fn test_validate_role_binding_module_must_be_in_a_chain() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(auth_with_binding(
+        &["keys"],
+        "oidc", // not in chain or admin_auth
+        "platform",
+        config::RoleBindingCfg::default(),
+    ));
+    let errs = validate(&cfg).expect_err("a binding under an inactive module must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings names module 'oidc'")
+                && e.contains("neither auth.chain nor auth.admin_auth")
+                && e.contains("chain:")),
+        "expected the inactive-module error with the chain paste stub; got: {errs:?}"
+    );
+
+    // The same binding under the ACTIVE `keys` module carries no such error.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(auth_with_binding(
+        &["keys"],
+        "keys",
+        "platform",
+        config::RoleBindingCfg::default(),
+    ));
+    assert!(
+        validate(&cfg).is_ok(),
+        "a binding under an active chain module must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+/// A binding's `group:` must exist in the top-level `groups:` tree - fail loud with the
+/// paste-ready group stub; binding to an existing group passes.
+#[test]
+fn test_validate_role_binding_group_must_exist() {
+    let binding = config::RoleBindingCfg {
+        allowed_pools: None,
+        group: Some("squad".to_string()),
+        admin_scope: None,
+    };
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(auth_with_binding(&["keys"], "keys", "dev", binding.clone()));
+    let errs = validate(&cfg).expect_err("a binding to a nonexistent group must fail");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("role_bindings.keys.dev names group 'squad'")
+            && joined.contains("Paste this under groups")
+            && joined.contains("squad:"),
+        "expected the missing-group error with the paste-ready stub; got: {joined}"
+    );
+
+    // With the group defined, the binding passes.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(auth_with_binding(&["keys"], "keys", "dev", binding));
+    cfg.groups.insert(
+        "squad".to_string(),
+        group(None, vec![limit_requests_per_minute(100)]),
+    );
+    assert!(
+        validate(&cfg).is_ok(),
+        "a binding to an existing group must validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+/// A role name shadowing the reserved operator principal id (`admin`) is rejected.
+#[test]
+fn test_validate_role_binding_reserved_role_name_rejected() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(auth_with_binding(
+        &["keys"],
+        "keys",
+        "admin",
+        config::RoleBindingCfg::default(),
+    ));
+    let errs = validate(&cfg).expect_err("a role named 'admin' must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("role_bindings.keys")
+            && e.contains("'admin'")
+            && e.contains("reserved")),
+        "expected the reserved-role-name error; got: {errs:?}"
+    );
+}
+
+// ---- secret-module resolvability: every SecretRef's MODULE must be known ----
+
+/// Unknown secret modules on the provider api_key and the TLS blocks are fail-closed errors
+/// naming the exact config path with a paste-ready `{ env: ... }` stub; env/file refs missing
+/// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
+#[test]
+fn test_validate_secret_module_resolvability() {
+    // A NON-built-in module (a `kind: secret` PLUGIN reference such
+    // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
+    // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
+    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
+    // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
+    // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
+    let (mut providers, models, pools) = valid_maps();
+    providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
+        module: "vault".to_string(),
+        settings: serde_json::Map::new(),
+    };
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a plugin-backed api_key module must not be rejected by pre-registry validate; got: {:?}",
+        validate(&cfg)
+    );
+
+    // The STRUCTURAL env/file shape checks still fire: a plugin-backed `tls.cert` passes `validate`
+    // (existence deferred), but a `file` ref missing settings.path and an `env` ref missing
+    // settings.key are structural errors validate STILL catches.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.tls = Some(config::TlsCfg {
+        cert: config::SecretRef {
+            module: "vault".to_string(),
+            settings: serde_json::Map::new(),
+        },
+        key: config::SecretRef {
+            module: "file".to_string(),
+            settings: serde_json::Map::new(), // missing settings.path
+        },
+        client_ca: Some(config::SecretRef {
+            module: "env".to_string(),
+            settings: serde_json::Map::new(), // missing settings.key
+        }),
+    });
+    let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
+    // The plugin-backed `tls.cert` is NOT rejected by validate (its existence is a pre-flight concern).
+    assert!(
+        !errs.iter().any(|e| e.contains("tls.cert")),
+        "a plugin-backed tls.cert must not be rejected by pre-registry validate; got: {errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("tls.key") && e.contains("requires settings.path")),
+        "tls.key file ref without settings.path must error; got: {errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("tls.client_ca") && e.contains("requires settings.key")),
+        "tls.client_ca env ref without settings.key must error; got: {errs:?}"
+    );
+
+    // Well-formed env/file refs pass without resolving the values (CI has no secrets present).
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.tls = Some(config::TlsCfg {
+        cert: config::SecretRef::file("/run/secrets/tls-cert.pem"),
+        key: config::SecretRef::file("/run/secrets/tls-key.pem"),
+        client_ca: Some(config::SecretRef::env("BUSBAR_CLIENT_CA_PEM")),
+    });
+    assert!(
+        validate(&cfg).is_ok(),
+        "well-formed tls secret refs must validate; got: {:?}",
+        validate(&cfg)
+    );
+
+    // auth.signing_key with a plugin-backed module is likewise NOT rejected by pre-registry validate.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.signing_key = Some(config::SecretRef {
+        module: "vault".to_string(),
+        settings: serde_json::Map::new(),
+    });
+    cfg.auth = Some(auth);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a plugin-backed signing_key module must not be rejected by pre-registry validate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+// ---- --validate == boot: validation runs on the RESOLVED RootCfg ----
+
+/// Resolve a DeployCfg yaml through `config::resolve` (the boot path) with a minimal catalog
+/// containing the `anthropic` provider def.
+fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
+    let deploy: config::DeployCfg =
+        serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
+    let def: config::ProviderDef = serde_yaml::from_str(
+        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
+    )
+    .unwrap();
+    let defs = HashMap::from([("anthropic".to_string(), def)]);
+    config::resolve(&deploy, &defs)
+}
+
+/// `--validate` and boot share ONE pipeline: DeployCfg yaml -> config::resolve -> RootCfg ->
+/// validate(). A fully wired 1.5.0 config (chain, role_bindings, groups, rate_card, store,
+/// advanced) resolves and validates clean end to end.
+#[test]
+fn test_validate_runs_on_resolved_root_cfg_clean_config() {
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+auth:
+  chain:
+    - keys
+  signing_key: { env: BUSBAR_SIGNING_KEY }
+  admin_auth: []
+  role_bindings:
+    keys:
+      platform:
+        allowed_pools: [main]
+        group: eng
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_API_KEY }
+models:
+  claude:
+    provider: anthropic
+pools:
+  main:
+    members:
+      - model: claude
+groups:
+  eng:
+    limits:
+      - { requests: 500, per: minute }
+rate_card:
+  claude: { input_utok: 3.0, output_utok: 15.0 }
+per_request_fee: 1
+store:
+  module: memory
+advanced:
+  rate_sweep_interval: 256
+"#;
+    let cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    assert!(
+        validate(&cfg).is_ok(),
+        "the resolved clean config must validate; got: {:?}",
+        validate(&cfg)
+    );
+    // The resolution really produced the new-surface fields validate() reads.
+    assert_eq!(cfg.per_request_fee, 1);
+    assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
+    assert!(cfg.groups.contains_key("eng"));
+    assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
+    assert_eq!(cfg.limits.rate_sweep_interval, 256);
+}
+
+/// The DOCUMENTED "secrets are plugins" vault example — a provider
+/// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
+/// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
+/// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
+/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes a
+/// regression where `validate` hard-rejected every plugin-backed secret module.
+#[test]
+fn test_validate_accepts_plugin_backed_secret_module_config() {
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+providers:
+  anthropic:
+    api_key: { module: acme-vault, settings: { path: "secret/data/anthropic#key" } }
+models:
+  claude:
+    provider: anthropic
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#;
+    let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
+    assert_eq!(
+        cfg.providers.get("anthropic").unwrap().api_key.module,
+        "acme-vault",
+        "the plugin-backed secret module survived resolution"
+    );
+    assert!(
+        validate(&cfg).is_ok(),
+        "a plugin-backed api_key module must pass the shared boot/--validate gate; got: {:?}",
+        validate(&cfg)
+    );
+}
+
+/// The faulty twin: every NEW cost/auth-surface fault in one resolved config is collected by the
+/// SAME validate() call boot uses (collect-all, no first-error short-circuit).
+#[test]
+fn test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults() {
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+auth:
+  chain:
+    - keys
+  role_bindings:
+    oidc:
+      platform:
+        group: ghost-group
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_API_KEY }
+models:
+  claude:
+    provider: anthropic
+  haiku:
+    provider: anthropic
+pools:
+  main:
+    members:
+      - model: claude
+groups:
+  frozen:
+    limits:
+      - { requests: 0, per: minute }
+rate_card:
+  claude: { input_utok: 3.0, output_utok: 15.0 }
+per_request_fee: -5
+store:
+  module: ""
+advanced:
+  rate_sweep_interval: 0
+"#;
+    let cfg =
+        resolve_yaml(yaml).expect("the faulty config still RESOLVES (faults are validate-time)");
+    let errs = validate(&cfg).expect_err("the resolved faulty config must fail validation");
+    let joined = errs.join("\n");
+    // rate_card completeness (haiku unpriced) with the paste stub.
+    assert!(
+        joined.contains("haiku:") && joined.contains("no rate entry"),
+        "{joined}"
+    );
+    // role_bindings module inactive + group missing.
+    assert!(
+        joined.contains("role_bindings names module 'oidc'"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("role_bindings.oidc.platform names group 'ghost-group'"),
+        "{joined}"
+    );
+    // groups zero-amount limit.
+    assert!(joined.contains("groups.frozen"), "{joined}");
+    // per_request_fee, store.module, advanced.rate_sweep_interval.
+    assert!(joined.contains("per_request_fee must be >= 0"), "{joined}");
+    assert!(
+        joined.contains("store.module must be non-empty"),
+        "{joined}"
+    );
+    assert!(joined.contains("advanced.rate_sweep_interval"), "{joined}");
+}
+
+/// `validate_limits`'s many "must be >= 1" checks are each an EXACT boundary: 1 must be accepted,
+/// 0 must be rejected. A mutated `< 1` -> `<= 1`/`== 1` would reject the boundary value itself (1)
+/// as well as 0, or only catch the exact value 1 rather than the whole 0 case — either way silently
+/// diverging from "0 is invalid, 1 is the floor". Table-driven over every field this rule governs.
+#[test]
+fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
+    macro_rules! check_floor_one {
+        ($field:ident, $needle:expr) => {{
+            let mut bad = config::LimitsResolved::default();
+            bad.$field = 0;
+            let mut errs = Vec::new();
+            validate_limits(&bad, &mut errs);
+            assert!(
+                errs.iter().any(|e| e.contains($needle)),
+                "{}=0 must be rejected; got {errs:?}",
+                stringify!($field)
+            );
+
+            let mut good = config::LimitsResolved::default();
+            good.$field = 1;
+            let mut errs = Vec::new();
+            validate_limits(&good, &mut errs);
+            assert!(
+                !errs.iter().any(|e| e.contains($needle)),
+                "{}=1 (the floor itself) must be ACCEPTED; got {errs:?}",
+                stringify!($field)
+            );
+        }};
+    }
+
+    check_floor_one!(tls_handshake_timeout_secs, "tls_handshake_timeout_secs");
+    check_floor_one!(
+        request_body_read_timeout_secs,
+        "request_body_read_timeout_secs"
+    );
+    // 1.5.3: `delivery_timeout_secs` is validated PER named `request-log-webhook` export instance
+    // (see `validate`'s per-instance loop), not off a single process-global `LimitsResolved` field.
+    check_floor_one!(
+        max_inflight_webhook_deliveries,
+        "max_inflight_deliveries must be >= 1"
+    );
+    check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
+    check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
+    check_floor_one!(
+        upstream_error_body_max_bytes,
+        "upstream_error_body_max_bytes"
+    );
+    check_floor_one!(default_max_tokens, "default_max_tokens");
+    check_floor_one!(default_probe_interval_secs, "default_probe_interval_secs");
+    check_floor_one!(default_probe_timeout_secs, "default_probe_timeout_secs");
+    // Found missing by adversarial review: a repo-wide grep confirmed NO test anywhere set these
+    // two fields to 0 — deleting either `< 1` guard in mod.rs left the whole suite green.
+    check_floor_one!(
+        upstream_request_timeout_secs,
+        "upstream_request_timeout_secs must be >= 1"
+    );
+    check_floor_one!(
+        default_policy_timeout_ms,
+        "default_policy_timeout_ms must be >= 1"
+    );
+}
+
+/// `max_inflight_webhook_deliveries`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself, same exact-boundary
+/// shape as `max_inbound_concurrent`'s ceiling test below — found missing by adversarial review (only
+/// the `max_inbound_concurrent` twin had a ceiling test; this field's own `> MAX_SEMAPHORE_PERMITS`
+/// guard, mod.rs:1333, had none).
+#[test]
+fn test_validate_limits_max_inflight_webhook_deliveries_ceiling_is_exact() {
+    let at_cap = config::LimitsResolved {
+        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_cap, &mut errs);
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("max_inflight_deliveries must be <=")),
+        "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
+    );
+
+    let over_cap = config::LimitsResolved {
+        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_cap, &mut errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("max_inflight_deliveries must be <=")),
+        "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
+    );
+}
+
+/// `request_body_max_bytes`'s floor and ceiling are each an EXACT boundary
+/// (`REQUEST_BODY_MAX_BYTES_FLOOR`/`_CEIL`) — found missing entirely by adversarial review.
+#[test]
+fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
+    use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
+
+    let at_floor = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_FLOOR,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_floor, &mut errs);
+    assert!(
+        !errs.iter().any(|e| e.contains("below the")),
+        "exactly the floor must be accepted; got {errs:?}"
+    );
+
+    let below_floor = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_FLOOR - 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&below_floor, &mut errs);
+    assert!(
+        errs.iter().any(|e| e.contains("below the")),
+        "one byte below the floor must be rejected; got {errs:?}"
+    );
+
+    let at_ceil = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_CEIL,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_ceil, &mut errs);
+    assert!(
+        !errs.iter().any(|e| e.contains("exceeds the")),
+        "exactly the ceiling must be accepted; got {errs:?}"
+    );
+
+    let over_ceil = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_CEIL + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_ceil, &mut errs);
+    assert!(
+        errs.iter().any(|e| e.contains("exceeds the")),
+        "one byte over the ceiling must be rejected; got {errs:?}"
+    );
+}
+
+/// `max_inbound_concurrent`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself (the value that panics is
+/// `MAX_SEMAPHORE_PERMITS + 1`, not the ceiling itself) — a mutated `>` -> `>=` would reject the
+/// ceiling value too.
+#[test]
+fn test_validate_limits_max_inbound_concurrent_ceiling_is_exact() {
+    let at_cap = config::LimitsResolved {
+        max_inbound_concurrent: MAX_SEMAPHORE_PERMITS,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_cap, &mut errs);
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("max_inbound_concurrent must be <=")),
+        "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
+    );
+
+    let over_cap = config::LimitsResolved {
+        max_inbound_concurrent: MAX_SEMAPHORE_PERMITS + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_cap, &mut errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("max_inbound_concurrent must be <=")),
+        "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
+    );
+}
+
+/// The pool-hooks-list `Rule (hooks/pool-ref)` requires every hook a pool's `gates:` list names to
+/// be a GATE, not a tap (a tap is fire-and-forget and cannot influence routing). A mutated match
+/// guard (`h.kind != HookKind::Gate` -> `false`) would let a pool reference a tap silently.
+#[test]
+fn test_pool_gate_ref_rejects_a_tap() {
+    let mut cfg = hooks_test_cfg();
+    let mut tap = gate_hook("watcher-plugin", 150);
+    tap.kind = config::HookKind::Tap;
+    cfg.hooks.insert("watcher".to_string(), tap);
+    cfg.pools
+        .get_mut("p1")
+        .expect("hooks_test_cfg seeds pool p1")
+        .gates
+        .push("watcher".to_string());
+    let errs = validate(&cfg).expect_err("a pool referencing a tap in gates: must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("watcher") && e.contains("must be a gate")),
+        "expected a wrong-kind-hook error naming the tap; got: {errs:?}"
+    );
+}
+
+/// The SAME rule must accept a real gate reference (no false-positive on the correct case).
+#[test]
+fn test_pool_gate_ref_accepts_a_real_gate() {
+    let mut cfg = hooks_test_cfg();
+    cfg.hooks
+        .insert("real-gate".to_string(), gate_hook("gate-plugin", 150));
+    cfg.pools
+        .get_mut("p1")
+        .expect("hooks_test_cfg seeds pool p1")
+        .gates
+        .push("real-gate".to_string());
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("must be a gate")),
+            "a real gate reference must not be flagged wrong-kind; got: {errs:?}"
+        );
+    }
+}
+
+/// `reasoning_effort_budgets` must be > 0 in EVERY field independently, not only when ALL FOUR are
+/// zero — a mutated `||` -> `&&` in the zero-check would only fire on the all-zero case.
+#[test]
+fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    // Only `low` is zero; minimal/medium/high are fine. An `&&`-mutated check would miss this.
+    cfg.limits.reasoning_effort_budgets = config::ReasoningEffortBudgets {
+        minimal: 1024,
+        low: 0,
+        medium: 4096,
+        high: 8192,
+    };
+    let errs = validate(&cfg).expect_err("a single zero budget field must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("reasoning_effort_budgets entries must be > 0")),
+        "expected the zero-entry error; got: {errs:?}"
+    );
+}
+
+// (1.5.2 scope collapse removed the `max_admin_scope`/`admin_scope` sibling-incomparability
+// cross-check: a two-rung {read-only, full} chain can never be incomparable, so the former
+// `test_admin_scope_incomparability_check_is_the_lattice_not_inequality` was deleted with it.)
+
+// ─── 1.5.2 token exchange: public_url + browser_login + key_ttl validation ───
+
+/// Parse an `auth:` block + its `identity-providers:` definitions from ONE YAML document (the two
+/// are siblings at the config root in 1.5.3) and resolve them into the runtime `AuthCfg`.
+fn parse_auth(yaml: &str) -> config::AuthCfg {
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        auth: config::AuthDeployCfg,
+        #[serde(default, rename = "identity-providers")]
+        identity_providers: config::IdentityProviders,
+    }
+    let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
+    let mut errors = Vec::new();
+    let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    assert!(
+        errors.is_empty(),
+        "auth yaml must resolve cleanly: {errors:?}"
+    );
+    out
+}
+
+#[test]
+fn test_public_url_requires_https() {
+    // Public host over plaintext http ⇒ error; loopback http ⇒ OK; public https ⇒ OK.
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.public_url = Some("http://api.busbar.example".to_string());
+    let errs = validate(&cfg).expect_err("public http host must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && e.contains("https")),
+        "missing https error: {errs:?}"
+    );
+
+    cfg.public_url = Some("http://127.0.0.1:8080".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("public_url")),
+        "loopback http must be accepted: {res:?}"
+    );
+
+    cfg.public_url = Some("https://api.busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("public_url")),
+        "public https must be accepted: {res:?}"
+    );
+}
+
+#[test]
+fn test_public_url_rejects_path_and_metadata() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.public_url = Some("https://api.busbar.example/x".to_string());
+    let errs = validate(&cfg).expect_err("public_url with a path must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && (e.contains("path") || e.contains("bare origin"))),
+        "missing path error: {errs:?}"
+    );
+
+    cfg.public_url = Some("https://169.254.169.254".to_string());
+    let errs = validate(&cfg).expect_err("public_url at a metadata host must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && e.contains("metadata")),
+        "missing metadata SSRF error: {errs:?}"
+    );
+}
+
+#[test]
+fn test_browser_login_requires_public_url() {
+    // 1.5.3: `browser_login` lives on the `identity-providers:` DEFINITION, not a parallel
+    // `auth.methods:` map.
+    let auth = parse_auth(
+        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\n",
+    );
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg.public_url = None;
+    let errs = validate(&cfg).expect_err("browser_login without public_url must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("browser_login") && e.contains("public_url")),
+        "error must name both browser_login and public_url: {errs:?}"
+    );
+
+    // With public_url set, that particular error disappears.
+    cfg.public_url = Some("https://busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("browser_login")),
+        "browser_login error must clear once public_url is set: {res:?}"
+    );
+}
+
+#[test]
+fn test_role_binding_under_browser_method_active() {
+    // A role_binding under a module that appears ONLY in `auth.methods` (not `chain`) is NOT dead
+    // config: the method resolves an identity, then its role_bindings apply.
+    let auth = parse_auth(
+        "methods:\n  oidc:\n    browser_login:\n      client_secret: { env: X }\nrole_bindings:\n  oidc:\n    member: {}\n",
+    );
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg.public_url = Some("https://busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("inactive module") && !e.contains("grants nothing")),
+        "methods-only module must not be flagged inactive: {res:?}"
+    );
+}
+
+#[test]
+fn test_key_ttl_validates_duration() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    auth.key_ttl = Some("90d".to_string());
+    cfg.auth = Some(auth);
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("key_ttl")),
+        "valid key_ttl must pass: {res:?}"
+    );
+
+    let mut auth = config::AuthCfg::default_none();
+    auth.key_ttl = Some("banana".to_string());
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("garbage key_ttl must fail");
+    assert!(
+        errs.iter().any(|e| e.contains("key_ttl")),
+        "missing key_ttl error: {errs:?}"
+    );
+}
+
+/// THE FAIL-OPEN'S OWN TEST, watched RED before the arm it pins existed (against a contains-only
+/// `validate_provider_protocol_with`, `errors` stayed EMPTY for both providers — every provider
+/// validated against a protocol set that could not match anything, which is the fail-OPEN answer).
+///
+/// The registry's own test asserts `known_protocols()` is non-empty, i.e. that the refusal arm is
+/// unreachable TODAY — which means this arm had never once been seen to fire. Per the standing
+/// rule ("a gate that has never been seen red is not evidence"), this drives the validator against
+/// an EMPTY known-set — the state step 4's protocol extraction makes reachable with a one-line
+/// Cargo.toml edit — and asserts exactly ONE error per provider, naming the BUILD as the cause
+/// rather than scolding each provider for an "unknown" protocol with an empty must-be-one-of tail.
+#[test]
+fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
+    let mut errors = Vec::new();
+    super::validate_provider_protocol_with(&[], "prov-a", "anthropic", &mut errors);
+    super::validate_provider_protocol_with(&[], "prov-b", "no-such-protocol", &mut errors);
+
+    assert_eq!(
+        errors.len(),
+        2,
+        "an empty protocol set must refuse EVERY provider (one error each), got: {errors:?}"
+    );
+    for (err, prov) in errors.iter().zip(["prov-a", "prov-b"]) {
+        assert!(err.contains(prov), "the refusal names the provider: {err}");
+        assert!(
+            err.contains("NO protocol") && err.contains("compiled in"),
+            "the refusal must name the BUILD as the cause (no protocol compiled in), not call the \
+             protocol unknown against an empty list: {err}"
+        );
+        assert!(
+            !err.contains("must be one of"),
+            "the empty set must NOT render the unknown-protocol arm with an empty tail: {err}"
+        );
+    }
+
+    // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
+    let mut errors = Vec::new();
+    super::validate_provider_protocol_with(
+        &["anthropic", "openai_chat"],
+        "prov-c",
+        "nope",
+        &mut errors,
+    );
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].contains("must be one of: anthropic, openai_chat"),
+        "the populated set names the choices: {}",
+        errors[0]
+    );
+}
+
+/// **D5 — THE FAIL-OPEN, DRIVEN THROUGH THE PRODUCTION SWEEP.**
+///
+/// [`an_empty_protocol_set_refuses_every_provider_naming_the_build`] above pins the protocol ARM.
+/// What it cannot see is its CALLER: with the arm parameterised but the loop not, someone restoring
+/// `if !known.contains(p)` inline in `validate_with_unset`'s provider loop would restore the
+/// fail-OPEN with the arm's own test still green — the same "the test does not drive the production
+/// path" trap D5 exists to catch, one level up. So the whole sweep now takes the known-set, and
+/// this drives THE SWEEP: the real loop, the real `RootCfg`, the real error collection and its
+/// ordering, against an empty set.
+///
+/// The fail-OPEN answer this refuses: with `known` empty and `contains` the only check, `contains`
+/// is false for NOTHING, so both providers below validate, the config that names protocols this
+/// build cannot speak boots, and the failure surfaces as a `die()` deep in lane construction.
+#[test]
+fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov-a".to_string(),
+        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+    );
+    providers.insert(
+        "prov-b".to_string(),
+        make_provider("no-such-protocol", "https://b.example.com", "KEY_B"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[], &cfg, &[], &mut errors);
+
+    // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
+    // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
+    // named provider that IS shipped today (`anthropic`) is refused exactly like the bogus one:
+    // with no codec compiled in, no provider lane can be served, whatever it is called.
+    for prov in ["prov-a", "prov-b"] {
+        let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "an empty protocol set must refuse '{prov}' exactly once, got: {hits:?}"
+        );
+        assert!(
+            hits[0].contains("NO protocol") && hits[0].contains("compiled in"),
+            "the refusal must name the BUILD as the cause: {}",
+            hits[0]
+        );
+    }
+    assert!(
+        !errors.iter().any(|e| e.contains("must be one of")),
+        "the empty set must never render the unknown-protocol arm with an empty tail: {errors:?}"
+    );
+
+    // THE CONTROL. The same sweep over the same config with a populated set takes the OTHER arm:
+    // the provider naming a protocol this build ships passes, the one naming a stranger is refused
+    // with the choices named. Without this half, a sweep that refused everything unconditionally
+    // would also satisfy the assertions above.
+    let mut errors = Vec::new();
+    super::validate_providers_with(&["anthropic", "openai"], &cfg, &[], &mut errors);
+    assert!(
+        !errors.iter().any(|e| e.contains("prov-a")),
+        "a provider naming a compiled-in protocol validates: {errors:?}"
+    );
+    let hits: Vec<&String> = errors.iter().filter(|e| e.contains("prov-b")).collect();
+    assert_eq!(hits.len(), 1, "one refusal for the stranger: {hits:?}");
+    assert!(
+        hits[0].contains("must be one of: anthropic, openai"),
+        "the populated set names the choices: {}",
+        hits[0]
+    );
+}
+
+/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
+///
+/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
+/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
+/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
+/// through the registry's OWN boot path with every protocol edge removed (see
+/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
+/// codec-protocol list, and feeds THAT to the production sweep.
+///
+/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
+/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
+/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
+/// with the last dialect extraction; this is the strongest proof available before it.
+#[test]
+fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
+    let empty_registry =
+        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let known: &'static [&'static str] = empty_registry.codec_protocols();
+    assert!(
+        known.is_empty(),
+        "the premise of this test: a registry with no declarations knows no protocols"
+    );
+
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov-a".to_string(),
+        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+
+    let mut errors = Vec::new();
+    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the registry-derived empty set refuses the provider, once: {errors:?}"
+    );
+    assert!(
+        errors[0].contains("prov-a")
+            && errors[0].contains("NO protocol")
+            && errors[0].contains("compiled in"),
+        "and names the build: {}",
+        errors[0]
+    );
+}
+
+// ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
+//
+// The neutral `pools:` map infers a pool's kind from its members and resolves members by NAME ALONE.
+// `validate_unified_pool_names` is the guard that keeps that name-only resolution unambiguous.
+
+/// A minimal `tools:` registry holding one server id, for the collision tests below.
+fn tools_with(id: &str) -> busbar_mcp::mcp::config::ToolsCfg {
+    let mut td = busbar_mcp::mcp::config::ToolsCfg::default();
+    td.servers.insert(
+        id.to_string(),
+        serde_yaml::from_str("{url: 'https://x.example/mcp', pin: {mechanism: unpinned}}")
+            .expect("a minimal server"),
+    );
+    td
+}
+
+/// A name defined in TWO nouns makes a bare member ambiguous — the router could not tell which plane
+/// `shared` belongs to. Refused so kind inference stays name-only.
+#[test]
+fn a_name_defined_in_two_nouns_is_refused() {
+    let mut models = HashMap::new();
+    models.insert("shared".to_string(), make_model_unbounded("prov"));
+    let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
+    cfg.tool_defs = Box::new(tools_with("shared"));
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(
+        errors.iter().any(|e| e.contains("`shared`")
+            && e.contains("`models:`")
+            && e.contains("`tools:`")
+            && e.contains("at most ONE noun")),
+        "the collision names the two nouns: {errors:?}"
+    );
+}
+
+/// A pool name that collides with a registration on the plane it routes to would alias that
+/// registration's breaker cell. Refused, cross-checked against every noun (the map is not kind-scoped).
+#[test]
+fn a_pool_named_like_a_tools_registration_is_refused() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.tool_defs = Box::new(tools_with("search"));
+    cfg.tool_pools.insert(
+        "search".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["search-eu".into(), "search-us".into()],
+            repeatable: Vec::new(),
+        },
+    );
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("pool name 'search'") && e.contains("`tools:` registration")),
+        "a pool sharing a registration name is refused: {errors:?}"
+    );
+}
+
+/// The clean case: distinct names across every noun and pool, no collision — zero errors.
+#[test]
+fn distinct_names_across_nouns_and_pools_pass() {
+    let mut models = HashMap::new();
+    models.insert("gpt".to_string(), make_model_unbounded("prov"));
+    let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
+    cfg.tool_defs = Box::new(tools_with("fs-server"));
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(errors.is_empty(), "no collisions: {errors:?}");
+}
+
+// ── 1.6.0 auth.policy: validation (duration bounds + default≤max + per-role ceiling) ─────────────
+
+/// Build a RootCfg whose resolved `auth:` carries the given policy block, everything else default.
+fn root_with_auth_policy(policy: config::AuthPolicyCfg) -> RootCfg {
+    let mut auth = config::AuthCfg::default_none();
+    auth.policy = policy;
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg
+}
+
+/// Return the validation errors that mention `auth.policy`, so an assertion is not fooled by other
+/// unrelated errors a bare config may raise.
+fn policy_errors(cfg: &RootCfg) -> Vec<String> {
+    validate(cfg)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.contains("auth.policy"))
+        .collect()
+}
+
+/// A garbage `default_ttl` / `max_ttl` duration fails boot (same fail-closed posture as `key_ttl`).
+#[test]
+fn test_auth_policy_bad_duration_is_rejected() {
+    let policy = config::AuthPolicyCfg {
+        default_ttl: Some("not-a-duration".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.policy.default_ttl") && e.contains("not a valid duration")),
+        "a bad default_ttl must fail validation: {errs:?}"
+    );
+
+    let policy = config::AuthPolicyCfg {
+        max_ttl: Some("90x".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.policy.max_ttl") && e.contains("not a valid duration")),
+        "a bad max_ttl must fail validation: {errs:?}"
+    );
+}
+
+/// `default_ttl` must not exceed `max_ttl` — the fallback a mint uses cannot outrun the ceiling.
+#[test]
+fn test_auth_policy_default_exceeding_max_is_rejected() {
+    let policy = config::AuthPolicyCfg {
+        default_ttl: Some("90d".to_string()),
+        max_ttl: Some("24h".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("default_ttl") && e.contains("exceeds") && e.contains("max_ttl")),
+        "default_ttl > max_ttl must fail validation: {errs:?}"
+    );
+}
+
+/// A per-role ceiling's `max_ttl` must parse, and cannot exceed the block-level `max_ttl`.
+#[test]
+fn test_auth_policy_ceiling_max_ttl_rules() {
+    // Bad duration on the ceiling.
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("wat".to_string()),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.max_ttl")
+                && e.contains("not a valid duration")
+        ),
+        "a bad ceiling max_ttl must fail validation: {errs:?}"
+    );
+
+    // Ceiling exceeding the deployment-wide max.
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("30d".to_string()),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        max_ttl: Some("7d".to_string()),
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.max_ttl") && e.contains("exceeds")
+        ),
+        "a ceiling exceeding the block max must fail validation: {errs:?}"
+    );
+}
+
+/// A well-formed policy block adds NO `auth.policy` validation error.
+#[test]
+fn test_auth_policy_valid_block_passes() {
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("7d".to_string()),
+            allowed_pools: Some(vec!["growth".to_string()]),
+            binding_modes: Some(vec![config::BindingMode::TimeBound]),
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        self_mint: Some(true),
+        binding_modes: Some(vec![config::BindingMode::Both]),
+        default_ttl: Some("24h".to_string()),
+        max_ttl: Some("90d".to_string()),
+        mint_ceilings: ceilings,
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(errs.is_empty(), "a valid policy adds no error: {errs:?}");
+}
+
+/// A CANONICAL empty built-in secret ref (`{ module: env, settings: { key: "" } }` /
+/// `{ module: file, settings: { path: "" } }`) must FAIL `--validate`.
+///
+/// The empty-value rejection historically lived ONLY in the `{ env: "" }` / `{ file: "" }` sugar
+/// deserializer, so the canonical form slipped through: `env_var()` / `file_path()` returned
+/// `Some("")`, `check_secret` only tested `.is_none()`, and the config passed `--validate` as "ok"
+/// then fail-closed at boot (`std::env::var("")` → Err). A clean validate must imply a clean boot,
+/// so the empty canonical form has to be rejected here, mirroring the sugar check.
+#[test]
+fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
+    // The canonical form deserializes fine — the deserializer's non-empty guard is sugar-only, so
+    // this is exactly the shape that used to slip past `--validate`.
+    let empty_env: config::SecretRef =
+        serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
+            .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
+    assert_eq!(
+        empty_env.env_var(),
+        Some(""),
+        "precondition: Some(\"\"), not None"
+    );
+
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = empty_env;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .expect_err("an empty canonical env secret key must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("providers.acme.api_key")
+            && e.contains("'env'")
+            && e.to_lowercase().contains("non-empty")),
+        "expected a non-empty settings.key error naming providers.acme.api_key; got: {errs:?}"
+    );
+
+    // The `file` module's empty path must fail the same way.
+    let empty_file: config::SecretRef =
+        serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
+            .expect("canonical empty-path file ref deserializes");
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = empty_file;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .expect_err("an empty canonical file path must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("providers.acme.api_key")
+            && e.contains("'file'")
+            && e.to_lowercase().contains("non-empty")),
+        "expected a non-empty settings.path error naming providers.acme.api_key; got: {errs:?}"
+    );
+
+    // CONTROL: a non-empty canonical key must NOT trip the empty-secret error. (`whitespace-only`
+    // is treated as empty, mirroring the sugar `trim().is_empty()` check.)
+    let good: config::SecretRef =
+        serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
+            .expect("canonical non-empty env ref deserializes");
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = good;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
+        "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
+    );
+}

@@ -1,0 +1,263 @@
+# busbar-core — the engine LIBRARY. Step 3.7 of 1.6.0 splits `crates/busbar` into this crate
+# (everything a protocol plugin or the binary links against) and the thin `busbar` binary
+# (argument parsing, config location, process lifecycle, and — from step 4 — protocol
+# registration, which is the composition root's knowledge and no one else's).
+#
+# NOTE ON THE PUBLIC SURFACE: this crate is `publish = false` and its `pub` items are NOT a
+# semver contract. Visibility here is what the lib/bin seam and the protocol crates need — it
+# was widened at the compiler's demand, not by design intent, and may narrow again at any time.
+# The security-relevant internals (the audit sink, the token signer, the durable statics, the
+# trust sweeper) stay `pub(crate)` behind the `boot` module's entry points; see src/boot.rs.
+#
+# Per-dependency rationale lives where it always did: the workspace table and the `busbar`
+# manifest this list was split from (crates/busbar/Cargo.toml, pre-split history).
+[package]
+name = "busbar-core"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar engine library: protocol registry, planes, governance, trust, audit, store, config — everything the thin `busbar` binary and the protocol crates link against."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_core"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-api = { path = "../api" }
+# The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
+# diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
+# and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
+# in-core call sites keep naming `crate::…`. Substrate never depends back on core.
+busbar-substrate = { path = "../busbar-substrate" }
+# Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
+# typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
+# live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
+smallvec = { workspace = true }
+# Debug-only per-method micro-timing. DEFAULT OFF: with `busbar-timing`'s `timing` feature disabled
+# (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
+# a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
+busbar-timing = { path = "../busbar-timing" }
+busbar-store-memory = { path = "../store-memory" }
+# The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
+# types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
+# capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
+busbar-plugin = { path = "../busbar-plugin" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-sign = { path = "../plugin-sign" }
+busbar-secret-ref = { path = "../secret-ref" }
+busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
+busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
+# TEST MACHINERY ONLY since the egress-symmetry migration: every production hop rides the engine,
+# and the remaining reqwest sites are the `test_support` mock-driving helpers this feature-gated
+# edge serves (the differential harness's reference stack lives in substrate under the same
+# discipline). Optional + `test-support`; plain `cargo test -p` reaches it via [dev-dependencies].
+reqwest = { workspace = true, features = ["http2"], optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
+# encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
+# unchanged.
+serde_urlencoded = { workspace = true }
+url = { workspace = true }
+indexmap = { workspace = true }
+schemars = { workspace = true, optional = true }
+loom = { workspace = true, optional = true }
+ring = { workspace = true }
+base64 = { workspace = true }
+oauth-as = { workspace = true }
+sonic-rs = { workspace = true }
+serde_yaml = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+# The plane-host credential mint (`plane_host::creds`) zeroizes resolved plaintext on drop (FFI-F6).
+zeroize = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+metrics-util = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-http = { workspace = true }
+hyper-rustls = { workspace = true }
+# The compiled-in Mozilla trust anchors the owned egress client pins — the same roots reqwest's
+# rustls-tls used, kept explicit so the trust story is named, not implied.
+webpki-roots = { workspace = true }
+http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+ed25519-dalek = { workspace = true }
+crc32fast = { workspace = true }
+async-trait = { workspace = true }
+# Lock-free read-mostly snapshot for the live-config seam (`AppHandle`): reads take a debt-slot
+# Guard — no lock, no shared-refcount RMW — where the old RwLock<Arc<App>> paid a contended
+# read-lock + Arc clone on EVERY extraction, on every request, across all workers.
+arc-swap = { workspace = true }
+# Inflates the embedded gzipped OpenAPI document once on first admin request (already in the
+# release graph transitively; this only names the edge).
+flate2 = { workspace = true }
+# The netted MCP codec (handlers/mod.rs nets `busbar-mcp/src/codec` for TEST builds only) names
+# rmcp's model types, so rmcp rides the `test-support` feature and is ABSENT from the production
+# build — the other plane-stack edges (a2a-lf/a2a-pb/tonic/prost) were unused in core entirely and
+# are gone (the plane crates own them).
+rmcp = { workspace = true, optional = true }
+httpdate = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+
+[features]
+# The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
+# the `busbar` binary forwards them (busbar/<feature> = ["busbar-core/<feature>"]).
+#
+# NOTE (recorded so it is not forgotten): keeping `dep:busbar-auth-admin-tokens` here leaves the
+# `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
+# dependency edge owned by the composition root. Moving that registration to the binary is the
+# protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
+default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+hooks-ranking = ["dep:busbar-hooks-ranking"]
+# THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
+# the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
+# never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
+# the `tools:`/`mcp:` config sections are captured raw and refused if used, so core still routes the
+# LLM and A2A planes with the MCP plane absent (the plane-split deletion test). The binary's
+# `plane-mcp` forwards to this via `busbar-core/plane-mcp`.
+#
+# Phase-B B1 FORWARDS to substrate: the relocated trust/egress/failover families carry the
+# plane-gated dead-code allowances, so enabling `plane-mcp` here must enable substrate's matching
+# marker (was an empty marker; now a forward) to keep the moved `#[cfg(feature = "plane-mcp")]` sites
+# correct.
+# THE LLM PLANE, now extracted to the `busbar-llm` crate on the SAME terms as MCP/A2A: this is the
+# marker the deletion gate flips to compile the LLM plane out of the neutral crates. LLM owns no
+# residual core code today (the codec/dialects/PLANE_DECL/arrivals all live in `busbar-llm`), so this
+# gates nothing in core directly — it FORWARDS to substrate's matching marker so any relocated
+# substrate item the LLM plane later claims resolves in lock-step, exactly as `plane-mcp`/`plane-a2a`
+# do. Default-on. The binary's `proto-llm` (which also carries the `dep:busbar-llm` edge) forwards to
+# this via `busbar-core/plane-llm`.
+plane-llm = ["busbar-substrate/plane-llm"]
+plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-mcp"]
+# THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
+# A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
+# Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
+# `plane::taskstore`) is compiled out and the `agents:` config section is captured raw and refused if
+# used, so core still routes the LLM and MCP planes with the A2A plane absent (the plane-split
+# deletion test). The binary's `plane-a2a` forwards to this via `busbar-core/plane-a2a`. The exact
+# analogue of `plane-mcp` above.
+#
+# Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
+# other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
+# substrate marker on with it.
+plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-a2a"]
+# ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
+# The neutral crates must name NO plane token in source (enforced by the plane-purity
+# lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
+# guarded a CAPABILITY rather than a plane's mere presence, so the gated source names a capability, not
+# a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
+# truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
+# replaced:
+#   egress-seam   — the host-mediated governed-egress fetch adapter (`egress::seam` + the `plane_host::
+#                   egress` scoped/driver twins). Enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), matching the substrate egress-seam types those gates
+#                   name, which core's plane forwards compile in lock-step.
+#   egress-stream — the streaming relay leg of that adapter (`stream_head`/`pump`/`HostlessEgress::
+#                   stream`). Enabled by `plane-a2a` only (was `plane-a2a`), matching the substrate
+#                   `HostlessEgress::stream` sub-gate.
+#   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
+#                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
+#                   matching `governance::GovState::card_sign`.
+egress-seam = []
+egress-stream = []
+card-signing = []
+#   jsonrpc-ingress  — the RFC 9728 JSON-RPC discovery/metadata ingress (`ingress::protocol`'s
+#                   re-export + the `App`-facing `ResourceMetadata`/`metadata_handler` stayers). Served
+#                   ONLY by the JSON-RPC-fronted planes; enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), so its truth value — and the dead-code allowance the
+#                   gated module carries when NO such plane is compiled in — is byte-identical to the
+#                   plane-token gate it replaced, while the gated source names a capability, not a plane.
+#   egress-auth-gate — the outbound trust/egress auth gate (`egress_auth::gate`'s re-export). Served
+#                   ONLY by the trust-fronting planes; enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), byte-identical for the same reason.
+jsonrpc-ingress = []
+egress-auth-gate = []
+# FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
+# and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
+# enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
+openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema"]
+loom-model = ["dep:loom"]
+txn-fence-red = []
+# Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
+# the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
+# so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
+# revealed to a dependent test binary.
+test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
+# Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
+# `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
+# the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
+# `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it forwards to
+# `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
+timing = ["busbar-timing/timing"]
+
+[dev-dependencies]
+# THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
+# (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
+# former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /
+# busbar-a2a normal-depend on busbar-core (optional, `test-support`), and a dev-dep the other way is
+# NOT a build cycle (cargo builds the lib first, then the dev-deps, then this crate's test binary).
+# It ALSO enables `test-support` on both planes in a `cargo test --workspace` build, so each plane
+# crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
+# keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+# THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
+# names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
+# the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped
+# binary boots with — the plane's PUBLIC decl across the honest crate boundary, not the former
+# `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
+# other way is not a build cycle (lib built first, then dev-deps, then the test binary).
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
+# name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
+# the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).
+# Feature unification means the one substrate instance carries it for the whole test build.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+busbar-store-example-plugin = { path = "../store-example-plugin" }
+tokio = { workspace = true, features = ["test-util"] }
+reqwest = { workspace = true, features = ["json"] }
+axum = { workspace = true, features = ["http1"] }
+http-body-util = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+rcgen = { workspace = true }
+proptest = { workspace = true }
+oauth-as = { workspace = true, features = ["test-util"] }
+# THE POOL-CREDS MICRO-BENCH (`benches/pool_upstream_creds.rs`) — measures the per-request
+# egress credential-mode resolution delta (String-keyed SipHash probe vs the flag-gated Copy read).
+criterion = { workspace = true }
+
+# The telemetry recovery tests read per-thread jemalloc counters; the lib's TEST binary therefore
+# runs on the same allocator the shipped binary does (see the cfg(test) global_allocator in
+# lib.rs). Dev-only and target-gated exactly as the binary's dependency is.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true }
+
+# ── THE POOL-CREDS MICRO-BENCH ── `harness = false`: criterion supplies its own `main`.
+[[bench]]
+name = "pool_upstream_creds"
+harness = false
+

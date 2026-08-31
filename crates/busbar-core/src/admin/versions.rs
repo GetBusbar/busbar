@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Config VERSION HISTORY — every successful config-plane mutation records the resulting
+//! hook-surface snapshot, so an operator can list versions, inspect any one, diff two, and ROLL
+//! BACK.
+//!
+//! This is the in-memory MVP: a bounded ring held on `App` behind an `Arc` (the Arc is SHARED
+//! across config-apply snapshots — `App::clone` clones the Arc, not the ring — so history survives
+//! every swap); the durable store is an additive follow-up behind the same record/read seam. The
+//! SNAPSHOT is deliberately the RESTRICT-SCOPE config surface (the hook registry + global wiring):
+//! lanes/pools/auth changes desync the lane-indexed live store (the store↔lane-index constraint),
+//! so v1 versioning covers exactly what v1 apply can mutate.
+
+use serde::Serialize;
+use std::collections::HashMap;
+
+/// One recorded config version: the metadata the versions LIST shows, plus the full hook-surface
+/// snapshot rollback restores. Never contains a secret (hook definitions are operator config:
+/// transports, grants, deadlines).
+#[derive(Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct ConfigVersion {
+    /// The `App.config_version` this snapshot corresponds to (monotonic per process).
+    pub(crate) version: u64,
+    /// Unix seconds when the mutation committed.
+    pub(crate) ts: u64,
+    /// The acting principal (audit attribution, same handle as the audit log).
+    pub(crate) principal: String,
+    /// Human summary of the mutation that produced this version (e.g. `hook.register hook:x`).
+    pub(crate) summary: String,
+    /// The hook registry at this version (the rollback payload).
+    #[serde(skip)]
+    pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
+    /// The global wiring at this version.
+    #[serde(skip)]
+    pub(crate) global_hooks: Vec<String>,
+}
+
+/// Bounded version history (`max_config_versions` — the spec default 100): FIFO prune of the
+/// oldest; a rollback to a pruned version is a clear error, never a guess.
+const MAX_VERSIONS: usize = 100;
+
+pub struct VersionLog {
+    entries: std::sync::Mutex<std::collections::VecDeque<ConfigVersion>>,
+}
+
+impl VersionLog {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+
+    /// Record the snapshot a successful mutation produced. Never fails (poisoned lock recovered —
+    /// version history must not take down a mutation that already committed).
+    pub fn record(
+        &self,
+        version: u64,
+        principal: &str,
+        summary: &str,
+        hook_registry: &HashMap<String, crate::config::HookCfg>,
+        global_hooks: &[String],
+    ) {
+        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        // Idempotence guard: re-recording the same version (e.g. a retried handler) replaces
+        // rather than duplicates, keeping the ring strictly monotonic.
+        q.retain(|v| v.version != version);
+        while q.len() >= MAX_VERSIONS {
+            q.pop_front();
+        }
+        q.push_back(ConfigVersion {
+            version,
+            ts: crate::store::now(),
+            principal: principal.to_string(),
+            summary: summary.to_string(),
+            hook_registry: hook_registry.clone(),
+            global_hooks: global_hooks.to_vec(),
+        });
+    }
+
+    /// A page of version metadata, most-recent-first (the LIST projection — snapshots omitted): skip
+    /// `offset`, then take `limit`. The transport fetches `limit + 1` to detect a further page for the
+    /// cursor envelope.
+    pub(crate) fn list(&self, offset: usize, limit: usize) -> Vec<ConfigVersion> {
+        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        q.iter().rev().skip(offset).take(limit).cloned().collect()
+    }
+
+    /// One full version (with its snapshot), if retained.
+    pub(crate) fn get(&self, version: u64) -> Option<ConfigVersion> {
+        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        q.iter().find(|v| v.version == version).cloned()
+    }
+}
+
+// STORE-OR-RAM (1.5.3): the version-history ring is RAM-only. It is NOT persisted to a side-car
+// state file (the `BUSBAR_STATE_FILE` snapshot that used to carry `export`/`load` + `PersistedVersion`
+// is gone). On boot the ring is re-seeded at its floor (`record(0, "boot", …)` in `main::run`) from
+// the live, overlay-merged config; the durable config that backs "fix the config and restart"
+// recovery lives in the config-overlay persistence, not here. Durable cross-restart rollback to a
+// PRE-restart intermediate version would need a store seam, which does not exist over the plugin
+// wire ABI today; that seam is a deliberate follow-up.
+
+#[cfg(test)]
+#[path = "tests/versions_tests.rs"]
+mod tests;

@@ -23,12 +23,16 @@
 mod auth;
 pub mod durable;
 mod hooks;
+pub mod operation;
 mod redacted;
 mod secret;
 mod signal;
 mod store;
 
-pub use auth::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
+pub use auth::{
+    constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, IdentityRefusal,
+    Principal, UpstreamCreds,
+};
 pub use auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,
@@ -39,10 +43,17 @@ pub use hooks::{
     TransformOutcome,
 };
 pub use redacted::Redacted;
-pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
+pub use secret::{
+    resolve_builtin, resolve_builtin_string, SecretError, SecretErrorKind, SecretModule,
+    SecretResolve, SecretResult,
+};
+// The config secret-reference type, re-exported from its own leaf crate so a plane crate names
+// `busbar_api::SecretRef` without a separate path dep.
+pub use busbar_secret_ref::SecretRef;
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens,
-    TierTokensDelta, UsageDelta, UsageLedger, VirtualKey,
+    register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
+    ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,
+    ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens, TierTokensDelta, UsageDelta,
+    UsageLedger, VirtualKey,
 };

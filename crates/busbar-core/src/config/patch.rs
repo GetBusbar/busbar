@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! PER-FIELD patches for the root config sections a `PUT /config/settings` may set.
+//!
+//! The overlay stores what the operator NAMED, never a whole section. Storing the section meant a
+//! partial body deserialized into a full struct of compiled defaults, so every field the operator
+//! did not mention silently reverted — including `config.yaml` values the API can neither read back
+//! (`GET` returns no effective values for unset fields) nor restore.
+//!
+//! Each patch is an all-`Option` twin, `deny_unknown_fields` so a typo is still a 400 at body-parse
+//! time, and `apply` splices only the named fields onto the RESOLVED base. Keeping the patch typed
+//! (rather than sparse JSON) is what lets `apply_to_deploy` stay infallible: it is called from boot,
+//! `--validate`, reload, apply and reset, none of which can take a merge error.
+//!
+//! `tls`, `admin_tls` and `store` are deliberately NOT field-merged — a cert bundle and a store
+//! definition are atomic units, and `store.settings` is opaque plugin config busbar must not
+//! reinterpret.
+
+use serde::{Deserialize, Serialize};
+
+/// THE RAW PER-ENTRY MERGE PATCH (RFC 7386), the sibling half of the typed section patches above.
+///
+/// The typed half works because a root section is a FIXED struct with a known field list, so an
+/// all-`Option` twin can mirror it and the merge is infallible. A named-map ENTRY is not that: the
+/// overlay stores it as an opaque document on purpose ([`crate::config::overlay::OverlayDoc`]'s
+/// `named_maps`), so that a new section needs no new overlay field and so that the bytes a restart
+/// replays are the bytes the operator wrote. There is no struct to mirror, so the patch has to be
+/// as raw as the thing it patches.
+///
+/// What this buys, and it is the reason ruling 3 of the 1.6.0 design calls the overlay's missing
+/// per-entry merge a limitation to FIX rather than to route around: recording ONE field of an entry
+/// currently means restating the whole entry, so any process that writes back a derived fact — an
+/// approval recording a pinned hash, say — rewrites every operator-authored field beside it. With a
+/// merge patch the overlay records only what changed, and everything else keeps whatever the base
+/// config says, including values that change later in `config.yaml`.
+///
+/// SEMANTICS, RFC 7386 exactly, and each rule is load-bearing rather than inherited:
+/// - An object patch merges RECURSIVELY into an object target, so a nested leaf is reachable
+///   without restating its siblings.
+/// - `null` REMOVES a key. Without a remove spelling a patch overlay can only ever grow a document,
+///   so a field set in the file could never be unset at runtime.
+/// - Any NON-object patch REPLACES the target. Whole-entry replace is therefore a special case of
+///   patching, not a second code path that can disagree with it.
+/// - An ARRAY is replaced wholesale, never element-merged. Config lists are ordered, meaningful
+///   wholes (`hooks: [a, b]` is a pipeline, not a set), and index-wise merging would invent an
+///   ordering nobody wrote.
+/// - A patch onto a non-object target REPLACES it, so an entry can be built from `null`.
+///
+/// The operation is IDEMPOTENT: applying a patch twice equals applying it once. The overlay replays
+/// its patches on every boot and every rebuild, so anything else would make the effective config
+/// depend on how many times busbar had reloaded.
+///
+/// Infallible, like the typed half and for the same reason: it is called from boot, `--validate`,
+/// reload, apply and reset, none of which can take a merge error. The fallible step stays where it
+/// already is — the `deny_unknown_fields` typed parse of the MERGED document
+/// ([`crate::config::named_map::NamedMapSection::parse_def`]), which is the one grammar both the
+/// API and the file are judged by.
+///
+/// Its production caller is [`crate::config::overlay::apply_named_maps_to_deploy`], which merges a
+/// stored overlay entry onto the base entry of the same name. It is deliberately NOT wired into
+/// `PATCH <section>/{name}/settings`, whose contract is REPLACE the whole settings bag — merging
+/// there would quietly turn a documented replace into a merge on a frozen wire.
+pub(crate) fn merge_entry(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    let serde_json::Value::Object(patch_obj) = patch else {
+        // A non-object patch replaces outright. This is the whole-entry-replace case.
+        *target = patch.clone();
+        return;
+    };
+    // A patch onto a non-object builds an object, so "there is no base entry yet" needs no special
+    // arm at the call site: start from `null`.
+    if !target.is_object() {
+        *target = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let Some(target_obj) = target.as_object_mut() else {
+        return;
+    };
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            target_obj.remove(key);
+            continue;
+        }
+        match target_obj.get_mut(key) {
+            Some(existing) => merge_entry(existing, value),
+            None => {
+                // The key is new to the target. Recursing into a fresh `null` (rather than cloning
+                // `value`) is what makes a patch carrying a nested `null` land WITHOUT materializing
+                // a null-valued key: the removal of an absent key is a no-op either way.
+                let mut fresh = serde_json::Value::Null;
+                merge_entry(&mut fresh, value);
+                target_obj.insert(key.clone(), fresh);
+            }
+        }
+    }
+}
+
+/// Build a section patch: an all-`Option` twin, its per-field `apply`, and its accumulate-across-
+/// PUTs `merge`.
+macro_rules! section_patch {
+    ($(#[$m:meta])* $patch:ident => $src:path { $($field:ident : $ty:ty),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub(crate) struct $patch {
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub(crate) $field: Option<$ty>,
+            )+
+        }
+
+        impl $patch {
+            /// Splice the named fields onto a resolved base; unnamed fields keep the base's value.
+            pub(crate) fn apply(&self, base: &mut $src) {
+                $( if let Some(v) = &self.$field { base.$field = v.clone(); } )+
+            }
+
+            /// Accumulate a newer patch over an older one, per field, for the persisted overlay.
+            pub(crate) fn merge(self, older: Self) -> Self {
+                Self { $( $field: self.$field.or(older.$field), )+ }
+            }
+        }
+    };
+}
+
+section_patch!(
+    /// Per-field patch for [`crate::config::LimitsCfg`].
+    LimitsPatch => crate::config::LimitsCfg {
+        upstream_request_timeout_secs: u64,
+        request_body_max_bytes: usize,
+        pool_max_idle_per_host: usize,
+        pool_idle_timeout_secs: u64,
+        max_inbound_concurrent: usize,
+        max_keys_per_principal: usize,
+        max_auto_provisioned_groups: usize,
+        hook_content_max_bytes: usize,
+        hard_down_cooldown_secs: u64,
+        upstream_error_body_max_bytes: usize,
+        tls_handshake_timeout_secs: u64,
+        request_body_read_timeout_secs: u64,
+        max_honored_retry_after_secs: u64,
+        default_max_tokens: u32,
+        reasoning_effort_budgets: crate::config::ReasoningEffortBudgets,
+    }
+);
+
+section_patch!(
+    /// Per-field patch for [`crate::config::SecurityCfg`].
+    SecurityPatch => crate::config::SecurityCfg {
+        blocked_metadata_hosts: Vec<String>,
+        allow_metadata_hosts: Vec<String>,
+        allow_all_metadata: bool,
+    }
+);
+
+// 1.5.3: there is NO `ObservabilityPatch` any more. The `observability:` BLOCK IS DELETED
+// — its last field (`otlp_url`) is now an `export:` instance with `module: otlp`, and the
+// `export:` block is edited in config.yaml + applied via plugin reload like every other exporter,
+// never through the single-value settings overlay.
+
+section_patch!(
+    /// Per-field patch for [`crate::config::AdvancedCfg`].
+    AdvancedPatch => crate::config::AdvancedCfg {
+        rate_sweep_interval: u32,
+        usage_flush_interval_ms: u64,
+        // BOOT-TIME (restart-to-apply), same class as `emit_server_timing` was: `server_timing` is
+        // baked into router middleware state and `route_policy` seeds a process-wide `OnceLock`, so a
+        // live PUT is stored but does not take effect until a restart (see `reload_to_apply_fields`).
+        response_headers: crate::config::ResponseHeadersCfg,
+    }
+);
+
+section_patch!(
+    /// Per-field patch for [`crate::config::HealthDefaultsCfg`].
+    HealthPatch => crate::config::HealthDefaultsCfg {
+        default_probe_interval_secs: u64,
+        default_probe_timeout_secs: u64,
+    }
+);
+
+section_patch!(
+    /// Per-field patch for [`crate::config::RoutingCfg`].
+    RoutingPatch => crate::config::RoutingCfg {
+        default_policy_timeout_ms: u64,
+    }
+);
+
+#[cfg(test)]
+#[path = "tests/entry_patch_tests.rs"]
+mod entry_patch_tests;
+
+#[cfg(test)]
+#[path = "tests/patch_tests.rs"]
+mod tests;

@@ -1,0 +1,336 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use axum::{
+    body::Body,
+    http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT},
+    response::IntoResponse,
+    response::Response,
+};
+use bytes::Bytes;
+use futures::Stream;
+use http::StatusCode;
+use serde_json::Value;
+
+use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
+use crate::config::OnExhausted;
+// NOTE THE ABSENCE. This module used to import six `PROTO_*` constants for the hook seam's own
+// content flattening. That second implementation is gone: the hook projection reads the IR the
+// protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
+// request SAYS any more.
+use crate::proto::{convert_headers, openai_family, StatusClass};
+use crate::state::{App, WeightedLane};
+use crate::store::{now, Permit};
+
+// NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
+// cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.
+
+/// The two `x-busbar-*` TRANSPARENCY response headers stamped when a non-default routing policy
+/// chose the target lane: the policy name and the chosen lane's model. Hoisted to consts so the
+/// emit site and any future readers cannot drift on spelling.
+const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
+/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at
+/// boot by [`configure_route_policy_headers`], mirroring `metrics::ENABLED` / `metrics::enabled()`:
+/// a settled decision read at every emission site, never rebuilt by a config apply (restart-to-apply,
+/// same as `advanced.response_headers.server_timing`). Unset ⇒ `false`: any test or build that never
+/// calls `configure_route_policy_headers` has the headers off, matching the documented default.
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
+/// boot, before the router is built (see `main.rs::run`); `OnceLock::set` silently no-ops on any
+/// later call, which is fine — the flag is documented restart-to-apply.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+/// Did the operator opt in to the `x-busbar-route-*` headers? Gates
+/// [`wire::maybe_attach_route_policy`] — the header is a fingerprintable observable (same class as
+/// `Server-Timing: busbar`), so it defaults OFF.
+pub(crate) fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
+// APPLICATION_JSON, TEXT_EVENT_STREAM, DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED and
+// PROVIDER_CODE_CONTEXT_LENGTH now live in the neutral substrate (busbar_substrate::proxy) so the
+// plane crates name them without reaching into busbar-core; re-exported below for core's own
+// `crate::proxy::*` call sites.
+pub use busbar_substrate::proxy::{
+    APPLICATION_JSON, DISPOSITION_TRANSIENT, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED,
+    PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+};
+
+/// Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to
+/// `ingress_error` as the `kind` argument. Each string is the protocol-agnostic discriminant that
+/// the per-protocol writer maps to its native error category (e.g. Bedrock `__type`, Gemini
+/// `error.status`). Values shared with the OpenAI-family/anthropic/admin vocabularies alias their
+/// canonical home in `proto::openai_family`; only the two forward-specific tokens (`overloaded`,
+/// `timeout`) are defined here.
+pub const KIND_AUTHENTICATION: &str = openai_family::ERR_TYPE_AUTHENTICATION;
+pub const KIND_PERMISSION: &str = openai_family::ERR_TYPE_PERMISSION;
+pub const KIND_RATE_LIMIT: &str = openai_family::ERR_TYPE_RATE_LIMIT;
+pub const KIND_INVALID_REQUEST: &str = openai_family::ERR_TYPE_INVALID_REQUEST;
+pub const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
+// The four PUBLIC forward-kind tokens the `busbar-llm` dialect writers name are RELOCATED DOWN to the
+// neutral `busbar_substrate::proxy` leaf (so the plane names them without reaching into `busbar-core`)
+// and re-exported here at their historical `crate::proxy::KIND_*` paths; the values are byte-identical
+// (`KIND_API_ERROR`/`KIND_SERVER_ERROR` still alias the ERR_TYPE_* bank, now at its substrate home).
+pub use busbar_substrate::proxy::{
+    KIND_API_ERROR, KIND_OVERLOADED, KIND_SERVER_ERROR, KIND_TIMEOUT,
+};
+pub const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
+pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
+
+/// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
+/// the error-KIND tokens above: they label the *category* of network failure recorded in the
+/// breaker store, not the protocol-level error kind surfaced to the caller.
+pub(crate) const ERR_NET_CONNECT: &str = "connect";
+pub(crate) const ERR_NET_TIMEOUT: &str = "timeout";
+const ERR_NET_TRANSPORT: &str = "transport";
+/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
+const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
+
+/// A single attempt's budget-clamped transport timeout fired (retryable within the request).
+pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
+pub(crate) const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+
+tokio::task_local! {
+    /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL
+    /// processing time (= total request wall-clock − upstream round-trip), reported as a
+    /// `Server-Timing: busbar;dur=<ms>` response header. Set via `.scope()` by the middleware;
+    /// written by `record_upstream_rtt` when an upstream call returns. Microseconds; the
+    /// `u64::MAX` sentinel means "no upstream hop on this request" (admin/health/early error),
+    /// in which case the middleware reports the full request time.
+    pub(crate) static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
+}
+
+mod egress;
+mod engine;
+mod hooks;
+mod lazy_body;
+// THE MODEL PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
+// because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
+// where the plane's metrics and its refund decision are already made.
+pub(crate) mod reqlog;
+mod response_body;
+mod select;
+pub(crate) mod usage;
+mod wire;
+// `pub(crate)` (was `pub`): egress.rs no longer exposes any `pub` item — the per-dialect
+// `EGRESS_UA_*` consts it once surfaced at `busbar_core::proxy::*` relocated to the LLM plugin's
+// decls — so every remaining egress name is crate-internal and this re-export is too.
+pub(crate) use egress::*;
+// THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
+// one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
+// re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
+// `EgressClient as Client`, appbuild's builder, the forward/health request assembly, the tests)
+// keeps resolving unchanged. `pub` rather than `pub(crate)` deliberately: some of these names
+// (`EgressConnector`) have no remaining in-core reader after the move, and an externally-visible
+// re-export cannot rot into an unused-import warning while the path contract stands.
+pub use busbar_substrate::egress::engine::{
+    egress_request, install_proxy_tunnel_if_configured, EngineClient as EgressClient,
+    EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
+};
+
+/// Build ONE egress client shard on the LLM-lane posture. An infallible shim over the engine's
+/// fallible builder (`busbar_substrate::egress::engine::build_client`, where the parity ledger
+/// now lives): the LLM posture carries no extra trust root and no client identity — the only
+/// arms a build can fail on — so the panic path here is unreachable by construction.
+pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
+    busbar_substrate::egress::engine::build_client(spec)
+        .expect("the base egress engine posture has no failing build arm")
+}
+pub(crate) use engine::*;
+pub(crate) use hooks::*;
+pub use lazy_body::*;
+pub(crate) use response_body::*;
+pub(crate) use select::*;
+pub(crate) use usage::*;
+pub use wire::*;
+
+// THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
+// `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the
+// claim is that a CUSTOMER'S REQUEST reaches the chain, and only a test that goes through
+// `crate::build_router` and a real socket can see that. A record-level test would pass just as
+// happily against a log with no production call site — which is the state this plane was in.
+#[cfg(test)]
+#[path = "tests/reqlog_dispatch_tests.rs"]
+mod reqlog_dispatch_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_tap_tests.rs"]
+mod usage_tap_tests;
+
+#[cfg(test)]
+#[path = "tests/hook_non_chat_projection_tests.rs"]
+mod hook_non_chat_projection_tests;
+
+// There is no byte-scanning usage tap to unit-test here: billing sources `IrUsage` directly from the
+// per-protocol IR readers, which carry their OWN per-reader usage tests (usage extraction across
+// protocols, message_start input-token counting, terminal-error detection, eventstream
+// metadata/exception), and the billing-parity tests below cover all four
+// {stream,non-stream}×{same,cross} combos end to end.
+
+// `cross_protocol_extra_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): it drove the witnessed
+// codec (`Protocol::{openai,anthropic,gemini}().reader()/.writer()`
+// over a concrete `IrRequest`), so it now lives beside the codecs it exercises.
+
+#[cfg(test)]
+#[path = "tests/response_model_fill_tests.rs"]
+mod response_model_fill_tests;
+
+// `tests/bedrock_eventstream_tests.rs` RELOCATED to `busbar-llm/src/tests/`: it drives
+// `bedrock::bedrock_response_to_eventstream` — a witnessed codec fn — so it moved
+// to the plugin beside the codec it exercises.
+
+#[cfg(test)]
+#[path = "tests/auth_style_tests.rs"]
+mod auth_style_tests;
+
+#[cfg(test)]
+#[path = "tests/egress_target_tests.rs"]
+mod egress_target_tests;
+
+#[cfg(test)]
+#[path = "tests/translate_offload_tests.rs"]
+mod translate_offload_tests;
+
+#[cfg(test)]
+#[path = "tests/attempt_timeout_precedence_tests.rs"]
+mod attempt_timeout_precedence_tests;
+
+// `max_tokens_precedence_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): it drove the
+// witnessed `chat_handle::chat_prepare_for_egress` over a concrete
+// `IrRequest` (max_tokens defaulting + cache_control clamping), so it lives beside that codec/IR.
+
+#[cfg(test)]
+#[path = "tests/on_exhausted_tests.rs"]
+mod on_exhausted_tests;
+
+/// REQUEST short-circuit. Proves that a same-protocol passthrough request whose
+/// body triggers none of invalidators #1-#4 is re-emitted BYTE-IDENTICAL to the retained original
+/// (`hop_bytes`), and that each invalidator individually forces NON-pristine and the correct
+/// rewritten bytes. Cross-protocol behaviour is exercised elsewhere; here we pin the same-proto path.
+#[cfg(test)]
+#[path = "tests/request_short_circuit_tests.rs"]
+mod request_short_circuit_tests;
+
+// BILLING PARITY GATE relocated to `busbar-llm` (`src/tests/proto/billing_parity_tests.rs`): it
+// drives the witnessed `StreamTranslate` + dialect readers
+// to assert the IR-derived usage (`translate.usage()` / `reader().read_response().usage`) equals
+// the billed (input, output) tokens for every {streaming, non-stream} × {same-proto, cross-proto}
+// path, so it lives beside the codec it exercises. Byte-identical assertions.
+#[cfg(test)]
+#[path = "tests/mid_stream_error_tests.rs"]
+mod mid_stream_error_tests;
+
+#[cfg(test)]
+#[path = "tests/ingress_indistinguishability_tests.rs"]
+mod ingress_indistinguishability_tests;
+
+#[cfg(test)]
+#[path = "tests/forward_once_pool_cell_tests.rs"]
+mod forward_once_pool_cell_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_upstream_creds_tests.rs"]
+mod pool_upstream_creds_tests;
+
+#[cfg(test)]
+#[path = "tests/ordered_walk_tests.rs"]
+mod ordered_walk_tests;
+
+#[cfg(test)]
+#[path = "tests/reroute_pool_tests.rs"]
+mod reroute_pool_tests;
+
+#[cfg(test)]
+#[path = "tests/lane_availability_proptest.rs"]
+mod lane_availability_proptest;
+
+#[cfg(test)]
+#[path = "tests/probe_guard_tests.rs"]
+mod probe_guard_tests;
+
+#[cfg(test)]
+#[path = "tests/probe_release_owner_tests.rs"]
+mod probe_release_owner_tests;
+
+#[cfg(test)]
+#[path = "tests/hook_opt_in_projection_tests.rs"]
+mod hook_opt_in_projection_tests;
+
+// THE DIFFERENTIAL TEST, INVERTED. It was built to compare the two implementations of "what is the
+// text in this request" and it went red on nine fixtures. The second implementation is gone, so the
+// same corpus now pins the surviving projection against a golden and re-asserts those nine as the
+// behaviour that SHIPPED — which is where the sibling characterisation suite's content went when it
+// was retired: a file that pinned "both sides, including where today's behaviour is wrong" has
+// nothing left to pin once there is one side.
+// `hook_ir_differential_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`): the projection
+// differential names the concrete IR (`IrRequest`, `ir::project`,
+// `IrFacts`) and drives every dialect's reader, so it now lives beside the codec/IR it exercises.
+
+#[cfg(test)]
+#[path = "tests/hook_seam_tests.rs"]
+mod hook_seam_tests;
+
+#[cfg(test)]
+#[path = "tests/ingress_reject_response_tests.rs"]
+mod ingress_reject_response_tests;
+
+#[cfg(test)]
+#[path = "tests/signal_catalog_tests.rs"]
+mod signal_catalog_tests;
+
+/// FAIL-CLOSED multi-candidate / batch-embeddings edge reject. Pins that a cross-protocol request
+/// asking for more than one candidate (OpenAI `n` / Gemini `candidateCount`) is REJECTED up front
+/// v1.5.4-restored multi-candidate cross-protocol degrade. Pins that a cross-protocol `n>1` /
+/// `candidateCount>1` request is FORWARDED and returns the first candidate at HTTP 200 (the
+/// single-candidate IR reads candidate `[0]`), not rejected with a 400, while a same-protocol
+/// `n>1` request is left untouched (served verbatim, all N preserved). Also pins the multi-input
+/// embeddings → Gemini `:embedContent` first-input degrade.
+#[cfg(test)]
+#[path = "tests/multi_candidate_degrade_tests.rs"]
+mod multi_candidate_degrade_tests;
+
+/// v1.5.4-restored stop-sequence-cap cross-protocol degrade. Pins that a cross-protocol request
+/// whose stop sequences exceed the egress dialect's published cap (Cohere: 5, Gemini: 5, OpenAI: 4)
+/// is CLAMPED to the cap (with a `warn!`) and forwarded at HTTP 200 — not rejected with a 400. A
+/// same-protocol request to any of the three is left untouched (served verbatim), leaving the cap
+/// to that vendor's own native 400.
+#[cfg(test)]
+#[path = "tests/stop_sequence_cap_degrade_tests.rs"]
+mod stop_sequence_cap_degrade_tests;
+
+/// AUDIT-AND-ALLOW for the two cross-dialect egress controls with no native target representation
+/// (`response_format`, `tool_choice:none`): the request still forwards, but each drop is recorded as
+/// a first-class `egress.control_unrepresentable` / `degraded` audit event, not just a `warn!`.
+#[cfg(test)]
+#[path = "tests/egress_dropped_controls_audit_tests.rs"]
+mod egress_dropped_controls_audit_tests;
+
+/// THE EGRESS DIFFERENTIAL HARNESS: both outbound stacks (the owned hyper engine and the pinned
+/// reqwest client) driven against the same recording fixtures, their observable outcomes —
+/// status, body, observed peer SPKI, error CLASS — compared row by row. This is the gate every
+/// step of the one-egress-stack migration re-runs; the fixtures live in
+/// `busbar_substrate::egress::fixtures` so the substrate engine tests drive the same servers.
+#[cfg(test)]
+#[path = "tests/egress_differential_tests.rs"]
+mod egress_differential_tests;
+
+/// THE ALLOCATION-COUNT PERF GATE (deterministic CI perf-regression gate). Drives one openai>openai
+/// passthrough request through the real forward path and asserts the per-request heap-allocation
+/// count has not regressed past a committed bound — so a stray per-request allocation (the "FIX-9"
+/// class: a redundant `Box::new` on the hot path, e.g. re-resolving `decl_for(..).dialect()` a
+/// second time) turns CI red. Machine-independent + fast, unlike a wall-clock RPS gate. jemalloc-
+/// only (`not(target_env = "msvc")`), the same target guard the telemetry-counter tests carry.
+#[cfg(all(test, not(target_env = "msvc")))]
+#[path = "tests/alloc_gate.rs"]
+mod alloc_gate;

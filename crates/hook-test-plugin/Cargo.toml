@@ -18,7 +18,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tracing = "0.1"
+tracing = { workspace = true }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
