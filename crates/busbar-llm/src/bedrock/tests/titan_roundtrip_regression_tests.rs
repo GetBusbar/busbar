@@ -129,8 +129,8 @@ fn bedrock_image_oversize_geometry_does_not_wrap() {
         "textToImageParams": { "text": "a bus" },
         "imageGenerationConfig": { "width": 4294967297u64, "height": 512 },
     });
-    let ir = read_image_request(&serde_json::to_vec(&body).unwrap(), "application/json")
-        .expect("read");
+    let ir =
+        read_image_request(&serde_json::to_vec(&body).unwrap(), "application/json").expect("read");
     assert_eq!(
         ir.size, None,
         "an out-of-u32-range width must drop the geometry, not wrap to 1px: {:?}",
@@ -146,7 +146,10 @@ fn bedrock_image_oversize_geometry_does_not_wrap() {
         .expect("read");
     assert_eq!(
         ir_ok.size,
-        Some(crate::ir::image::ImageSize::Wh { width: 1024, height: 768 }),
+        Some(crate::ir::image::ImageSize::Wh {
+            width: 1024,
+            height: 768
+        }),
         "in-range geometry must parse unchanged"
     );
 }

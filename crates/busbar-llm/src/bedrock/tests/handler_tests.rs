@@ -189,8 +189,12 @@ fn bedrock_titan_image_carries_size_and_quality() {
 #[test]
 fn converse_resolves_to_chat_unconditionally() {
     let h = BedrockRequestHandler;
-    for body in [b"".as_slice(), b"{}", b"garbage-not-json", br#"{"query":"x","documents":["y"]}"#]
-    {
+    for body in [
+        b"".as_slice(),
+        b"{}",
+        b"garbage-not-json",
+        br#"{"query":"x","documents":["y"]}"#,
+    ] {
         assert_eq!(
             h.resolve_operation("/model/anthropic.claude-3/converse", body),
             Some(Operation::CHAT),

@@ -714,7 +714,9 @@ fn transcription_translate_round_trips_as_translate() {
     // Writer selects TRANSLATE_INSTRUCTION when target_language is set.
     let wire = write_transcription_request(&req);
     let v: Value = serde_json::from_slice(&wire).unwrap();
-    let first_text = v.pointer("/contents/0/parts/0/text").and_then(Value::as_str);
+    let first_text = v
+        .pointer("/contents/0/parts/0/text")
+        .and_then(Value::as_str);
     assert_eq!(
         first_text,
         Some(TRANSLATE_INSTRUCTION),
@@ -730,7 +732,8 @@ fn transcription_translate_round_trips_as_translate() {
     let wire2 = write_transcription_request(&back);
     let v2: Value = serde_json::from_slice(&wire2).unwrap();
     assert_eq!(
-        v2.pointer("/contents/0/parts/0/text").and_then(Value::as_str),
+        v2.pointer("/contents/0/parts/0/text")
+            .and_then(Value::as_str),
         Some(TRANSLATE_INSTRUCTION),
         "re-emit must stay translate, not downgrade to transcribe: {v2}"
     );
@@ -790,7 +793,11 @@ fn transcription_response_reads_token_usage() {
     assert_eq!(
         back.usage,
         Some(busbar_substrate::billing::Billing::Tokens(
-            busbar_substrate::billing::TokenUsage { input: 7, output: 3, ..Default::default() }
+            busbar_substrate::billing::TokenUsage {
+                input: 7,
+                output: 3,
+                ..Default::default()
+            }
         )),
         "token usageMetadata must read back as Tokens"
     );
@@ -819,7 +826,10 @@ fn image_response_writer_round_trips_usage() {
         Some(&json!(10)),
         "image usage must be emitted: {v}"
     );
-    assert_eq!(v.pointer("/usageMetadata/candidatesTokenCount"), Some(&json!(5)));
+    assert_eq!(
+        v.pointer("/usageMetadata/candidatesTokenCount"),
+        Some(&json!(5))
+    );
     // And it round-trips back through the response reader instead of being dropped.
     let back = read_image_response(&wb.bytes).expect("re-read");
     assert_eq!(

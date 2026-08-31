@@ -390,7 +390,9 @@ pub(crate) fn read_image_request(
             // above): an out-of-range width/height drops the geometry rather than silently WRAPPING
             // (e.g. `4294967297 as u32 == 1`), which would fabricate a bogus 1px dimension.
             (Some(w), Some(h)) => match (u32::try_from(w).ok(), u32::try_from(h).ok()) {
-                (Some(width), Some(height)) => Some(crate::ir::image::ImageSize::Wh { width, height }),
+                (Some(width), Some(height)) => {
+                    Some(crate::ir::image::ImageSize::Wh { width, height })
+                }
                 _ => None,
             },
             _ => None,
