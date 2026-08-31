@@ -97,9 +97,10 @@ fn an_installed_plane_reaches_the_cross_plane_refusal() {
 
 /// CANONICAL LAYERING ORDER, INSTALL-SOURCE-INDEPENDENT, and the built-ins' own operator-visible
 /// order is BYTE-IDENTICAL either side of the fold — the hard property the protocol control earned,
-/// restated on the plane axis. The fold normalises to [`CANONICAL_PLANE_ORDER`], so the three
-/// canonical planes keep their layering order regardless of whether a plane arrived built-in or
-/// installed; a plane outside that list (`widget`) sorts stably to the tail rather than jumping ahead.
+/// restated on the plane axis. The fold normalises to the canonical layering order DERIVED FROM THE
+/// REGISTRATION DATA (`canonical_key_order`), so the three canonical planes keep their layering order
+/// regardless of whether a plane arrived built-in or installed; a plane outside that list (`widget`)
+/// sorts stably to the tail rather than jumping ahead.
 #[test]
 fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
     let keys: Vec<&str> = installed().iter().map(|d| d.key).collect();

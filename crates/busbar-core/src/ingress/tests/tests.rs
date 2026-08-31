@@ -42,7 +42,7 @@ fn minimal_app() -> Arc<App> {
                 Arc<dyn std::any::Any + Send + Sync>,
             > = Default::default();
             m.insert(
-                crate::state::MCP_RUNTIME_SLOT,
+                crate::state::runtime_slot_key("mcp"),
                 busbar_mcp::testkit::default_mcp_runtime(),
             );
             m

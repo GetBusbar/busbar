@@ -62,10 +62,7 @@
 // (the TASKS engine + host journal, all `plane-a2a`): with the plane off they are compiled out and
 // this re-export would otherwise read unused.
 #[cfg(feature = "plane-a2a")]
-pub use busbar_substrate::audit::vocab::{
-    EV_ARTIFACT, EV_DELEGATED, EV_PUSH_DELIVERED, EV_PUSH_FAILED, EV_PUSH_REFUSED, EV_SUBMITTED,
-    EV_TERMINAL,
-};
+pub use busbar_substrate::audit::vocab::{EV_ARTIFACT, EV_DELEGATED, EV_SUBMITTED, EV_TERMINAL};
 
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are
 /// the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call site can

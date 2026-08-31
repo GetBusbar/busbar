@@ -1424,7 +1424,7 @@ pub fn build_app_from_config(
             )
         })
     {
-        plane_slots.insert(crate::state::MCP_RUNTIME_SLOT, runtime_slot);
+        plane_slots.insert(crate::state::runtime_slot_key("mcp"), runtime_slot);
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
@@ -1558,7 +1558,13 @@ pub fn build_app_from_config(
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
         // lifetime; the pool DECLARATIONS are config like any other).
         tool_pools: cfg.tool_pools.clone(),
-        agent_pools: cfg.agent_pools.clone(),
+        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the A2A
+        // relay's `agent_pools:` set; the MCP `tool_pools:` set keeps its own dedicated field above).
+        plane_pools: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("a2a", cfg.agent_pools.clone());
+            m
+        },
         by_model,
         pools,
         client: upstream_client.clone(),
@@ -1570,8 +1576,15 @@ pub fn build_app_from_config(
         tap_hooks_routing,
         tap_hooks_response,
         global_gates,
-        mcp_server_gates,
-        a2a_agent_gates,
+        // The GENERIC per-plane per-container submission-gate map, keyed by each plane's stable decl
+        // key — in place of the former per-plane `mcp_server_gates`/`a2a_agent_gates` fields. Each
+        // plane's resolved gate map (built above, empty when its feature is off) goes under its key.
+        plane_gates: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("mcp", mcp_server_gates);
+            m.insert("a2a", a2a_agent_gates);
+            m
+        },
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),
         requested_signals: hooks::requested_signals(&cfg.hooks),

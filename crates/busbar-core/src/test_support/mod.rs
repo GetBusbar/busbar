@@ -1417,7 +1417,7 @@ impl TestApp {
         // MCP plane unless a test registers it — and such a test installs its own runtime.
         #[cfg(test)]
         plane_slots
-            .entry(crate::state::MCP_RUNTIME_SLOT)
+            .entry(crate::state::runtime_slot_key("mcp"))
             .or_insert_with(busbar_mcp::testkit::default_mcp_runtime);
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
@@ -1496,7 +1496,11 @@ impl TestApp {
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
             tool_pools: self.tool_pools,
-            agent_pools: self.agent_pools,
+            plane_pools: {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("a2a", self.agent_pools);
+                m
+            },
             by_model,
             pools: self.pools,
             upstream_credentials: self.upstream_credentials,
@@ -1525,8 +1529,12 @@ impl TestApp {
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
-            mcp_server_gates,
-            a2a_agent_gates,
+            plane_gates: {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("mcp", mcp_server_gates);
+                m.insert("a2a", a2a_agent_gates);
+                m
+            },
             hook_env,
             hook_registry: self.hook_registry,
             requested_signals,

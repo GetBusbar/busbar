@@ -423,7 +423,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     fn gate_decide(
         &self,
-        plane_key: u8,
+        plane_key: &str,
         container: &str,
         request_id: u64,
         tool: &str,
@@ -570,10 +570,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         }
     }
 
-    fn demotion_rows(&self) -> Vec<busbar_api::McpDemotionRow> {
-        self.app.demotion_record.list()
-    }
-
     fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
         self.app
             .tool_pools
@@ -582,35 +578,35 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
     }
 
-    fn gate_attached(&self, plane_key: u8, container: &str) -> bool {
-        match plane_key {
-            0 => self.app.mcp_server_gates.contains_key(container),
-            // The A2A twin: same shape as the MCP arm, over the `a2a_agent_gates` map.
-            1 => self.app.a2a_agent_gates.contains_key(container),
-            _ => false,
-        }
+    fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
+        // Pure snapshot read of the generic per-plane gate map, keyed by the opaque registry key.
+        self.app
+            .plane_gates(plane_key)
+            .is_some_and(|g| g.contains_key(container))
     }
 
-    fn a2a_agent_pool_members(&self, agent: &str) -> Option<(String, Vec<String>)> {
-        // The A2A twin of `tool_pool_members`: scan `agent_pools` for the pool `agent` belongs to and
-        // return its name + members (the walk derives lanes from member position). A pure snapshot read.
+    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
+        // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
+        // members (the walk derives lanes from member position). A pure snapshot read over the generic
+        // per-plane pool map, keyed by the opaque registry key.
         self.app
-            .agent_pools
+            .plane_pools(plane_key)?
             .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == agent))
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
             .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
     }
 
-    fn a2a_audience_bound(&self) -> bool {
-        // Pure snapshot read: is the A2A plane mounted under an audience-bound door?
+    fn plane_audience_bound(&self, plane_key: &str) -> bool {
+        // Pure snapshot read: is the plane identified by the opaque registry key mounted under an
+        // audience-bound door?
         self.app
             .planes
-            .mount_of("a2a")
+            .mount_of(plane_key)
             .and_then(|m| self.app.planes.admission_for(m))
             .is_some()
     }
 
-    fn a2a_secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
+    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
         // Pure snapshot read: hand the plane the live `Arc<SecretResolver>` behind the neutral
         // `busbar_api::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
         // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
@@ -625,9 +621,9 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         card_sign_over(&self.app, signing_input)
     }
 
-    fn a2a_agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
-        // Pure snapshot read: the type-erased `AgentsCfg` the A2A plane downcasts, cloned so it outlives
-        // the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
+    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
+        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
         self.app.agent_defs.clone()
     }
 
@@ -635,162 +631,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
         // A plain forward to the UNCHANGED core engine.
         crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
-    }
-
-    #[cfg(feature = "plane-a2a")]
-    fn task_journal_write(
-        &self,
-        task_id: &str,
-        op: busbar_substrate::plane_host::TaskWrite<'_>,
-        now: u64,
-        request_id: &str,
-    ) -> Result<busbar_api::TaskRow, String> {
-        use busbar_substrate::plane_host::TaskWrite;
-        // Mint a fresh per-call arena over the live engine and drive the SAME `TASKS.*` op the relay
-        // drives in place, SYNCHRONOUSLY — the `HostCtx` never escapes the call. The engine is now
-        // `TaskRow`-NEUTRAL, so this A2A caller owns the codec: `Submit` hands the row straight to the
-        // engine (the caller already built it from the canonical `Task`); a `Transition` parses the
-        // state token to a `TaskState` here and hands the engine an a2a-built PLAN
-        // (`plan_transition`) that validates the move and chooses the event kind under the engine's
-        // lock. Every effect is byte-identical to the in-place `with_dispatch_scope` leg, and the
-        // engine's neutral `TaskStoreError` renders (`Display`) into the `String` the seam carries.
-        with_dispatch_scope(&self.app, |host, _| {
-            let written: Result<busbar_api::TaskRow, crate::plane::taskstore::TaskStoreError> =
-                match op {
-                    TaskWrite::Submit { row } => {
-                        crate::plane::taskstore::TASKS.submit(host, row, request_id)
-                    }
-                    TaskWrite::Transition { to_state } => {
-                        // The plan (parse the token, validate the move, choose the event kind) is A2A
-                        // domain logic reached through the neutral `TaskCodec` seam the plane installed
-                        // at boot — core drives the engine with the returned closure and names no
-                        // `crate::a2a` type. `Err` on an unknown token is byte-identical to the former
-                        // in-place `TaskState::parse` refusal.
-                        let plan = busbar_substrate::plane_host::task_codec()
-                            .ok_or_else(|| "a2a task codec not installed".to_string())?
-                            .plan_transition(to_state, now)?;
-                        crate::plane::taskstore::TASKS.transition(host, task_id, request_id, plan)
-                    }
-                    TaskWrite::Dispatch { agent_id } => crate::plane::taskstore::TASKS
-                        .record_dispatch(host, task_id, agent_id, now, request_id),
-                    TaskWrite::AdvanceCursor { cursor } => crate::plane::taskstore::TASKS
-                        .advance_cursor(host, task_id, cursor, now, request_id),
-                };
-            written.map_err(|e| e.to_string())
-        })
-    }
-
-    /// The `plane-a2a`-OFF twin: the durable task journal is compiled out with the A2A domain, so there
-    /// is no engine to drive. The trait stays unconditional (its types are neutral), so the method must
-    /// exist in every build; it answers `Err` rather than being absent.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn task_journal_write(
-        &self,
-        _task_id: &str,
-        _op: busbar_substrate::plane_host::TaskWrite<'_>,
-        _now: u64,
-        _request_id: &str,
-    ) -> Result<busbar_api::TaskRow, String> {
-        Err("A2A task journal is not compiled in this build (plane-a2a off)".to_string())
-    }
-
-    #[cfg(feature = "plane-a2a")]
-    fn task_record_push_delivery(
-        &self,
-        task_id: &str,
-        kind: &str,
-        now: u64,
-        request_id: &str,
-    ) -> Result<(), String> {
-        // The engine's `record_push_delivery` takes a `&'static str` kind (it rides the provenance
-        // digest as a static token). Map the neutral wire token back onto the exact core constant it
-        // names; an unrecognised token is refused rather than chained, so the seam cannot mint an event
-        // with an arbitrary kind. Then mint a fresh arena and append synchronously, exactly as the
-        // in-place delivery path did.
-        let kind: &'static str = match kind {
-            crate::provenance::EV_PUSH_DELIVERED => crate::provenance::EV_PUSH_DELIVERED,
-            crate::provenance::EV_PUSH_REFUSED => crate::provenance::EV_PUSH_REFUSED,
-            crate::provenance::EV_PUSH_FAILED => crate::provenance::EV_PUSH_FAILED,
-            other => return Err(format!("unknown push-delivery kind `{other}`")),
-        };
-        with_dispatch_scope(&self.app, |host, _| {
-            crate::plane::taskstore::TASKS
-                .record_push_delivery(host, task_id, kind, now, request_id)
-                .map_err(|e| e.to_string())
-        })
-    }
-
-    /// The `plane-a2a`-OFF twin of [`task_record_push_delivery`](Self::task_record_push_delivery).
-    #[cfg(not(feature = "plane-a2a"))]
-    fn task_record_push_delivery(
-        &self,
-        _task_id: &str,
-        _kind: &str,
-        _now: u64,
-        _request_id: &str,
-    ) -> Result<(), String> {
-        Err("A2A task journal is not compiled in this build (plane-a2a off)".to_string())
-    }
-
-    #[cfg(feature = "plane-a2a")]
-    fn task_get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow> {
-        // A pure working-set read — the underlying `get_scoped` takes no `HostCtx`, and the engine is
-        // now `TaskRow`-neutral so it hands back the row directly. `Denied::NotYours` (no such task OR
-        // not this principal's) collapses to `None`, preserving indistinguishability.
-        crate::plane::taskstore::TASKS
-            .get_scoped(principal, task_id)
-            .ok()
-    }
-
-    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn task_get_scoped(&self, _principal: &str, _task_id: &str) -> Option<busbar_api::TaskRow> {
-        None
-    }
-
-    #[cfg(feature = "plane-a2a")]
-    fn task_get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow> {
-        // Pure read (operator / inbound-pushback path); no `HostCtx`. The engine is `TaskRow`-neutral,
-        // so it hands back the row directly. `None` when absent.
-        crate::plane::taskstore::TASKS.get_unscoped(task_id)
-    }
-
-    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn task_get_unscoped(&self, _task_id: &str) -> Option<busbar_api::TaskRow> {
-        None
-    }
-
-    #[cfg(feature = "plane-a2a")]
-    fn task_set_push_callback(
-        &self,
-        task_id: &str,
-        callback: Option<String>,
-        now: u64,
-    ) -> Result<busbar_api::TaskRow, String> {
-        // The SSRF FLOOR is A2A domain logic, reached through the neutral `TaskCodec` seam the plane
-        // installed at boot — a refusable URL is DROPPED (`None` reaches the store) and logged loudly,
-        // exactly as the former in-engine `floor_push_callback` did, and core names no `crate::a2a`
-        // type. The engine then stores the already-cleared callback and makes no security decision.
-        // (Codec absent is only reachable in a mis-wired build; then the callback stores as-is.)
-        let callback = match busbar_substrate::plane_host::task_codec() {
-            Some(codec) => codec.floor_callback(task_id, callback),
-            None => callback,
-        };
-        crate::plane::taskstore::TASKS
-            .set_push_callback(task_id, callback, now)
-            .map_err(|e| e.to_string())
-    }
-
-    /// The `plane-a2a`-OFF twin: no task store is compiled in, so the write answers `Err`.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn task_set_push_callback(
-        &self,
-        _task_id: &str,
-        _callback: Option<String>,
-        _now: u64,
-    ) -> Result<busbar_api::TaskRow, String> {
-        Err("A2A task store not compiled (plane-a2a off)".into())
     }
 
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
@@ -963,9 +803,11 @@ pub use busbar_substrate::plane_host::GateOutcome;
 /// the host ALWAYS initializes the out-param to a 403 reject, so a null subject or a caught panic
 /// reconstructs a `Reject` (an empty message/hook), exactly as a gate that could not run refuses.
 ///
-/// `plane_key`: `0` = MCP (`mcp_server_gates` / `Plane::Mcp`), `1` = A2A (`a2a_agent_gates` /
-/// `Plane::A2a`). `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session (the
-/// MCP `x-session-id` / the A2A `contextId`), `Some` only when non-empty.
+/// `plane_key` is the plane's stable decl key; the host resolves it to the ABI registration INDEX for
+/// the POD (see [`crate::plane::registry::plane_key_index`]) and the vtable slot resolves the index
+/// back to the key to select the gate set and the `ingress_protocol` label — no hard-coded numbering,
+/// no plane token. `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session,
+/// `Some` only when non-empty.
 #[cfg_attr(
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
@@ -974,7 +816,7 @@ pub use busbar_substrate::plane_host::GateOutcome;
 #[must_use]
 pub fn gate_decide_over(
     app: &App,
-    plane_key: u8,
+    plane_key: &str,
     container: &str,
     request_id: u64,
     tool: &str,
@@ -982,6 +824,9 @@ pub fn gate_decide_over(
     key: Option<(&str, &str)>,
     session_id: Option<&str>,
 ) -> GateOutcome {
+    // Resolve the plane's stable decl key to its opaque ABI registration index for the FFI POD; the
+    // vtable slot resolves it back to the key string (see `dispatch::gate_decide`).
+    let plane_key_idx = crate::plane::registry::plane_key_index(plane_key);
     let mut msg_buf = [0u8; 512];
     let mut hook_buf = [0u8; 512];
     let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GateVerdictOut>::uninit();
@@ -992,7 +837,7 @@ pub fn gate_decide_over(
         let subject = busbar_plugin::hot::GateSubjectRef {
             size: core::mem::size_of::<busbar_plugin::hot::GateSubjectRef>() as u32,
             version: busbar_plugin::hot::POD_VERSION,
-            plane_key,
+            plane_key: plane_key_idx,
             key_present: u8::from(key.is_some()),
             incremental: u8::from(session_id.is_some()),
             _reserved: [0; 3],

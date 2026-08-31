@@ -24,10 +24,11 @@
 //!
 //! * **CANONICAL LAYERING ORDER, INSTALL-SOURCE-INDEPENDENT.** The plane list is operator-visible in
 //!   the same way the protocol list is — it is the order [`super::config::config_sections`] reports,
-//!   which is the order a cross-plane refusal names sections in. The fold normalises to
-//!   [`CANONICAL_PLANE_ORDER`] regardless of whether a plane arrived as a built-in or as an installed
-//!   crate, so an extracted plane keeps the position it has always held rather than shifting to the
-//!   head or tail on the day it becomes a crate. See [`merged_boot_plane_decls`].
+//!   which is the order a cross-plane refusal names sections in. The fold normalises to the
+//!   canonical layering order DERIVED FROM THE REGISTRATION DATA (see [`canonical_key_order`])
+//!   regardless of whether a plane arrived as a built-in or as an installed crate, so an extracted
+//!   plane keeps the position it has always held rather than shifting to the head or tail on the day
+//!   it becomes a crate. See [`merged_boot_plane_decls`].
 //! * **SAME KEY REGISTERED TWICE IS SKIPPED, AUDIBLY.** Same reason as the protocol registry: under
 //!   `cargo test`'s feature unification a `test-support` build compiles an extracted plane back in
 //!   as a built-in while the composition root still installs the crate's own copy. Refusing the
@@ -441,7 +442,20 @@ pub(crate) fn merged_boot_plane_decls(
     // composition-root copy still wins a same-key collision; this only reorders the SURVIVORS so an
     // extracted plane (installed) lands in the same slot its built-in copy held — a stable sort, so
     // any plane outside the canonical list keeps its relative fold position at the tail.
-    decls.sort_by_key(|d| canonical_rank(d.key));
+    //
+    // The canonical order is DATA, not a hard-coded token list: it is the order each plane KEY first
+    // appears across the built-in rows then the installed ones. In production the built-in rows
+    // compile out and the composition root installs the planes in layering order, so that install
+    // order IS the canonical order; under the test / test-support surface the built-in rows supply
+    // it. Either way core names no plane token here — the order leaves with the decls.
+    let canonical = canonical_key_order(installed, builtins);
+    let rank = |key: &str| {
+        canonical
+            .iter()
+            .position(|k| *k == key)
+            .unwrap_or(canonical.len())
+    };
+    decls.sort_by_key(|d| rank(d.key));
     // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_api` scope-kind wire registry, so a
     // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
     // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
@@ -455,18 +469,28 @@ pub(crate) fn merged_boot_plane_decls(
 }
 
 /// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
-/// and a cross-plane refusal names sections in. `merged_boot_plane_decls` normalises to this so the
-/// order is a property of the plane, not of whether it shipped as a built-in or an installed crate.
-const CANONICAL_PLANE_ORDER: &[&str] = &["llm", "mcp", "a2a"];
-
-/// The canonical layering rank of a plane key: its index in [`CANONICAL_PLANE_ORDER`], or the list's
-/// length (the tail) for a key not named there — so an unknown/registered-later plane sorts stably
-/// after the canonical three rather than jumping the queue.
-fn canonical_rank(key: &str) -> usize {
-    CANONICAL_PLANE_ORDER
-        .iter()
-        .position(|k| *k == key)
-        .unwrap_or(CANONICAL_PLANE_ORDER.len())
+/// and a cross-plane refusal names sections in — DERIVED FROM REGISTRATION DATA rather than a
+/// hard-coded token list. It is the order each plane key FIRST APPEARS across the built-in rows then
+/// the installed ones, deduped. The built-in rows (a plane's own `&PLANE_DECL`, `#[cfg(test)]`) fix
+/// the canonical positions under the test/test-support surface; in production the built-ins compile
+/// out and the composition root installs the planes in layering order, so the install order IS the
+/// canonical order. Core spells no `"llm"/"mcp"/"a2a"` here — the order leaves with the decls.
+///
+/// `merged_boot_plane_decls` sorts its survivors by each key's index in this list (tail for a key not
+/// present — an unknown/registered-later plane sorts stably after the canonical set rather than
+/// jumping the queue), so the position is a property of the plane, not of whether it shipped as a
+/// built-in or an installed crate.
+fn canonical_key_order(
+    installed: &[&'static PlaneDecl],
+    builtins: &[&'static PlaneDecl],
+) -> Vec<&'static str> {
+    let mut order: Vec<&'static str> = Vec::new();
+    for d in builtins.iter().chain(installed) {
+        if !order.contains(&d.key) {
+            order.push(d.key);
+        }
+    }
+    order
 }
 
 /// The process plane list, in fold order. One acquire-load once initialised.
@@ -523,6 +547,43 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
     let leaked: &'static [&'static PlaneDecl] = Box::leak(merged.into_boxed_slice());
     *memo = Some((want, leaked));
     leaked
+}
+
+/// THE ABI PLANE-KEY (the registration INDEX) for a plane's stable decl `key`, or `u8::MAX` when no
+/// registered plane owns it — the opaque numeric handle the FFI PODs carry across the C-ABI seam,
+/// resolved back to the key string via [`plane_key_at`]. This is the "registration index → key"
+/// assignment the plane ABI keys on, in place of a hard-coded `0`/`1` numbering: core spells no plane
+/// token; the number is only a position in the process registry.
+pub(crate) fn plane_key_index(key: &str) -> u8 {
+    plane_decls()
+        .iter()
+        .position(|d| d.key == key)
+        .map_or(u8::MAX, |i| i as u8)
+}
+
+/// THE SCOPE-KIND at ABI scope-kind index `idx`, DERIVED FROM REGISTRY DATA rather than a hard-coded
+/// table. Index `0` is core's neutral admission-pool topology (`"pool"`, the kind every deployment
+/// always has); indices `1..` are each installed plane's declared `PlaneDecl.scope_kinds` in
+/// registration order — the same order a plane encodes when it stamps a `TargetRef.scope_kind`. So a
+/// host entitlement slot resolves the opaque numeric kind to its string without core spelling any
+/// plane's kind token. `None` (fail-closed) for an index past the registered kinds.
+pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
+    // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data.
+    std::iter::once("pool")
+        .chain(
+            plane_decls()
+                .iter()
+                .flat_map(|d| d.scope_kinds.iter().copied()),
+        )
+        .nth(idx as usize)
+}
+
+/// The stable decl `key` of the plane at ABI registration index `idx`, or `None` when out of range —
+/// the inverse of [`plane_key_index`], so a host vtable slot that received the opaque numeric handle
+/// resolves it back to the key string it looks its gate set / `ingress_protocol` label up by, naming
+/// no plane token.
+pub(crate) fn plane_key_at(idx: u8) -> Option<&'static str> {
+    plane_decls().get(idx as usize).map(|d| d.key)
 }
 
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.

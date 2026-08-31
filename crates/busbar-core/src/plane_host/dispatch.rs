@@ -218,16 +218,13 @@ pub(crate) extern "C-unwind" fn workhandle_resume(
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Map a [`TargetRef::scope_kind`] discriminant to the [`busbar_api::ScopeRef`] kind string the caller
-/// key's grant is partitioned by. UNKNOWN kinds return `None` → the entitlement FAILS CLOSED, so a
-/// future kind that reaches this seam before its mapping is added denies rather than silently widens.
+/// key's grant is partitioned by — resolved from REGISTRY DATA (see
+/// [`crate::plane::registry::scope_kind_at`]): index `0` is core's neutral admission-pool kind, `1..`
+/// are the installed planes' declared `scope_kinds` in registration order, so core spells no plane's
+/// kind token. UNKNOWN kinds return `None` → the entitlement FAILS CLOSED, so a future kind that
+/// reaches this seam before its plane is registered denies rather than silently widens.
 fn scope_kind_str(scope_kind: u32) -> Option<&'static str> {
-    match scope_kind {
-        0 => Some("pool"),
-        1 => Some("mcp_server"),
-        2 => Some("mcp_tool"),
-        3 => Some("agent"),
-        _ => None,
-    }
+    crate::plane::registry::scope_kind_at(scope_kind)
 }
 
 /// WIRED `entitlement_check` → does the CALLER's scope grant permit this TARGET? The host owns the
@@ -451,22 +448,20 @@ pub(crate) extern "C-unwind" fn gate_decide(
         let tool = unsafe { borrow_str(s.tool_ptr, s.tool_len) }.unwrap_or("");
         // SAFETY: as above.
         let args = unsafe { borrow_bytes(s.args_ptr, s.args_len) };
+        // Resolve the opaque ABI plane-key (a registration index) back to the plane's stable decl key
+        // via the registry — core spells no plane token; the number is only a position in the process
+        // registry. An out-of-range index resolves to `""`, which selects the empty gate set.
+        let plane_key = crate::plane::registry::plane_key_at(s.plane_key).unwrap_or("");
         // The host OWNS the resolved gate set; the plane passes only `(plane_key, container)`. An unknown
         // plane key or an unattached container selects the empty set (`decide`'s zero-cost `Proceed`).
-        let gates: &[(u16, crate::hooks::ResolvedPolicy)] = match s.plane_key {
-            0 => app.mcp_server_gates.get(container),
-            1 => app.a2a_agent_gates.get(container),
-            _ => None,
-        }
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-        // The `ingress_protocol` label is DERIVED from the plane key host-side (not carried), spelled
-        // exactly as the in-process site spells it.
-        let ingress = match s.plane_key {
-            0 => "mcp",
-            1 => "a2a",
-            _ => "",
-        };
+        let gates: &[(u16, crate::hooks::ResolvedPolicy)] = app
+            .plane_gates(plane_key)
+            .and_then(|g| g.get(container))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        // The `ingress_protocol` label IS the plane's stable decl key — derived from the registry, so
+        // it reads byte-identically to the in-process site while spelling no literal.
+        let ingress = plane_key;
         // Rebuild the caller's arguments `Value`. Byte-safe because `serde_json`'s `preserve_order` is
         // OFF (a `Value` object is a sorted-stable `BTreeMap`), so `to_vec`→`from_slice` round-trips to
         // the identical `Value` and the gate's `value.to_string()` projection is unchanged.

@@ -134,21 +134,21 @@ fn build_with_hook_makes_an_mcp_attach_live() {
             .unwrap(),
         );
         builder.install_plane_runtime(
-            crate::state::MCP_RUNTIME_SLOT,
+            crate::state::runtime_slot_key("mcp"),
             busbar_mcp::testkit::mcp_runtime_with_servers(tools),
         );
     }
     let app = builder.build();
     assert!(
-        !app.mcp_server_gates.contains_key("fs"),
+        !app.plane_gates("mcp").is_some_and(|g| g.contains_key("fs")),
         "the attach names a hook no registry entry defines yet, so it resolves to nothing"
     );
 
     let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
         .expect("a valid gate registers");
     assert_eq!(
-        next.mcp_server_gates
-            .get("fs")
+        next.plane_gates("mcp")
+            .and_then(|g| g.get("fs"))
             .map(|g| g.len())
             .unwrap_or_default(),
         1,

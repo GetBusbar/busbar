@@ -398,17 +398,24 @@ impl Drop for QueueDepthGuard {
     }
 }
 
-/// The [`App::plane_slots`] key under which the MCP plane's ALWAYS-PRESENT per-generation runtime
-/// object (`crate::mcp::McpRuntime`) is carried. It is deliberately DISTINCT from the MCP plane's own
-/// decl key (`"mcp"`), under which the CONFIG-CONDITIONAL dispatch resource (`crate::mcp::McpResource`)
-/// lives: the runtime bundle exists on every generation (an empty catalogue and a live pool exist even
-/// with no `tools:`/`mcp:` block), whereas the dispatch slot is absent when `mcp:` is not configured —
-/// so folding them onto one key would change `plane_slot("mcp")`'s presence semantics (and with it the
-/// dispatch table `build_dispatch` derives from that slot). Carrying the runtime under this companion
-/// key keeps both presences byte-identical to when they were two separate `App` fields. Composed into
-/// `plane_slots` by `appbuild` through the plane's neutral `build_runtime` seam, and read back by the
-/// plane through `crate::mcp::runtime`, so this crate names no `crate::mcp` runtime type.
-pub use busbar_substrate::plane_host::MCP_RUNTIME_SLOT;
+/// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
+/// object is carried in [`App::plane_slots`] under `runtime_slot_key(plane_key)` — the neutral
+/// `"<key>:runtime"` convention — DISTINCT from the plane's own decl key, under which the
+/// CONFIG-CONDITIONAL dispatch resource lives (the runtime bundle exists on every generation whereas
+/// the dispatch slot is absent when the plane's config block is unspecified, so folding them onto one
+/// key would change the bare key's presence semantics, and with it the dispatch table
+/// `build_dispatch` derives from it). Composed into `plane_slots` by `appbuild` and read back by the
+/// owning plane, each passing its decl key — so this crate names no plane runtime type or token.
+pub use busbar_substrate::plane_host::runtime_slot_key;
+
+/// One plane's per-container resolved submission-gate map: container name → resolved
+/// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
+pub(crate) type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
+
+/// THE GENERIC per-plane submission-gate map, keyed by each plane's stable decl key (the opaque
+/// registry key) — the registry-keyed structure that replaced the former per-plane
+/// `mcp_server_gates`/`a2a_agent_gates` fields, so core names no plane vocabulary in its field types.
+pub(crate) type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
@@ -457,10 +464,20 @@ pub struct App {
     // A2A on) it is carried on the snapshot but never read.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    /// The `agent_pools:` twin for the A2A relay. Same carriage, same reasoning.
-    // A2A-only: the A2A relay's reroute twin; with `plane-a2a` off (and MCP on) it is never read.
+    /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
+    /// ([`busbar_substrate::plane_host::EngineHost::plane_pool_members`]), keyed by the plane's stable
+    /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
+    /// `agent_pools` field, so core carries no plane vocabulary in its own field names. Each plane's
+    /// entry is its `<section>.pools:` set (member selection derives lanes from member position). Read
+    /// on the plane's submission/route path through [`App::plane_pools`]. (The MCP `tool_pools:` set
+    /// keeps its own dedicated field + 3-tuple `tool_pool_members` seam, which also carries the pool's
+    /// `repeatable:` list.)
+    // Read on a plane's route/admission path; with `plane-a2a` off (and MCP on) it is never read.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
-    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub(crate) plane_pools: std::collections::BTreeMap<
+        &'static str,
+        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    >,
     /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
     /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
     pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
@@ -525,17 +542,21 @@ pub struct App {
     ///
     /// Resolved here, at config apply, for the reason every other hook list is: resolution `dlopen`s
     /// the plugin, and doing that per request would put a library load on the dispatch path.
-    // MCP-only: consulted by the MCP submission gate firing site; with `plane-mcp` off (and A2A on)
-    // it is resolved onto the snapshot but never read.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub mcp_server_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
-    /// THE A2A SUBMISSION GATES, per registered agent: `agents.hooks:` ∪ `agents.<agent>.hooks:`.
-    /// The exact twin of [`App::mcp_server_gates`], same combine rule, same keying, same zero-cost
-    /// absence — because it is one operator concept spelled on two planes, and an operator who
-    /// learned it on `tools:` must not have to learn it again here.
-    // A2A-only twin of `mcp_server_gates`; with `plane-a2a` off (and MCP on) it is never read.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
-    pub(crate) a2a_agent_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    /// THE PER-PLANE PER-CONTAINER SUBMISSION GATES, keyed by the plane's stable decl key (the opaque
+    /// registry key) — one generic registry-keyed map in place of the former per-plane
+    /// `mcp_server_gates`/`a2a_agent_gates` fields, so core carries no plane vocabulary in its own
+    /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
+    /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
+    /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
+    /// [`busbar_substrate::plane_host::ContainerGateSink`]); read on the dispatch path by
+    /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
+    // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
+    // gate, so the map goes unread in that config alone.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    pub(crate) plane_gates: PlaneGateMap,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
     /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
@@ -907,6 +928,30 @@ impl App {
         self.plane_slots.get(key)
     }
 
+    /// The per-container submission-gate map for the plane identified by the opaque registry
+    /// `plane_key`, or `None` when the plane attached no gates this generation — a pure
+    /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a
+    /// plane-named field. The dispatch/admission gate paths read it; `None` and an empty inner map are
+    /// both "no gate attached" (the zero-cost `Proceed` early-out).
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    pub(crate) fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
+        self.plane_gates.get(plane_key)
+    }
+
+    /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
+    /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
+    /// map read, reached through the key instead of a plane-named field.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    pub(crate) fn plane_pools(
+        &self,
+        plane_key: &str,
+    ) -> Option<&std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>> {
+        self.plane_pools.get(plane_key)
+    }
+
     /// Resolve a container plane's per-registration hook gates against THIS snapshot's hook registry,
     /// env and config version — the core-side of a container plane's config-swap gate rebuild. An
     /// extracted plane hands its neutral `(container, own-hooks)` inputs + the reserved section attach
@@ -949,19 +994,22 @@ impl busbar_substrate::plane_host::PlaneSlots for App {
 
 /// THE NEUTRAL `&mut` GATE-REBUILD SINK the plane `PlaneDecl::reresolve_gates` callback names instead
 /// of `&mut App`. Resolves the plane's per-container gates host-side (through the inherent
-/// [`App::resolve_container_gates`]) and stores them under the plane's own gate field, keyed by
-/// `plane_key` — byte-identical to the old inline `next.<field> = next.resolve_container_gates(...)`.
+/// [`App::resolve_container_gates`]) and stores them in the generic [`App::plane_gates`] map under the
+/// opaque registry `plane_key` — byte-identical to the old inline
+/// `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
 impl busbar_substrate::plane_host::ContainerGateSink for App {
     fn reresolve_container_gates(
         &mut self,
-        plane_key: u8,
+        plane_key: &str,
         containers: &[(&str, &[String])],
         section_hooks: &[String],
     ) {
         let gates = self.resolve_container_gates(containers.iter().copied(), section_hooks);
-        match plane_key {
-            0 => self.mcp_server_gates = gates,
-            _ => self.a2a_agent_gates = gates,
+        // The map key is the plane's stable decl key. `reresolve` is only ever called for an installed
+        // plane, whose key is `&'static`; recover that static key from the registry so the map's
+        // `&'static str` key type is satisfied without leaking (the `plane_key` argument is a borrow).
+        if let Some(static_key) = crate::plane::registry::plane_decl_for(plane_key).map(|d| d.key) {
+            self.plane_gates.insert(static_key, gates);
         }
     }
 }

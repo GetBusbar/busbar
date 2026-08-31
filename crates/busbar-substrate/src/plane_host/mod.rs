@@ -115,43 +115,6 @@ pub struct HostCompletion {
     pub body: bytes::Bytes,
 }
 
-/// A neutral, borrow-free description of ONE task-journal write, handed to
-/// [`EngineHost::task_journal_write`]. The plane converts its own `Task` domain to
-/// `busbar_api::TaskRow`/`&str` at THIS boundary; the core engine re-derives its own canonical
-/// `Task`/`TaskState` inside the host, so neither the wire task type nor the state enum crosses the
-/// seam. `Submit` carries the full row (a new task is described in one shot); the mutators name ONLY
-/// what they change, exactly as the engine's `TASKS.{transition, record_dispatch, advance_cursor}`
-/// take just the changed field. The whole enum is neutral (it names only `busbar_api::TaskRow`, `str`
-/// and `u64`), so it compiles in every feature combo even though the write it drives is A2A-only.
-///
-/// `dead_code`-allowed for now: the enum and its variants are constructed only by the A2A plane's
-/// journal call sites, which a later batch repoints onto this seam. Until then nothing mints one.
-#[allow(dead_code)]
-pub enum TaskWrite<'a> {
-    /// Record a brand-new task from its full projected row (the engine reconstructs its canonical
-    /// `Task` via `Task::from_row`, so a row that does not parse is refused rather than stored).
-    Submit {
-        /// The complete task row to persist as `submitted`.
-        row: &'a busbar_api::TaskRow,
-    },
-    /// Move an existing task to `to_state` (the engine parses it back to its canonical `TaskState`
-    /// and enforces the legal-transition table; an unknown or illegal move is refused).
-    Transition {
-        /// The target state's stable wire/store token (`working`, `completed`, …).
-        to_state: &'a str,
-    },
-    /// Record which agent an existing task was routed to (not a state change).
-    Dispatch {
-        /// The chosen/fronted agent's busbar-local id.
-        agent_id: &'a str,
-    },
-    /// Advance an existing task's artifact cursor (monotonic; a rewind is a no-op).
-    AdvanceCursor {
-        /// The new cursor — how many artifact chunks have been durably relayed.
-        cursor: u64,
-    },
-}
-
 /// The neutral seam by which the A2A plane supplies the task-CODEC operations the core TASKS engine
 /// needs but MUST NOT name. The engine works in neutral `busbar_api::TaskRow`s, but three fragments of
 /// its write/restore path are A2A domain logic — parsing a state token, planning a validated
@@ -236,6 +199,36 @@ pub fn task_reader() -> Option<&'static dyn TaskReader> {
     TASK_READER.get().copied()
 }
 
+/// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object
+/// is carried — DERIVED from the plane's own decl `key` by the neutral `"<key>:runtime"` convention,
+/// so core spells no plane token. It is deliberately distinct from the plane's config-conditional
+/// dispatch slot (carried under the bare decl key): the runtime bundle exists on every generation
+/// whereas the dispatch slot is absent when the plane's config block is unspecified, so folding them
+/// onto one key would change the bare key's presence semantics (and the dispatch table `build_dispatch`
+/// derives from it). Named by both core's `appbuild` (which composes the slot) and the owning plane
+/// (which reads it back through [`EngineHost::plane_slot`]) — each passes its decl key and gets the
+/// SAME interned `&'static str`, so it lives in the neutral substrate rather than either crate.
+///
+/// Interned process-lifetime (leaked once per distinct key, bounded by the plane count) so the
+/// companion key is a stable `&'static str` fit for the `plane_slots` map's key type without either
+/// caller holding a hard-coded literal.
+pub fn runtime_slot_key(plane_key: &str) -> &'static str {
+    static INTERNED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let composed = format!("{plane_key}:runtime");
+    let mut interned = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = interned.get(&composed) {
+        return k;
+    }
+    let leaked: &'static str = Box::leak(composed.clone().into_boxed_str());
+    interned.insert(composed, leaked);
+    leaked
+}
+
+/// A source of freshly live-bound hosts: each call returns a host reading the current snapshot,
+/// so a config swap between calls is seen. Handed to transports that re-mint per frame.
+pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -250,17 +243,6 @@ pub fn task_reader() -> Option<&'static dyn TaskReader> {
 /// `#[async_trait]` because ONE method — [`identity_admit`](EngineHost::identity_admit) — is `async`
 /// (it awaits a `spawn_blocking` join over the host auth chain). Every other method is a plain sync
 /// fn the attribute leaves untouched; only the async one is desugared to a boxed `Send` future.
-/// The `plane_slots` companion key under which the MCP plane's always-present per-generation runtime
-/// object is carried, distinct from the plane's config-conditional decl key (`"mcp"`). Named by both
-/// core's `appbuild` (which composes the slot) and the MCP plane (which reads it back through
-/// [`EngineHost::plane_slot`]), so it lives in the neutral substrate rather than either crate. Core
-/// re-exports it as `busbar_core::state::MCP_RUNTIME_SLOT` so in-core names are unchanged.
-pub const MCP_RUNTIME_SLOT: &str = "mcp:runtime";
-
-/// A source of freshly live-bound hosts: each call returns a host reading the current snapshot,
-/// so a config swap between calls is seen. Handed to transports that re-mint per frame.
-pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
-
 #[async_trait::async_trait]
 pub trait EngineHost: Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form
@@ -276,12 +258,13 @@ pub trait EngineHost: Send + Sync {
     /// same reconstructed facts, same key identity, same gate decision. Drives the ASYNC gate on a
     /// fresh runtime, so it MUST be called from a BLOCKING thread (`spawn_blocking`).
     ///
-    /// `plane_key`: `0` = MCP, `1` = A2A. `key` is the caller's resolved `(id, name)`; `session_id`
-    /// is the caller's session, `Some` only when non-empty.
+    /// `plane_key` is the opaque registry key (the plane's stable decl key) the host resolves the
+    /// gate set and the `ingress_protocol` label from. `key` is the caller's resolved `(id, name)`;
+    /// `session_id` is the caller's session, `Some` only when non-empty.
     #[allow(clippy::too_many_arguments)]
     fn gate_decide(
         &self,
-        plane_key: u8,
+        plane_key: &str,
         container: &str,
         request_id: u64,
         tool: &str,
@@ -449,42 +432,37 @@ pub trait EngineHost: Send + Sync {
     /// without a live handle). A pure map read, no `HostCtx`.
     fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
-    /// Every durably-recorded upstream demotion, the boot-replay source. Identical to
-    /// `App::demotion_record.list()`; the row type is the neutral `busbar_api::McpDemotionRow`.
-    fn demotion_rows(&self) -> Vec<busbar_api::McpDemotionRow>;
-
     /// The `(pool_name, members, repeatable)` of the `tool_pools:` failover pool `server` belongs to,
     /// off the BOUND snapshot; `None` when `server` is un-pooled. `repeatable` is the pool's
     /// `repeatable:` operation list (what `CandidatePoolCfg::repeatability` consults). Identical to
     /// scanning `App::tool_pools`.
     fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
 
-    /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on this
-    /// plane (`plane_key` `0` = MCP, `1` = A2A)? Lets a plane skip the blocking `gate_decide` hop when
-    /// nothing is attached. Identical to `App::mcp_server_gates.contains_key(container)` for MCP and
-    /// `App::a2a_agent_gates.contains_key(container)` for A2A.
-    fn gate_attached(&self, plane_key: u8, container: &str) -> bool;
+    /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on the
+    /// plane identified by the opaque registry `plane_key` (the plane's stable decl key)? Lets a plane
+    /// skip the blocking `gate_decide` hop when nothing is attached. Identical to
+    /// `App::plane_gates(plane_key).contains_key(container)`.
+    fn gate_attached(&self, plane_key: &str, container: &str) -> bool;
 
-    /// The `(pool_name, members)` of the `agent_pools:` failover pool `agent` belongs to, off the
-    /// BOUND snapshot; `None` when `agent` is un-pooled. The A2A twin of
-    /// [`tool_pool_members`](Self::tool_pool_members) — the member-selection walk derives each
-    /// candidate's lane from the member's position in the returned list, so name + members is the
-    /// whole seam (the A2A walk fixes `Repeatable::No`, so the pool's `repeatable:` list is not
-    /// consulted on this plane). Identical to scanning `App::agent_pools`.
-    fn a2a_agent_pool_members(&self, agent: &str) -> Option<(String, Vec<String>)>;
+    /// The `(pool_name, members)` of the failover pool `member` belongs to on the plane identified by
+    /// the opaque registry `plane_key`, off the BOUND snapshot; `None` when `member` is un-pooled. The
+    /// member-selection walk derives each candidate's lane from the member's position in the returned
+    /// list, so name + members is the whole seam. Identical to scanning the plane's pool map.
+    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)>;
 
-    /// Whether the A2A plane is mounted under an AUDIENCE-BOUND door — the deployment gate the A2A
-    /// request path reads before it trusts an inbound audience claim. Identical to
-    /// `App::planes.mount_of("a2a").and_then(|m| App::planes.admission_for(m)).is_some()`. A pure
+    /// Whether the plane identified by the opaque registry `plane_key` is mounted under an
+    /// AUDIENCE-BOUND door — the deployment gate a request path reads before it trusts an inbound
+    /// audience claim. Identical to
+    /// `App::planes.mount_of(plane_key).and_then(|m| App::planes.admission_for(m)).is_some()`. A pure
     /// snapshot read, no `HostCtx`.
-    fn a2a_audience_bound(&self) -> bool;
+    fn plane_audience_bound(&self, plane_key: &str) -> bool;
 
-    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so the
-    /// A2A plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
+    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so a
+    /// plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
     /// engine's concrete `SecretResolver`. A pure snapshot read of `App::secret_resolver`, no
     /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
-    fn a2a_secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
+    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
 
     /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
     /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
@@ -493,63 +471,11 @@ pub trait EngineHost: Send + Sync {
     /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
     fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
 
-    /// The deployment's type-erased agent definitions (`Arc<dyn Any + Send + Sync>` holding the
-    /// `AgentsCfg` the A2A plane downcasts), off the BOUND snapshot — the `App::agent_defs` field that
-    /// is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it outlives the call; a pure snapshot
-    /// read, no `HostCtx` (mirrors [`a2a_secret_resolver`](Self::a2a_secret_resolver)).
-    fn a2a_agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
-
-    /// Drive ONE durable task-journal write — submit a new task or mutate an existing one — over the
-    /// same core `TASKS.{submit, transition, record_dispatch, advance_cursor}` engine ops the A2A
-    /// relay drives in place, returning the resulting task's projected row. The transient `HostCtx`
-    /// the journal seam needs is minted INTERNALLY (a fresh per-call `DispatchScope` over the live
-    /// engine, driven synchronously; the pointer never escapes the call), so the plane holds no host.
-    /// Identical to opening a `crate::plane_host::with_dispatch_scope` and calling the matching
-    /// `crate::plane::taskstore::TASKS.*` — the `TaskWrite`↔`Task`/`TaskState` conversion is the whole
-    /// boundary; the effect is byte-identical. `now` is the mutation timestamp (ignored by `Submit`,
-    /// whose timestamps ride the row); `request_id` is the provenance join key. An `Err` renders the
-    /// engine's own `TaskStoreError`/`TaskError` (`Display`) as a string — a refused parse, an illegal
-    /// transition, an unknown task, or a durable-store miss. In a build without the A2A domain
-    /// compiled (`plane-a2a` off) the journal engine does not exist, so this answers `Err`.
-    fn task_journal_write(
-        &self,
-        task_id: &str,
-        op: TaskWrite<'_>,
-        now: u64,
-        request_id: &str,
-    ) -> Result<busbar_api::TaskRow, String>;
-
-    /// Record ONE push-notification DELIVERY OUTCOME on a task's own provenance chain — the
-    /// journal-only twin of [`task_journal_write`](EngineHost::task_journal_write) that appends an
-    /// event and touches no row (a delivery attempt changes neither state nor agent). `kind` is the
-    /// event token (`task.push_delivered` / `task.push_refused` / `task.push_failed`); an unrecognised
-    /// token is refused. The transient `HostCtx` is minted INTERNALLY and consumed synchronously.
-    /// Identical to `crate::plane::taskstore::TASKS.record_push_delivery` under a fresh
-    /// `with_dispatch_scope`; `Err` on an unknown task, a store miss, or (`plane-a2a` off) no engine.
-    fn task_record_push_delivery(
-        &self,
-        task_id: &str,
-        kind: &str,
-        now: u64,
-        request_id: &str,
-    ) -> Result<(), String>;
-
-    /// SCOPED task read off the live working set — the get/subscribe authorization gate. Returns None for
-    /// BOTH "not this principal's task" and "no such task" (preserving the indistinguishability the
-    /// underlying Denied::NotYours collapse gives). A pure read; no HostCtx.
-    fn task_get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow>;
-
-    /// UNSCOPED task read (operator / inbound-pushback path). None when absent. No HostCtx.
-    fn task_get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow>;
-
-    /// Set/clear a task's push callback (runs the SSRF floor + write-through to the durable sink), returning
-    /// the mutated row. Err = unknown task / store miss (Display). No HostCtx.
-    fn task_set_push_callback(
-        &self,
-        task_id: &str,
-        callback: Option<String>,
-        now: u64,
-    ) -> Result<busbar_api::TaskRow, String>;
+    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
+    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
+    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
+    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
+    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
@@ -573,10 +499,10 @@ pub trait EngineHost: Send + Sync {
 /// `&busbar_core::state::App` are neutralised over — so a plane's `on_swap` / `registry_contains` /
 /// `retain_verify_gates` hook reads its own per-generation runtime object off the snapshot WITHOUT
 /// the callback fn-pointer signature naming a core type. Core `impl`s it for `App` as a thin delegate
-/// to the inherent `App::plane_slot`; an EXTRACTED plane (MCP) reaches only [`Self::plane_slot`] and
-/// stays neutral. [`Self::as_any`] is the recovery hatch an IN-CORE plane twin (A2A, still in core)
-/// uses to downcast back to its concrete snapshot for the field that does not live in `plane_slots`
-/// (`agent_defs`); an extracted plane never calls it.
+/// to the inherent `App::plane_slot`; an EXTRACTED plane reaches only [`Self::plane_slot`] and
+/// stays neutral. [`Self::as_any`] is the recovery hatch an in-core plane twin uses to downcast back
+/// to its concrete snapshot for a field that does not live in `plane_slots` (`agent_defs`); an
+/// extracted plane never calls it.
 pub trait PlaneSlots {
     /// The plane's type-erased runtime object for THIS generation, keyed by the plane's decl key —
     /// a pure `plane_slots` map read, borrowed (mirrors the inherent `App::plane_slot`).
@@ -598,12 +524,12 @@ pub trait PlaneSlots {
 /// never crosses the seam; it is built and stored entirely core-side, keyed by `plane_key`.
 pub trait ContainerGateSink: PlaneSlots {
     /// Resolve `containers` (each `(name, its-own-hooks)`) unioned with `section_hooks` against this
-    /// snapshot's hook registry, and store the resolved per-container gates under `plane_key`
-    /// (`0` = MCP `mcp_server_gates`, else A2A `a2a_agent_gates`). Byte-identical to the old inline
-    /// `next.<field> = next.resolve_container_gates(...)`.
+    /// snapshot's hook registry, and store the resolved per-container gates under the opaque registry
+    /// `plane_key` (the plane's stable decl key) in the generic `App::plane_gates` map. Byte-identical
+    /// to the old inline `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
     fn reresolve_container_gates(
         &mut self,
-        plane_key: u8,
+        plane_key: &str,
         containers: &[(&str, &[String])],
         section_hooks: &[String],
     );

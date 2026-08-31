@@ -13183,7 +13183,7 @@ async fn named_map_app_opts(
             .unwrap(),
         );
         builder.install_plane_runtime(
-            crate::state::MCP_RUNTIME_SLOT,
+            crate::state::runtime_slot_key("mcp"),
             busbar_mcp::testkit::mcp_runtime_with_servers(tools),
         );
     }
