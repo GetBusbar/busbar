@@ -173,6 +173,166 @@ pub(crate) async fn operation_ingress(
     .await
 }
 
+/// The immutable, plane-neutral inputs of ONE gauntlet traversal, threaded to the plane hooks so a
+/// hook reads everything it needs without the core skeleton handing it ingress-private helpers and
+/// without a plane leaking its own types back into the neutral core. Borrows for the duration of
+/// `run`; the CONSUMED inputs (`body`, `parsed_v`, the admission grant) are passed to `route` by
+/// value, never held here.
+struct GauntletCtx<'a> {
+    app: &'a Arc<App>,
+    gov: &'a crate::governance::GovCtx,
+    proto: &'static str,
+    operation: crate::operation::Operation,
+    op_handler: &'static dyn crate::handlers::OperationHandler,
+    headers: &'a HeaderMap,
+    caller_token: Option<&'a str>,
+    started: Instant,
+    charged_at: u64,
+    /// Shapes the gemini dialect's model-not-found echo in `route`; opaque to every other stage.
+    gemini_api_version: Option<&'a str>,
+}
+
+/// THE PLANE HOOKS of the operation gauntlet (design §10). [`run`] owns the FIXED skeleton — identity
+/// (stage 1, threaded in via `gov` by the auth layer that ran before the gauntlet), the scope/grant +
+/// THE single budget-admission door (stages 3–4, [`admission_door`]), and audit + finish/metrics
+/// (stage 6, [`finish_admitted`]). A plane fills only the two genuinely plane-specific stages: stage
+/// 2 `verify_destination` (WHERE a request may go, pre-admission) and stage 5 `route` (HOW the
+/// admitted request reaches the egress engine). Everything a hook reads is threaded through
+/// [`GauntletCtx`], so the seam carries no plane-specific type into the neutral core.
+///
+/// M2 wires only the native plane ([`NativePlane`], the in-core pool/engine path an LLM arrival
+/// takes), preserving today's traversal byte-for-byte; M3/M4 add the MCP `tools_call` and A2A
+/// `receive` planes behind these same two methods. The trait is used through a concrete plane (not
+/// `dyn`) — the `route` future is RPITIT `+ Send`; plane SELECTION (today unconditional) is what M3
+/// grows.
+trait PlaneOps {
+    /// STAGE 2 — pre-admission destination verification. Runs BEFORE the budget door (stage 4) so
+    /// nothing can reject an already-charged request. `Ok(())` clears the request to admission;
+    /// `Err(resp)` is the protocol-native rejection, already routed through `finish_rejected`,
+    /// returned verbatim to the caller.
+    fn verify_destination(&self, cx: &GauntletCtx<'_>, model: &str) -> Result<(), Box<Response>>;
+
+    /// STAGE 5 — route + egress. With the ADMITTED (post-downgrade) `model`, the request `body`, its
+    /// parsed form, and the admission grant, select candidates and drive the one engine, returning
+    /// the RAW egress response (a destination the plane cannot resolve is the plane's own not-found
+    /// response). The gauntlet applies stage 6 finish/metrics/refund to whatever this returns.
+    fn route(
+        &self,
+        cx: &GauntletCtx<'_>,
+        model: &str,
+        body: Bytes,
+        parsed_v: Option<crate::proxy::LazyBody>,
+        admit: Option<crate::governance::AdmitGrant>,
+    ) -> impl std::future::Future<Output = Response> + Send;
+}
+
+/// The NATIVE plane's hooks — the pool/engine routing that lives in-core today (the path an LLM
+/// arrival takes), named plane-neutrally so the neutral core spells no plane-family type (per the
+/// freeze and purity law). Its body is today's inline gauntlet logic, VERBATIM: `verify_destination`
+/// is the pre-admission [`destination_guard`] (pool ACL, fallback-pool ACL, unpriced-model gate);
+/// `route` is the pool/lane candidate selection plus `forward_with_pool_parsed` (THE ONE ENGINE).
+/// Behavior-identical to the pre-seam `operation_resolved`: same order, same errors, same
+/// `gemini_api_version`/not-found shaping, same budget-door position. A later milestone relocates
+/// this impl into its plane crate; M2 only establishes the seam it plugs into.
+struct NativePlane;
+
+impl PlaneOps for NativePlane {
+    fn verify_destination(&self, cx: &GauntletCtx<'_>, model: &str) -> Result<(), Box<Response>> {
+        destination_guard(cx.app, cx.gov, cx.proto, model, cx.started, cx.charged_at)
+    }
+
+    // The seam declares `route` as `-> impl Future + Send` (not `async fn`) so the `+ Send` bound is
+    // an explicit part of the plane contract — the egress future is spawned/awaited by the axum host
+    // and M3's plane selection may dispatch it dynamically. That deliberately trades clippy's
+    // `manual_async_fn` suggestion (which would drop the bound) for the stated contract.
+    #[allow(clippy::manual_async_fn)]
+    fn route(
+        &self,
+        cx: &GauntletCtx<'_>,
+        model: &str,
+        body: Bytes,
+        parsed_v: Option<crate::proxy::LazyBody>,
+        admit: Option<crate::governance::AdmitGrant>,
+    ) -> impl std::future::Future<Output = Response> + Send {
+        async move {
+            let (cands, pool_name): (Vec<WeightedLane>, &str) =
+                if let Some(c) = cx.app.pools.get(model) {
+                    (c.clone(), model)
+                } else if let Some(&i) = cx.app.by_model.get(model) {
+                    (
+                        vec![WeightedLane {
+                            reasoning: None,
+                            idx: i,
+                            weight: 1,
+                            attempt_timeout_ms: None,
+                        }],
+                        "",
+                    )
+                } else {
+                    // The plane could not resolve the destination — its own dialect-shaped not-found,
+                    // returned RAW for the gauntlet's stage 6 to finish (same tail as a served
+                    // request, so the pre-seam not-found accounting is reproduced exactly).
+                    return ingress_error(
+                        cx.proto,
+                        StatusCode::NOT_FOUND,
+                        crate::proxy::KIND_NOT_FOUND,
+                        &not_found_message(model, cx.gemini_api_version),
+                    );
+                };
+
+            // THE ONE ENGINE: every operation — chat included — forwards through the same failover/
+            // breaker/policy pipeline. JSON bodies ride parsed (`Some(v)`, parsed once by the caller);
+            // opaque bodies (multipart/binary) ride `None` and relay/translate at the byte level via
+            // the operation codecs.
+            let ct = cx
+                .headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            // Session affinity: the pool's configured affinity header, read generically for EVERY
+            // operation (sticky routing is an engine capability, not a chat feature).
+            let affinity_key: Option<String> = cx
+                .headers
+                .get(affinity_header_for(cx.app, model))
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string);
+            crate::proxy::forward_with_pool_parsed(
+                cx.app,
+                cands,
+                body,
+                parsed_v,
+                // `ct` borrows `cx.headers` (a caller-held reference that outlives this call) — no
+                // per-request `to_string` copy is needed to thread the Content-Type through.
+                if ct.is_empty() {
+                    crate::proxy::APPLICATION_JSON
+                } else {
+                    ct
+                },
+                cx.caller_token,
+                // The key the auth layer resolved/synthesized for this caller — lets the routing-
+                // signal path project rate_headroom/identity for group/SSO principals whose token is
+                // not a virtual-key secret (so a token `lookup` would miss).
+                cx.gov.key.as_ref(),
+                pool_name,
+                affinity_key.as_deref(),
+                cx.proto,
+                // THE THIRD AXIS IS DECIDED AT THE ARRIVAL, which is the only place that knows it.
+                // This is an axum handler: the exchange came in on one HTTP request and leaves on its
+                // response, so the transport is `Http` and saying so is a statement of fact, not a
+                // default. The stdio and gRPC arrivals get their own entry points and frame the same
+                // codecs.
+                crate::handlers::frame(
+                    crate::transport::Transport::Http,
+                    cx.operation,
+                    cx.op_handler,
+                ),
+                usage_sink(cx.app, cx.gov, pool_name, cx.charged_at, admit),
+            )
+            .await
+        }
+    }
+}
+
 /// THE UNIVERSAL RESOLVED CORE — every operation, chat included, from the moment the model is known:
 /// governance → candidates → affinity → the one engine. `gemini_api_version` shapes the gemini
 /// dialect's model-not-found echo; everything else is operation- and protocol-blind.
@@ -180,7 +340,9 @@ pub(crate) async fn operation_ingress(
 /// THE ONE GAUNTLET (1.6 vision): this is the single canonical entry every arrival converges on once
 /// the model is resolved. It is surfaced as [`crate::operation::run`] — the name the plane hooks
 /// (M2–M5) grow onto — while [`operation_resolved`] remains a thin delegator preserving the existing
-/// ingress call surface. Today the two are byte-identical; the gauntlet body lives here.
+/// ingress call surface. The body is the FIXED §10 skeleton: stages 1/3/4/6 are shared core; stage 2
+/// ([`PlaneOps::verify_destination`]) and stage 5 ([`PlaneOps::route`]) are plane hooks. M2 drives the
+/// LLM plane, so the traversal stays byte-identical to the pre-seam `operation_resolved`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: &Arc<App>,
@@ -197,88 +359,55 @@ pub async fn run(
     charged_at: u64,
     gemini_api_version: Option<&str>,
 ) -> Response {
-    let ct = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let (admit, downgraded) = match governance_guard(app, gov, proto, model, started, charged_at) {
+    // STAGE 1 — identity is already resolved and threaded in via `gov` (the auth layer ran before the
+    // gauntlet). Which plane serves this traversal is, in M2, unconditionally the native plane; M3/M4
+    // grow the selection. Everything the hooks read rides `GauntletCtx`.
+    let plane = NativePlane;
+    let cx = GauntletCtx {
+        app,
+        gov,
+        proto,
+        operation,
+        op_handler,
+        headers,
+        caller_token,
+        started,
+        charged_at,
+        gemini_api_version,
+    };
+
+    // STAGE 2 — plane hook: pre-admission destination verification (nothing may reject after stage 4).
+    if let Err(resp) = plane.verify_destination(&cx, model) {
+        return *resp;
+    }
+
+    // STAGE 3–4 — shared core: identity/scope already carried by `gov`; THE single budget-admission
+    // door charges the chain buckets. On rejection nothing was charged (the door finished it).
+    let (admit, downgraded) = match admission_door(app, gov, proto, model, started, charged_at) {
         Err(resp) => return *resp,
         Ok(admitted) => admitted,
     };
     let charged = admit.is_some();
-    // A budget downgrade re-pooled the admission: dispatch through the pool the charge
-    // actually landed on, not the one the client asked for.
+    // A budget downgrade re-pooled the admission: dispatch through the pool the charge actually
+    // landed on, not the one the client asked for.
     let model = downgraded.as_deref().unwrap_or(model);
 
-    let (cands, pool_name): (Vec<WeightedLane>, &str) = if let Some(c) = app.pools.get(model) {
-        (c.clone(), model)
-    } else if let Some(&i) = app.by_model.get(model) {
-        (
-            vec![WeightedLane {
-                reasoning: None,
-                idx: i,
-                weight: 1,
-                attempt_timeout_ms: None,
-            }],
-            "",
-        )
-    } else {
-        return finish_admitted(
-            app,
-            gov,
-            proto,
-            pool_label(app, model),
-            started,
-            charged_at,
-            ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::proxy::KIND_NOT_FOUND,
-                &not_found_message(model, gemini_api_version),
-            ),
-            charged,
-        );
-    };
+    // STAGE 5 — plane hook: route + egress (THE ONE ENGINE), returning the RAW egress response.
+    let resp = plane.route(&cx, model, body, parsed_v, admit).await;
 
-    // THE ONE ENGINE: every operation — chat included — forwards through the same failover/breaker/
-    // policy pipeline. JSON bodies ride parsed (`Some(v)`, parsed once by the caller); opaque bodies
-    // (multipart/binary) ride `None` and relay/translate at the byte level via the operation codecs.
-    let v = parsed_v;
-    // Session affinity: the pool's configured affinity header, read generically for EVERY operation
-    // (sticky routing is an engine capability, not a chat feature).
-    let affinity_key: Option<String> = headers
-        .get(affinity_header_for(app, model))
-        .and_then(|h| h.to_str().ok())
-        .map(str::to_string);
-    let resp = crate::proxy::forward_with_pool_parsed(
+    // STAGE 6 — shared core: audit + finish/metrics/refund. `pool_label` bounds the metric label —
+    // the effective model is a configured pool/lane on the served path and the fixed sentinel on
+    // not-found — so this ONE finish reproduces both the pre-seam served and not-found tails exactly.
+    finish_admitted(
         app,
-        cands,
-        body,
-        v,
-        // `ct` borrows `headers` (a caller-held reference that outlives this call) — no per-request
-        // `to_string` copy is needed to thread the Content-Type through.
-        if ct.is_empty() {
-            crate::proxy::APPLICATION_JSON
-        } else {
-            ct
-        },
-        caller_token,
-        // The key the auth layer resolved/synthesized for this caller — lets the routing-signal
-        // path project rate_headroom/identity for group/SSO principals whose token is not a
-        // virtual-key secret (so a token `lookup` would miss).
-        gov.key.as_ref(),
-        pool_name,
-        affinity_key.as_deref(),
+        gov,
         proto,
-        // THE THIRD AXIS IS DECIDED AT THE ARRIVAL, which is the only place that knows it. This is
-        // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
-        // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
-        // and gRPC arrivals get their own entry points and frame the same codecs.
-        crate::handlers::frame(crate::transport::Transport::Http, operation, op_handler),
-        usage_sink(app, gov, pool_name, charged_at, admit),
+        pool_label(app, model),
+        started,
+        charged_at,
+        resp,
+        charged,
     )
-    .await;
-    finish_admitted(app, gov, proto, model, started, charged_at, resp, charged)
 }
 
 /// The stable ingress name for the resolved-operation gauntlet, retained as a thin delegator to the
