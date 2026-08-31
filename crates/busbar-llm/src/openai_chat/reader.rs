@@ -677,6 +677,10 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|d| d.get("content"))
             .and_then(|c| c.as_str())
             .or(refusal_delta)
+            // Gate on `!text_block_closed`: once a `tool_calls` chunk closed the text block (step 4),
+            // a later text delta must NOT reopen it — that would emit a duplicate `BlockStart` at the
+            // already-closed index. Drop the out-of-spec resumed text instead (Cohere's discipline).
+            .filter(|_| !state.text_block_closed)
         {
             if state.thinking_block_open {
                 state.thinking_block_open = false;
@@ -712,7 +716,14 @@ impl ProtocolReader for OpenAiReader {
         //     so a foreign-dialect stream (e.g. a Gemini client) can re-emit them natively. A
         //     logprobs-only chunk (no content) still opens the text block so the delta has a block
         //     to attach to.
-        let lp_entries = read_openai_logprobs(choice0.and_then(|c| c.get("logprobs")));
+        // Gate on `!text_block_closed` for the same reason as step 3: a logprobs chunk arriving after
+        // `tool_calls` closed the text block must not reopen it (duplicate `BlockStart` at a closed
+        // index) — drop the stray logprobs rather than un-balance the stream.
+        let lp_entries = if state.text_block_closed {
+            Vec::new()
+        } else {
+            read_openai_logprobs(choice0.and_then(|c| c.get("logprobs")))
+        };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
                 // Close any still-open thinking block FIRST (a logprobs-only chunk can arrive while
@@ -764,6 +775,16 @@ impl ProtocolReader for OpenAiReader {
             // the finish-path text close below and cohere's ET_TOOL_CALL_START handling.
             if state.text_block_open {
                 state.text_block_open = false;
+                // Latch the text index CLOSED (mirroring the Cohere reader's `text_block_closed`
+                // discipline). Without this latch `text_index` stays `Some(ti)`, so a LATER
+                // `delta.content` (step 3) or `choices[].logprobs` (step 3b) chunk — reachable with
+                // OpenAI-compatible backends that stream preamble-text→tool_calls→more-text
+                // (vLLM/Azure/OpenRouter) — falls back to that still-`Some` index gated only on
+                // `!text_block_open` and emits a SECOND `BlockStart` at an index that already got
+                // `BlockStart`+`BlockStop`, un-balancing the IR (two `content_block_start` at one
+                // index on an Anthropic egress). The one-way latch makes any resumed text after
+                // tools a drop rather than an un-balancing reopen.
+                state.text_block_closed = true;
                 if let Some(ti) = state.text_index {
                     out.push(IrStreamEvent::BlockStop { index: ti });
                 }

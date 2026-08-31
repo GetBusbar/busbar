@@ -1202,6 +1202,84 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
     );
 }
 
+// Chat#1 regression: preamble-text → tool_calls → MORE text. The `tool_calls` chunk closes the text
+// block (BlockStart+BlockStop at its index); a LATER `delta.content` chunk must NOT reopen a text
+// block at that already-closed index (a second `content_block_start` at one index = an unbalanced IR
+// stream on an Anthropic egress). Reachable with OpenAI-compatible backends (vLLM/Azure/OpenRouter).
+// Pre-fix: `text_index` stays `Some` and the reopen fires on `!text_block_open`, emitting TWO
+// BlockStart at the same index. Post-fix: `text_block_closed` latches on the close and the resumed
+// text is dropped, leaving exactly one balanced text block.
+#[test]
+fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
+    let reader = OpenAiReader;
+    let mut st = crate::ir::StreamDecodeState::default();
+    let mut events = Vec::new();
+    // Chunk 1: assistant preamble TEXT.
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Thinking… "},
+                         "finish_reason": null}]
+        }),
+        &mut st,
+    ));
+    // Chunk 2: a tool call begins (closes the text block).
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"}
+            }]}, "finish_reason": null}]
+        }),
+        &mut st,
+    ));
+    // Chunk 3: the backend resumes TEXT after the tool call (the out-of-spec reopen trigger).
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "choices": [{"index": 0, "delta": {"content": "…done."}, "finish_reason": null}]
+        }),
+        &mut st,
+    ));
+    // Chunk 4: finish.
+    events.extend(reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+        }),
+        &mut st,
+    ));
+
+    // Exactly ONE text BlockStart across the whole stream — the resumed text never reopens.
+    let text_starts: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStart {
+                index,
+                block: IrBlockMeta::Text,
+            } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text_starts.len(),
+        1,
+        "the text block must be opened exactly once, never reopened at a closed index: {events:?}"
+    );
+    let text_idx = text_starts[0];
+    // …and exactly one BlockStop at that text index, so the block is balanced.
+    let text_stops = events
+        .iter()
+        .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
+        .count();
+    assert_eq!(
+        text_stops, 1,
+        "the text block index must be closed exactly once (balanced): {events:?}"
+    );
+}
+
 // --- total_tokens must saturate, never overflow-panic/wrap ---
 
 #[test]
