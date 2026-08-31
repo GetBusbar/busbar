@@ -5219,3 +5219,55 @@ fn response_blank_tool_call_id_is_synthesized() {
     }
     assert_ne!(ids[0], ids[1], "distinct tool calls must get distinct ids");
 }
+
+// Chat#7: a Thinking block (e.g. reasoning carried cross-protocol from Anthropic, or an
+// OpenAI-compatible `reasoning_content`) is DROPPED on OpenAI Chat write because the completion
+// response has no thinking output field. That drop must be OBSERVABLE (a `warn!`), not silent.
+#[test]
+fn openai_write_drops_thinking_observably() {
+    use busbar_core::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let resp = crate::ir::IrResponse {
+        role: IrRole::Assistant,
+        content: vec![
+            IrBlock::Thinking {
+                text: "let me reason about this".to_string(),
+                signature: None,
+                redacted: false,
+                cache_control: None,
+            },
+            text_block("the answer"),
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        logprobs: Vec::new(),
+    };
+
+    let cap = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(sub, || OpenAiWriter.write_response(&resp));
+
+    // The reasoning text never leaks into the completion content, and the drop warned.
+    assert_eq!(out["choices"][0]["message"]["content"], "the answer");
+    assert!(
+        !out.to_string().contains("let me reason"),
+        "reasoning text must not leak onto the OpenAI wire: {out}"
+    );
+    assert!(
+        cap.contains("thinking") || cap.contains("reasoning"),
+        "dropping a thinking block on OpenAI egress must warn: {:?}",
+        cap.messages()
+    );
+}

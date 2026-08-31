@@ -963,8 +963,27 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
 
-        // Thinking blocks are DROPPED on OpenAI write (lossy-by-necessity; OpenAI has no thinking)
-        // They are not collapsed into content.
+        // Thinking blocks are DROPPED on OpenAI write (lossy-by-necessity; the Chat Completions
+        // RESPONSE shape has no thinking/`reasoning_content` output field the writer can populate) and
+        // are not collapsed into content. This writer is reached only on a CROSS-protocol egress (a
+        // same-protocol OpenAI→OpenAI response relays raw bytes and preserves `reasoning_content`), so
+        // the drop only affects an IR carrying reasoning from another source (e.g. Anthropic thinking,
+        // or an OpenAI-compatible `reasoning_content` re-serialized cross-protocol). Rather than the
+        // prior SILENT drop, emit a `warn!` per non-empty reasoning block so the loss is observable —
+        // mirroring the drop-with-warn convention the request-side controls use.
+        for block in &resp.content {
+            if let crate::ir::IrBlock::Thinking { text, redacted, .. } = block {
+                if !text.is_empty() {
+                    tracing::warn!(
+                        redacted = *redacted,
+                        byte_len = text.len(),
+                        "dropping a reasoning/thinking block on OpenAI Chat egress: the completion \
+                         response shape has no thinking output field (lossy-by-target); the \
+                         chain-of-thought is NOT forwarded on this cross-protocol response"
+                    );
+                }
+            }
+        }
 
         let mut message_obj = serde_json::json!({
             "role": "assistant",
