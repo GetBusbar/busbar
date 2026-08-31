@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The busbar NEUTRAL SUBSTRATE — the transport-agnostic value families and helpers a plane crate
+//! (`busbar-mcp`, `busbar-a2a`) names without reaching into `busbar-core`.
+//!
+//! The Phase-B plane extraction inverts the old dependency direction: instead of the planes living
+//! inside core and reaching for core-private types, the neutral pieces they share — trust value
+//! families, egress-authorisation decisions, failover walk types, and the transport-neutral ingress
+//! helpers — move DOWN into this crate. It depends only on the plugin contracts (`busbar-api`) and
+//! the plugin ABI (`busbar-plugin`), both leaves, so a plane crate can depend on it with no path
+//! back to core and no dependency cycle.
+//!
+//! B0-b relocates the Tier-0 leaves here (the guarded-fetch network primitives, the diagnostics
+//! catalog, the audit vocabulary, the transport-neutral JSON-RPC envelope reader, the wire-format
+//! names, and the capped upstream-body read); B1 the trust/egress/failover families. Core
+//! re-exports each relocated item during the transition so the in-core call sites do not change in
+//! the same commit.
+
+// The neutral Admin API v1 DATA helpers (the path prefix + its absolute-path helper, the shared
+// named-definition read view, and the OpenAPI response-schema attach helper) a plane crate names
+// without reaching into core. Pure serde data + `serde_json` manipulation, no `App`/`Store`/audit/
+// `Scope`. Core re-exports each from its old `admin::v1` path so its own call sites are unchanged.
+pub mod api;
+// The RFC 6750 `WWW-Authenticate` challenge render for OAuth 2.1 resource-server ingresses — pure
+// `axum::http` + `serde_json`, no `App`/`Store`/auth-chain reach — so a plane crate names it without
+// reaching into core. Core re-exports it from its old `auth::challenge` path.
+pub mod auth {
+    pub mod challenge;
+}
+pub mod detached;
+pub mod diagnostics;
+pub mod net_guard;
+// wt2/neutral-utils: the five NEUTRAL transport/crypto utility leaves relocated down from
+// busbar-core so a plane crate (busbar-llm) names them via the ABI instead of reaching back into
+// `busbar_core::`. Each is pure (no plane/`App`/`Store` knowledge): JSON canonicalization + the
+// depth-guarded parser seam (`sonic-rs`), the base64/media-type helper, the AWS EventStream (SSE)
+// framing codec, the source-scoped lossless-extras namespace, and the hand-rolled SigV4 signer.
+// Core re-exports each from its old `busbar_core::<mod>` path so its own call sites are unchanged.
+pub mod eventstream;
+pub mod json;
+pub mod lossless;
+pub mod media;
+pub mod sigv4;
+// A test-only tracing Layer that captures WARN/ERROR (and, lowered, DEBUG) events so the relocated
+// `eventstream` framing tests can assert a `diag_*!` fired without a global subscriber. Copied with
+// the module it serves; core keeps its own copy for its remaining test sites.
+#[cfg(test)]
+mod test_support {
+    pub mod warn_capture;
+}
+pub mod audit {
+    pub mod vocab;
+
+    /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
+    /// full log. `pub` (was `pub(crate)` in core) so the admin audit ring and the plane audit-log ring
+    /// both name one cap across the core/substrate seam; core re-exports it at
+    /// `crate::admin::audit::MAX_AUDIT_ENTRIES` so its own call sites are unchanged.
+    pub const MAX_AUDIT_ENTRIES: usize = 1000;
+}
+pub mod ingress {
+    /// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect (gemini/bedrock)
+    /// calls to reach the core request pipeline, and the protocol-name-keyed side-table the composition
+    /// root registers those arrivals through. Core implements `ArrivalHost` over its live `App`.
+    pub mod arrival;
+    pub mod jsonrpc;
+    // B1: the transport-neutral JSON-RPC ingress SEQUENCE (`serve`), the core-refusal vocabulary and
+    // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,
+    // `metadata_handler`) stays in core and re-exports these.
+    pub mod protocol;
+}
+pub mod billing;
+pub mod breaker;
+// The proleptic-Gregorian civil-date split shared by the plane crates that render an epoch timestamp
+// (MCP task `iso8601_ms`, A2A push `status.timestamp`) without pulling a date-time crate into their
+// closure. One copy here, in the substrate both planes depend on, rather than one per plane.
+pub mod civil;
+pub mod duration;
+// The neutral protocol handler matrix — `OperationHandler`/`RequestHandler` and their codec-cell
+// value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from
+// `busbar-core` so the dialect crates implement them here; core re-exports each from
+// `busbar_core::handlers`. The engine dispatch handle and registry-resolved chat/op_for stay in core.
+pub mod handlers;
+// The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress
+// value types (`WireBody`/`EgressCtx`). Pure value families a plane crate names directly; core keeps
+// the `IrFacts` projection + the `IrHandle` wrappers and re-exports these types from their old paths.
+pub mod egress;
+pub mod ir;
+pub mod plane;
+pub mod wire;
+// D1: the NEUTRAL HOST SEAM — the `EngineHost` trait a plane calls to reach engine host capabilities
+// without naming a core type, plus the relocated lifecycle-scope arena (`DispatchScope` et al.) those
+// capabilities register handles into. Core implements `EngineHost` over its live `App` and re-exports
+// the scope types, so its own call sites are unchanged.
+pub mod plane_host;
+// S4a: the NEUTRAL ROUTE-MOUNT SEAM — the `PlaneRouteSpec` / `PlaneReqCtx` vocabulary a plane uses to
+// declare its data routes without naming `CoreRouter` / `Arc<AppHandle>`, so `PlaneDecl`'s route
+// field can be typed `fn(&dyn Any) -> Vec<PlaneRouteSpec>` and eventually travel to this crate.
+pub mod plane_routes;
+// ADMIN-2/3: the NEUTRAL PLANE TRUST-VERB SEAM — `PlaneTrust`/`PlaneVerbError`/`registered` (resolve +
+// look) and `AdminRouteSpec`/`AdminReqCtx`/`AdminReply` (route mount), so a plane declares its admin
+// trust verbs and resolves one registration without naming `AdminError`/`Scope`/`Arc<AppHandle>`/the
+// core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
+pub mod admin_verbs;
+pub mod admin_witness;
+pub mod proto;
+pub mod proxy;
+
+// ── Phase-B B1: the trust value families + decision engines, the egress gate, the catalogue and the
+// failover walk types + the lane-availability taxonomy. Each depends only on `busbar-api`
+// (`VirtualKey`) and `busbar-plugin` (`hot::VerifyDecision`) — both leaves — plus this crate's own
+// audit vocabulary. Core re-exports each relocated item so the in-core call sites do not change.
+pub mod tls;
+pub mod transport;
+pub mod trust;
+pub mod egress_auth {
+    pub mod gate;
+}
+pub mod catalogue;
+pub mod failover;
+pub mod store;
+pub mod telemetry;
+// The neutral GOVERNANCE value families — the busbar-signed token crypto, the mint-parameter struct
+// and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
+// each from its old `busbar_core::governance::…` path.
+pub mod governance;
+
+// THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
+// crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
+// Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;

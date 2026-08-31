@@ -1,0 +1,188 @@
+[package]
+name = "busbar-substrate"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The neutral shared substrate the extracted plane crates (busbar-mcp, busbar-a2a) name instead of reaching into busbar-core: trust/egress/failover value families and transport-neutral helpers, all depending only on the plugin contracts (busbar-api) and the plugin ABI (busbar-plugin)."
+license = "Apache-2.0"
+
+# Phase-B B0-b: the relocated Tier-0 leaves need exactly these — `axum`/`serde_json` for the
+# JSON-RPC envelope reader (`ingress::jsonrpc`), and `reqwest`/`bytes` for the capped upstream-body
+# read (`proxy::read_capped`). The diagnostics catalog, audit vocabulary, net-guard primitives and
+# wire-format names are pure `std`. The emit macros (which touch `tracing`) stay in core, so no
+# `tracing` edge here yet; the trust/egress/failover families and their `busbar-api`/`busbar-plugin`
+# deps arrive with B1.
+[dependencies]
+# Phase-B B1: the trust/egress/failover/catalogue value families name the plugin CONTRACTS
+# (`busbar-api`'s `VirtualKey`) and the plugin ABI (`busbar-plugin`'s `hot::VerifyDecision`). Both are
+# leaves — `busbar-api` depends only on `busbar-secret-ref`, `busbar-plugin` only on `busbar-api` — so
+# there is no path back to core and no cycle: core -> substrate -> {api, plugin}.
+busbar-api = { path = "../api" }
+busbar-plugin = { path = "../busbar-plugin" }
+axum = { workspace = true }
+serde_json = { workspace = true }
+# wt2/neutral-utils: the relocated `json` seam funnels every parse/serialize through sonic-rs (SIMD
+# on the large string-heavy LLM bodies) in ONE place; the `eventstream` framing codec CRC32s each
+# AWS EventStream prelude/message via crc32fast. Both are neutral leaves the LLM plane names here.
+sonic-rs = { workspace = true }
+crc32fast = { workspace = true }
+# The differential harness's REFERENCE stack only (`egress::build_pinned_client` + the reqwest
+# resolver seams + the fixture resolver doubles): optional, enabled by `test-support` for the
+# dependent test binaries; this crate's own tests reach it through [dev-dependencies]. A shipped
+# build resolves NO reqwest edge from this crate.
+reqwest = { workspace = true, optional = true }
+bytes = { workspace = true }
+# `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
+# the relocated guard needs tokio's `net` API; the relocated verify-on-call gate (`trust::verify`)
+# single-flights its refresh through a `tokio::sync::Mutex`, so it needs `sync` too. Still no runtime,
+# macros or timers in the shipped surface.
+# The relocated egress engine adds `time` (the CONNECT-handshake wall-clock bound rides
+# `tokio::time::timeout`) and `io-util` (the tunnel speaks the CONNECT exchange through
+# `AsyncReadExt`/`AsyncWriteExt`) to the existing `net`/`sync` floor. The OWNED pool adds `rt`:
+# its dial tasks, connection drivers, return-path watchers and on-demand reaper are detached
+# `tokio::spawn`s (detachment IS the corpse-avoidance requirement — no caller owns a dial, so no
+# cancellation can abort one). The composed binary already carried the feature via core.
+tokio = { workspace = true, features = ["net", "sync", "time", "io-util", "rt"] }
+# S2c: the relocated breaker classifier logs one deduped warning on an unrecognized error_map value
+# via `tracing::warn!` directly (not through the diag macros, which the expanding crate feeds). The
+# classifier is otherwise pure std + axum, so this is the family's only new edge.
+tracing = { workspace = true }
+# S2c: the breaker classifier's `parse_retry_after` parses an HTTP-date `Retry-After` via httpdate.
+httpdate = { workspace = true }
+# `proxy::read_capped` is generic over ANY chunk stream (`impl Stream<Item = Result<Bytes,
+# E>>`) so core's owned hyper egress and the planes' reqwest responses share one capped loop; the
+# `Stream`/`StreamExt` vocabulary comes from `futures`.
+futures = { workspace = true }
+# S2e: the shared store clock `now()` is instrumented with `busbar_timing::timeit!`. Timing is
+# default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
+# adds nothing to the shipped build.
+busbar-timing = { path = "../busbar-timing" }
+# D3: the one ASYNC `EngineHost` method (`identity_admit`) makes the neutral host seam an
+# `#[async_trait]` trait; the other methods stay plain sync fns within it.
+async-trait = { workspace = true }
+# D3 Phase-C: the relocated ask-state `Sealer` (mint/open) is pure HMAC-SHA256 over a base64url
+# payload, and `AskState` derives serde — the crypto the plane holds, with the key DERIVATION staying
+# core behind the `ask_state_sealer` seam. `serde`/`serde_json` are already reached transitively.
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# `digest_arguments` hex-encodes the salient-parameter SHA-256 digest beside the seal.
+hex = { workspace = true }
+serde = { workspace = true }
+# S4b: the relocated `PlaneDecl::parse_section`/`parse_endpoint` seam fields name `serde_yaml::Value`
+# (the positionless intermediate a plane deserializes its `tools:`/`mcp:` section through), so the
+# relocated declaration surface needs the same maintained `serde_yaml_ng` fork the rest of the tree
+# reads YAML with. Type-name only in the shipped surface; no YAML is parsed in this crate.
+serde_yaml = { workspace = true }
+# The relocated section-map split (`plane::config::split_section`) reads a plane's top-level section
+# into an insertion-ordered `IndexMap` — catalogue construction and every operator-facing listing
+# read it, and a hash-ordered listing changes between runs for no reason. The neutral half of the
+# reader (the reserved-key refusals + the two typed lifts), taking its section/noun words as params so
+# it names no plane registry; core wraps it with the `PlaneDecl` lookup for its own callers.
+indexmap = { workspace = true }
+# The relocated busbar-signed token crypto (`governance::signing`): Ed25519 mint/verify over a
+# base64url payload (`ed25519-dalek`), with first-boot key generation drawing 32 bytes straight from
+# the OS CSPRNG (`getrandom`) — the same fail-closed entropy source key secrets use. Pure crypto with
+# no `App`/`Store` reach, so it names only these two new leaf edges.
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+# The egress differential-harness FIXTURES (`egress::fixtures`): real rustls TLS/mTLS/redirect
+# servers with rcgen-minted certificates, shared by this crate's own engine tests AND (via the
+# `test-support` feature) by busbar-core's stack-A/stack-B differential harness. `rcgen` is
+# OPTIONAL and enabled only by `test-support` — a normal build of this crate does not carry it,
+# so the fixtures cost the shipped binary nothing. (This crate's own test binary reaches it
+# through [dev-dependencies] below, so `cargo test -p busbar-substrate` needs no feature.)
+rcgen = { workspace = true, optional = true }
+# The engine's TLS-posture vocabulary is production surface: `ClientIdentity` holds
+# `CertificateDer`/`PrivateKeyDer` and `from_pem` rides the same `rustls-pki-types` PEM walk
+# `reqwest::Identity::from_pem` uses — which is the R4 verdict-parity argument made structural.
+rustls-pki-types = { workspace = true }
+# THE EGRESS ENGINE (`egress::engine`, relocated verbatim from busbar-core's
+# `proxy::egress_client`): hyper_util's legacy pool client over a rustls/webpki connector plus the
+# owned scheme-scoped CONNECT tunnel. The engine is the ONE outbound stack every plane builds its
+# clients from (owner-ruled), and substrate is its neutral home, so the client/TLS edges move down
+# here with it — all already in the composed binary's graph via core, which now re-exports instead
+# of owning (net zero for the shipped build; see R10 in the design's risk register). `rustls` stops
+# being test-only in the same act: the engine's ClientConfig is production surface.
+rustls = { workspace = true }
+# `hyper::rt::{Read, Write}` — the I/O vocabulary the engine's `ObservedIo` stream delegates.
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+# The tunnel connector implements `tower::Service<http::Uri>` — the same seam every connector in
+# the hyper_util stack speaks.
+tower = { workspace = true }
+url = { workspace = true }
+# The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
+# `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
+# they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
+metrics = { workspace = true }
+# The relocated admin named-definition read view (`api::NamedDefView`) derives `schemars::JsonSchema`
+# under `openapi-schema`, and the relocated response-schema attach helper (`api::set_response_schema`)
+# is compiled only under it — the same CI-only OpenAPI derive core and the plane crates gate on.
+schemars = { workspace = true, optional = true }
+
+# The relocated `governance::signing` known-answer tests hex-encode the derived subkey seeds they pin
+# and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
+[dev-dependencies]
+# The reqwest REFERENCE stack (`build_pinned_client`, `RefuseSecondLookup`, the fixture resolver
+# doubles) is compiled under `cfg(any(test, feature = "test-support"))`, and this crate's OWN
+# suite drives it (pinned_pool_tests, resolver_tests assert doctrine-text parity against the
+# reqwest resolver) — so the plain `cfg(test)` arm needs the crate as a dev edge, exactly as the
+# reqwest-retirement commit stated. Without it, `cargo test -p busbar-substrate` (no features)
+# does not compile; workspace runs only ever worked through feature unification from core's
+# `test-support` edge. Same workspace-pinned version as the optional production entry above.
+reqwest = { workspace = true }
+hex = { workspace = true }
+# wt2/neutral-utils: the relocated `eventstream` framing tests capture WARN/ERROR events through a
+# `tracing_subscriber::Layer` (WarnCapture) to assert a `diag_*!` fired without a global subscriber.
+tracing-subscriber = { workspace = true }
+# The relocated `plane_host::identity`/`plane_host::trust_anchor` registry tests build throw-away
+# self-signed client identities and roots (the way the a2a boot resolver builds one) with `rcgen`;
+# it is used only by those moved tests, so it is a dev edge here.
+rcgen = { workspace = true }
+# The egress fixture servers (`egress::fixtures`, compiled under `cfg(test)` for this crate's own
+# suite) mint certificates; a dev edge so no feature is needed for `cargo test -p`. (`rustls` and
+# `rustls-pki-types` are full dependencies above — the engine owns them now.)
+tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
+# The owned-pool battery's ALPN-switch fixture (a TLS server that offers h2 to one connection and
+# h1-only to the next — the KnownProto transition pin) serves hyper conns over async TLS; the
+# crate is already in the shipped binary's graph via busbar-core, so this is a test-only edge to
+# an existing dependency, not a new one.
+tokio-rustls = { workspace = true }
+
+# PLANE-PURITY: the neutral substrate names no concrete plane in its SOURCE. The relocated leaves
+# gate their plane-consumed items on two NEUTRAL capability features — `dispatch` (the server-side
+# request/dispatch seam, formerly `plane-mcp`) and `relay` (the outbound agent relay/signing seam,
+# formerly `plane-a2a`). The `plane-*` names below survive ONLY as composition-root FORWARDS so
+# core/bin can keep enabling substrate's seams by plane name (`busbar-substrate/plane-mcp` →
+# `dispatch`); which plane maps to which capability lives here at the boundary, not in the source.
+# `dispatch`/`relay` are empty (they gate `#[cfg]`/`#[cfg_attr(...allow(dead_code))]` sites only) and
+# must stay DECLARED or `unexpected_cfgs` fires under `-D warnings`.
+[features]
+dispatch = []
+relay = []
+# THE PLANE-NAME FORWARDS (composition-root vocabulary; not referenced in this crate's source). Each
+# forwards to its neutral capability so core's `busbar-core/plane-{mcp,a2a}` → `busbar-substrate/
+# plane-{mcp,a2a}` edge enables the same seams it always did, in lock-step. `plane-llm` owns no
+# substrate seam yet, so it forwards to nothing — declared so the deletion gate can switch LLM off
+# across every neutral crate with one flip, exactly as it does for the other two.
+plane-mcp = ["dispatch"]
+plane-a2a = ["relay"]
+plane-llm = []
+# The CI-only OpenAPI schema derive, mirroring core and the plane crates: `api::NamedDefView`'s
+# `schemars::JsonSchema` derive and `api::set_response_schema` are gated on it. Core's own
+# `openapi-schema` FORWARDS to this so the re-exported view carries its schema impl in lock-step.
+openapi-schema = ["dep:schemars"]
+# Exposes the test-only `governance::signing::TokenSigner::mint_for_audience` to a DEPENDENT crate's
+# test binary (core's, which also dual-compiles the mcp/a2a plane tests). Never on in a normal build;
+# core enables it from its own `test-support` feature and its dev-dependency edge. Mirrors core's own
+# `test-support`, which likewise reveals a test-only surface to the crate that links its tests.
+# The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
+# this feature too, so the crates whose test binaries link this one (core's differential harness)
+# can spawn the same fixture servers this crate's own engine tests drive.
+test-support = ["dep:rcgen", "dep:reqwest"]
