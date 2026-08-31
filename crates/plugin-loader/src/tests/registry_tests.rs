@@ -24,13 +24,16 @@ fn supported_abi_auth_floor_admits_v1() {
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
 }
 
-/// THE 1.6.0 FLOOR. The store payload schema bumped 2→3 when the fourteen protocol-named durable
-/// ops were deleted for the eight neutral kind-tagged verbs — a REAL breaking change, not the
-/// additive churn earlier 1.6.0 work rode. So the store range is a single point at the current
-/// `ABI_VERSION` (=3): floor == max == 3. A v2 artifact (which speaks only the deleted named
-/// variants) is below the floor and out of range.
+/// THE 1.7.0 FLOOR. The store payload schema bumped 2→3 in 1.6.0 (the fourteen protocol-named
+/// durable ops deleted for the eight neutral kind-tagged verbs), then 3→4 in 1.7.0 when the four
+/// protocol-named durable record structs (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`)
+/// were relocated out of `busbar-api` into their owning plane crates — the WIRE is unchanged (still
+/// the eight kind-tagged neutral `PlaneRecord` variants) but a plugin built against the 1.6 typed
+/// contract can no longer be built against 1.7, so it is a REAL breaking bump on the source contract.
+/// So the store range is a single point at the current `ABI_VERSION` (=4): floor == max == 4. A v2
+/// (or v3) artifact is below the floor and out of range.
 #[test]
-fn supported_abi_store_floor_is_v3() {
+fn supported_abi_store_floor_is_v4() {
     let range = supported_abi("store");
     assert_eq!(
         range,
@@ -41,30 +44,31 @@ fn supported_abi_store_floor_is_v3() {
     );
     assert_eq!(
         busbar_plugin::cold::ABI_VERSION,
-        3,
-        "store payload schema is v3"
+        4,
+        "store payload schema is v4"
     );
     let (floor, max) = (range[0], range[1]);
     assert_eq!(
-        floor, 3,
-        "the floor MUST be 3 — a v2 named-only artifact is refused"
+        floor, 4,
+        "the floor MUST be 4 — a v2/v3 named-or-typed artifact is refused"
     );
     assert!(!(floor <= 2 && 2 <= max), "abi_version 2 is NOT in range");
-    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
+    assert!(!(floor <= 3 && 3 <= max), "abi_version 3 is NOT in range");
+    assert!(floor <= 4 && 4 <= max, "abi_version 4 is in range");
 }
 
 /// FAIL-CLOSED, the C4 safety property: a signed, otherwise-valid store artifact whose manifest
-/// declares `abi_version: 2` (the old named-only wire) is REFUSED at load under the v3 floor — a
+/// declares `abi_version: 2` (the old named-only wire) is REFUSED at load under the v4 floor — a
 /// HARD structural INVALID naming the file and the reason, never a partial registry and never
 /// answered from a default. A stale plugin that would silently drop every durable write fails LOUD
 /// instead. The trust signature is valid on purpose: the rejection is the ANTI-DOWNGRADE ABI floor,
 /// not a trust failure.
 #[test]
-fn a_v2_named_only_store_artifact_is_refused_at_load_under_the_v3_floor() {
+fn a_v2_named_only_store_artifact_is_refused_at_load_under_the_v4_floor() {
     let release = key(1);
     let dir = tmpdir("v2-refused");
     let mut m = manifest("busbar-store-legacy", "legacy", "busbar");
-    m.abi_version = 2; // the OLD named-only store wire, below the v3 floor
+    m.abi_version = 2; // the OLD named-only store wire, below the v4 floor
     let m = sign(&release, m, b"legacy lib");
     write_tarball(&dir, "legacy.tar.gz", &m, b"legacy lib");
 

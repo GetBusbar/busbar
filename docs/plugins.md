@@ -121,8 +121,10 @@ you can name the tarball anything.
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey-plugin`); `alias` is the short
 config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
-cdylib was built against. It is set **per kind**: `store` and `auth` are at `2`, `secret` and
-`hook` at `1` (auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives). The loader
+cdylib was built against. It is set **per kind**: `store` is at `4`, `auth` at `2`, `secret` and
+`hook` at `1` (auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives; store was
+bumped 2→3 in 1.6.0 for the neutral kind-tagged durable verbs and 3→4 in 1.7.0 when the plane record
+structs relocated out of `busbar-api`). The loader
 enforces a supported-version RANGE per kind, so a plugin built against an outdated (or too-new) ABI
 is refused at load rather than mis-called. See `busbar-plugin-abi` for the authoritative versions.
 

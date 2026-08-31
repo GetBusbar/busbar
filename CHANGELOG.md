@@ -44,6 +44,15 @@ If you run dashboards, read the metrics breaking change first: both request fami
   `config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only` and
   `advanced.upstream_h2_prior_knowledge` respectively. `TOKIO_WORKER_THREADS` still works as a
   fallback for `advanced.worker_threads`, and `BUSBAR_CONFIG` is unchanged.
+- **The store-plugin ABI floor is raised to `abi_version: 4`.** It bumped 2→3 in 1.6.0 (the fourteen
+  protocol-named durable ops collapsed into the eight neutral kind-tagged `PlaneRecord` verbs), and
+  now 3→4 as the four protocol-named durable record structs (`McpCallRecord`/`McpDemotionRow`/
+  `TaskRow`/`TaskEventRow`) relocate out of `busbar-api` into their owning plane crates. The durable
+  WIRE is byte-identical — still the kind-tagged neutral `PlaneRecord` variants carrying opaque
+  bodies — but a store plugin built against the older typed `busbar-api` contract can no longer be
+  compiled against it, so a stale artifact is refused at load (fail-closed, anti-downgrade) rather
+  than mis-linking. Rebuild third-party store plugins against the current `busbar-plugin` and re-pin
+  any `plugins.min_versions` floor. See [the plugin guide](docs/plugins.md).
 - **Clean-slate removal of five deprecated back-compat surfaces.** 1.x is a clean slate, so 1.6.0
   drops the retired spellings 1.5.x still accepted. Every removal ships with a migration path — no
   persisted state or boot is bricked. See [the 1.6.0 migration guide](docs/migration-1.6.md).

@@ -941,14 +941,15 @@ impl Store for DynStore {
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────────
     //
     // THE EIGHT DURABLE-PLANE OVERRIDES, and now the ONLY ones — the fourteen protocol-named
-    // overrides they replaced are deleted, `ABI_VERSION` is 3, and the store `supported_abi` floor
-    // is 3, so a stale named-only (v2) artifact is REFUSED at load and can never reach this seam.
+    // overrides they replaced are deleted, `ABI_VERSION` is 4, and the store `supported_abi` floor
+    // is 4, so a stale named-only (v2) or typed (v3) artifact is REFUSED at load and can never reach
+    // this seam.
     // Without these overrides `DynStore` would answer the neutral verbs from `Store`'s defaults, so a
     // store plugin that implements them would have its every write DISCARDED here while the call
     // reported success. Each still routes through `call_with_legacy_default`, the one choke point, so
     // a real backend error, a caught panic and a caller-protocol violation all propagate rather than
     // collapsing to an empty read; the `STATUS_UNSUPPORTED` legacy arm is now defensive only (a
-    // loaded v3 plugin knows every one of these variants).
+    // loaded v4 plugin knows every one of these variants).
     //
     // This commit's wire carries only the fields each verb routes on; the typed sidecar columns of
     // [`PlaneRecord`] it does not yet carry (`ts`/`disposition`, and `parent`/`seq` on upsert) are
