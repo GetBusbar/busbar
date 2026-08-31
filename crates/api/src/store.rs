@@ -34,28 +34,90 @@ impl ScopeRef {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each registered
-/// scope kind gets its OWN named wire field -
-/// `allowed_pools` (kind `pool`), `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools`
-/// (kind `mcp_tool`) - each a plain array of bare value strings, never a `{kind, value}` object.
-/// The in-memory `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read.
+/// THE NEUTRAL SCOPE-KIND WIRE REGISTRY — the set of `ScopeRef` kinds (beyond the built-in `pool`)
+/// that have a named wire field on [`VirtualKey`]. This crate names NO concrete plane kind: the
+/// registry starts with only `pool` (core's own admission kind) and every plane kind
+/// (`mcp_server`, `mcp_tool`, an A2A `agent`, …) is registered at boot by the composition root,
+/// which iterates each installed `PlaneDecl.scope_kinds` and calls [`register_scope_kind`]. The
+/// wire-field NAME for a kind is the frozen convention `allowed_{kind}s` (`pool`→`allowed_pools`,
+/// `mcp_server`→`allowed_mcp_servers`, …), so the config grammar keys stay byte-identical while the
+/// vocabulary itself lives in the registry rather than being hard-coded here.
+pub mod scope_kinds {
+    use std::collections::BTreeSet;
+    use std::sync::RwLock;
+
+    /// The built-in kind every deployment always has — core's admission-pool topology. Seeded so a
+    /// pool grant serializes with no registration and so the pool-only wire shape is unconditional.
+    const BUILTIN_POOL_KIND: &str = "pool";
+
+    static REGISTERED: RwLock<BTreeSet<String>> = RwLock::new(BTreeSet::new());
+
+    /// REGISTER a scope kind so a grant of that kind may be persisted (its wire field is
+    /// `allowed_{kind}s`). Idempotent. Called at boot for every `PlaneDecl.scope_kinds` entry — the
+    /// composition root supplies the string, so no plane token is ever a literal in a neutral crate.
+    pub fn register(kind: &str) {
+        let mut w = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
+        w.insert(kind.to_string());
+    }
+
+    /// Whether `kind` may be serialized to a named wire field. `pool` is always registered.
+    pub fn is_registered(kind: &str) -> bool {
+        if kind == BUILTIN_POOL_KIND {
+            return true;
+        }
+        REGISTERED
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(kind)
+    }
+
+    /// The frozen wire-field name for a scope `kind` — `allowed_{kind}s`.
+    pub fn wire_field_for(kind: &str) -> String {
+        format!("allowed_{kind}s")
+    }
+
+    /// The scope kind a wire field carries, or `None` if the field is not an `allowed_*` scope
+    /// field. The exact inverse of [`wire_field_for`] for the frozen convention.
+    pub fn kind_for_wire_field(field: &str) -> Option<String> {
+        field
+            .strip_prefix("allowed_")
+            .and_then(|rest| rest.strip_suffix('s'))
+            .map(|k| k.to_string())
+    }
+}
+
+/// REGISTER a `ScopeRef` kind's wire field — see [`scope_kinds`]. The composition root calls this at
+/// boot for every installed plane's declared `scope_kinds`, so this neutral crate carries no plane
+/// vocabulary of its own.
+pub fn register_scope_kind(kind: &str) {
+    scope_kinds::register(kind);
+}
+
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each REGISTERED
+/// scope kind gets its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`),
+/// `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools` (kind `mcp_tool`) — each a plain
+/// array of bare value strings, never a `{kind, value}` object. The in-memory
+/// `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read. The kind
+/// vocabulary lives in the neutral [`scope_kinds`] registry (populated at boot from each installed
+/// `PlaneDecl.scope_kinds`), NOT hard-coded here — so this crate names no concrete plane.
 ///
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
 ///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
-///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
+///   the per-kind fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
 ///   sees them;
 /// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
 ///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
 ///   store round-trip - a lost MCP grant AND a pool-access escalation) and never silently dropped
 ///   (which would WIDEN a `Some([unknown])` = no-scopes grant toward the `None` = all wildcard);
-/// - reassembly is canonical-by-kind (pools, then servers, then tools). `scope_allowed` is a pure
-///   membership test, so cross-kind order is never consulted.
+/// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
+///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
 ///
 /// Rows are persisted THROUGH this shape by JSON-round-tripping store backends (valkey-shaped),
 /// which is exactly where the pre-P0 kind collapse corrupted grants.
 mod virtual_key_wire {
-    use super::{ScopeRef, VirtualKey};
+    use super::{scope_kinds, ScopeRef, VirtualKey};
+    use std::collections::BTreeMap;
 
     /// The mirror struct that IS the persistence wire contract for [`VirtualKey`]. Field names,
     /// order and defaults must stay in lockstep with the in-memory struct; the only divergence is
@@ -67,10 +129,12 @@ mod virtual_key_wire {
         pub name: String,
         #[serde(default)]
         pub allowed_pools: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub allowed_mcp_servers: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub allowed_mcp_tools: Option<Vec<String>>,
+        /// The per-kind plane scope grants, each under its `allowed_{kind}s` wire field. Flattened
+        /// so a registered kind's field sits inline exactly where its named field used to
+        /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
+        /// pool-only key's wire shape is byte-identical to the pre-generalization one.
+        #[serde(flatten)]
+        pub allowed_by_kind: BTreeMap<String, Vec<String>>,
         pub enabled: bool,
         pub created_at: u64,
         #[serde(default)]
@@ -91,12 +155,9 @@ mod virtual_key_wire {
         pub minted_by: Option<String>,
     }
 
-    /// The per-kind wire partition: `(allowed_pools, allowed_mcp_servers, allowed_mcp_tools)`.
-    pub(super) type ScopePartition = (
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-    );
+    /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
+    /// every non-`pool` kind's grant under its frozen wire-field name.
+    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
     /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
@@ -104,32 +165,31 @@ mod virtual_key_wire {
         scopes: &Option<Vec<ScopeRef>>,
     ) -> Result<ScopePartition, String> {
         let Some(list) = scopes else {
-            return Ok((None, None, None));
+            return Ok((None, BTreeMap::new()));
         };
         let mut pools = Vec::new();
-        let mut servers = Vec::new();
-        let mut tools = Vec::new();
+        let mut by_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for sr in list {
-            match sr.kind.as_str() {
-                "pool" => pools.push(sr.value.clone()),
-                "mcp_server" => servers.push(sr.value.clone()),
-                "mcp_tool" => tools.push(sr.value.clone()),
-                other => {
-                    return Err(format!(
-                        "scope kind '{other}' has no registered wire field: refusing to \
-                         serialize (a kind is never silently remapped into allowed_pools or \
-                         dropped - give it its own named wire field first)"
-                    ));
-                }
+            if sr.kind == "pool" {
+                pools.push(sr.value.clone());
+            } else if scope_kinds::is_registered(&sr.kind) {
+                by_kind
+                    .entry(scope_kinds::wire_field_for(&sr.kind))
+                    .or_default()
+                    .push(sr.value.clone());
+            } else {
+                return Err(format!(
+                    "scope kind '{}' has no registered wire field: refusing to serialize (a kind \
+                     is never silently remapped into allowed_pools or dropped - register it via \
+                     its plane's `PlaneDecl.scope_kinds` first)",
+                    sr.kind
+                ));
             }
         }
         // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
-        // no-scopes survives the trip; the MCP fields are additive and omitted when empty.
-        Ok((
-            Some(pools),
-            (!servers.is_empty()).then_some(servers),
-            (!tools.is_empty()).then_some(tools),
-        ))
+        // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
+        // (a kind with no values never gets a map entry above).
+        Ok((Some(pools), by_kind))
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
@@ -137,22 +197,28 @@ mod virtual_key_wire {
     /// (fail-closed, exhaustive-across-kinds) list.
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
-        servers: Option<Vec<String>>,
-        tools: Option<Vec<String>>,
+        by_kind: BTreeMap<String, Vec<String>>,
     ) -> Option<Vec<ScopeRef>> {
-        if pools.is_none() && servers.is_none() && tools.is_none() {
+        // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
+        // foreign top-level field never becomes a phantom scope kind.
+        let scope_fields: Vec<(String, Vec<String>)> = by_kind
+            .into_iter()
+            .filter_map(|(field, values)| {
+                scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
+            })
+            .collect();
+        if pools.is_none() && scope_fields.is_empty() {
             return None;
         }
         let mut list = Vec::new();
         list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
-        list.extend(servers.into_iter().flatten().map(|value| ScopeRef {
-            kind: "mcp_server".to_string(),
-            value,
-        }));
-        list.extend(tools.into_iter().flatten().map(|value| ScopeRef {
-            kind: "mcp_tool".to_string(),
-            value,
-        }));
+        // `by_kind` is a `BTreeMap`, so kinds arrive in wire-field order (canonical, deterministic).
+        for (kind, values) in scope_fields {
+            list.extend(values.into_iter().map(|value| ScopeRef {
+                kind: kind.clone(),
+                value,
+            }));
+        }
         Some(list)
     }
 
@@ -161,15 +227,14 @@ mod virtual_key_wire {
         where
             S: serde::Serializer,
         {
-            let (allowed_pools, allowed_mcp_servers, allowed_mcp_tools) =
+            let (allowed_pools, allowed_by_kind) =
                 partition_scopes(&self.allowed_scopes).map_err(serde::ser::Error::custom)?;
             VirtualKeyWire {
                 id: self.id.clone(),
                 generation_hash: self.generation_hash.clone(),
                 name: self.name.clone(),
                 allowed_pools,
-                allowed_mcp_servers,
-                allowed_mcp_tools,
+                allowed_by_kind,
                 enabled: self.enabled,
                 created_at: self.created_at,
                 group: self.group.clone(),
@@ -195,11 +260,7 @@ mod virtual_key_wire {
                 id: w.id,
                 generation_hash: w.generation_hash,
                 name: w.name,
-                allowed_scopes: assemble_scopes(
-                    w.allowed_pools,
-                    w.allowed_mcp_servers,
-                    w.allowed_mcp_tools,
-                ),
+                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind),
                 enabled: w.enabled,
                 created_at: w.created_at,
                 group: w.group,

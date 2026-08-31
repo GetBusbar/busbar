@@ -433,6 +433,15 @@ pub(crate) fn merged_boot_plane_decls(
     // extracted plane (installed) lands in the same slot its built-in copy held — a stable sort, so
     // any plane outside the canonical list keeps its relative fold position at the tail.
     decls.sort_by_key(|d| canonical_rank(d.key));
+    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_api` scope-kind wire registry, so a
+    // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
+    // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
+    // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
+    for d in &decls {
+        for kind in d.scope_kinds {
+            busbar_api::register_scope_kind(kind);
+        }
+    }
     decls
 }
 
