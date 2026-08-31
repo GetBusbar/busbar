@@ -21,6 +21,47 @@ fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
 use crate::a2a::pin::CardPin;
 use busbar_core::config::named_map::NamedMapSection;
 
+/// A STAND-IN FOR THE LLM PLANE (`pools:`), registered so the cross-plane refusal battery below has a
+/// section owned by ANOTHER plane to reach onto. The LLM plane's declaration relocated to `busbar-llm`
+/// in the 1.7.0 plane extraction and is installed by the composition root behind `plane-llm`; this
+/// crate's own test binary never links `busbar-llm`, so — exactly as core's `registry_tests::WIDGET_PLANE`
+/// stands in for an extracted plane there — this fixture supplies the `pools:` section the way a
+/// shipped "busbar with the LLM plane" binary would. Idempotent by key, registered process-wide.
+static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
+    busbar_substrate::plane::registry::PlaneDecl {
+        key: "llm",
+        config_section: "pools",
+        scope_kinds: &["pool"],
+        subject_noun: "model pool",
+        admin_noun: "pool",
+        audit_kind: "pool_thing",
+        wire_format_names: || &["llm"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
+    };
+
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
 /// these tests read as the boot path does: the projection is this plane's grammar's
 /// (`AgentPinCfg::declaration`), the sequence is `busbar_substrate::trust::declared`'s, and the artifact is
@@ -261,6 +302,8 @@ fn a_cross_plane_hook_reference_is_refused() {
     busbar_substrate::plane::config::install_plane_sections(
         busbar_core::plane::config::config_sections,
     );
+    // Make the `pools:` (LLM) plane a section this test binary knows about — see [`LLM_POOLS_STANDIN`].
+    busbar_core::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
     for bad in [
         "pools.fast",
         "agents.planner",
