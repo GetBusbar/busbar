@@ -488,11 +488,22 @@ pub(crate) extern "C-unwind" fn gate_decide(
         let sid = unsafe { borrow_str(s.session_id_ptr, s.session_id_len) }.unwrap_or("");
         // The session substrate is SUBSUMED: the host reads its own `session_store` + clock. Gated on the
         // operator opt-in AND a non-empty session id, exactly as the in-process site gates it.
+        //
+        // The screen-cache identity is BOUND to the caller principal AND the hook-config generation,
+        // NOT the client-chosen `sid` alone: an `x-session-id` is caller-supplied and shared, so keying
+        // on it alone let a clearance cross principals (confused deputy) or survive a policy tightening.
+        // `key.id` is the resolved caller principal (empty when governance resolved none), and
+        // `config_version` is the monotonic generation a gate/policy change bumps.
+        let principal_id = key.as_ref().map(|k| k.id.as_str()).unwrap_or("");
         let incremental =
             (s.incremental != 0 && app.incremental_scan && !sid.is_empty()).then(|| {
                 crate::hooks::gate::IncrementalScan {
                     store: &app.session_store,
-                    session: crate::session::SessionKey(crate::store::fnv1a_u64(sid)),
+                    session: crate::hooks::gate::IncrementalScan::derive_session_key(
+                        sid,
+                        principal_id,
+                        app.config_version,
+                    ),
                     now_ms: crate::store::now_ms(),
                 }
             });

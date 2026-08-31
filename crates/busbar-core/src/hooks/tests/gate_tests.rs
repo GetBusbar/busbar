@@ -696,3 +696,94 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
         "a blocked piece is re-screened on retry, never skipped"
     );
 }
+
+/// IG1 (security): the incremental cleared-set identity is BOUND to the caller PRINCIPAL and the
+/// hook-config GENERATION, not the client-chosen `x-session-id` alone. `derive_session_key` yields a
+/// DIFFERENT `SessionKey` when either the principal or the generation differs — so a clearance cannot
+/// cross principals (confused deputy) or survive a policy tightening (stale clearance) — while staying
+/// stable for identical inputs.
+#[test]
+fn derive_session_key_partitions_by_principal_and_generation() {
+    let base = IncrementalScan::derive_session_key("sid", "alice", 1);
+    // Identical inputs are stable.
+    assert_eq!(base, IncrementalScan::derive_session_key("sid", "alice", 1));
+    // A DIFFERENT principal on the same session id + generation: different key (confused-deputy fix).
+    assert_ne!(base, IncrementalScan::derive_session_key("sid", "bob", 1));
+    // A generation bump (policy tightened) on the same principal + session id: different key
+    // (stale-clearance fix).
+    assert_ne!(base, IncrementalScan::derive_session_key("sid", "alice", 2));
+    // Domain separation: the principal/sid field boundary cannot alias into another split.
+    assert_ne!(
+        IncrementalScan::derive_session_key("b", "a", 1),
+        IncrementalScan::derive_session_key("", "ab", 1),
+    );
+}
+
+/// IG1 end-to-end through `decide`: a piece cleared for principal ALICE at generation G is
+/// RE-SCREENED for a DIFFERENT principal BOB on the SAME session id, and RE-SCREENED for ALICE again
+/// after a generation bump — the two invalidations the old `fnv1a(sid)`-only key silently skipped.
+#[tokio::test]
+async fn incremental_scan_reclears_across_principal_and_generation() {
+    let store = SessionStore::new(64, None);
+    let facts = tool_call();
+    let sid = "shared-session";
+
+    // Run one turn under a derived session key; returns whether the hook SAW the content (i.e. it was
+    // re-screened rather than skipped as already-cleared). A clean Abstain caches the piece.
+    async fn turn(store: &SessionStore, facts: &InvokeReq, session: SessionKey) -> bool {
+        let spy = Arc::new(Spy {
+            reply: RoutingDecision::Abstain,
+            seen: Mutex::new(None),
+        });
+        let g = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Weighted,
+            true,
+            true,
+        );
+        let v = decide(
+            &g,
+            &GateSubject {
+                facts,
+                container: "filesystem",
+                ingress_protocol: "mcp",
+                request_id: 1,
+                key: None,
+                incremental: Some(IncrementalScan {
+                    store,
+                    session,
+                    now_ms: 0,
+                }),
+            },
+        )
+        .await;
+        assert!(matches!(v, GateVerdict::Proceed));
+        let saw = spy.seen.lock().unwrap().is_some();
+        saw
+    }
+
+    let alice_g1 = IncrementalScan::derive_session_key(sid, "alice", 1);
+    let bob_g1 = IncrementalScan::derive_session_key(sid, "bob", 1);
+    let alice_g2 = IncrementalScan::derive_session_key(sid, "alice", 2);
+
+    // ALICE screens the piece clean at generation 1.
+    assert!(
+        turn(&store, &facts, alice_g1).await,
+        "first sight is screened"
+    );
+    // Same principal + generation: the piece is now cleared (the mechanism still caches within a key).
+    assert!(
+        !turn(&store, &facts, alice_g1).await,
+        "re-cleared for the same principal + generation"
+    );
+    // BOB, SAME session id, must NOT inherit ALICE's clearance — re-screened.
+    assert!(
+        turn(&store, &facts, bob_g1).await,
+        "a different principal on the same session id must re-screen (confused-deputy fix)"
+    );
+    // ALICE again, but after a policy tightening (generation bump) — re-screened.
+    assert!(
+        turn(&store, &facts, alice_g2).await,
+        "a policy-generation bump must invalidate the clearance (stale-clearance fix)"
+    );
+}

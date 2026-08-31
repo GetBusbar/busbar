@@ -131,6 +131,33 @@ type ClearedSets =
 impl IncrementalScan<'_> {
     const OWNER: crate::session::OwnerKey = "gate.screen";
 
+    /// Derive the screen-cache session identity, BINDING it to the caller PRINCIPAL and the
+    /// hook-config GENERATION — never the client-chosen session id alone.
+    ///
+    /// The raw `x-session-id` / `contextId` is CLIENT-supplied and freely shared, so keying the
+    /// cleared-set on `fnv1a(sid)` alone was two holes at once: (1) a CONFUSED DEPUTY — content
+    /// screened clean under a privileged principal counted as cleared for a DIFFERENT principal that
+    /// reused the same session id; and (2) STALE CLEARANCE — after a gate/policy was TIGHTENED,
+    /// previously-cleared content stayed cleared because the key carried no policy generation. Folding
+    /// the resolved principal id and the monotonic config generation into the opaque `u64` confines
+    /// every cleared set to exactly one `(principal, policy-generation, session)`; a mismatch on
+    /// either simply misses the slot and re-screens (safe degradation, never a wrongful skip).
+    ///
+    /// Domain-separated: each field is length-tagged and delimited so no boundary can alias into
+    /// another (principal `"a"` + sid `"b"` can never collide with principal `""` + sid `"ab"`).
+    pub(crate) fn derive_session_key(
+        sid: &str,
+        principal_id: &str,
+        hook_generation: u64,
+    ) -> crate::session::SessionKey {
+        let material = format!(
+            "g={hook_generation}\u{1f}p{}={principal_id}\u{1f}s{}={sid}",
+            principal_id.len(),
+            sid.len()
+        );
+        crate::session::SessionKey(crate::store::fnv1a_u64(&material))
+    }
+
     /// Get-or-create this session's cleared-sets slot. The get-then-put is not atomic, but a lost race
     /// only drops a cleared entry (→ a re-screen), which is safe degradation.
     fn sets(&self) -> std::sync::Arc<ClearedSets> {
