@@ -118,3 +118,30 @@ fn tool_use_with_id_parses() {
         "the tool_use id must be carried into the IR verbatim"
     );
 }
+
+// ── Chat#2: top-level `tools` type ───────────────────────────────────────────
+// A PRESENT-but-wrong-typed `tools` was silently coerced to empty (`as_array().unwrap_or(&[])`),
+// so a client sending `"tools":{...}` proceeded TOOL-LESS at HTTP 200 — its tools stripped with no
+// error. It must reject like `messages`/`content` do.
+#[test]
+fn top_level_tools_wrong_typed_rejects() {
+    for bad in [
+        serde_json::json!({"model": "x", "max_tokens": 16, "messages": [], "tools": {"a": 1}}),
+        serde_json::json!({"model": "x", "max_tokens": 16, "messages": [], "tools": "nope"}),
+        serde_json::json!({"model": "x", "max_tokens": 16, "messages": [], "tools": 7}),
+    ] {
+        assert_ir_parse_reject(
+            AnthropicReader.read_request(&bad),
+            "a present-but-wrong-typed tools must reject",
+        );
+    }
+    // An ABSENT or empty-array `tools` stays lenient.
+    AnthropicReader
+        .read_request(&serde_json::json!({"model": "x", "max_tokens": 16, "messages": []}))
+        .expect("absent tools must stay lenient");
+    AnthropicReader
+        .read_request(
+            &serde_json::json!({"model": "x", "max_tokens": 16, "messages": [], "tools": []}),
+        )
+        .expect("empty-array tools must parse");
+}

@@ -134,3 +134,26 @@ fn tool_call_with_id_parses() {
         "the tool_call id must be carried into the IR verbatim"
     );
 }
+
+// ── Chat#2: top-level `tools` type ───────────────────────────────────────────
+// A PRESENT-but-wrong-typed `tools` was silently coerced to empty, so a client sending
+// `"tools":{...}` proceeded TOOL-LESS at HTTP 200. It must reject like `messages` does.
+#[test]
+fn top_level_tools_wrong_typed_rejects() {
+    for bad in [
+        serde_json::json!({"model": "x", "messages": [], "tools": {"a": 1}}),
+        serde_json::json!({"model": "x", "messages": [], "tools": "nope"}),
+        serde_json::json!({"model": "x", "messages": [], "tools": 7}),
+    ] {
+        assert_ir_parse_reject(
+            OpenAiReader.read_request(&bad),
+            "a present-but-wrong-typed tools must reject",
+        );
+    }
+    OpenAiReader
+        .read_request(&serde_json::json!({"model": "x", "messages": []}))
+        .expect("absent tools must stay lenient");
+    OpenAiReader
+        .read_request(&serde_json::json!({"model": "x", "messages": [], "tools": []}))
+        .expect("empty-array tools must parse");
+}

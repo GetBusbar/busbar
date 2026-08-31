@@ -109,3 +109,26 @@ fn function_call_with_id_parses() {
         .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { id, .. } if id == "call_abc"));
     assert!(has_id, "the call_id must be carried into the IR verbatim");
 }
+
+// ── Chat#2: top-level `tools` type ───────────────────────────────────────────
+// A PRESENT-but-wrong-typed `tools` was silently coerced to empty, so a client sending
+// `"tools":{...}` proceeded TOOL-LESS at HTTP 200. It must reject like `input` does.
+#[test]
+fn top_level_tools_wrong_typed_rejects() {
+    for bad in [
+        serde_json::json!({"model": "x", "input": "hi", "tools": {"a": 1}}),
+        serde_json::json!({"model": "x", "input": "hi", "tools": "nope"}),
+        serde_json::json!({"model": "x", "input": "hi", "tools": 7}),
+    ] {
+        assert_ir_parse_reject(
+            ResponsesReader.read_request(&bad),
+            "a present-but-wrong-typed tools must reject",
+        );
+    }
+    ResponsesReader
+        .read_request(&serde_json::json!({"model": "x", "input": "hi"}))
+        .expect("absent tools must stay lenient");
+    ResponsesReader
+        .read_request(&serde_json::json!({"model": "x", "input": "hi", "tools": []}))
+        .expect("empty-array tools must parse");
+}

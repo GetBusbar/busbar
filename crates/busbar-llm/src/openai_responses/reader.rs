@@ -471,7 +471,15 @@ impl ProtocolReader for ResponsesReader {
 
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
-            for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
+            // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
+            // `input` type-check) rather than coercing to empty, which would forward a tool-less
+            // request upstream at HTTP 200 and silently strip the caller's tools.
+            let tools_arr = tools_val.as_array().ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
+            for tool_val in tools_arr {
                 // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
                 // function tools (`type:"function"` with a flat `name`/`parameters`) with provider-
                 // HOSTED tools (`type:"web_search"`/`"file_search"`/`"code_interpreter"`/
