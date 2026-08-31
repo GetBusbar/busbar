@@ -568,3 +568,32 @@ fn anthropic_drops_penalties_seed_n_observably() {
         );
     }
 }
+
+// Chat#5: a streamed REDACTED (encrypted) reasoning delta has no Anthropic streaming-delta analog and
+// is dropped on cross-protocol egress — but the drop must be OBSERVABLE (a `warn!`) rather than the
+// prior silent `return None`, so the lost reasoning-reuse blob is visible to an operator. (Full
+// preservation is deferred: it needs the bytes on the block-start meta.)
+#[test]
+fn streamed_redacted_reasoning_drop_is_observable() {
+    use busbar_core::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let ev = crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::RedactedReasoningDelta("ENCRYPTED_BLOB".to_string()),
+    };
+
+    let cap = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(sub, || AnthropicWriter.write_response_event(&ev));
+
+    assert!(
+        out.is_none(),
+        "the redacted-reasoning delta has no Anthropic streaming analog and emits no wire event"
+    );
+    assert!(
+        cap.contains("redacted"),
+        "dropping streamed redacted reasoning on Anthropic egress must warn: {:?}",
+        cap.messages()
+    );
+}

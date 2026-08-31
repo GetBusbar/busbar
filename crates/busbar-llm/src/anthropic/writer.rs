@@ -562,8 +562,27 @@ impl ProtocolWriter for AnthropicWriter {
                         serde_json::json!({ "type": DELTA_TYPE_SIGNATURE, "signature": sig })
                     }
                     // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Anthropic
-                    // streaming-delta analog — emit nothing for this frame.
-                    IrDelta::RedactedReasoningDelta(_) => return None,
+                    // streaming-delta analog: native Anthropic carries `redacted_thinking` bytes INLINE
+                    // on the `content_block_start` and sends NO deltas for a redacted block, so a
+                    // stateless one-event-in/one-event-out writer that has already emitted the block
+                    // start cannot faithfully relocate the bytes onto it. The bytes are therefore
+                    // dropped on this cross-protocol egress (e.g. Bedrock/Responses→Anthropic streaming)
+                    // — but that drop must be OBSERVABLE rather than the prior silent `return None`, so
+                    // an operator can see the reasoning-reuse blob was lost. Full preservation needs the
+                    // bytes carried on the block-start meta (an `IrBlockMeta` change touching every
+                    // protocol writer + both redacted stream readers), deferred as out of this
+                    // minimal-safe fix's scope. The non-stream path (`write_block`) preserves it.
+                    IrDelta::RedactedReasoningDelta(bytes) => {
+                        tracing::warn!(
+                            byte_len = bytes.len(),
+                            "dropping streamed redacted (encrypted) reasoning on Anthropic egress: the \
+                             Messages streaming API carries redacted_thinking bytes only on \
+                             content_block_start (no delta), which a stateless streaming writer cannot \
+                             reconstruct after the block has opened; the opaque reasoning-reuse blob is \
+                             NOT forwarded on this cross-protocol stream"
+                        );
+                        return None;
+                    }
                     // Anthropic has no logprobs concept at all — lossy-by-target, emit nothing.
                     IrDelta::LogprobsDelta(_) => return None,
                     // STREAMING citation: re-emit each carried citation as its own native
