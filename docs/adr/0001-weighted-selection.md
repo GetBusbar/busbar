@@ -1,6 +1,6 @@
 # ADR-0001: Smooth weighted round-robin (SWRR) member selection
 
-> Status: accepted. `ADR-0001` is referenced in `crates/busbar/src/store/mod.rs`.
+> Status: accepted. `ADR-0001` is referenced in `crates/busbar-core/src/store/in_memory/availability.rs`.
 
 ## Context
 
@@ -18,7 +18,7 @@ the hot request path.
 Use Nginx-style **smooth weighted round-robin**. Each candidate cell carries a
 signed `current_weight` (an `AtomicI64` on `BreakerCell` / `LaneState`). On each
 selection over the healthy candidate subset (implementation:
-`InMemoryStore::select_weighted_for` in `crates/busbar/src/store/mod.rs`):
+`HealthState::select_weighted_for` in `crates/busbar-core/src/store/in_memory/mod.rs`):
 
 1. Filter candidates to the usable subset (not dead, budget remaining, breaker
    cell admits, see [ADR-0002](0002-circuit-breaker.md)).

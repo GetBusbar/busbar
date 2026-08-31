@@ -1,8 +1,8 @@
 # ADR-0002: Circuit breaker: disposition taxonomy & recovery
 
 > Status: accepted. `ADR-0002` is referenced throughout
-> `crates/busbar/src/breaker.rs`, `crates/busbar/src/store/mod.rs`,
-> `crates/busbar/src/proxy/engine/mod.rs`, and `crates/busbar/src/config/mod.rs`.
+> `crates/busbar-substrate/src/breaker.rs`, `crates/busbar-core/src/store/mod.rs`,
+> `crates/busbar-core/src/proxy/engine/mod.rs`, and `crates/busbar-core/src/config/mod.rs`.
 
 ## Context
 
@@ -45,7 +45,7 @@ is recognized as a built-in canonical code.
 | `ClientError` | `ClientFault` |
 | `ContextLength` | `ContextLength` |
 
-Outcome rules (applied in `crates/busbar/src/proxy/engine/mod.rs`, written via `StateStore`):
+Outcome rules (applied in `crates/busbar-core/src/proxy/engine/mod.rs`, written via `StateStore`):
 
 - **`ClientFault`**: relay the upstream error verbatim to the caller; record
   *nothing* against the breaker (a separate `client_fault` counter tracks it for

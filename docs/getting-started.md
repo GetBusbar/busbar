@@ -1,41 +1,61 @@
 # Getting Started with Busbar
 
-Busbar is your AI control plane: a single self-hosted, static Rust binary that sits between your application and your AI providers. Point any SDK at it (OpenAI, Anthropic, Gemini, Cohere, Bedrock, or the OpenAI Responses API) and Busbar routes each request to the provider (or pool of providers) you configured, translating between wire protocols when the ingress and egress differ.
+Busbar is your AI control plane: a single self-hosted, self-contained Rust binary (no runtime, no interpreter, no sidecar) that sits between your application and your AI providers. Point any SDK at it (OpenAI, Anthropic, Gemini, Cohere, Bedrock, or the OpenAI Responses API) and Busbar routes each request to the provider (or pool of providers) you configured, translating between wire protocols when the ingress and egress differ.
 
 It does the same job as LiteLLM or OpenRouter (one API in front of every model and provider) and goes further: it speaks six provider protocols natively (so any vendor's SDK can point at it, not just OpenAI-shaped ones), ships as one binary with no Python runtime and no third party in your data path, and gives you per-(pool, lane) circuit breaking with in-flight failover. You run it in your own infra and it holds your keys.
 
 This guide takes you from zero to a working request in about five minutes.
 
-<svg viewBox="0 0 800 130" role="img" aria-label="Four steps to a working request: install the binary, write a minimal config, run Busbar, then send a request." style="width:100%;height:auto;max-width:800px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 0 820 300" role="img" aria-label="The Busbar request path: a client SDK using OpenAI, Anthropic, or Gemini ingress sends to Busbar on port 8080, which authenticates the caller, routes by model name to a pool, translates through its intermediate representation when the ingress and egress protocols differ, and picks a lane by weighted smooth round-robin with per-lane circuit breaking before calling the provider (Anthropic, OpenAI, Bedrock, and others). When a lane's breaker is open the in-flight request fails over to a sibling member of the pool." style="width:100%;height:auto;max-width:820px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
-    <marker id="gs-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="gs-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a3e635"/>
+    </marker>
+    <marker id="gs-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="800" height="130" fill="#ffffff"/>
-  <g stroke="#94a3b8" stroke-width="2" marker-end="url(#gs-arw)">
-    <line x1="185" y1="68" x2="203" y2="68"/>
-    <line x1="375" y1="68" x2="393" y2="68"/>
-    <line x1="565" y1="68" x2="583" y2="68"/>
+  <rect x="0" y="0" width="820" height="300" fill="#111a2e"/>
+  <!-- primary request flow -->
+  <g stroke="#a3e635" stroke-width="2.5">
+    <line x1="168" y1="150" x2="206" y2="150" marker-end="url(#gs-flow)"/>
+    <line x1="612" y1="150" x2="650" y2="150" marker-end="url(#gs-flow)"/>
   </g>
+  <!-- client -->
+  <rect x="16" y="110" width="150" height="80" rx="12" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="91" y="142" text-anchor="middle" fill="#e6edf7" font-size="14" font-weight="700">Client SDK</text>
+  <text x="91" y="161" text-anchor="middle" fill="#94a3b8" font-size="10">OpenAI / Anthropic /</text>
+  <text x="91" y="175" text-anchor="middle" fill="#94a3b8" font-size="10">Gemini ingress</text>
+  <!-- provider -->
+  <rect x="652" y="110" width="152" height="80" rx="12" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="728" y="142" text-anchor="middle" fill="#e6edf7" font-size="14" font-weight="700">Provider</text>
+  <text x="728" y="161" text-anchor="middle" fill="#94a3b8" font-size="10">Anthropic / OpenAI /</text>
+  <text x="728" y="175" text-anchor="middle" fill="#94a3b8" font-size="10">Bedrock ...</text>
+  <!-- busbar core -->
+  <rect x="208" y="28" width="404" height="244" rx="14" fill="#a3e635" fill-opacity="0.05" stroke="#a3e635" stroke-opacity="0.5" stroke-width="2"/>
+  <text x="410" y="53" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">Busbar  :8080</text>
+  <!-- internal pipeline -->
   <g>
-    <rect x="15"  y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="43"  cy="60" r="14" fill="#a3e635"/><text x="43"  y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">1</text>
-    <text x="66"  y="57" fill="#0f172a" font-size="14" font-weight="700">Install</text>
-    <text x="66"  y="77" fill="#64748b" font-size="10.5">one-line script</text>
-    <rect x="205" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="233" cy="60" r="14" fill="#a3e635"/><text x="233" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">2</text>
-    <text x="256" y="57" fill="#0f172a" font-size="14" font-weight="700">Configure</text>
-    <text x="256" y="77" fill="#64748b" font-size="10.5">one provider + model</text>
-    <rect x="395" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="423" cy="60" r="14" fill="#a3e635"/><text x="423" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">3</text>
-    <text x="446" y="57" fill="#0f172a" font-size="14" font-weight="700">Run</text>
-    <text x="446" y="77" fill="#64748b" font-size="10.5">serves on :8080</text>
-    <rect x="585" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="613" cy="60" r="14" fill="#a3e635"/><text x="613" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">4</text>
-    <text x="636" y="57" fill="#0f172a" font-size="14" font-weight="700">Request</text>
-    <text x="636" y="77" fill="#64748b" font-size="10.5">point any SDK at it</text>
+    <circle cx="244" cy="74" r="7" fill="#a3e635"/><text x="244" y="78" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">1</text>
+    <text x="262" y="78" fill="#e6edf7" font-size="11.5">Authenticate the caller</text>
+    <circle cx="244" cy="102" r="7" fill="#a3e635"/><text x="244" y="106" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">2</text>
+    <text x="262" y="106" fill="#e6edf7" font-size="11.5">Route by model name to a pool</text>
+    <circle cx="244" cy="130" r="7" fill="#a3e635"/><text x="244" y="134" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">3</text>
+    <text x="262" y="134" fill="#e6edf7" font-size="11.5">IR translate<tspan fill="#94a3b8"> if ingress != egress</tspan></text>
+    <circle cx="244" cy="158" r="7" fill="#a3e635"/><text x="244" y="162" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">4</text>
+    <text x="262" y="162" fill="#e6edf7" font-size="11.5">Pick a lane<tspan fill="#94a3b8"> via weighted SWRR + breaker</tspan></text>
   </g>
+  <!-- pool lanes with failover -->
+  <text x="232" y="192" fill="#94a3b8" font-size="10" font-weight="600">pool</text>
+  <path d="M373,198 C373,174 455,174 455,198" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#gs-fail)"/>
+  <text x="414" y="171" text-anchor="middle" fill="#94a3b8" font-size="9.5">failover</text>
+  <rect x="248" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#f87171" stroke-opacity="0.55" stroke-width="1.5"/>
+  <text x="323" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">claude-sonnet-4-5</text>
+  <circle cx="278" cy="238" r="3.5" fill="#f87171"/>
+  <text x="333" y="241" text-anchor="middle" fill="#fca5a5" font-size="10">breaker open</text>
+  <rect x="430" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="505" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">gpt-4o</text>
+  <text x="505" y="241" text-anchor="middle" fill="#94a3b8" font-size="10">sibling member</text>
 </svg>
 
 ---
@@ -60,6 +80,22 @@ Drops `busbar` and `providers.yaml` where you run it (no sudo). To install onto 
 
 **Or download manually**: grab the archive for your platform from the [latest release](https://github.com/GetBusbar/busbar/releases/latest) (Linux `x86_64`/`aarch64`, macOS Intel/Apple Silicon, Windows `x86_64`), plus the provider catalog from [getbusbar.com/providers.yaml](https://getbusbar.com/providers.yaml). The binary is self-contained (no runtime, no virtualenv, no dependencies):
 
+**Which 64-bit ARM Linux build do I need?** There are two, of equal standing — they are the same
+release, built for two CPU generations:
+
+| Your hardware | Download this |
+| --- | --- |
+| Any cloud ARM (AWS Graviton, Ampere, Google Axion), Raspberry Pi 5, Apple Silicon running Linux, anything 2016+ | `busbar-aarch64-unknown-linux-gnu.tar.gz` (the default) |
+| Raspberry Pi 4 / Pi 400 / CM4, or other older ARMv8.0 boards (Cortex-A72/A53 class) | `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` |
+
+The default build requires ARMv8.1 or newer so it can use the CPU's native atomic instructions —
+measurably faster under concurrency, and every ARM server or desktop chip made since 2016 has
+them. The `-armv8.0` build is the same binary recipe without that requirement, so it runs on the
+Raspberry Pi 4 generation. If you pick wrong in the fast direction nothing breaks; if you run the
+default build on a Pi 4 it stops immediately with an "illegal instruction" error — switch to the
+`-armv8.0` download. Not sure what you have? `busbar --build-info` on the running binary prints
+`target-features=+lse` for the default build and `target-features=default` for the compat one.
+
 ```bash
 tar -xzf busbar-*.tar.gz   # extracts the `busbar` binary
 chmod +x busbar
@@ -75,7 +111,19 @@ docker run -d -p 8080:8080 \
   getbusbar/busbar
 ```
 
-The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.0`) or ride `latest`. If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
+The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
+
+The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_KEY \
+  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
+  -v busbar-data:/var/lib/busbar \
+  getbusbar/busbar
+```
+
+with `config.overlay.file: /var/lib/busbar/busbar-overlay.json` in your `config.yaml`. Or set `config.locked: true` to declare the read-only posture deliberately and silence the warning.
 
 **Or build from source** (requires Rust 1.97+):
 
@@ -110,7 +158,7 @@ providers:
     api_key: { env: ANTHROPIC_KEY }   # the NAME of the env var to read the key from, NOT the key itself
 
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
 ```
 
@@ -140,10 +188,10 @@ Save this as `config.yaml` in your working directory.
 # the actual secret, this is what `api_key: { env: ANTHROPIC_KEY` } in config.yaml points at
 export ANTHROPIC_KEY=sk-ant-...
 
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 ```
 
-Busbar logs a startup event indicating the listen address (`busbar listening`, with the bound address as a field). It accepts requests immediately: Prometheus/TSC calibration is deferred to a background thread, so it never blocks the hot path at boot.
+Busbar logs a startup event per listener indicating the listen address (`busbar listening`, with the bound address as a field) — on unix you'll see one line per data-plane worker, all on the same port. It accepts requests immediately: Prometheus/TSC calibration is deferred to a background thread, so it never blocks the hot path at boot.
 
 **Check liveness:**
 
@@ -163,7 +211,7 @@ curl -s http://localhost:8080/healthz
 The model name goes in the URL path: `POST /<model-name>/v1/messages`. Busbar resolves `<model-name>` against your configured pools first, then your models, and routes the request to the matching lane.
 
 ```bash
-curl -s http://localhost:8080/claude-sonnet/v1/messages \
+curl -s http://localhost:8080/claude-sonnet-4-5/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "max_tokens": 256,
@@ -181,7 +229,7 @@ The model name goes in the request body: `POST /v1/chat/completions`. This works
 curl -s http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet",
+    "model": "claude-sonnet-4-5",
     "messages": [{"role": "user", "content": "What is a busbar?"}]
   }' | jq .
 ```
@@ -199,13 +247,13 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="claude-sonnet",     # busbar model name, not OpenAI's
+    model="claude-sonnet-4-5",     # busbar model name, not OpenAI's
     messages=[{"role": "user", "content": "What is a busbar?"}],
 )
 print(response.choices[0].message.content)
 ```
 
-The OpenAI SDK has no idea it's talking to an Anthropic backend. Swap `model="claude-sonnet"` to any model or pool name you configured; no other change required.
+The OpenAI SDK has no idea it's talking to an Anthropic backend. Swap `model="claude-sonnet-4-5"` to any model or pool name you configured; no other change required.
 
 ### Via the Anthropic Python SDK
 
@@ -218,7 +266,7 @@ client = anthropic.Anthropic(
 )
 
 message = client.messages.create(
-    model="claude-sonnet",     # the model name from your config
+    model="claude-sonnet-4-5",     # the model name from your config
     max_tokens=256,
     messages=[{"role": "user", "content": "What is a busbar?"}],
 )
@@ -252,7 +300,7 @@ providers:
     api_key: { env: OPENAI_KEY }
 
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
     max_concurrent: 20
   gpt-4o:
@@ -262,7 +310,7 @@ models:
 pools:
   smart:
     members:
-      - model: claude-sonnet
+      - model: claude-sonnet-4-5
         weight: 2
       - model: gpt-4o
         weight: 1
@@ -278,7 +326,7 @@ export ANTHROPIC_KEY=sk-ant-...
 export OPENAI_KEY=sk-...
 export BUSBAR_ADMIN_TOKEN=your-admin-token
 
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 
 # Mint a signed key for your app (expires in 90 days by default):
 BUSBAR_CLIENT_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
@@ -302,11 +350,11 @@ curl -s http://localhost:8080/smart/v1/messages \
   -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-With `weight: 2` on `claude-sonnet` and `weight: 1` on `gpt-4o`, Busbar distributes via smooth weighted round-robin, roughly two of every three requests go to Claude and one to GPT-4o. If `claude-sonnet`'s breaker trips (on upstream 5xx, 429, timeout, or network errors), Busbar fails the request over to `gpt-4o`, provided the failure happens before the first byte of the response reaches your client. After the first byte, in-flight failover is no longer possible.
+With `weight: 2` on `claude-sonnet-4-5` and `weight: 1` on `gpt-4o`, Busbar distributes via smooth weighted round-robin, roughly two of every three requests go to Claude and one to GPT-4o. If `claude-sonnet-4-5`'s breaker trips (on upstream 5xx, 429, timeout, or network errors), Busbar fails the request over to `gpt-4o`, provided the failure happens before the first byte of the response reaches your client. After the first byte, in-flight failover is no longer possible.
 
 ### What "cross-protocol" means here
 
-`claude-sonnet` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet`, it translates the request from OpenAI to Anthropic format, and the response back, losslessly, through its intermediate representation. When it routes to `gpt-4o`, it passes through natively. Your client never needs to know.
+`claude-sonnet-4-5` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet-4-5`, it translates the request from OpenAI to Anthropic format, and the response back, through its intermediate representation: every modelled field arrives in the other protocol's native shape, and what has no place to go is dropped at the seam rather than forwarded in a shape either end would reject. What that does and does not cover, including what is still lost in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). When it routes to `gpt-4o`, it passes through natively, byte-for-byte. Your client never needs to know.
 
 ---
 
@@ -329,7 +377,7 @@ curl -s http://localhost:8080/stats \
 
 `/stats` goes through the auth middleware, so with a non-empty `auth.chain` it requires a valid key; under `chain: []` it is open. It returns a per-lane snapshot: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `ok`/`err`/`client_fault` counts, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`, `streak`, and `budget`. A key restricted to specific `allowed_pools` only sees the pools and lanes it can reach.
 
-**Prometheus metrics** (`/metrics`) — opt-in; add an `export:` instance with `module: prometheus` and a required `settings.buffer_seconds` retention window first, otherwise the route is not mounted:
+**Prometheus metrics** (`/metrics`) are opt-in. Add an `export:` instance with `module: prometheus` and a required `settings.buffer_seconds` retention window first, otherwise the route is not mounted:
 
 ```bash
 curl -s http://localhost:8080/metrics \
@@ -392,7 +440,7 @@ If you route OpenAI-format requests to an Anthropic backend, Anthropic's API req
 
 ```yaml
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
     max_concurrent: 20
     default_max_tokens: 8192
@@ -419,7 +467,7 @@ Before taking Busbar out of dev mode:
 
 ## What's next
 
-- **Deploy it**: running Busbar for real — process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
+- **Deploy it**: running Busbar for real. Process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
 - **Full config reference**: every field, default, and validation rule ([`docs/configuration.md`](configuration.md))
 - **Pools, breakers, and failover**: weighting, breaker tuning, session affinity, context-length failover, and exhaustion policies ([`docs/configuration.md#pools`](configuration.md#pools))
 - **Running in production**: TLS termination, systemd, Docker, `/stats` monitoring, and breaker diagnosis ([`docs/operations.md`](operations.md))

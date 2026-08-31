@@ -10,7 +10,7 @@ and/or gates) in one `hooks: [...]` list. Hooks are defined once under a top-lev
 registry and referenced by name, on a pool, or globally.
 
 > **Reading this in 1.5.3 or later?** This guide describes the 1.2.x → 1.3 hop, so **every YAML
-> block below is dated** — both the "1.2.x" and the "1.3" halves. The 1.3 hook REGISTRY it targets
+> block below is dated**: both the "1.2.x" and the "1.3" halves. The 1.3 hook REGISTRY it targets
 > (`socket:` / `webhook:` transports, `send_prompt`) was retired in 1.5.0, and 1.5.3 reshaped hooks
 > again into a top-level `hooks:` DEFINITION map of `kind: hook` plugins referenced by bare name.
 > `busbar --migrate-config <config.yaml>` takes a 1.2.x config all the way to the 1.5.3 shape in one
@@ -41,8 +41,8 @@ pools:
 
 `route: weighted` (or an absent `route:`) needs no change beyond deleting the key. Weighted is
 still the zero-cost default when a pool names no strategy. Boot error if you leave `route: cheapest`:
-`the `route:` pool key was removed in 1.3; a pool names its ordering strategy in its `hooks:` list —
-write `hooks: [<name>]``.
+`the `route:` pool key was removed in 1.3; a pool names its ordering strategy in its `hooks:` list.
+Write `hooks: [<name>]``.
 
 ---
 
@@ -54,7 +54,7 @@ gone.
 
 <!-- config-check: historical -->
 ```yaml
-# 1.2.x — transport named in route:, config inline
+# 1.2.x: transport named in route:, config inline
 pools:
   my-pool:
     route: socket
@@ -64,7 +64,7 @@ pools:
       on_error: weighted
     members: [...]
 
-# 1.3 — define the hook once, name it in the pool's list
+# 1.3: define the hook once, name it in the pool's list
 hooks:
   my-router:
     kind: gate
@@ -144,7 +144,7 @@ under top-level `hooks:` (kind: gate, socket:) and name it in the pool's `hooks:
 > **1.5.0 note:** `kind: hook` dlopen plugins are the new first-class mechanism for custom policies
 > in 1.5.0. A socket hook binary (above) still works and remains a valid choice, especially for
 > out-of-process isolation. For in-process performance and the full plugin trust model, consider
-> building a signed `kind: hook` plugin tarball instead — see [plugins.md](plugins.md) and
+> building a signed `kind: hook` plugin tarball instead. See [plugins.md](plugins.md) and
 > [hooks.md](hooks.md).
 
 ---

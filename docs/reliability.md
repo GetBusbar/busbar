@@ -9,8 +9,8 @@ Busbar keeps serving through provider failures. That reliability is not one feat
 
 **Resilience**: what happens when a backend misbehaves (the guides in this section):
 
-- **[Circuit breaker](/docs/circuit-breaker/)** - fault-attributed breaking that classifies each failure and benches only the lane at fault.
-- **[In-flight failover](/docs/failover/)** - reroute a failing request before your client sees a byte, even mid-stream, across protocols.
+- **[Circuit breaker](/docs/circuit-breaker/)** - fault-attributed breaking that classifies each failure and benches only the target at fault. It runs on all three planes: pool members, MCP tool servers and A2A agents, one state machine and [one config struct in three places](/docs/circuit-breaker/#the-breaker-on-the-mcp-and-a2a-planes). On MCP and A2A it buys failing fast rather than paying a timeout per call, an operator signal naming the dead server or agent, and — where the operator has declared substitutable deployments as a [`pools:` failover pool](/docs/circuit-breaker/#failover-on-mcp-and-a2a-the-same-server-deployed-twice) — reroute to a verified twin before the first byte. Busbar never decides two registrations are interchangeable on its own: the operator names them and busbar checks the pins it already computed. What stays deliberately narrower than the LLM plane is what happens *after* a dispatch has gone out: only operator-listed `repeatable:` operations move, and an accepted A2A task is pinned to the member that accepted it.
+- **[In-flight failover](/docs/failover/)** - reroute a failing request before the first byte, even on a streaming request, across protocols.
 - **[Health and observability](/docs/observability/)** - `/healthz`, `/stats`, `/metrics`, and the signals to watch.
 
 **Control**: who may spend what ([Governance](/docs/guides/governance/)):

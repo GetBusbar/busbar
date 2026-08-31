@@ -1,0 +1,991 @@
+{
+  "counts": {
+    "BASELINED": 1,
+    "INAPPLICABLE": 4,
+    "OBSERVED": 10,
+    "PASS": 44
+  },
+  "generated_at": "2026-08-09T00:00:51Z",
+  "harness": "a2aht",
+  "harness_version": "1.0.0",
+  "known_deviations": {
+    "baselined": 1,
+    "problems": [],
+    "recorded": 1,
+    "source": "a2aproject/a2a-python @ 1.1.2 (samples/hello_world_agent.py)"
+  },
+  "meta": {
+    "client_drive_configured": false,
+    "tier": "pre-release"
+  },
+  "python": "3.14.6",
+  "results": [
+    {
+      "clause": "SPEC 3.3.2; SPEC 9.5 (-32700 JSONParseError)",
+      "defect": "A truncated or corrupt JSON body crashes the agent or returns a 500, so any peer with a flaky connection can fault the agent instead of being told its request was bad.",
+      "detail": "",
+      "id": "adv.malformed_json",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "malformed_json_code": "SPEC 9.5 names -32700 JSONParseError for this."
+        },
+        "malformed_json_code": -32700,
+        "malformed_json_status": 200
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.3.2",
+      "defect": "An empty POST body faults the agent, giving any unauthenticated caller a one-byte denial of service.",
+      "detail": "",
+      "id": "adv.empty_body",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "empty_body_status": 200
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.3.2; PROTO Message field types",
+      "defect": "A field with the wrong JSON type (parts as a string, role as a number) is coerced or crashes rather than rejected, so garbage enters the task store and surfaces later as corrupt history.",
+      "detail": "",
+      "id": "adv.wrong_types",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "wrong_type_statuses": {
+          "message_is_array": 200,
+          "part_is_null": 200,
+          "parts_is_string": 200,
+          "role_is_number": 200
+        }
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO Message.parts REQUIRED; SPEC 5.7",
+      "defect": "A message with no parts is accepted, so an agent starts work on an empty instruction and bills or acts on nothing.",
+      "detail": "",
+      "id": "adv.missing_required_fields",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "missing_parts_error": "InvalidParamsError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 5.7 Unrecognized Fields",
+      "defect": "Agent rejects a request carrying a field it does not recognise, breaking forward compatibility so that every future spec addition is a flag day for this agent.",
+      "detail": "",
+      "id": "adv.unknown_fields_ignored",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "unknown_field_accepted": "SPEC 5.7 makes ignoring unknown fields a SHOULD, so rejecting them is a legal if unfriendly choice."
+        },
+        "unknown_field_accepted": false
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.2; PROTO Part.data is google.protobuf.Value",
+      "defect": "A deeply nested data part exhausts the parser stack and takes the agent process down, which is a remote crash from a single well-formed JSON document.",
+      "detail": "",
+      "id": "adv.deep_nesting",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "deep_nesting_depth": 2000,
+        "deep_nesting_status": 200
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.2 (no size limit is specified anywhere; see notes)",
+      "defect": "A very large message is accepted without limit and exhausts memory, or is rejected with a fault instead of a clear 413/400, so callers cannot tell 'too big' from 'agent broken'.",
+      "detail": "",
+      "id": "adv.oversized_payload",
+      "needs": "fake-peer",
+      "notes": [
+        "The A2A specification defines NO maximum message or artifact size. Any limit an implementation applies is its own policy, so the harness records the outcome rather than judging it."
+      ],
+      "observations": {
+        "oversize_bytes": 8388608,
+        "oversize_status": 200
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "SPEC 3.3.2; RFC 9110 message framing",
+      "defect": "A request whose Content-Length overstates the bytes actually sent leaves a connection or worker wedged, so a peer that dies mid-send degrades the agent for everyone else.",
+      "detail": "",
+      "id": "adv.truncated_request_body",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "truncated_body_reply": "connection error: timed out"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "NO SPEC CLAUSE. The A2A spec sets no idle timeout. Characterised, not enforced.",
+      "defect": "A peer that connects and then goes silent holds a worker open indefinitely, so a handful of idle connections starve the agent of capacity.",
+      "detail": "",
+      "id": "adv.connect_then_stall",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "closed_idle_connection_within_budget": false,
+        "stall_budget_seconds": 8.0
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "SPEC 3.5.2 (stream lifecycle is independent of task lifecycle)",
+      "defect": "When a client vanishes mid-stream the agent keeps the task or the connection alive forever, leaking a worker per abandoned delegation.",
+      "detail": "",
+      "id": "adv.client_disconnects_mid_stream",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "aborted_task_id_known": true,
+        "events_before_abort": 1
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.1 Idempotency (MAY, so recorded not enforced)",
+      "defect": "The same messageId submitted twice silently creates two tasks and the work is done, and possibly charged, twice.",
+      "detail": "",
+      "id": "adv.duplicate_message_id",
+      "needs": "fake-peer",
+      "notes": [
+        "Resubmitting an identical messageId produced a second, distinct task. SPEC 3.3.1 permits this, but it means the agent offers no replay protection: a retried request after a network timeout does the work twice."
+      ],
+      "observations": {
+        "_clauses": {
+          "duplicate_message_id_deduplicated": "SPEC 3.3.1: 'Send Message operations MAY be idempotent. Agents may utilize the messageId to detect duplicate messages.' MAY, so both answers are conformant."
+        },
+        "duplicate_message_id_deduplicated": false,
+        "duplicate_second_error": "ok"
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.5, 3.1.6, 3.1.7 error cases; SPEC 13.1",
+      "defect": "Agent accepts a cancel, subscribe or push-config call naming a task it never issued, letting an unrelated caller manipulate or probe another tenant's task namespace.",
+      "detail": "",
+      "id": "adv.response_to_nothing",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "ghost_task_outcomes": {
+          "CancelTask": "TaskNotFoundError",
+          "GetTask": "TaskNotFoundError",
+          "ListTaskPushNotificationConfigs": "PushNotificationNotSupportedError"
+        }
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 9.3; JSON-RPC 2.0",
+      "defect": "Agent answers a request with a missing or wrong jsonrpc version, or fails to echo the request id, so a client multiplexing calls over one connection matches the wrong reply to the wrong request.",
+      "detail": "",
+      "id": "adv.wrong_jsonrpc_envelope",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "missing_jsonrpc_member_status": 200
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 9.1 (PascalCase); see AMBIGUITIES.JSONRPC_METHOD_NAMING",
+      "defect": "Agent accepts a method name in the wrong case, so an implementation that happens to send 'sendmessage' works against this agent and fails against a conformant one, producing an interop bug nobody can reproduce.",
+      "detail": "",
+      "id": "adv.method_case_sensitivity",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "method_name_acceptance": "SPEC 9.1 mandates PascalCase. 'message/send' is the 0.3 name and an interface may legally still serve 0.3 (SPEC 3.6.2), so its acceptance is observed, not failed."
+        },
+        "method_name_acceptance": {
+          "SendMessage": "ok",
+          "message/send": -32600,
+          "sendMessage": -32601,
+          "sendmessage": -32601
+        }
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "SPEC 3.4.2 (unique task ids); SPEC 13.1 (access scoping)",
+      "defect": "Concurrent tasks bleed into each other: one task's artifact is attached to another's id, so a caller receives another caller's output. This is the worst defect in the battery.",
+      "detail": "",
+      "id": "adv.concurrent_interleaved_tasks",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "concurrent_tasks_created": 8
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.3, 3.3.3",
+      "defect": "Task state is lost between calls, so any workflow longer than one request forgets itself and long-running delegation is impossible.",
+      "detail": "",
+      "id": "adv.task_survives_across_calls",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.6",
+      "defect": "Subscribing to an already-finished task hangs the client forever instead of erroring, so a reconnecting client waits on a stream that will never produce an event.",
+      "detail": "",
+      "id": "adv.subscribe_to_terminal_task",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "subscribe_verb_used": "SubscribeToTask REST binding is GET in the proto and POST in the prose."
+        },
+        "subscribe_terminal_events": 0,
+        "subscribe_terminal_status": 200,
+        "subscribe_verb_used": null
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.2: 'Servers MUST reject requests with invalid or missing authentication credentials. Servers SHOULD include authentication challenge information in the error response. Servers SHOULD specify which authentication scheme is required.'",
+      "defect": "An agent that requires authentication answers an anonymous caller with something other than a clear challenge, so a legitimate peer cannot discover how to authenticate and retries blind.",
+      "detail": "the target's card declares no securitySchemes, so it does not claim to require authentication. This is legal (the field is not REQUIRED in the proto) but it means the auth surface is UNTESTED against this target, not that it passed.",
+      "id": "auth.server_challenges_unauthenticated_callers",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "INAPPLICABLE",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 8.1, 8.2, 14.3",
+      "defect": "Agent is undiscoverable: no card at the well-known URI, so no client can ever learn how to talk to it.",
+      "detail": "",
+      "id": "card.served",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "card_content_type": "SPEC 14.3 registers application/a2a+json but does not mandate it for the card endpoint.",
+          "card_url": "The spec does not say the well-known card path is served relative to the interface URL or to the bare origin."
+        },
+        "card_content_type": "application/json",
+        "card_url": "http://127.0.0.1:41241/.well-known/agent-card.json"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "PROTO AgentCard REQUIRED annotations; SPEC 5.7",
+      "defect": "Card omits a field the proto marks REQUIRED, so a strict client rejects the agent outright and delegation silently never starts.",
+      "detail": "",
+      "id": "card.required_fields",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "optional_fields_present": [
+          "provider"
+        ]
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 5.7 (see AMBIGUITIES.EMPTY_REQUIRED_ARRAYS)",
+      "defect": "Card declares zero skills or zero input modes, so a client that selects agents by capability can never route work to it.",
+      "detail": "",
+      "id": "card.required_arrays_nonempty",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "empty_required_arrays": "SPEC 5.7 says non-empty; SPEC 8.4.1 example says [] is fine."
+        },
+        "empty_required_arrays": []
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO AgentInterface REQUIRED annotations",
+      "defect": "An interface entry lacks a url, binding or protocol version, so a client cannot work out where or how to connect.",
+      "detail": "",
+      "id": "card.interfaces_wellformed",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "non_core_bindings": "PROTO AgentInterface.protocol_binding: 'This is an open form string, to be easily extended for other protocol bindings.'"
+        },
+        "bindings": [
+          "GRPC",
+          "GRPC",
+          "JSONRPC",
+          "JSONRPC",
+          "HTTP+JSON",
+          "HTTP+JSON"
+        ],
+        "non_core_bindings": [],
+        "protocol_versions": [
+          "0.3",
+          "1.0"
+        ]
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 5.1 Functional Equivalence Requirements. This test is the harness refusing to overclaim, not a conformance requirement on the target.",
+      "defect": "The subject serves a protocol binding this battery cannot drive, so the suite goes green having never touched the transport that actually ships. A battery that cannot exercise the shipped transport is worse than no battery, because it looks like proof.",
+      "detail": "",
+      "id": "card.every_declared_binding_is_exercised",
+      "needs": "fake-peer",
+      "notes": [
+        "ACKNOWLEDGED GAP: binding(s) ['GRPC'] are declared by the target and are NOT exercised by this battery. Nothing in this run says anything about them."
+      ],
+      "observations": {
+        "bindings_not_exercised": [
+          "GRPC"
+        ],
+        "bindings_this_harness_can_drive": [
+          "HTTP+JSON",
+          "JSONRPC"
+        ],
+        "declared_bindings": [
+          "GRPC",
+          "HTTP+JSON",
+          "JSONRPC"
+        ]
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.6",
+      "defect": "Card advertises a patch-level protocol version, which breaks version negotiation against clients matching on Major.Minor.",
+      "detail": "",
+      "id": "card.protocol_version_no_patch",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO AgentSkill REQUIRED annotations",
+      "defect": "A declared skill is missing its id, name, description or tags, so capability-based agent selection picks the wrong agent.",
+      "detail": "",
+      "id": "card.skills_wellformed",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "skill_ids": [
+          "sample_agent"
+        ]
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO SecurityScheme oneof; SPEC 4.5",
+      "defect": "A declared security scheme uses an unrecognised discriminator, so a client cannot work out how to authenticate and delegation fails with an opaque 401.",
+      "detail": "card declares no securitySchemes (this is legal; the field is not REQUIRED in the proto)",
+      "id": "card.security_schemes_wellformed",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "declares_auth": false,
+        "security_schemes": null
+      },
+      "outcome": "INAPPLICABLE",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "NO SPEC CLAUSE. See spec.RECOMMENDATIONS. Reported as a finding, never as a conformance failure.",
+      "defect": "Card changes between two back-to-back fetches with no deployment in between, which lets an agent be approved on one card and operated under another. This is the bait-and-switch surface.",
+      "detail": "",
+      "id": "card.stable_between_fetches",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "card_stable_across_two_fetches": true,
+        "version_field": "1.0.0"
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 8.6.1 (SHOULD, so observed and never failed)",
+      "defect": "Card endpoint ships no ETag or Cache-Control, so every client refetches on every call and a changed card is indistinguishable from a cached one.",
+      "detail": "",
+      "id": "card.caching_headers",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "has_cache_control": false,
+        "has_etag": false,
+        "has_last_modified": false
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "SPEC 8.4.2; PROTO AgentCardSignature",
+      "defect": "A signed card carries a malformed JWS, so signature verification either crashes the client or, worse, is skipped and the card is trusted unverified.",
+      "detail": "card is unsigned; SPEC 8.4 makes signing a MAY",
+      "id": "card.signature_shape",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "card_signed": false
+      },
+      "outcome": "INAPPLICABLE",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 8.4.1, 8.4.3",
+      "defect": "A card's signature does not actually verify over its RFC 8785 canonical form, meaning the integrity protection is decorative and a tampered card would be accepted.",
+      "detail": "card is unsigned; SPEC 8.4 makes signing a MAY",
+      "id": "card.signature_verifies",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "INAPPLICABLE",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "NO SPEC CLAUSE for the message; SPEC 8.3.1 requires the URL be accurate. This test characterises the failure mode.",
+      "defect": "When the card advertises a URL that does not answer, the failure surfaces as a hang or a stack trace rather than a legible error, so an operator cannot tell a down peer from a broken one.",
+      "detail": "",
+      "id": "card.unreachable_endpoint_is_legible",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "interface_url_reachable": {
+          "127.0.0.1:50051": "non-http-scheme",
+          "127.0.0.1:50052": "non-http-scheme",
+          "http://127.0.0.1:41241/a2a/jsonrpc": true,
+          "http://127.0.0.1:41241/a2a/rest": true
+        }
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO AgentInterface.url: 'Must be a valid absolute HTTPS URL in production.'",
+      "defect": "Card advertises a plaintext http:// interface, so A2A traffic including bearer credentials crosses the network in the clear.",
+      "detail": "",
+      "id": "card.https_in_production",
+      "needs": "fake-peer",
+      "notes": [
+        "Interfaces advertised over plaintext http://: ['http://127.0.0.1:41241/a2a/jsonrpc', 'http://127.0.0.1:41241/a2a/jsonrpc', 'http://127.0.0.1:41241/a2a/rest', 'http://127.0.0.1:41241/a2a/rest']. PROTO AgentInterface.url says HTTPS 'in production'. The harness cannot tell whether this target is production, so this is a finding, not a failure."
+      ],
+      "observations": {
+        "plaintext_interface_urls": [
+          "http://127.0.0.1:41241/a2a/jsonrpc",
+          "http://127.0.0.1:41241/a2a/jsonrpc",
+          "http://127.0.0.1:41241/a2a/rest",
+          "http://127.0.0.1:41241/a2a/rest"
+        ]
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pre-release"
+    },
+    {
+      "clause": "NO SPEC CLAUSE. spec.RECOMMENDATIONS.CARD_NO_CREDENTIALS. This is MY RECOMMENDATION, not a conformance requirement.",
+      "defect": "Card leaks a credential. The card is a public document, so any token in it is compromised the moment the agent is discoverable.",
+      "detail": "",
+      "id": "card.no_embedded_credentials",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "credential_patterns_in_card": []
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "Self-test of the harness. Catches the harness, not the target.",
+      "defect": "Proves the harness's own card validator actually rejects bad cards. Without this, every card test could be vacuously green.",
+      "detail": "",
+      "id": "card.malformed_is_rejected_by_our_parser",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "real_card_validation_problems": []
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.1.1; PROTO SendMessageResponse oneof payload",
+      "defect": "SendMessage returns something that is neither a Task nor a Message, so a client cannot tell whether work was accepted and delegation silently drops on the floor.",
+      "detail": "",
+      "id": "core.send_message_returns_task_or_message",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "send_response_kind": "SPEC 3.1.1: 'The agent MAY create a new Task ... or MAY return a direct Message response'."
+        },
+        "initial_task_state": "TASK_STATE_COMPLETED",
+        "send_response_kind": "task"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "PROTO enum TaskState; SPEC 5.5 (ProtoJSON enum serialisation)",
+      "defect": "Agent reports a task state outside the proto enum, so a client's state machine falls through and the task hangs forever in a state nobody handles.",
+      "detail": "",
+      "id": "core.task_state_is_defined_enum",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.2.2 Execution Mode",
+      "defect": "A blocking SendMessage returns while the task is still running, so a caller that trusts the default gets an empty result and reports success with no output.",
+      "detail": "",
+      "id": "core.blocking_send_reaches_settled_state",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "blocking_final_state": "TASK_STATE_COMPLETED"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.2.2",
+      "defect": "returnImmediately is ignored, so a client that deliberately went non-blocking is blocked anyway and its own request times out.",
+      "detail": "",
+      "id": "core.return_immediately_is_honoured",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "return_immediately_state": "SPEC 3.2.2 requires an immediate return, but a fast agent may legitimately already be finished."
+        },
+        "return_immediately_state": "TASK_STATE_SUBMITTED"
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.3, 3.4.2",
+      "defect": "A task id handed out by SendMessage is not retrievable by GetTask, so polling clients can never collect the result of work the agent actually did.",
+      "detail": "",
+      "id": "core.get_task_roundtrip",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.1.3 errors; SPEC 5.4 error code mapping",
+      "defect": "Agent answers a bogus task id with success or the wrong error, so a client cannot distinguish 'never existed' from 'still working' and either retries forever or gives up on live work.",
+      "detail": "",
+      "id": "core.unknown_task_is_task_not_found",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {},
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.4.2",
+      "defect": "Agent accepts a client-invented task id and creates a task under it, letting one client collide with or hijack another client's task namespace.",
+      "detail": "",
+      "id": "core.client_supplied_task_id_rejected",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "client_task_id_error": "TaskNotFoundError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.4.1, 3.4.3",
+      "defect": "Agent issues a new contextId for every turn of the same conversation, so multi-turn delegation loses all continuity and the remote agent forgets what it was asked.",
+      "detail": "",
+      "id": "core.context_id_present_and_stable",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "client_supplied_context_rejected": false
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.4.3",
+      "defect": "Agent accepts a message whose contextId contradicts its taskId, letting a caller splice a task into a conversation it does not belong to and leak context across sessions.",
+      "detail": "",
+      "id": "core.mismatched_task_and_context_rejected",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "mismatch_error": "The spec mandates rejection but does not name which error, so the code itself is observed."
+        },
+        "mismatch_error": "InvalidParamsError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.1 errors",
+      "defect": "Agent accepts new work on an already-completed task, so a stale or replayed message silently mutates a finished result that a caller has already acted on.",
+      "detail": "",
+      "id": "core.terminal_task_refuses_new_messages",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "terminal_reject_error": "InvalidParamsError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.5",
+      "defect": "Cancel neither cancels nor reports why, so a caller cannot stop runaway work and has no way to know it failed to stop it.",
+      "detail": "",
+      "id": "core.cancel_semantics",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "state_after_cancel": "SPEC 3.1.5: 'success is not guaranteed', so the state after a cancel request is observed, not asserted."
+        },
+        "state_after_cancel": "TASK_STATE_CANCELED"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.1",
+      "defect": "A repeated cancel throws a different error the second time, so a client retrying after a network blip cannot tell a real failure from a duplicate it caused itself.",
+      "detail": "",
+      "id": "core.cancel_is_idempotent",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "cancel_first": "ok",
+        "cancel_second": "TaskNotCancelableError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 5.6.1",
+      "defect": "Timestamps carry a local UTC offset instead of Z, so any client comparing or sorting task times across agents in different regions orders them wrongly.",
+      "detail": "",
+      "id": "core.timestamps_are_utc_z",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "status_timestamp_present": true,
+        "status_timestamp_sample": "2026-08-09T00:00:43.332062Z"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.2.4",
+      "defect": "historyLength=0 still returns the whole conversation, so a client asking for a lightweight poll gets an unbounded payload and a long transcript is echoed back to a caller that must not see it.",
+      "detail": "",
+      "id": "core.history_length_zero_omits_history",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "history_field_omitted_at_zero": "SPEC 3.2.4 says SHOULD omit, so present-but-empty is legal."
+        },
+        "history_field_omitted_at_zero": true
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.6.2",
+      "defect": "Agent silently serves a protocol version it was not asked for, so a client pinned to a newer version gets older semantics and loses functionality with no error to alert anyone.",
+      "detail": "",
+      "id": "core.unsupported_version_is_rejected",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "version_error_code": "SPEC 5.4 maps VersionNotSupportedError to -32009."
+        },
+        "declared_versions": [
+          "0.3",
+          "1.0"
+        ],
+        "unsupported_version_status": 200,
+        "version_error_code": -32009
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.6.2",
+      "defect": "Agent rejects requests that omit A2A-Version, breaking every 0.3 client, which the spec requires be treated as 0.3 rather than as an error.",
+      "detail": "",
+      "id": "core.absent_version_header_defaults_to_0_3",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "no_version_header_error": "VersionNotSupportedError"
+      },
+      "outcome": "OBSERVED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.4 Capability Validation",
+      "defect": "Card claims streaming and the stream endpoint does not work, or denies streaming and streams anyway. Either way a client's capability check is worthless and it picks the wrong call path.",
+      "detail": "",
+      "id": "core.streaming_capability_is_honest",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "stream_content_type": "SPEC 9.1 / 11.1 specify text/event-stream for SSE."
+        },
+        "capability_streaming": true,
+        "stream_content_type": "text/event-stream"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 3.1.2, 3.2.3; PROTO StreamResponse oneof",
+      "defect": "A stream frame sets two payload kinds at once or none, so a client's dispatch either drops the event or double-applies it, corrupting the assembled artifact.",
+      "detail": "",
+      "id": "core.stream_frames_are_wellformed",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "stream_frame_count": 4,
+        "stream_frame_kinds": [
+          "task",
+          "statusUpdate",
+          "artifactUpdate",
+          "statusUpdate"
+        ]
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    },
+    {
+      "clause": "SPEC 9.4.2",
+      "defect": "Under the JSON-RPC binding, stream frames omit the JSON-RPC envelope or echo the wrong request id, so a client multiplexing several streams over one connection attributes events to the wrong task.",
+      "detail": "",
+      "id": "core.jsonrpc_stream_envelope",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "jsonrpc_stream_frames": 4
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.2 Behavior",
+      "defect": "A stream begins with a status delta before any Task, so a client receives updates for a task it has never been told the id of and cannot correlate them to anything.",
+      "detail": "",
+      "id": "core.stream_opens_with_task_or_message",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "stream_opening_kind": "task"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.2 Behavior",
+      "defect": "Stream stays open after the task reaches a terminal state, so clients leak a connection per delegated task and eventually exhaust their socket budget under load.",
+      "detail": "",
+      "id": "core.stream_closes_at_terminal_state",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "events_after_terminal": 0,
+        "terminal_frame_index": 3
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.3.4",
+      "defect": "Card denies push notifications but the config endpoint accepts registrations, so a client believes it will be called back on a webhook that will never fire and waits forever.",
+      "detail": "",
+      "id": "core.push_capability_is_honest",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "_clauses": {
+          "push_denied_code": "SPEC 5.4 maps this to -32003."
+        },
+        "capability_pushNotifications": false,
+        "push_denied_code": -32003
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "SPEC 3.1.11, 3.3.4",
+      "defect": "Card denies extendedAgentCard but the endpoint serves one, or claims it and returns the wrong error, so a client either misses authenticated capabilities or hangs on an endpoint that is not there.",
+      "detail": "",
+      "id": "core.extended_card_capability_is_honest",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "capability_extendedAgentCard": false,
+        "extended_card_denied_error": "UnsupportedOperationError"
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "baselined": {
+        "clause": "SPEC 3.1.4 List Tasks: 'When includeArtifacts is false (the default), the artifacts field MUST be omitted entirely from each Task object in the response. The field should not be present as an empty array or null value.'",
+        "evidence": "without includeArtifacts=true",
+        "judgement": "Real defect in a2a-sdk 1.1.2. The default for includeArtifacts is false, and the spec is explicit that the field must then be absent rather than empty. Confirmed as a control defect and not a misreading by the first control, a2a-go v2.4.0, whose ListTasks the harness could not reach for other reasons, and by direct reading of the clause, which admits no other interpretation.",
+        "verdict": "real-defect-in-control"
+      },
+      "clause": "SPEC 3.1.4: 'When includeArtifacts is false (the default), the artifacts field MUST be omitted entirely from each Task object in the response.'",
+      "defect": "ListTasks omits nextPageToken or returns it as null on the last page, so a paginating client either loops forever or stops early and silently misses tasks.",
+      "detail": "ListTasks returned artifacts for 50 task(s) without includeArtifacts=true",
+      "id": "core.list_tasks_shape",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "list_tasks_fields": [
+          "nextPageToken",
+          "pageSize",
+          "tasks",
+          "totalSize"
+        ]
+      },
+      "outcome": "BASELINED",
+      "role": "server",
+      "tier": "pull-request"
+    },
+    {
+      "clause": "PROTO Artifact REQUIRED annotations",
+      "defect": "An artifact arrives with no parts or no artifactId, so the consuming agent has an output it cannot address, chunk, or render, and the result of the delegated work is unusable.",
+      "detail": "",
+      "id": "core.artifacts_wellformed",
+      "needs": "fake-peer",
+      "notes": [],
+      "observations": {
+        "artifact_count": 1
+      },
+      "outcome": "PASS",
+      "role": "server",
+      "tier": "every-commit"
+    }
+  ],
+  "spec": {
+    "repo": "https://github.com/a2aproject/A2A",
+    "tag": "v1.0.1"
+  },
+  "target": "control:a2a-python@1.1.2"
+}
