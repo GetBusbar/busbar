@@ -34,6 +34,7 @@ pub(super) static TEST_BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
 /// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.
 static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     key: "widget",
+    residual: false,
     config_section: "widgets",
     scope_kinds: &["widget"],
     subject_noun: "fronted widget",
@@ -158,6 +159,7 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
 fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
     static A2A_FROM_THE_CRATE: PlaneDecl = PlaneDecl {
         key: "a2a",
+        residual: false,
         config_section: "agents",
         scope_kinds: &["agent"],
         subject_noun: "fronted agent",
@@ -240,7 +242,7 @@ fn every_plane_key_answers_from_its_declaration() {
     }
     // The values themselves are unchanged by the rewiring — the operator-visible strings that
     // metrics, audit records and grants are keyed by.
-    assert_eq!(crate::plane::RESIDUAL_KEY, "llm");
+    assert_eq!(crate::plane::residual_key(), "llm");
     assert_eq!(crate::plane::plane_decl("mcp").audit_kind, "mcp_server");
     assert_eq!(crate::plane::plane_decl("a2a").audit_kind, "a2a_agent");
     assert_eq!(
@@ -259,12 +261,12 @@ fn every_plane_key_answers_from_its_declaration() {
 #[test]
 fn the_llm_decl_reads_the_protocol_registry() {
     assert_eq!(
-        crate::plane::wire_format_names(crate::plane::RESIDUAL_KEY),
+        crate::plane::wire_format_names(crate::plane::residual_key()),
         crate::proto::known_protocols(),
         "the LLM plane's dialects are the registered protocols, not a literal"
     );
     assert!(
-        crate::plane::wire_formats(crate::plane::RESIDUAL_KEY) > 1,
+        crate::plane::wire_formats(crate::plane::residual_key()) > 1,
         "and the superset-IR threshold is computed from that list"
     );
 }
@@ -453,6 +455,7 @@ fn r1_every_declared_path_resolves_an_admission() {
 fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     static MOUNTS_BUT_NEVER_ADMITS: PlaneDecl = PlaneDecl {
         key: "widget",
+        residual: false,
         config_section: "widgets",
         scope_kinds: &["widget"],
         subject_noun: "fronted widget",
@@ -503,6 +506,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     // The CONTROL: a plane that mounts nothing (claims empty) needs no admission and does NOT refuse.
     static MOUNTS_NOTHING: PlaneDecl = PlaneDecl {
         key: "widget",
+        residual: false,
         config_section: "widgets",
         scope_kinds: &["widget"],
         subject_noun: "fronted widget",
@@ -555,6 +559,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
 fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     static REFUSES_START: PlaneDecl = PlaneDecl {
         key: "refuser",
+        residual: false,
         config_section: "refusers",
         scope_kinds: &["refuser"],
         subject_noun: "refuser",
@@ -599,6 +604,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     // do not abort — the fold runs to the end and returns `Ok`.
     static STARTS_CLEAN: PlaneDecl = PlaneDecl {
         key: "clean",
+        residual: false,
         config_section: "cleans",
         scope_kinds: &["clean"],
         subject_noun: "clean",
@@ -641,6 +647,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
 fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
     static REFUSES_HYDRATE: PlaneDecl = PlaneDecl {
         key: "refuser",
+        residual: false,
         config_section: "refusers",
         scope_kinds: &["refuser"],
         subject_noun: "refuser",

@@ -112,6 +112,9 @@ pub mod proto_stream;
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "llm",
+        // THE RESIDUAL CATCH-ALL — every unclaimed path falls through to the LLM plane, so core reads
+        // the residual key off this flag rather than a hard-coded `"llm"` literal.
+        residual: true,
         config_section: "pools",
         scope_kinds: &["pool"],
         subject_noun: "pool",

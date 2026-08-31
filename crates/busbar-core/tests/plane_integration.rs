@@ -279,6 +279,11 @@ const POOL: &str = "observe-residual-exactness-pool";
 #[tokio::test]
 async fn a_model_plane_request_is_counted_exactly_once() {
     busbar_core::metrics::init();
+    // Register the residual LLM plane (as the composition root does in production and the MCP/A2A
+    // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
+    // residual — otherwise the model-plane boundary would not know this request rides the residual and
+    // would double-count it. Idempotent, process-wide.
+    busbar_core::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "observe-residual-model",
@@ -412,6 +417,11 @@ mod metrics_scrape {
     #[tokio::test]
     async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
         busbar_core::metrics::init();
+        // Register the residual LLM plane (as the composition root does in production and the MCP/A2A
+        // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
+        // residual and the model-plane traffic below stays on the v1.5.4 model family (no `plane`
+        // label, one count) rather than being mistaken for a mounted plane. Idempotent, process-wide.
+        busbar_core::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
         let app = TestApp::new()
             .public_url("https://busbar.example")
             .mcp(&mcp_cfg())

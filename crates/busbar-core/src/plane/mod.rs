@@ -130,9 +130,40 @@ pub mod store;
 //                    advertises — so the card cannot claim a binding the plane does not list.
 pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
-/// The residual in-core LLM plane's registry key — the key `proto::PLANE_DECL` declares. Named
-/// once so the residual guard and the model-plane telemetry branch compare against one string.
-pub(crate) const RESIDUAL_KEY: &str = "llm";
+/// The residual plane's registry key — DERIVED from the plane registry rather than a hard-coded
+/// `"llm"` literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::residual`]
+/// (the LLM plane). Read by the residual guard (`PlaneDispatch::mount`/`admit` no-op) and the
+/// model-plane telemetry branch so core names no dialect. The composition root (`register_planes`)
+/// installs the LLM plane before any reader runs, and core's own test binary carries it in
+/// `registry::builtin_plane_decls`, so exactly one residual is always present.
+pub(crate) fn residual_key() -> &'static str {
+    let decls = registry::plane_decls();
+    // Prefer the plane that DECLARES itself residual (the LLM plane, always present in a production
+    // or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane for the one
+    // build where no residual is flagged: the `test-support`-only dependency-copy of core the plane
+    // crates link, whose built-in plane rows are empty and which registers only the plane under test
+    // (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty telemetry
+    // bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
+    decls
+        .iter()
+        .find(|d| d.residual)
+        .or_else(|| decls.first())
+        .map(|d| d.key)
+        .unwrap_or("")
+}
+
+/// Whether `key` names THE RESIDUAL plane — the non-panicking predicate the residual GUARDS read
+/// (`PlaneDispatch::mount`/`admit` no-op; the model-plane telemetry branch). Distinct from
+/// [`residual_key`]: it answers "is THIS key the residual" WITHOUT requiring a residual to be
+/// registered, so it is safe in a build where the residual (LLM) plane's decl is absent — the
+/// dependency-copy of core the plane crates link, whose built-in plane rows are empty and which only
+/// ever asks this about a mounted plane's OWN key (never the LLM key). `residual_key`, by contrast,
+/// is read only on paths (App build, request telemetry family) where the residual is always present.
+pub(crate) fn is_residual(key: &str) -> bool {
+    registry::plane_decls()
+        .iter()
+        .any(|d| d.key == key && d.residual)
+}
 
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
 /// validator and the candidate projection, so a plane absent from here is a plane that silently
@@ -318,7 +349,7 @@ impl PlaneDispatch {
     pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         // The residual takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the LLM plane would quietly make every unclaimed path an OAuth resource server.
-        if key == RESIDUAL_KEY {
+        if is_residual(key) {
             return self;
         }
         self.admit_key(key, admission)
@@ -345,7 +376,7 @@ impl PlaneDispatch {
         // path and never reaches the admission map — then read that plane's bound audience by key.
         self.admissions.get(self.mounted_plane_of(path)?)
     }
-    /// Mount `plane` at `path`. Mounting the residual LLM plane ([`RESIDUAL_KEY`]) is a no-op.
+    /// Mount `plane` at `path`. Mounting the residual LLM plane ([`residual_key`]) is a no-op.
     ///
     /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
     /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
@@ -360,7 +391,7 @@ impl PlaneDispatch {
     pub(crate) fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
         // Mounting the residual is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
-        if key == RESIDUAL_KEY {
+        if is_residual(key) {
             return self;
         }
         self.mount_key(key, path, wire)

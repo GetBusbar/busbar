@@ -178,6 +178,14 @@ pub struct PlaneDecl {
     /// **OPERATOR-VISIBLE.** Replaces `Plane::key`'s match.
     pub key: &'static str,
 
+    /// TRUE for the ONE built-in plane that is the RESIDUAL catch-all — the plane every unclaimed
+    /// path falls through to, which mounts nothing and binds no audience (the LLM plane). Core reads
+    /// the residual plane's key OFF THIS FLAG (`busbar_core::plane::residual_key`) rather than from a
+    /// hard-coded `"llm"` literal, so the residual-guard (`PlaneDispatch::mount`/`admit` no-op) and the
+    /// model-plane telemetry branch name no dialect. At most one built-in plane sets this; a build
+    /// installs exactly one residual (the LLM plane is unconditional).
+    pub residual: bool,
+
     /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. Replaces
     /// `Plane::config_section`'s match, and it is this field that `config::config_sections_from`
     /// folds — so a plane registered from outside core gets its section into the hook-reference grammar

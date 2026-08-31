@@ -30,6 +30,8 @@ use busbar_core::config::named_map::NamedMapSection;
 static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "llm",
+        // Stands in for the residual LLM plane.
+        residual: true,
         config_section: "pools",
         scope_kinds: &["pool"],
         subject_noun: "model pool",

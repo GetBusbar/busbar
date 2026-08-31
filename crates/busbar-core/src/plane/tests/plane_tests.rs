@@ -144,7 +144,7 @@ fn transports_do_not_count_as_wire_formats() {
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
-        Ingress::Residual(_) => RESIDUAL_KEY,
+        Ingress::Residual(_) => residual_key(),
     }
 }
 
@@ -220,13 +220,13 @@ fn a_mount_is_normalised_before_it_is_matched() {
 /// two ways to reach the same plane and a precedence question with no good answer.
 #[test]
 fn the_llm_plane_cannot_be_mounted() {
-    let d = PlaneDispatch::default().mount(RESIDUAL_KEY, "/llm", WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(residual_key(), "/llm", WIRE_JSONRPC);
     assert_eq!(
         plane_of(&d, "/llm"),
         "llm",
         "it is the residual anyway, so the mount is a no-op rather than a second door"
     );
-    assert_eq!(d.mount_of(RESIDUAL_KEY), None);
+    assert_eq!(d.mount_of(residual_key()), None);
 }
 
 /// A plane's mount is readable back, which is what lets the router mount the right handler and what
@@ -363,7 +363,7 @@ fn a_claim_only_names_a_wire_format_its_plane_speaks() {
 /// absent one is what it is written for.
 #[test]
 fn every_mounted_planes_door_dialect_is_jsonrpc() {
-    for p in plane_keys().filter(|p| *p != RESIDUAL_KEY) {
+    for p in plane_keys().filter(|p| *p != residual_key()) {
         assert_eq!(
             Ingress::Mounted(p).shaping_wire_format(),
             Some(WIRE_JSONRPC),
@@ -461,7 +461,7 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
         "/",
     ] {
         assert_eq!(
-            d.mounted_plane_of(path).unwrap_or(RESIDUAL_KEY),
+            d.mounted_plane_of(path).unwrap_or(residual_key()),
             plane_of(&d, path),
             "the two readings disagree about {path}"
         );

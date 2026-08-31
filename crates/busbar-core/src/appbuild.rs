@@ -1502,7 +1502,7 @@ pub fn build_app_from_config(
             &lanes,
             &pools,
             &by_model,
-            crate::plane::RESIDUAL_KEY,
+            crate::plane::residual_key(),
         )),
         probe_schedule,
         lanes,

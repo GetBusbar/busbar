@@ -122,6 +122,8 @@
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "mcp",
+        // A MOUNTED plane, not the residual catch-all.
+        residual: false,
         config_section: "tools",
         scope_kinds: &["mcp_server", "mcp_tool"],
         subject_noun: "MCP server",
