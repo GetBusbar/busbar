@@ -186,6 +186,7 @@ fn yaml_comment_start(line: &str) -> usize {
 /// through the deferred-decision serializer:
 ///   * flow sugar `{ file: /path }` (as the raw corpus writes it), and
 ///   * block form `\n  file: /path` (as `serde_yaml` re-emits the same `SecretRef`).
+///
 /// In both, everything before `file:` on the line is whitespace only — either the leading
 /// indentation (block) or `{ ` (flow). So the anchor is: the head, trimmed, is empty OR ends with
 /// `{`. `providers_file:` / `cert_file:` / `key_file:` / `client_ca_file:` all FAIL it (the char
