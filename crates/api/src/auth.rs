@@ -40,6 +40,24 @@ impl Principal {
     }
 }
 
+/// Request-extension carrier for the authenticated [`Principal`]. ALWAYS inserted by the auth
+/// middleware on admitted requests (`None` = the empty-chain anonymous front door), so downstream
+/// consumers (audit attribution, the hook `send_user` projection, admin scopes) can extract it
+/// without an is-it-there dance. Never carries the credential.
+#[derive(Debug, Clone)]
+pub struct AuthPrincipal(pub Option<Principal>);
+
+impl AuthPrincipal {
+    /// The attribution handle for audit records: the principal id, or `anonymous` for the
+    /// explicit open-front-door postures.
+    pub fn actor_id(&self) -> &str {
+        self.0
+            .as_ref()
+            .map(|p| p.id.as_str())
+            .unwrap_or("anonymous")
+    }
+}
+
 /// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on:
 /// `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,
@@ -257,20 +275,38 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "tests/auth_tests.rs"]
+mod tests;
 
-    #[test]
-    fn constant_time_eq_basics() {
-        assert!(constant_time_eq("secret", "secret"));
-        assert!(!constant_time_eq("short", "longer"));
-        assert!(!constant_time_eq("secret1", "secret2"));
-    }
+/// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.
+/// DISTINCT from authentication (which auth module, if any, ran at the front door — that's the
+/// `auth.chain`): `Own` (default) signs the upstream call with busbar's configured lane key;
+/// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
+/// otherwise-ambiguous credential scheme to the single native header the caller's real client
+/// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
+// `Serialize` is additive and is what lets a config section carrying this field be projected back
+// to a raw definition document — the base half of the config overlay's per-entry MERGE
+// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
+// cannot be patched per field, only replaced wholesale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamCreds {
+    #[default]
+    Own,
+    Passthrough,
+}
 
-    #[test]
-    fn sha256_hex_is_lowercase_64() {
-        let h = sha256_hex(b"busbar");
-        assert_eq!(h.len(), 64);
-        assert_eq!(h, h.to_lowercase());
-    }
+/// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
+/// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
+/// and the stdio serve mode a boot-time stderr sentence and a nonzero exit — which is the same
+/// decision/vocabulary split `crate::ingress::protocol::CoreRefusal` documents for the ingress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityRefusal {
+    /// The chain denied the credential: a `Reject`, an all-`Pass` on a configured chain, or a
+    /// signed key that stopped verifying.
+    Denied,
+    /// The principal authenticated but its roles earned NO enforcement key while this module has a
+    /// `role_bindings` table. Admitting it `key: None` would hand it UNRESTRICTED access, so it is
+    /// refused — the same fail-closed rule stated at length below.
+    NoGrant,
 }

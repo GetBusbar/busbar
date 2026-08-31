@@ -9,9 +9,9 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-api = { path = "../api" }
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 [dev-dependencies]
 # The native policies are sync; the async-trait wrapper still makes `decide` async, so the tests
 # need a (current-thread) runtime to drive it.
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros"] }

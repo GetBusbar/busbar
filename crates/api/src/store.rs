@@ -34,34 +34,245 @@ impl ScopeRef {
     }
 }
 
-/// The wire (de)serializer for [`VirtualKey::allowed_scopes`], keeping the JSON/YAML shape
-/// BYTE-IDENTICAL to the pre-generalization `allowed_pools: Option<Vec<String>>` for the
-/// pool-only case: on the wire this is still a plain `allowed_pools` array of
-/// bare strings (or absent/null), never a `{kind, value}` object. The in-memory
-/// `Option<Vec<ScopeRef>>` is translated transparently at the serde boundary. Every entry that
-/// reaches this field is `kind: "pool"` by construction (a future second kind gets its OWN named
-/// wire field, e.g. `allowed_mcp_servers` — never mixed into this one), so the
-/// translation is a straight `ScopeRef.value` <-> bare-string mapping in both directions.
-mod allowed_scopes_wire {
-    use super::ScopeRef;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+/// THE NEUTRAL SCOPE-KIND WIRE REGISTRY — the set of `ScopeRef` kinds (beyond the built-in `pool`)
+/// that have a named wire field on [`VirtualKey`]. This crate names NO concrete plane kind: the
+/// registry starts with only `pool` (core's own admission kind) and every plane kind
+/// (`mcp_server`, `mcp_tool`, an A2A `agent`, …) is registered at boot by the composition root,
+/// which iterates each installed `PlaneDecl.scope_kinds` and calls [`register_scope_kind`]. The
+/// wire-field NAME for a kind is the frozen convention `allowed_{kind}s` (`pool`→`allowed_pools`,
+/// `mcp_server`→`allowed_mcp_servers`, …), so the config grammar keys stay byte-identical while the
+/// vocabulary itself lives in the registry rather than being hard-coded here.
+pub mod scope_kinds {
+    use std::collections::BTreeSet;
+    use std::sync::RwLock;
 
-    pub(super) fn serialize<S>(v: &Option<Vec<ScopeRef>>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let bare: Option<Vec<&str>> = v
-            .as_ref()
-            .map(|list| list.iter().map(|sr| sr.value.as_str()).collect());
-        bare.serialize(s)
+    /// The built-in kind every deployment always has — core's admission-pool topology. Seeded so a
+    /// pool grant serializes with no registration and so the pool-only wire shape is unconditional.
+    const BUILTIN_POOL_KIND: &str = "pool";
+
+    static REGISTERED: RwLock<BTreeSet<String>> = RwLock::new(BTreeSet::new());
+
+    /// REGISTER a scope kind so a grant of that kind may be persisted (its wire field is
+    /// `allowed_{kind}s`). Idempotent. Called at boot for every `PlaneDecl.scope_kinds` entry — the
+    /// composition root supplies the string, so no plane token is ever a literal in a neutral crate.
+    pub fn register(kind: &str) {
+        let mut w = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
+        w.insert(kind.to_string());
     }
 
-    pub(super) fn deserialize<'de, D>(d: D) -> Result<Option<Vec<ScopeRef>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bare: Option<Vec<String>> = Option::deserialize(d)?;
-        Ok(bare.map(|list| list.into_iter().map(ScopeRef::pool).collect()))
+    /// Whether `kind` may be serialized to a named wire field. `pool` is always registered.
+    pub fn is_registered(kind: &str) -> bool {
+        if kind == BUILTIN_POOL_KIND {
+            return true;
+        }
+        REGISTERED
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(kind)
+    }
+
+    /// The frozen wire-field name for a scope `kind` — `allowed_{kind}s`.
+    pub fn wire_field_for(kind: &str) -> String {
+        format!("allowed_{kind}s")
+    }
+
+    /// The scope kind a wire field carries, or `None` if the field is not an `allowed_*` scope
+    /// field. The exact inverse of [`wire_field_for`] for the frozen convention.
+    pub fn kind_for_wire_field(field: &str) -> Option<String> {
+        field
+            .strip_prefix("allowed_")
+            .and_then(|rest| rest.strip_suffix('s'))
+            .map(|k| k.to_string())
+    }
+}
+
+/// REGISTER a `ScopeRef` kind's wire field — see [`scope_kinds`]. The composition root calls this at
+/// boot for every installed plane's declared `scope_kinds`, so this neutral crate carries no plane
+/// vocabulary of its own.
+pub fn register_scope_kind(kind: &str) {
+    scope_kinds::register(kind);
+}
+
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each REGISTERED
+/// scope kind gets its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`),
+/// `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools` (kind `mcp_tool`) — each a plain
+/// array of bare value strings, never a `{kind, value}` object. The in-memory
+/// `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read. The kind
+/// vocabulary lives in the neutral [`scope_kinds`] registry (populated at boot from each installed
+/// `PlaneDecl.scope_kinds`), NOT hard-coded here — so this crate names no concrete plane.
+///
+/// Wire-compat invariants, all pinned by tests:
+/// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
+///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
+///   the per-kind fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
+///   sees them;
+/// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
+///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
+///   store round-trip - a lost MCP grant AND a pool-access escalation) and never silently dropped
+///   (which would WIDEN a `Some([unknown])` = no-scopes grant toward the `None` = all wildcard);
+/// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
+///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
+///
+/// Rows are persisted THROUGH this shape by JSON-round-tripping store backends (valkey-shaped),
+/// which is exactly where the pre-P0 kind collapse corrupted grants.
+mod virtual_key_wire {
+    use super::{scope_kinds, ScopeRef, VirtualKey};
+    use std::collections::BTreeMap;
+
+    /// The mirror struct that IS the persistence wire contract for [`VirtualKey`]. Field names,
+    /// order and defaults must stay in lockstep with the in-memory struct; the only divergence is
+    /// the scope partition documented on the module.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub(super) struct VirtualKeyWire {
+        pub id: String,
+        pub generation_hash: String,
+        pub name: String,
+        #[serde(default)]
+        pub allowed_pools: Option<Vec<String>>,
+        /// The per-kind plane scope grants, each under its `allowed_{kind}s` wire field. Flattened
+        /// so a registered kind's field sits inline exactly where its named field used to
+        /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
+        /// pool-only key's wire shape is byte-identical to the pre-generalization one.
+        #[serde(flatten)]
+        pub allowed_by_kind: BTreeMap<String, Vec<String>>,
+        pub enabled: bool,
+        pub created_at: u64,
+        #[serde(default)]
+        pub group: Option<String>,
+        #[serde(default)]
+        pub labels: std::collections::BTreeMap<String, String>,
+        #[serde(default)]
+        pub expires_at: Option<u64>,
+        #[serde(default)]
+        pub deleted_at: Option<u64>,
+        #[serde(default)]
+        pub revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub idp_subject: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub binding_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub minted_by: Option<String>,
+    }
+
+    /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
+    /// every non-`pool` kind's grant under its frozen wire-field name.
+    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
+
+    /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
+    /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
+    pub(super) fn partition_scopes(
+        scopes: &Option<Vec<ScopeRef>>,
+    ) -> Result<ScopePartition, String> {
+        let Some(list) = scopes else {
+            return Ok((None, BTreeMap::new()));
+        };
+        let mut pools = Vec::new();
+        let mut by_kind: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for sr in list {
+            if sr.kind == "pool" {
+                pools.push(sr.value.clone());
+            } else if scope_kinds::is_registered(&sr.kind) {
+                by_kind
+                    .entry(scope_kinds::wire_field_for(&sr.kind))
+                    .or_default()
+                    .push(sr.value.clone());
+            } else {
+                return Err(format!(
+                    "scope kind '{}' has no registered wire field: refusing to serialize (a kind \
+                     is never silently remapped into allowed_pools or dropped - register it via \
+                     its plane's `PlaneDecl.scope_kinds` first)",
+                    sr.kind
+                ));
+            }
+        }
+        // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
+        // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
+        // (a kind with no values never gets a map entry above).
+        Ok((Some(pools), by_kind))
+    }
+
+    /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
+    /// omitted-grant wildcard (`None`); any present field makes the grant an explicit
+    /// (fail-closed, exhaustive-across-kinds) list.
+    pub(super) fn assemble_scopes(
+        pools: Option<Vec<String>>,
+        by_kind: BTreeMap<String, Vec<String>>,
+    ) -> Option<Vec<ScopeRef>> {
+        // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
+        // foreign top-level field never becomes a phantom scope kind.
+        let scope_fields: Vec<(String, Vec<String>)> = by_kind
+            .into_iter()
+            .filter_map(|(field, values)| {
+                scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
+            })
+            .collect();
+        if pools.is_none() && scope_fields.is_empty() {
+            return None;
+        }
+        let mut list = Vec::new();
+        list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
+        // `by_kind` is a `BTreeMap`, so kinds arrive in wire-field order (canonical, deterministic).
+        for (kind, values) in scope_fields {
+            list.extend(values.into_iter().map(|value| ScopeRef {
+                kind: kind.clone(),
+                value,
+            }));
+        }
+        Some(list)
+    }
+
+    impl serde::Serialize for VirtualKey {
+        fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let (allowed_pools, allowed_by_kind) =
+                partition_scopes(&self.allowed_scopes).map_err(serde::ser::Error::custom)?;
+            VirtualKeyWire {
+                id: self.id.clone(),
+                generation_hash: self.generation_hash.clone(),
+                name: self.name.clone(),
+                allowed_pools,
+                allowed_by_kind,
+                enabled: self.enabled,
+                created_at: self.created_at,
+                group: self.group.clone(),
+                labels: self.labels.clone(),
+                expires_at: self.expires_at,
+                deleted_at: self.deleted_at,
+                revision: self.revision,
+                idp_subject: self.idp_subject.clone(),
+                binding_mode: self.binding_mode.clone(),
+                minted_by: self.minted_by.clone(),
+            }
+            .serialize(s)
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for VirtualKey {
+        fn deserialize<D>(d: D) -> Result<VirtualKey, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let w = VirtualKeyWire::deserialize(d)?;
+            Ok(VirtualKey {
+                id: w.id,
+                generation_hash: w.generation_hash,
+                name: w.name,
+                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind),
+                enabled: w.enabled,
+                created_at: w.created_at,
+                group: w.group,
+                labels: w.labels,
+                expires_at: w.expires_at,
+                deleted_at: w.deleted_at,
+                revision: w.revision,
+                idp_subject: w.idp_subject,
+                binding_mode: w.binding_mode,
+                minted_by: w.minted_by,
+            })
+        }
     }
 }
 
@@ -69,7 +280,15 @@ mod allowed_scopes_wire {
 /// (1.5.0): identity + pool grants + at most one `groups:` binding. Keys carry NO inline
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
 /// so policy is mutable in config/store without re-issuing the credential.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Serde note: `Serialize`/`Deserialize` are HAND-IMPLEMENTED in [`virtual_key_wire`] (the
+/// kind-partitioned scope wire, 1.6.0 P0) - keep the wire mirror struct's fields/defaults in
+/// lockstep with this struct when adding a field.
+///
+/// `Default` (1.6.0) is a construction convenience only — `..Default::default()` lets a call site
+/// name the fields it cares about and leave the rest at their zero value (empty id, `enabled:
+/// false`, no scopes, `None` attribution). It is NEVER a valid stored key on its own; every real
+/// mint sets `id`/`generation_hash`/`enabled` explicitly.
+#[derive(Clone, PartialEq, Default)]
 pub struct VirtualKey {
     pub id: String,
     /// A ROTATION FINGERPRINT, not a lookup credential. For a 1.5.0 signed-token key this is the
@@ -83,38 +302,54 @@ pub struct VirtualKey {
     pub name: String,
     /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind
     /// (the grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO
-    /// scopes (an empty list is the empty set, never "all"). Today every entry is `kind:
-    /// "pool"` (the only registered kind); on the WIRE this still serializes/deserializes as the
-    /// pre-generalization `allowed_pools: Option<Vec<String>>` — see `allowed_scopes_wire`.
-    #[serde(default, rename = "allowed_pools", with = "allowed_scopes_wire")]
+    /// scopes (an empty list is the empty set, never "all"). On the WIRE this partitions by kind
+    /// into `allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools` (the pool-only shape
+    /// stays byte-identical to the pre-generalization `allowed_pools: Option<Vec<String>>`):
+    /// see [`virtual_key_wire`].
     pub allowed_scopes: Option<Vec<ScopeRef>>,
     pub enabled: bool,
     pub created_at: u64,
     /// The `groups:` bucket this key charges through (at most one; the chain walks `parent` up
     /// from here). `None` = no group: the key is authed + UNLIMITED (access only).
-    #[serde(default)]
     pub group: Option<String>,
     /// Optional operator-supplied labels attached at mint (e.g. `{"team": "growth"}`), echoed onto
     /// per-key metric series so external dashboards can `sum by (team)` WITHOUT busbar knowing what
     /// "team" means. Never interpreted by enforcement. BTreeMap for a deterministic label order.
-    #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
     /// Principal-level hard expiry (distinct from a signed token's own `exp` claim — this is the
     /// KEY's, checked on every resolution regardless of which token names it). `None` = never.
-    #[serde(default)]
     pub expires_at: Option<u64>,
     /// TOMBSTONE marker. `None` = live. `Some(ts)` = this key was hard-deleted at `ts`: `enabled`
     /// is false, every credential row for it has been destroyed, and the id will never be
     /// reissued — but the row itself (id/name/group/labels) is KEPT so anything that attributes by
     /// key id (billing, audit) keeps resolving forever. See [`Store::delete_key`].
-    #[serde(default)]
     pub deleted_at: Option<u64>,
     /// Store-global monotonic revision, bumped on every mutation to this row. Used by
     /// [`Store::list_keys_since`] for incremental hydration. `0` for a row a pre-revision backend
     /// never stamped (treated as "always changed" by a delta consumer, which is safe — a bare
     /// full-scan degrades to correct-but-inefficient, never incorrect).
-    #[serde(default)]
     pub revision: u64,
+    /// The IdP SUBJECT recorded at mint for a PERSONAL (user-bound) token — ATTRIBUTION ONLY (1.6.0).
+    /// `None` for every key minted before this field existed and for app/service tokens (which are
+    /// not tied to a live human). This is the honest, buildable half of "user-bound": it records WHO
+    /// minted the personal token so per-user budget/audit can attribute to a named person. It is NOT
+    /// a per-use IdP introspection floor (standard OIDC cannot provide that; see the auth design
+    /// review C1) — busbar never re-checks this subject against the IdP on use. Trailing `Option` for
+    /// backward-compatible deserialize (existing keys read `None`).
+    pub idp_subject: Option<String>,
+    /// The BINDING MODE this key was minted under (1.6.0): `"time-bound"` (app/service token, no
+    /// identity tie), `"user-bound"` (personal, records `idp_subject`, short-lived + client
+    /// re-exchange), or `"both"`. `None` = a key minted before binding modes existed (treated as the
+    /// legacy time-bound-by-`exp` behavior). Mirrors the `auth.policy` `BindingMode` wire spelling;
+    /// kept a `String` here because the protocol-agnostic api crate carries no config enum.
+    pub binding_mode: Option<String>,
+    /// PROVENANCE: the principal id (an app-admin's key/subject) that minted this key (1.6.0). Set on
+    /// APP/service tokens, whose defining feature is that they OUTLIVE their minter — offboarding the
+    /// minter revokes only the minter's personal token, never these (auth design H2/H3). Recorded so
+    /// an operator can "list all tokens minted-by X" for re-attestation and so per-role MINT-CEILING
+    /// accounting can count how many an app-admin has minted. `None` for self-minted personal tokens
+    /// and pre-field keys. Provenance, NOT an automatic revocation trigger.
+    pub minted_by: Option<String>,
 }
 
 impl VirtualKey {
@@ -127,7 +362,7 @@ impl VirtualKey {
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.6), an
+    /// When a later release introduces a new kind (`mcp_server` and `agent`, both in 1.6.0), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///
@@ -187,6 +422,9 @@ impl std::fmt::Debug for VirtualKey {
             .field("expires_at", &self.expires_at)
             .field("deleted_at", &self.deleted_at)
             .field("revision", &self.revision)
+            .field("idp_subject", &self.idp_subject)
+            .field("binding_mode", &self.binding_mode)
+            .field("minted_by", &self.minted_by)
             .finish()
     }
 }
@@ -390,6 +628,37 @@ impl UsageLedger {
             .fold(0u64, |acc, m| acc.saturating_add(m.tokens.total()))
     }
 
+    /// UNCACHED-INPUT tokens across every model (`TierTokens.input`) — the durable counterpart of
+    /// the `tokens_input` per-tier cap. Mirrors [`Self::total_tokens`].
+    pub fn total_input(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.input))
+    }
+
+    /// OUTPUT tokens across every model — the durable counterpart of the `tokens_output` cap.
+    pub fn total_output(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.output))
+    }
+
+    /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
+    /// cap.
+    pub fn total_cache_read(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_read))
+    }
+
+    /// CACHE-WRITE (cache_creation) tokens across every model — the durable counterpart of the
+    /// `tokens_cache_write` cap.
+    pub fn total_cache_write(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_write))
+    }
+
     /// Apply one signed per-model tier delta, flooring every counter at 0 (a refund can never
     /// drive a durable counter negative). Allocates a model entry only on first sight.
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
@@ -588,6 +857,73 @@ impl From<&str> for StoreError {
     fn from(s: &str) -> Self {
         StoreError(s.to_string())
     }
+}
+
+// ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ──────────────────────────────
+//
+// The 14 protocol-named durable methods above (put_task/…/redeem_ask_state) are being collapsed onto
+// eight KIND-TAGGED verbs that name a "plane record" by its `kind` string instead of by protocol
+// ("task"/"task_event"/"call"/"demotion"/"ask"). This block ADDS that neutral surface; nothing calls
+// it yet and every method is DEFAULTED to the SAME accept-and-keep-nothing behaviour as its
+// protocol-named sibling, so the addition is byte-for-byte inert. The migration of call sites and the
+// removal of the named methods happen in later commits.
+
+/// Whether a plane record is in a TERMINAL (final) state or still ACTIVE. This is the sidecar column
+/// that lets [`Store::purge_plane_records_before`] honor a per-kind retention contract that opaque
+/// `body` bytes cannot express: the `task` kind drops only TERMINAL rows older than the cutoff (an
+/// interrupted task waiting on a human is exactly the old row that must survive), while the `call`
+/// kind drops ALL rows older than the cutoff. Encoding "terminal" in the opaque body would hide it
+/// from the backend's own retention query, so it rides as a TYPED column on the envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PlaneDisposition {
+    /// The record may still change (a live/interrupted task, an open ledger entry) — retention must
+    /// keep it regardless of age for kinds whose purge contract is terminal-only.
+    Active,
+    /// The record has reached a final state — eligible to be dropped once older than a purge cutoff.
+    Terminal,
+}
+
+/// One durable PLANE RECORD — the neutral envelope the eight kind-tagged verbs read and write. Only
+/// [`PlaneRecord::body`] is opaque (the protocol-specific row, serialized by the caller); every other
+/// field is a TYPED sidecar column so the store can index, order and retention-sweep without ever
+/// decoding the body. This is the retention-landmine fix: `{ kind, id, parent, seq, ts, disposition }`
+/// stay typed even though the body is bytes, so `purge_plane_records_before` can honor the
+/// terminal-only-vs-all-older distinction the named `purge_tasks_before`/`purge_mcp_calls_before`
+/// split encoded structurally.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlaneRecord {
+    /// The record's KIND — `"task"`, `"task_event"`, `"call"`, `"demotion"`, … — the tag that
+    /// replaces a protocol-named method. Kept a plain `String`, never a closed enum, for the same
+    /// reason [`ScopeRef::kind`] is.
+    pub kind: String,
+    /// The record's identity within its kind (a `task_id`, an upstream `server`, …). Upsert keys on
+    /// `(kind, id)`; append-only kinds carry the child id here.
+    pub id: String,
+    /// The PARENT this record hangs off, for append-only child kinds (a `task_event`'s task, an MCP
+    /// `call`'s principal). `None` for top-level kinds (`task`, `demotion`).
+    pub parent: Option<String>,
+    /// Monotonic sequence within `parent`, oldest-first ordering for append-only kinds. `0` for
+    /// upsert kinds that have no per-parent chain.
+    pub seq: u64,
+    /// The record's timestamp (Unix seconds) — the axis `purge_plane_records_before` compares against.
+    pub ts: u64,
+    /// Whether retention may drop this row once older than a cutoff — see [`PlaneDisposition`].
+    pub disposition: PlaneDisposition,
+    /// The OPAQUE protocol row (a plane crate's serialized record). The store persists and
+    /// returns it verbatim and never decodes it — the sidecar columns above carry everything the
+    /// store needs to key, order and sweep.
+    pub body: Vec<u8>,
+}
+
+/// How [`Store::list_plane_records`] narrows a kind's records — the neutral form of "list_tasks
+/// (everything) vs list_task_events (one parent's chain)".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PlaneSelector {
+    /// EVERY record of the kind, unfiltered (the neutral `list_tasks` / `list_mcp_demotions`).
+    All,
+    /// Only records whose [`PlaneRecord::parent`] equals this value, oldest-first by `seq` (the
+    /// neutral `list_task_events` / `list_mcp_calls`).
+    Parent(String),
 }
 
 /// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
@@ -919,585 +1255,120 @@ pub trait Store: Send + Sync + 'static {
         }
         Ok(all)
     }
+
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0) ────────────────────────────────────
+    //
+    // Eight kind-tagged verbs that SUBSUME the fourteen protocol-named durable methods this trait
+    // once carried (put_task/…/redeem_ask_state, deleted in the 1.6.0 14→8 collapse). Every core
+    // consumer and every backend now speaks these; the `kind` string names what a protocol method
+    // named in its identifier (`upsert_plane_record(kind: "task", …)` is the old `put_task`), one
+    // row of the 14→8 table in the 1.6.0 design. Each is DEFAULTED to accept-and-keep-nothing so a
+    // backend that keeps no durable rows behaves exactly as the shipped RAM default does.
+
+    /// UPSERT one plane record by `(record.kind, record.id)` — the neutral `put_task` (kind `task`)
+    /// and `put_mcp_demotion` (kind `demotion`). Takes the full [`PlaneRecord`] so the typed sidecar
+    /// (`ts`/`disposition`/…) is on the write path where retention needs it.
+    ///
+    /// DEFAULTED to `Ok(())` — accept and keep nothing, matching [`Store::put_task`] /
+    /// [`Store::put_mcp_demotion`]. The return value is worthless as evidence of durability; the
+    /// engine learns what its backend kept by reading it back.
+    fn upsert_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent — the
+    /// neutral `get_task`. DEFAULTED to `Ok(None)`, matching [`Store::get_task`].
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq` — the
+    /// neutral `append_task_event` (kind `task_event`) and `append_mcp_call` (kind `call`). The store
+    /// persists the opaque body verbatim and never recomputes any digest inside it.
+    ///
+    /// DEFAULTED to `Ok(())`, matching [`Store::append_task_event`] / [`Store::append_mcp_call`].
+    fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// The opaque bodies of a kind's records, narrowed by `selector` — the neutral `list_tasks` /
+    /// `list_mcp_demotions` ([`PlaneSelector::All`]) and `list_task_events` / `list_mcp_calls`
+    /// ([`PlaneSelector::Parent`], oldest-first by `seq`). DEFAULTED to empty, matching those four.
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+
+    /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` — the neutral
+    /// `list_mcp_call_principals` (the boot enumeration). DEFAULTED to empty, matching
+    /// [`Store::list_mcp_call_principals`].
+    fn list_plane_record_parents(&self, _kind: &str) -> StoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// RETENTION: drop records of `kind` older than `before`, returning how many went — the neutral
+    /// `purge_tasks_before` (kind `task`, drop only [`PlaneDisposition::Terminal`] rows) and
+    /// `purge_mcp_calls_before` (kind `call`, drop ALL older rows). WHICH predicate applies is part
+    /// of the kind's contract, which is exactly why the `disposition` sidecar is a typed column: the
+    /// backend reads it to honor the terminal-only split without decoding the opaque body.
+    ///
+    /// DEFAULTED to `Ok(0)`, matching [`Store::purge_tasks_before`] / [`Store::purge_mcp_calls_before`].
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+
+    /// DELETE the record identified by `(kind, id)`; absent is a no-op — the neutral
+    /// `clear_mcp_demotion`. DEFAULTED to `Ok(())`, matching [`Store::clear_mcp_demotion`].
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
+    /// was the first redemption — the neutral `redeem_ask_state` (kind `ask`). `now` lets a backend
+    /// drop lapsed rows in the same call. DEFAULTED to `Ok(true)` ("this store keeps no ledger"),
+    /// matching [`Store::redeem_ask_state`].
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> StoreResult<bool> {
+        Ok(true)
+    }
+}
+
+/// The per-request context a plane handler receives: the resolved caller identity attached to each
+/// request by the auth middleware, in a form a plane (llm / a2a / mcp) can name without reaching for
+/// a core-private governance type. `key` is `None` when governance is disabled (so downstream
+/// enforcement is a no-op). This is a request-scoped, in-process value — not a plugin-ABI type — so
+/// it is `pub` purely so an out-of-tree plane can name it; the one field it carries is the
+/// already-public [`VirtualKey`].
+#[derive(Clone, Debug, Default)]
+pub struct PlaneRequestCtx {
+    /// The resolved virtual key (or synthesized principal key), shared via `Arc`: attaching it to the
+    /// request and threading it through governance/routing is then a refcount bump, never a clone of
+    /// the key's `String` fields. `None` when governance is disabled (enforcement is a no-op).
+    pub key: Option<std::sync::Arc<VirtualKey>>,
+}
+
+impl PlaneRequestCtx {
+    /// The resolved caller key, or `None` when governance is disabled. Borrows through the `Arc` so a
+    /// plane reads the key without naming `Arc` or touching the field directly.
+    pub fn key(&self) -> Option<&VirtualKey> {
+        self.key.as_deref()
+    }
+
+    /// Whether this request carries a resolved key (governance enabled). `false` is the no-op posture:
+    /// there is no key, no budget, and nothing to enforce.
+    pub fn is_governed(&self) -> bool {
+        self.key.is_some()
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample_key() -> VirtualKey {
-        VirtualKey {
-            id: "vk_1".to_string(),
-            generation_hash: "deadbeefdeadbeef".to_string(),
-            name: "test".to_string(),
-            allowed_scopes: Some(vec![ScopeRef::pool("p")]),
-            enabled: true,
-            created_at: 42,
-            group: Some("growth".to_string()),
-            labels: std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]),
-            expires_at: None,
-            deleted_at: None,
-            revision: 1,
-        }
-    }
-
-    fn sample_credential() -> CredentialSecret {
-        CredentialSecret {
-            meta: CredentialMeta {
-                id: "cred_1".to_string(),
-                key_id: "vk_1".to_string(),
-                kind: "sigv4".to_string(),
-                slot: 0,
-                public_id: "AKIA_TEST".to_string(),
-                secret_form: SecretForm::Recoverable,
-                created_at: 42,
-                updated_at: 42,
-                expires_at: None,
-                revoked_at: None,
-                revoke_reason: None,
-                revision: 1,
-            },
-            secret: "v1:plain:s3cr3t-signing-key".to_string(),
-        }
-    }
-
-    /// Pool-grant semantics on the runtime encoding: omitted (`None`) = ALL pools; an explicit
-    /// list is exhaustive; an explicit EMPTY list is NO pools (never "all"). Exercised through
-    /// `scope_allowed("pool", ...)`, the generalized replacement for the old `pool_allowed` - this
-    /// is the "zero behavior change for pool-only configs" property the generalization promises.
-    #[test]
-    fn scope_allowed_pool_kind_c6_semantics() {
-        let mut k = sample_key();
-        k.allowed_scopes = None;
-        assert!(k.scope_allowed("pool", "anything"), "omitted = all scopes");
-        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
-        assert!(k.scope_allowed("pool", "fast"));
-        assert!(!k.scope_allowed("pool", "cold"));
-        k.allowed_scopes = Some(Vec::new());
-        assert!(
-            !k.scope_allowed("pool", "fast"),
-            "an explicit [] is the EMPTY set - no scopes, never all"
-        );
-    }
-
-    /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
-    ///
-    /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-    /// matters because 1.5.4 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
-    /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
-    /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
-    /// version bump.
-    ///
-    /// Only an OMITTED (`None`) list is ever a wildcard. An explicit list — even one that mentions no
-    /// entry of the queried kind at all — is exhaustive ACROSS ALL KINDS.
-    #[test]
-    fn scope_allowed_cross_kind_is_fail_closed() {
-        let mut k = sample_key();
-
-        // A pool-only grant denies every future kind, by value AND by kind.
-        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
-        assert!(k.scope_allowed("pool", "fast"));
-        for future_kind in ["mcp_server", "agent", "some_kind_not_invented_yet"] {
-            assert!(
-                !k.scope_allowed(future_kind, "fast"),
-                "a pool-only grant must grant NOTHING for the future kind '{future_kind}' — the unlisted-kind case is FAIL-CLOSED and frozen"
-            );
-            assert!(!k.scope_allowed(future_kind, "anything-else"));
-        }
-
-        // The ONLY wildcard is an omitted list, and it spans every kind (unchanged).
-        k.allowed_scopes = None;
-        assert!(k.scope_allowed("pool", "fast"));
-        assert!(k.scope_allowed("mcp_server", "filesystem"));
-        assert!(k.scope_allowed("agent", "planner"));
-
-        // A grant naming ONLY a future kind likewise denies pools — the rule is symmetric, so it
-        // cannot be read as "pool is special".
-        k.allowed_scopes = Some(vec![ScopeRef {
-            kind: "mcp_server".to_string(),
-            value: "filesystem".to_string(),
-        }]);
-        assert!(k.scope_allowed("mcp_server", "filesystem"));
-        assert!(
-            !k.scope_allowed("pool", "filesystem"),
-            "the fail-closed rule is symmetric across kinds"
-        );
-    }
-
-    /// A DIFFERENT kind never matches a `pool`-kind grant, and vice versa - `ScopeRef` is
-    /// kind-agnostic and `scope_allowed` is a strict `(kind, value)` membership test, not a bare
-    /// value match: kind stays a plain string, never privileging "pool".
-    #[test]
-    fn scope_allowed_is_kind_specific() {
-        let mut k = sample_key();
-        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
-        assert!(k.scope_allowed("pool", "fast"));
-        assert!(
-            !k.scope_allowed("mcp_server", "fast"),
-            "same value, different kind: must not match"
-        );
-    }
-
-    /// THE contract test: a config using only `allowed_pools` (bare strings, no `kind` wrapper)
-    /// produces a BYTE-IDENTICAL wire shape before and after the `ScopeRef` generalization - the
-    /// entire point of the wire-compat design. The in-memory representation is
-    /// `allowed_scopes: Vec<ScopeRef>`, but the JSON on the wire is still the plain
-    /// `"allowed_pools":["fast","slow"]` array of bare strings a pre-generalization admin API
-    /// client already knows how to read and write.
-    #[test]
-    fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
-        let mut k = sample_key();
-        k.allowed_scopes = Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")]);
-        let json = serde_json::to_string(&k).unwrap();
-        assert!(
-            json.contains(r#""allowed_pools":["fast","slow"]"#),
-            "wire field must be the bare-string array under the `allowed_pools` name, no `kind` \
-             wrapper anywhere: {json}"
-        );
-        assert!(
-            !json.contains("kind"),
-            "no ScopeRef {{kind, value}} shape may leak onto the wire: {json}"
-        );
-
-        // The pre-generalization wire shape a real (already-deployed) admin API client sends -
-        // must deserialize into the exact ScopeRef list this test set up.
-        let legacy_wire = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":["fast","slow"],"enabled":true,"created_at":1}"#;
-        let back: VirtualKey = serde_json::from_str(legacy_wire).unwrap();
-        assert_eq!(
-            back.allowed_scopes,
-            Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")])
-        );
-
-        // Round-trip: serialize → deserialize → identical scopes (and the None/empty cases,
-        // which must ALSO stay wire-identical).
-        let round: VirtualKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(round.allowed_scopes, k.allowed_scopes);
-
-        let mut none_grant = sample_key();
-        none_grant.allowed_scopes = None;
-        let json_none = serde_json::to_string(&none_grant).unwrap();
-        assert!(
-            json_none.contains(r#""allowed_pools":null"#),
-            "omitted grant serializes as bare `null`, same as before: {json_none}"
-        );
-
-        let mut empty_grant = sample_key();
-        empty_grant.allowed_scopes = Some(Vec::new());
-        let json_empty = serde_json::to_string(&empty_grant).unwrap();
-        assert!(
-            json_empty.contains(r#""allowed_pools":[]"#),
-            "explicit-empty grant serializes as a bare `[]`, same as before: {json_empty}"
-        );
-    }
-
-    /// The redacting `Debug` - the guard for the structured-logging surface, since
-    /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
-    /// equivalent `generation_hash` / `secret_access_key`. Any place a record reaches a log must
-    /// show presence only.
-    #[test]
-    fn debug_redacts_secret_equivalents() {
-        let key = sample_key();
-        let key_dbg = format!("{key:?}");
-        assert!(
-            !key_dbg.contains("deadbeefdeadbeef"),
-            "VirtualKey Debug leaked generation_hash: {key_dbg}"
-        );
-        assert!(key_dbg.contains("<redacted; present>"));
-
-        let cred = sample_credential();
-        let cred_dbg = format!("{cred:?}");
-        assert!(
-            !cred_dbg.contains("s3cr3t-signing-key"),
-            "CredentialSecret Debug leaked the secret: {cred_dbg}"
-        );
-        // The AccessKeyId (public_id) is NOT secret and stays visible for diagnosability, via the
-        // embedded CredentialMeta's ordinary (derived) Debug.
-        assert!(cred_dbg.contains("AKIA_TEST"));
-    }
-
-    /// The `Serialize`/`Deserialize` on `VirtualKey` is a load-bearing PERSISTENCE contract (a
-    /// valkey-shaped store round-trips it as JSON): it MUST stay faithful, so it is emphatically NOT
-    /// redacted. This pins that contract so a well-meaning "redact the Serialize too" change (which
-    /// would silently corrupt every valkey-persisted key) fails loudly here instead. The
-    /// logging-surface leak is closed by the redacting `Debug` above, not by lossy serialization.
-    /// `CredentialSecret` deliberately has NO `Serialize` at all (see its doc) — persisting the raw
-    /// `secret` string is a backend-owned concern, not this crate's, so there is no equivalent
-    /// round-trip test for it here.
-    #[test]
-    fn serialize_roundtrip_is_faithful_for_persistence() {
-        let key = sample_key();
-        let json = serde_json::to_string(&key).unwrap();
-        assert!(
-            json.contains("deadbeefdeadbeef"),
-            "persistence must keep generation_hash"
-        );
-        let back: VirtualKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(key, back);
-
-        // CredentialSecret DOES round-trip faithfully too — it crosses the plugin ABI wire and is
-        // what a backend persists, so its Serialize/Deserialize is load-bearing (see the type doc);
-        // the leak surface it must NOT have is Debug (covered by the redaction test above), not
-        // serde.
-        let cred = sample_credential();
-        let json = serde_json::to_string(&cred).unwrap();
-        assert!(
-            json.contains("s3cr3t-signing-key"),
-            "persistence must keep the secret material"
-        );
-        let back: CredentialSecret = serde_json::from_str(&json).unwrap();
-        assert_eq!(cred, back);
-    }
-
-    /// The minimal pure-auth JSON round-trips, and the optional fields default: a row with no
-    /// `allowed_pools` / `group` / `labels` / `expires_at` / `deleted_at` / `revision` deserializes
-    /// to all-pools / no-group / no labels / never-expires / live / revision-0. Guards the
-    /// valkey-style JSON persistence for the 1.5.0 pure-auth key shape, including the fields added by
-    /// the credentials-generalization redesign.
-    #[test]
-    fn virtual_key_minimal_json_defaults_optionals() {
-        let minimal =
-            r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
-        let k: VirtualKey = serde_json::from_str(minimal).unwrap();
-        assert_eq!(k.allowed_scopes, None, "absent grant = all pools");
-        assert_eq!(k.group, None);
-        assert!(k.labels.is_empty());
-        assert_eq!(k.expires_at, None);
-        assert_eq!(k.deleted_at, None);
-        assert_eq!(k.revision, 0);
-    }
-
-    /// `CredentialMeta::is_live` is the exact predicate the SigV4 admit path consults (in addition
-    /// to the KEY-level `enabled`/denylist checks, which are unaffected by per-credential
-    /// revocation): not revoked, and not expired as of `now`.
-    #[test]
-    fn credential_meta_is_live_checks_revocation_and_expiry() {
-        let mut m = sample_credential().meta;
-        assert!(m.is_live(100), "fresh credential, no expiry: live");
-        m.expires_at = Some(200);
-        assert!(m.is_live(100), "before expiry: live");
-        assert!(!m.is_live(200), "at expiry: not live");
-        assert!(!m.is_live(300), "past expiry: not live");
-        m.expires_at = None;
-        m.revoked_at = Some(50);
-        assert!(
-            !m.is_live(100),
-            "revoked (even with no expiry set): not live"
-        );
-    }
-
-    /// The ledger's additive delta application: model rows materialize on first sight, tiers
-    /// accumulate independently, and negative deltas floor every counter at 0.
-    #[test]
-    fn usage_ledger_applies_deltas_and_floors_at_zero() {
-        let mut l = UsageLedger::default();
-        l.apply_delta(&UsageDelta {
-            requests: 2,
-            billable_requests: 2,
-            models: vec![ModelTokensDelta {
-                model: "gpt-5".to_string(),
-                tokens: TierTokensDelta {
-                    input: 100,
-                    output: 50,
-                    cache_read: 10,
-                    cache_write: 5,
-                },
-            }],
-        });
-        assert_eq!(l.requests, 2);
-        let t = l.tokens_for("gpt-5").unwrap();
-        assert_eq!(
-            (t.input, t.output, t.cache_read, t.cache_write),
-            (100, 50, 10, 5)
-        );
-        assert_eq!(l.total_tokens(), 165);
-
-        // A second model materializes its own row; the first is untouched.
-        l.apply_delta(&UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![ModelTokensDelta {
-                model: "haiku".to_string(),
-                tokens: TierTokensDelta {
-                    input: 7,
-                    output: 3,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            }],
-        });
-        assert_eq!(l.models.len(), 2);
-        assert_eq!(l.tokens_for("gpt-5").unwrap().input, 100);
-
-        // Over-refund floors at 0, never negative.
-        l.apply_delta(&UsageDelta {
-            requests: -10,
-            billable_requests: -10,
-            models: vec![ModelTokensDelta {
-                model: "haiku".to_string(),
-                tokens: TierTokensDelta {
-                    input: -1000,
-                    output: -1,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            }],
-        });
-        assert_eq!(l.requests, 0);
-        let h = l.tokens_for("haiku").unwrap();
-        assert_eq!((h.input, h.output), (0, 2));
-    }
-
-    /// The default trait `add_usage` (read-modify-write fallback) accumulates through
-    /// get_usage/put_usage, so a store double implementing only those two is fleet-usable
-    /// (single-writer).
-    #[test]
-    fn default_add_usage_accumulates_via_get_put() {
-        use std::sync::Mutex;
-        #[derive(Default)]
-        struct Double(Mutex<std::collections::HashMap<(String, u64), UsageLedger>>);
-        impl Store for Double {
-            fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
-                Ok(())
-            }
-            fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
-                Ok(None)
-            }
-            fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-                Ok(Vec::new())
-            }
-            fn delete_key(&self, _: &str) -> StoreResult<()> {
-                Ok(())
-            }
-            fn get_usage(&self, b: &str, w: u64) -> StoreResult<UsageLedger> {
-                Ok(self
-                    .0
-                    .lock()
-                    .unwrap()
-                    .get(&(b.to_string(), w))
-                    .cloned()
-                    .unwrap_or_default())
-            }
-            fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
-                self.0.lock().unwrap().insert((b.to_string(), w), l.clone());
-                Ok(())
-            }
-            fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
-                Ok(())
-            }
-            fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
-                Ok(Vec::new())
-            }
-        }
-        let s = Double::default();
-        let d = UsageDelta {
-            requests: 1,
-            billable_requests: 1,
-            models: vec![ModelTokensDelta {
-                model: "m".to_string(),
-                tokens: TierTokensDelta {
-                    input: 5,
-                    output: 5,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            }],
-        };
-        s.add_usage("bucket", 0, &d).unwrap();
-        s.add_usage("bucket", 0, &d).unwrap();
-        let l = s.get_usage("bucket", 0).unwrap();
-        assert_eq!(l.requests, 2);
-        assert_eq!(l.tokens_for("m").unwrap().input, 10);
-    }
-
-    #[test]
-    fn virtual_key_is_live_reflects_deleted_at() {
-        let mut k = sample_key();
-        assert!(k.is_live(), "deleted_at: None must be live");
-        k.deleted_at = Some(99);
-        assert!(!k.is_live(), "deleted_at: Some(_) must not be live");
-    }
-
-    #[test]
-    fn credential_secret_plaintext_extracts_v1_plain_only() {
-        let mut c = sample_credential();
-        assert_eq!(c.plaintext(), Some("s3cr3t-signing-key"));
-        c.secret = "v1:aead:opaque-ciphertext".to_string();
-        assert_eq!(
-            c.plaintext(),
-            None,
-            "a non-plain scheme must never be treated as plaintext"
-        );
-        c.secret = String::new();
-        assert_eq!(c.plaintext(), None);
-    }
-
-    #[test]
-    fn tier_tokens_is_zero_requires_every_field_zero() {
-        assert!(TierTokens::default().is_zero());
-        assert!(!TierTokens {
-            input: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokens {
-            output: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokens {
-            cache_read: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokens {
-            cache_write: 1,
-            ..Default::default()
-        }
-        .is_zero());
-    }
-
-    #[test]
-    fn tier_tokens_delta_is_zero_requires_every_field_zero() {
-        assert!(TierTokensDelta::default().is_zero());
-        assert!(!TierTokensDelta {
-            input: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokensDelta {
-            output: -1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokensDelta {
-            cache_read: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!TierTokensDelta {
-            cache_write: 1,
-            ..Default::default()
-        }
-        .is_zero());
-    }
-
-    #[test]
-    fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
-        assert!(UsageDelta::default().is_zero());
-        assert!(!UsageDelta {
-            requests: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!UsageDelta {
-            billable_requests: 1,
-            ..Default::default()
-        }
-        .is_zero());
-        assert!(!UsageDelta {
-            models: vec![ModelTokensDelta {
-                model: "m".to_string(),
-                tokens: TierTokensDelta {
-                    input: 1,
-                    ..Default::default()
-                },
-            }],
-            ..Default::default()
-        }
-        .is_zero());
-    }
-
-    #[test]
-    fn store_error_display_wraps_the_inner_message() {
-        let e = StoreError("disk full".to_string());
-        assert_eq!(e.to_string(), "store error: disk full");
-    }
-
-    struct AuditDouble(Vec<AuditRecord>, Vec<VirtualKey>);
-    impl Store for AuditDouble {
-        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
-            Ok(())
-        }
-        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
-            Ok(None)
-        }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-            Ok(self.1.clone())
-        }
-        fn delete_key(&self, _: &str) -> StoreResult<()> {
-            Ok(())
-        }
-        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
-            Ok(UsageLedger::default())
-        }
-        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
-            Ok(())
-        }
-        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
-            Ok(())
-        }
-        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
-            Ok(Vec::new())
-        }
-        fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
-            Ok(self.0.clone())
-        }
-    }
-
-    fn audit_record(seq: u64) -> AuditRecord {
-        AuditRecord {
-            seq,
-            ts: 0,
-            action: "test.action".to_string(),
-            resource: "test:res".to_string(),
-            outcome: "applied".to_string(),
-            principal: "vk_1".to_string(),
-            prev_hash: String::new(),
-            hash: String::new(),
-        }
-    }
-
-    /// The DEFAULTED `list_keys_since` fallback: `revision > since`, exclusive of `since` itself
-    /// (a row whose revision EQUALS `since` was already seen by that watermark and must not
-    /// re-appear, or a poller loops on the same row forever).
-    #[test]
-    fn default_list_keys_since_excludes_the_watermark_itself() {
-        let mut a = sample_key();
-        a.id = "vk_a".to_string();
-        a.revision = 5;
-        let mut b = sample_key();
-        b.id = "vk_b".to_string();
-        b.revision = 6;
-        let s = AuditDouble(Vec::new(), vec![a, b]);
-        let since5: Vec<_> = s.list_keys_since(5).unwrap();
-        assert_eq!(
-            since5.len(),
-            1,
-            "revision == since must be EXCLUDED, not included"
-        );
-        assert_eq!(since5[0].id, "vk_b");
-        assert_eq!(s.list_keys_since(4).unwrap().len(), 2);
-        assert_eq!(s.list_keys_since(6).unwrap().len(), 0);
-    }
-
-    /// The DEFAULTED `list_audit_tail` fallback: keep only the last `limit` records (drain the
-    /// HEAD, `all.len() - limit` of them), never off-by-one on the boundary.
-    #[test]
-    fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
-        let records: Vec<_> = (1..=5).map(audit_record).collect();
-        let s = AuditDouble(records, Vec::new());
-        // Exactly at the cap: nothing trimmed.
-        let exact = s.list_audit_tail(5).unwrap();
-        assert_eq!(exact.len(), 5);
-        // Under the cap: keep the tail-most `limit` records (drop the oldest, i.e. lowest seq).
-        let tail = s.list_audit_tail(3).unwrap();
-        assert_eq!(tail.len(), 3);
-        assert_eq!(
-            tail.iter().map(|r| r.seq).collect::<Vec<_>>(),
-            vec![3, 4, 5],
-            "must keep the NEWEST records, dropping the oldest from the head"
-        );
-        // limit above the total count: everything is kept, no panic on the subtraction.
-        assert_eq!(s.list_audit_tail(100).unwrap().len(), 5);
-    }
-}
+#[path = "tests/store_tests.rs"]
+mod tests;
