@@ -1642,36 +1642,32 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         "the boot enumeration must find the principal whose chain this process never saw written"
     );
 
-    // ── the two retention ops, which return a COUNT rather than `Ok(0)` from a defaulted no-op ──
+    // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
+    // defaulted `Ok(0)` no-op. This exercises the AGE axis only — the `kind: call` "drop all older"
+    // contract — because the current store-plugin RPC wire deliberately carries only the subset each
+    // verb routes on (`kind`/`id`/`body`, plus append's `parent`/`seq`); the `ts`/`disposition`
+    // SIDECAR columns of [`PlaneRecord`] are NOT on this schema's wire (see
+    // `busbar_plugin::cold::StoreRequest` — relocating the full sidecar is the later schema commit).
+    // So the DISPOSITION axis — `kind: task` "drop only Terminal rows" — cannot be exercised through a
+    // dlopen'd plugin at this schema, and is proven where the full envelope is in hand instead: the
+    // store-example-plugin's own in-process `purge_plane_records_before_task_drops_only_terminal_rows`
+    // and busbar-a2a's `taskstore_tests`. This test's unique job is the DLOPEN-RESTART round trip of
+    // the durable body/identity, which the assertions above have already proven.
+    let call_purged = store
+        .purge_plane_records_before("call", 2_000)
+        .expect("purge_mcp_calls_before");
     assert_eq!(
-        store.purge_plane_records_before("task", 3_000).expect("purge_tasks_before"),
-        0,
-        "an `input-required` task is NEVER purged by age — it is exactly the row waiting on a human"
-    );
-    let terminal = sample_task_row("task-done", "completed", 2_000);
-    store
-        .upsert_plane_record(&task_record(&terminal))
-        .expect("put_task terminal");
-    assert_eq!(
-        store
-            .purge_plane_records_before("task", 3_000)
-            .expect("purge_tasks_before"),
-        1,
-        "the TERMINAL row is purged, and the count comes from the plugin, not a default"
-    );
-    assert_eq!(
-        store
-            .purge_plane_records_before("call", 2_000)
-            .expect("purge_mcp_calls_before"),
-        1
+        call_purged, 1,
+        "the `call` retention op drops the older row and the count comes from the plugin, not a default"
     );
 
-    // The purge is durable too: a third open sees the compacted state.
+    // The purge is durable too: a third open sees the compacted state — the call chain is gone, the
+    // still-open `input-required` task survives (a `task` row is never age-collected while non-terminal).
     drop(store);
     let store = load_store(&lib, &cfg).expect("re-load after the purge");
     assert_eq!(
-        n_list_tasks(store.as_ref()).expect("list_tasks").len(),
-        1,
+        n_list_tasks(store.as_ref()).expect("list_tasks"),
+        vec![task.clone()],
         "the purge must have been written through, not just applied in the plugin's memory"
     );
     assert!(n_list_mcp_calls(store.as_ref(), "vk_owner")
