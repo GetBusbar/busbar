@@ -386,6 +386,11 @@ impl IrHandle for SpeechReqHandle {
     fn wants_stream(&self) -> bool {
         self.0.stream
     }
+    /// The TTS request-seam meter (see [`SpeechReq::billing`]): the exact character count of the
+    /// input, the true billable unit — knowable here, never from the opaque audio response.
+    fn billing(&self) -> Option<Billing> {
+        self.0.billing()
+    }
     fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
         Box::new(self.0.clone())
     }

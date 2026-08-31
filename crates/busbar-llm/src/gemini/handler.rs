@@ -772,8 +772,9 @@ pub(crate) fn read_speech_response(
             pcm: None,
         }),
         // TTS carries no usage object in its audio body; without a marker `billing()` returned
-        // `None` and the request was billed nothing. Record a `Flat` marker so the request is at
-        // least counted (the per-character/token quantity would need the request `input`).
+        // `None` and the request was billed nothing. The true per-character unit needs the request
+        // `input` and is resolved at the request seam by `crate::ir::audio::SpeechReq::billing`;
+        // this `Flat` marker only records that a request was delivered.
         usage: Some(busbar_substrate::billing::Billing::Flat),
         ..Default::default()
     })

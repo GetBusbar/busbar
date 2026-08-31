@@ -162,6 +162,22 @@ pub struct SpeechReq {
     pub extra: SourceScopedExtra,
 }
 
+impl SpeechReq {
+    /// THE TTS REQUEST-SEAM METER. TTS is billed by the SIZE OF THE INPUT (tts-1/-hd: characters),
+    /// and that quantity is knowable ONLY here — the response is opaque audio with no usage object, so
+    /// the response reader can only mark the synthesis `Billing::Flat` ("a request happened"), never
+    /// the true unit (the `SpeechResp::billing` degrade the readers document). This method resolves the
+    /// exact character count from the request `input` (the one place it exists), the faithful
+    /// request-seam representation of the billable quantity. Token-metered TTS models
+    /// (`gpt-4o-mini-tts`) re-derive tokens at pricing time; the exact character count carried here is
+    /// strictly more information than the former response-side `Flat`.
+    pub fn billing(&self) -> Option<Billing> {
+        Some(Billing::Characters {
+            count: self.input.chars().count() as u64,
+        })
+    }
+}
+
 /// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_substrate::ir::facts::IrFacts`]. Every caller
 /// free-text field is projected to [`busbar_substrate::ir::facts::ContentItem::Text`]: the `input` to
 /// synthesize, the `instructions` style prompt when present (FATAL-2 — forwarded verbatim by both

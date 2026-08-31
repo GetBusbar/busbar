@@ -1048,10 +1048,10 @@ pub(crate) fn read_speech_response(
             pcm: None,
         }),
         // TTS carries no usage object in its binary body, so without a marker `billing()` returned
-        // `None` and the synthesis was billed nothing. The true unit is per-input-character (tts-1)
-        // or tokens (gpt-4o-mini-tts), both counted from the REQUEST `input`, which this
-        // response-only reader cannot see — so record a `Flat` marker (as rerank does) to at least
-        // count the request. The exact character/token quantity needs the request seam.
+        // `None` and the synthesis was billed nothing. The TRUE unit is per-input-character (tts-1)
+        // counted from the REQUEST `input`, which this response-only reader cannot see — so the exact
+        // count is resolved at the request seam by `crate::ir::audio::SpeechReq::billing`. This marker
+        // stays `Flat` only to record that a request was delivered (as rerank does).
         usage: Some(Billing::Flat),
         ..Default::default()
     })

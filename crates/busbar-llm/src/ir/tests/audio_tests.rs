@@ -127,3 +127,42 @@ fn speech_instructions_alone_are_screened() {
         .iter()
         .any(|t| t == "SECRET-INSTRUCTIONS"));
 }
+
+// L2: TTS is metered by the size of the input, a quantity that exists ONLY on the request (the audio
+// response is opaque). `SpeechReq::billing()` resolves the exact character count at the request seam,
+// where the response-only reader's `Billing::Flat` marker never could. Fails pre-fix: there was no
+// request-seam meter — the unit was always `Flat`.
+#[test]
+fn speech_request_meters_by_character_count() {
+    let req = SpeechReq {
+        input: "hello world".into(), // 11 chars
+        model: "tts-1".into(),
+        voice: "alloy".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        req.billing(),
+        Some(Billing::Characters { count: 11 }),
+        "TTS must meter by the exact input character count, not Flat"
+    );
+}
+
+#[test]
+fn speech_request_character_count_is_unicode_scalar_not_bytes() {
+    // A multi-byte grapheme counts as its scalar length, not its UTF-8 byte length.
+    let req = SpeechReq {
+        input: "café €".into(), // 6 scalars ('c','a','f','é',' ','€'), 9 UTF-8 bytes
+        ..Default::default()
+    };
+    assert_eq!(
+        req.billing(),
+        Some(Billing::Characters { count: 6 }),
+        "character count must be Unicode scalars, not bytes"
+    );
+}
+
+#[test]
+fn speech_empty_input_meters_zero_characters() {
+    let req = SpeechReq::default();
+    assert_eq!(req.billing(), Some(Billing::Characters { count: 0 }));
+}
