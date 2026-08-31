@@ -487,6 +487,10 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
                 request_id: _,
                 prev_hash: _,
                 hash: _,
+                // Framing SELECTOR, not a hashed content field: it picks which digest framing verifies
+                // the row rather than being fed into the preimage. Perturbing it is exercised by the
+                // dedicated version-gate tests, not this content-field sweep.
+                digest_version: _,
             } = e;
         });
     }

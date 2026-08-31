@@ -14,6 +14,27 @@ pub const KIND_TASK: &str = "task";
 /// The `task_event` kind — the A2A per-task provenance event's neutral `PlaneRecord.kind` tag.
 pub const KIND_TASK_EVENT: &str = "task_event";
 
+/// DIGEST FRAMING VERSION 1 — the LEGACY ambiguous pipe-join (`{prev_hash}|{task_id}|…|{state}`). The
+/// free-text fields (`context_id`, `principal`, `agent_id`) are NOT length-framed, so a value that
+/// itself contains `|` shifts the field boundaries: two distinct event tuples can hash the SAME
+/// preimage (field-injection forgery / ambiguous canonicalization). RETAINED only so a chain persisted
+/// before the fix — whose rows carry no `digest_version` and thus default to this — still verifies.
+/// NEVER emitted for a new event.
+pub const DIGEST_VERSION_LEGACY_PIPE: u8 = 1;
+
+/// DIGEST FRAMING VERSION 2 — the INJECTIVE length-prefixed framing every new event is sealed under:
+/// a fixed domain tag, then each string field as `<u64-le len><bytes>` and each integer field as its
+/// fixed 8-byte little-endian encoding. Because the length precedes the bytes, no field's content can
+/// ever be read as another field's — the boundary is unambiguous, so the pipe-injection collision is
+/// impossible.
+pub const DIGEST_VERSION_LEN_PREFIXED: u8 = 2;
+
+/// The framing a row that predates the versioned digest is read under: rows persisted before the fix
+/// carry no `digest_version` and serde defaults them to the legacy pipe-join so they keep verifying.
+fn default_digest_version() -> u8 {
+    DIGEST_VERSION_LEGACY_PIPE
+}
+
 /// The A2A task states that are FINAL — the terminal set the `task` kind's retention contract drops.
 /// Kept beside the row so the `disposition` a record carries and the purge that reads it agree.
 const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "canceled", "rejected"];
@@ -106,6 +127,12 @@ pub struct TaskEventRow {
     pub prev_hash: String,
     /// The tamper-evidence digest over this event's chained fields (computed + verified engine-side).
     pub hash: String,
+    /// WHICH DIGEST FRAMING `hash` was computed under — the version gate that lets a chain persisted
+    /// before the field-injection fix (framing v1, ambiguous pipe-join) keep verifying while every new
+    /// event is sealed under the injective framing v2. Absent on pre-fix rows, where serde defaults it
+    /// to [`DIGEST_VERSION_LEGACY_PIPE`]; new events set [`DIGEST_VERSION_LEN_PREFIXED`].
+    #[serde(default = "default_digest_version")]
+    pub digest_version: u8,
 }
 
 impl TaskEventRow {
@@ -230,6 +257,7 @@ mod tests {
             request_id: "req-1".into(),
             prev_hash: String::new(),
             hash: "deadbeef".into(),
+            digest_version: DIGEST_VERSION_LEN_PREFIXED,
         };
         let env = event.to_plane_record().unwrap();
         assert_eq!(env.kind, KIND_TASK_EVENT);

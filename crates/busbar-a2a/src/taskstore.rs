@@ -9,10 +9,14 @@
 //! durable journal is backed by the GENERIC neutral `PlaneRecord` store
 //! ([`busbar_substrate::plane::store::PlaneStore`]) — the same opaque envelope every plane persists
 //! through — so nothing A2A-specific crosses the store ABI. The per-task provenance CHAIN is computed
-//! here, plane-side, over the plane's own [`TaskEventRow`]; the DIGEST is byte-identical to the one the
-//! former core host-side journal produced (`{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|
-//! {principal}|{agent_id}|{state}`, sha256, PipeSeparated with the task id in the digest), so a chain
-//! written before the relocation still verifies.
+//! here, plane-side, over the plane's own [`TaskEventRow`]. The DIGEST is VERSIONED on the row
+//! ([`TaskEventRow::digest_version`]): a new event is sealed under the INJECTIVE length-prefixed framing
+//! v2 ([`DIGEST_VERSION_LEN_PREFIXED`]), while a chain persisted before the field-injection fix carries
+//! no version, defaults to the legacy pipe-join framing v1, and still verifies byte-identically. The
+//! legacy framing (`{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|
+//! {state}`, sha256) is the one the former core host-side journal produced verbatim; it is RETAINED for
+//! read-back only because its unframed free-text fields let a `|` shift field boundaries and collide two
+//! distinct tuples — the reason v2 exists.
 //!
 //! ## The property this file exists to hold
 //!
@@ -35,7 +39,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::record::{KIND_TASK, KIND_TASK_EVENT};
+use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
 use busbar_substrate::plane::store::PlaneStore;
@@ -44,13 +48,47 @@ use busbar_substrate::plane::store::PlaneStore;
 // The per-task provenance chain — computed plane-side, byte-identical digest.
 // ---------------------------------------------------------------------------------------------------
 
-/// Recompute one task event's tamper-evidence digest. The input is the legacy PipeSeparated byte
-/// stream `frame_prelude(prev_hash, task_id, seq) ⧺ |ts|kind|context_id|principal|agent_id|state`,
-/// which the former core host-side journal produced verbatim — so a chain written before the
-/// relocation verifies byte-identically. `request_id` is deliberately excluded (a join key, absent on
-/// the boot/sweep paths, must not be able to break an intact chain).
+/// Recompute one task event's tamper-evidence digest under the framing `version` selects. `request_id`
+/// is deliberately excluded from every framing (a join key, absent on the boot/sweep paths, must not be
+/// able to break an intact chain).
+///
+/// - [`DIGEST_VERSION_LEN_PREFIXED`] (v2): the INJECTIVE framing every new event is sealed under. See
+///   [`digest_event_v2`].
+/// - [`crate::record::DIGEST_VERSION_LEGACY_PIPE`] (v1) — a pre-fix row whose `digest_version` defaulted there:
+///   the legacy ambiguous pipe-join, retained ONLY so a chain persisted before the field-injection fix
+///   still verifies byte-identically. See [`digest_event_v1`].
 #[allow(clippy::too_many_arguments)]
 fn digest_event(
+    version: u8,
+    prev_hash: &str,
+    task_id: &str,
+    seq: u64,
+    ts: u64,
+    kind: &str,
+    context_id: &str,
+    principal: &str,
+    agent_id: &str,
+    state: &str,
+) -> String {
+    match version {
+        DIGEST_VERSION_LEN_PREFIXED => digest_event_v2(
+            prev_hash, task_id, seq, ts, kind, context_id, principal, agent_id, state,
+        ),
+        // v1 and any unrecognized/defaulted version fall to the legacy framing: a pre-fix row carries
+        // no `digest_version` and serde defaults it to v1, and an unknown version can only have been
+        // written by a build that does not exist, so treating it as legacy is the safe read.
+        _ => digest_event_v1(
+            prev_hash, task_id, seq, ts, kind, context_id, principal, agent_id, state,
+        ),
+    }
+}
+
+/// FRAMING V1 — the LEGACY ambiguous pipe-join `{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|
+/// {principal}|{agent_id}|{state}`, which the former core host-side journal produced verbatim. The
+/// free-text fields are not length-framed, so a `|` inside one shifts field boundaries and two distinct
+/// tuples can collide — the reason v2 exists. Kept ONLY to verify chains persisted before the fix.
+#[allow(clippy::too_many_arguments)]
+fn digest_event_v1(
     prev_hash: &str,
     task_id: &str,
     seq: u64,
@@ -67,9 +105,48 @@ fn digest_event(
     busbar_api::sha256_hex(input.as_bytes())
 }
 
-/// The digest of an already-built event row, from its own fields — the verification primitive.
+/// FRAMING V2 — the INJECTIVE length-prefixed encoding: a fixed domain tag, then each STRING field as
+/// `<u64-le len><bytes>` and each INTEGER field as its fixed 8-byte little-endian encoding, hashed with
+/// sha256. Because every field's length precedes its bytes, the boundary between fields is unambiguous:
+/// no attacker-influenced value (`context_id` / `agent_id` / `principal`) can shift a boundary to make
+/// two distinct tuples share a preimage. The field ORDER matches v1 so the mapping stays legible.
+#[allow(clippy::too_many_arguments)]
+fn digest_event_v2(
+    prev_hash: &str,
+    task_id: &str,
+    seq: u64,
+    ts: u64,
+    kind: &str,
+    context_id: &str,
+    principal: &str,
+    agent_id: &str,
+    state: &str,
+) -> String {
+    // A fixed-length constant prefix that domain-separates this preimage space from any other sha256
+    // use (and, trivially, from every v1 preimage, which begins with a hex hash or a bare `|`).
+    let mut buf: Vec<u8> = b"busbar.a2a.taskchain.v2\0".to_vec();
+    let push_str = |buf: &mut Vec<u8>, field: &str| {
+        buf.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    };
+    push_str(&mut buf, prev_hash);
+    push_str(&mut buf, task_id);
+    buf.extend_from_slice(&seq.to_le_bytes());
+    buf.extend_from_slice(&ts.to_le_bytes());
+    push_str(&mut buf, kind);
+    push_str(&mut buf, context_id);
+    push_str(&mut buf, principal);
+    push_str(&mut buf, agent_id);
+    push_str(&mut buf, state);
+    busbar_api::sha256_hex(&buf)
+}
+
+/// The digest of an already-built event row, from its own fields AND its stored framing version — the
+/// verification primitive. Reading the version off the row is what lets a pre-fix (v1) chain and a
+/// post-fix (v2) chain both verify against their own bytes.
 fn digest_of(row: &TaskEventRow) -> String {
     digest_event(
+        row.digest_version,
         &row.prev_hash,
         &row.task_id,
         row.seq,
@@ -369,7 +446,10 @@ impl TaskRegistry {
     /// caller's; this appends the event body through the generic plane-record store.
     fn seal_event(&self, pos: &mut Position, task_id: &str, ev: &EventInput) -> StoreResult<()> {
         let seq = pos.next_seq;
+        // Every NEW event is sealed under the injective framing v2; v1 is only ever read, never written.
+        let digest_version = DIGEST_VERSION_LEN_PREFIXED;
         let hash = digest_event(
+            digest_version,
             &pos.tail_hash,
             task_id,
             seq,
@@ -392,6 +472,7 @@ impl TaskRegistry {
             request_id: ev.request_id.clone(),
             prev_hash: pos.tail_hash.clone(),
             hash: hash.clone(),
+            digest_version,
         };
         if let Some(store) = self.sink() {
             store.append_plane_record(&event_row.to_plane_record()?)?;
@@ -966,22 +1047,34 @@ mod taskstore_tests;
 
 /// THE FROZEN BYTE-LAYOUT GOLDEN for the A2A per-task provenance chain — relocated from
 /// `busbar-core`'s `audit/tests/boot_verify_golden.rs` with the task subsystem. It pins the durable
-/// digest (`{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}`,
-/// sha256) and the typed `TaskEventRow` body encoding against frozen bytes: a change to either would
-/// report every persisted chain in every deployment as TAMPERED, so it fails LOUDLY on drift. Runs in
-/// the plain unit build (no `test-support`, no `busbar-core`), so it guards the wire contract on every
-/// `cargo test -p busbar-a2a`.
+/// digest and the typed `TaskEventRow` body encoding against frozen bytes: a change to either would
+/// report every persisted chain in every deployment as TAMPERED, so it fails LOUDLY on drift. It pins
+/// BOTH framings — the legacy v1 pipe-join (a chain persisted before the field-injection fix, whose rows
+/// carry no `digest_version` and default to v1) AND the injective v2 length-prefixed framing every new
+/// event is sealed under — so a change to EITHER is caught. Runs in the plain unit build (no
+/// `test-support`, no `busbar-core`), so it guards the wire contract on every `cargo test -p busbar-a2a`.
 #[cfg(test)]
 mod chain_golden {
     use super::*;
     use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 
-    // The GENESIS event and its successor, frozen — typed `TaskEventRow` JSON bodies exactly as the
-    // plane persists them, with the hashes the plane-side digest produced. The genesis hash proves the
-    // leading-`|` before `task_id` (the empty `prev_hash` "landmine") is in the digest input.
+    // The LEGACY v1 (pipe-join) GENESIS event and its successor, frozen — typed `TaskEventRow` JSON
+    // bodies EXACTLY as a pre-fix deployment persisted them: no `digest_version` field, so serde
+    // defaults them to `DIGEST_VERSION_LEGACY_PIPE` and they still verify byte-identically. The genesis
+    // hash proves the leading-`|` before `task_id` (the empty `prev_hash` "landmine") is in the v1
+    // digest input.
     const A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
     const A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
     const A2A_TAIL_HASH: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
+
+    // The SAME two-event chain, re-sealed under the INJECTIVE v2 framing — `digest_version:2` present,
+    // and the hashes the length-prefixed digest produces. Frozen so a drift in the v2 preimage layout
+    // (field order, the domain tag, the u64-le length prefixes) fails here rather than silently
+    // reporting every v2 chain as tampered.
+    const A2A_V2_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"07d3b2028b0729c42fdaae5f4d59c3a98749aa88db89caabcacb5ebe3981ec28","digest_version":2}"#;
+    const A2A_V2_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"07d3b2028b0729c42fdaae5f4d59c3a98749aa88db89caabcacb5ebe3981ec28","hash":"c77eb9be8b1da1f46888ba29c137914b17c91ec0303c61bdb99870bc5d1c9f2d","digest_version":2}"#;
+    const A2A_V2_TAIL_HASH: &str =
+        "c77eb9be8b1da1f46888ba29c137914b17c91ec0303c61bdb99870bc5d1c9f2d";
 
     /// A read-only store returning exactly the one working task and its two frozen events.
     struct FrozenStore;
@@ -1036,6 +1129,13 @@ mod chain_golden {
     fn the_frozen_a2a_chain_recomputes_from_its_own_bytes() {
         let e1 = TaskEventRow::from_body(A2A_1).unwrap();
         let e2 = TaskEventRow::from_body(A2A_2).unwrap();
+        // A pre-fix body carries no `digest_version`, so serde defaults it to the legacy pipe framing —
+        // this is the version gate that keeps chains persisted before the fix verifiable.
+        assert_eq!(
+            e1.digest_version,
+            crate::record::DIGEST_VERSION_LEGACY_PIPE,
+            "a pre-fix body must default to the legacy framing"
+        );
         // The digest recomputes to the frozen genesis hash — the byte layout is pinned.
         assert_eq!(digest_of(&e1), e1.hash, "genesis digest drifted");
         assert_eq!(
@@ -1045,6 +1145,95 @@ mod chain_golden {
         assert_eq!(digest_of(&e2), e2.hash, "tail digest drifted");
         assert_eq!(e2.hash, A2A_TAIL_HASH);
         verify_chain(&[e1, e2]).expect("the frozen chain must verify");
+    }
+
+    /// THE v2 GOLDEN: the injective length-prefixed framing recomputes to its own frozen hashes, and the
+    /// re-sealed chain verifies. Guards the v2 preimage layout (domain tag, field order, u64-le length
+    /// prefixes) against silent drift — a change here would report every v2 chain as tampered.
+    #[test]
+    fn the_frozen_v2_chain_recomputes_from_its_own_bytes() {
+        let e1 = TaskEventRow::from_body(A2A_V2_1).unwrap();
+        let e2 = TaskEventRow::from_body(A2A_V2_2).unwrap();
+        assert_eq!(
+            e1.digest_version, DIGEST_VERSION_LEN_PREFIXED,
+            "the v2 golden must carry the length-prefixed framing version"
+        );
+        assert_eq!(digest_of(&e1), e1.hash, "v2 genesis digest drifted");
+        assert_eq!(
+            e1.hash,
+            "07d3b2028b0729c42fdaae5f4d59c3a98749aa88db89caabcacb5ebe3981ec28"
+        );
+        assert_eq!(digest_of(&e2), e2.hash, "v2 tail digest drifted");
+        assert_eq!(e2.hash, A2A_V2_TAIL_HASH);
+        verify_chain(&[e1, e2]).expect("the frozen v2 chain must verify");
+    }
+
+    /// THE REGRESSION for F-A2A2 (hash-chain field-injection forgery): two DISTINCT event tuples that
+    /// differ only in where a `|` falls across two attacker-influenced free-text fields. Under the old
+    /// pipe-join framing (v1) both produced the SAME digest input — a forgery primitive; under the
+    /// injective framing (v2) they MUST produce distinct digests. Fails-before (this test did not exist,
+    /// and v2 did not exist) / passes-after.
+    #[test]
+    fn pipe_shifting_tuples_that_collided_under_v1_are_distinct_under_v2() {
+        // `("a|b", "c")` vs `("a", "b|c")` in (context_id, principal): both flatten to the same
+        // `…|a|b|c|…` under the unframed pipe-join.
+        let v1_a = digest_event(
+            crate::record::DIGEST_VERSION_LEGACY_PIPE,
+            "",
+            "t",
+            1,
+            1,
+            "k",
+            "a|b",
+            "c",
+            "ag",
+            "s",
+        );
+        let v1_b = digest_event(
+            crate::record::DIGEST_VERSION_LEGACY_PIPE,
+            "",
+            "t",
+            1,
+            1,
+            "k",
+            "a",
+            "b|c",
+            "ag",
+            "s",
+        );
+        assert_eq!(
+            v1_a, v1_b,
+            "the legacy pipe-join framing COLLIDES these two distinct tuples — the vulnerability"
+        );
+
+        let v2_a = digest_event(
+            DIGEST_VERSION_LEN_PREFIXED,
+            "",
+            "t",
+            1,
+            1,
+            "k",
+            "a|b",
+            "c",
+            "ag",
+            "s",
+        );
+        let v2_b = digest_event(
+            DIGEST_VERSION_LEN_PREFIXED,
+            "",
+            "t",
+            1,
+            1,
+            "k",
+            "a",
+            "b|c",
+            "ag",
+            "s",
+        );
+        assert_ne!(
+            v2_a, v2_b,
+            "the injective length-prefixed framing MUST separate these tuples — the fix"
+        );
     }
 
     #[test]
