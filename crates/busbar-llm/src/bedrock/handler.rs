@@ -386,10 +386,13 @@ pub(crate) fn read_image_request(
             cfg.get("width").and_then(Value::as_u64),
             cfg.get("height").and_then(Value::as_u64),
         ) {
-            (Some(w), Some(h)) => Some(crate::ir::image::ImageSize::Wh {
-                width: w as u32,
-                height: h as u32,
-            }),
+            // Checked narrowing (mirrors the `u32::try_from(...).ok()` used for `numberOfImages`
+            // above): an out-of-range width/height drops the geometry rather than silently WRAPPING
+            // (e.g. `4294967297 as u32 == 1`), which would fabricate a bogus 1px dimension.
+            (Some(w), Some(h)) => match (u32::try_from(w).ok(), u32::try_from(h).ok()) {
+                (Some(width), Some(height)) => Some(crate::ir::image::ImageSize::Wh { width, height }),
+                _ => None,
+            },
             _ => None,
         },
         quality: cfg
@@ -523,6 +526,10 @@ pub(crate) fn read_rerank_request(
             .get("top_n")
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
+        // Read `return_documents` (cohere.rerank-*/amazon.rerank-* honor it) so a bedrock->bedrock
+        // rerank preserves the flag the writer re-emits — the reader formerly skipped it, an
+        // asymmetry with Cohere's reader that silently dropped `return_documents:true`.
+        return_documents: wire.get("return_documents").and_then(Value::as_bool),
         ..Default::default()
     })
 }

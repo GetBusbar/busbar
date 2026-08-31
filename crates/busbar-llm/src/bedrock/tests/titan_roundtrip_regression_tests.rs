@@ -91,3 +91,62 @@ fn titan_image_writer_omits_unset_optional_params() {
     assert!(v["imageGenerationConfig"].get("seed").is_none(), "{v}");
     assert!(v["imageGenerationConfig"].get("cfgScale").is_none(), "{v}");
 }
+
+// M2: `return_documents` is emitted by the bedrock rerank writer and honored by the
+// cohere.rerank-*/amazon.rerank-* models, but the reader formerly never parsed it — so a
+// bedrock->bedrock rerank with `return_documents:true` lost the flag. Fails pre-fix: the read-back
+// `return_documents` was `None`.
+#[test]
+fn bedrock_rerank_writer_round_trips_return_documents() {
+    let req = crate::ir::rerank::RerankReq {
+        model: String::new(),
+        query: "q".into(),
+        documents: vec!["a".into(), "b".into()],
+        return_documents: Some(true),
+        ..Default::default()
+    };
+    let wire = write_rerank_request(&req);
+    let v: Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(
+        v["return_documents"],
+        serde_json::json!(true),
+        "return_documents on wire: {v}"
+    );
+    let back = read_rerank_request(&wire, "application/json").expect("re-read");
+    assert_eq!(
+        back.return_documents,
+        Some(true),
+        "return_documents must round-trip through write->read"
+    );
+}
+
+// L4: an oversize width/height must not WRAP through `as u32` (`4294967297 as u32 == 1`) — the
+// checked `u32::try_from(...).ok()` drops the geometry instead. Fails pre-fix: `size` became
+// `Wh { width: 1, .. }`.
+#[test]
+fn bedrock_image_oversize_geometry_does_not_wrap() {
+    let body = serde_json::json!({
+        "textToImageParams": { "text": "a bus" },
+        "imageGenerationConfig": { "width": 4294967297u64, "height": 512 },
+    });
+    let ir = read_image_request(&serde_json::to_vec(&body).unwrap(), "application/json")
+        .expect("read");
+    assert_eq!(
+        ir.size, None,
+        "an out-of-u32-range width must drop the geometry, not wrap to 1px: {:?}",
+        ir.size
+    );
+
+    // A valid in-range geometry still parses.
+    let body_ok = serde_json::json!({
+        "textToImageParams": { "text": "a bus" },
+        "imageGenerationConfig": { "width": 1024, "height": 768 },
+    });
+    let ir_ok = read_image_request(&serde_json::to_vec(&body_ok).unwrap(), "application/json")
+        .expect("read");
+    assert_eq!(
+        ir_ok.size,
+        Some(crate::ir::image::ImageSize::Wh { width: 1024, height: 768 }),
+        "in-range geometry must parse unchanged"
+    );
+}
