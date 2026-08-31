@@ -278,6 +278,21 @@ jobs:
       # Same "prove the gate before you trust its verdict" discipline as the lints above.
       - name: qa-gate segmentation self-test
         run: scripts/qa-segments.sh --selftest
+      # NEUTRAL-PURITY lint (plane-extraction §6.2 — the enforcement gate). The plane ABI is the ONE
+      # surface between core and a plane; every side channel (a `#[path=…/busbar-<plane>/…]` witness
+      # include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete plane key/dialect/record-type in a
+      # neutral crate, or a plane crate reaching BACK into busbar_core:: implementation) is what let
+      # the boundary drift when nothing watched it. Self-test runs FIRST (never trust the scanner's
+      # verdict before it re-proves it flags the four planted side channels and passes the allow-listed
+      # / comment / test fixtures). Then the tree is scanned in `--baseline` (INFORMATIONAL) mode: it
+      # PRINTS the categorized violation count on every push but ALWAYS exits 0, so it never reds the
+      # dirty pre-extraction tree — exactly as field_coverage.rs keeps its acceptance #[ignore]d until
+      # the queue is drained. The BLOCKING form (`--check`) is wired as the RESERVED `plane-purity`
+      # qa segment, armed (reserved→active) the day the baseline reaches 0.
+      - name: Plane-purity lint self-test (the side-channel scanner cannot be lied to)
+        run: scripts/plane-purity-lint.sh --selftest
+      - name: Plane-purity baseline (informational — the ledger the extraction drives to zero)
+        run: scripts/plane-purity-lint.sh --baseline
 
   check:
     name: fmt · clippy · build · test
@@ -770,6 +785,67 @@ jobs:
       # toolchain + cache warm.
       - name: Protocol deletion gate
         run: scripts/proto-deletion-gate.sh
+
+  # THE DELETION-TEST BUILD MATRIX (plane-extraction §6.1 — the enforcement gate, weak form).
+  #
+  # THE DELETION TEST (design §1): for each plane P, with busbar-<P> absent the NEUTRAL crates —
+  # busbar-core, busbar-substrate, busbar-api — must still COMPILE (and the binary boots serving no P
+  # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
+  # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
+  # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
+  # boot-proving `Protocol deletion gate` above (which builds and boots the whole BIN): this leg proves
+  # the neutral ABI crates themselves need no plane crate to compile, one plane at a time.
+  #
+  # WHY A DEDICATED JOB / MATRIX: the whole point of the extraction is that each plane is independently
+  # removable, so each removal is an independent fact about the tree and gets its own matrix leg — a
+  # leg that goes red names exactly which plane the neutral crates still can't compile without.
+  #
+  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into core
+  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live (design §3E). So the
+  # per-plane "llm off" leg cannot be expressed until design P1 lands `plane-llm`; TODO(P1): add an
+  # `llm` matrix leg (features "plane-mcp,plane-a2a") the moment that feature exists. Until then the
+  # ALL-PLANES-OFF leg (`--no-default-features`) is the closest expressible "serves no protocols"
+  # neutral build, and it is the owner's literal requirement ("core serving no protocols is valid").
+  #
+  # STRONG FORM — TODO(§6.1): the crate PHYSICALLY REMOVED from the workspace members + `dep:` lines in
+  # a scratch checkout, then build the neutral crates + bin and boot-smoke that the plane reports
+  # absent. That needs a scratch-checkout harness (a sibling of proto-deletion-gate.sh's scratch build)
+  # and is a follow-up; this weak form is the permanent asserted floor it will build on.
+  deletion-test-matrix:
+    name: deletion-test (neutral crates compile with a plane removed)
+    runs-on: ubuntu-latest
+    # FULL TIER ONLY (same axis + cost profile as no-default-features). Skipped on pushes to
+    # non-promotion branches; runs on every pull request, on dev/qa/main, and on workflow_dispatch.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mcp removed (a2a kept)
+            features: plane-a2a
+          - name: a2a removed (mcp kept)
+            features: plane-mcp
+          - name: all planes off (core serves no protocols)
+            features: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build neutral crates — ${{ matrix.name }}
+        # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
+        # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
+        # busbar-api carries no plane features and is simply built neutral alongside. A red here means
+        # a neutral crate still needs the removed plane crate to compile — a deletion-test failure.
+        run: |
+          set -euo pipefail
+          FEATS="${{ matrix.features }}"
+          if [ -n "$FEATS" ]; then
+            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+              --no-default-features --features "$FEATS" --locked --verbose
+          else
+            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+              --no-default-features --locked --verbose
+          fi
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops

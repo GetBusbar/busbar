@@ -217,3 +217,26 @@ id     = "smart-router"
 status = "reserved"   # -> active in 1.5.6 (smart-router)
 tier   = "fast"
 run    = "cargo test -p busbar --test qa_smart_router"
+
+[[segment]]
+id     = "plane-purity"
+status = "reserved"   # -> active in 1.7.x once the plane extraction drains the neutral crates (design P5)
+tier   = "fast"
+# THE NEUTRAL-PURITY GATE (plane-extraction §6.2/§6.3) as an independently-reported release verdict —
+# the plane-boundary analogue of field-coverage/config-stability above. The plane ABI (PlaneDecl /
+# ProtocolDecl / install_* / the opaque PlaneRecord / plane_slots / the PLANE_* diagnostics namespace)
+# is the ONE surface between core and a plane; this segment fails RED on any SIDE CHANNEL in a neutral
+# crate — a `#[path=…/busbar-<plane>/…]` witness include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete
+# plane key/dialect/record-type, or a plane crate reaching BACK into busbar_core:: implementation.
+#
+# RESERVED, RED-BY-DESIGN-UNTIL-DRAINED (the field-coverage discipline). The tree is DIRTY today — the
+# deletion test fails for all three planes and §3 is the residual ledger (the current baseline is
+# ~1236 side channels, surfaced non-blocking on every push by the `--baseline` step in ci.yml's
+# structure-lint job). An `active` segment whose `--check` cannot pass would be a hollow-red that
+# breaks the honesty rule, so this slot is `reserved` — INERT, excluded from the green claim, named in
+# the umbrella's scope line — exactly like method-coverage-acceptance was red-by-design while its queue
+# was owed. Arming it is a one-line reserved→active flip the day the baseline reaches 0; the `--check`
+# form then passes green and stays a permanent gate, so the boundary can never erode unwatched again.
+# The self-test (which proves the scanner catches the four planted side channels) is ALREADY green and
+# already runs per-push in ci.yml — only the tree VERDICT is deferred, never the scanner's proof.
+run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"
