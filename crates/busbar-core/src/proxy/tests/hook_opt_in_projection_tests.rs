@@ -12,7 +12,7 @@
 //! moved, the contract did not.
 
 use super::*;
-use crate::ir::facts::{IrFacts, OPAQUE_CONTENT_MARKER};
+use crate::ir::facts::OPAQUE_CONTENT_MARKER;
 
 /// Read the fixture body into the hook seam's facts, asserting the reader accepts it.
 fn facts(v: &Value, proto: &str) -> HookFacts {
@@ -495,17 +495,11 @@ fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content
 /// at it directly, where it already lives, instead of at a second copy of its accept/skip rules.
 #[test]
 fn responses_reasoning_reader_rejects_malformed_encrypted_content() {
-    let empty_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": ""});
-    assert!(
-        crate::proto::openai_responses::read_reasoning_encrypted_content(&empty_string).is_none()
-    );
-
-    let non_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": 123});
-    assert!(
-        crate::proto::openai_responses::read_reasoning_encrypted_content(&non_string).is_none()
-    );
-
-    // And end to end: an item carrying neither text nor a usable blob contributes no content at all.
+    // The reader's own accept/skip rules (`read_reasoning_encrypted_content` rejecting an empty
+    // string / non-string blob) are asserted directly beside that codec now — RELOCATED to
+    // `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5).
+    // What stays here is the END-TO-END projection assertion, which is core hook behavior.
+    // An item carrying neither text nor a usable blob contributes no content at all.
     let v: Value = serde_json::json!({"input": [{"type": "reasoning", "encrypted_content": ""}]});
     let f = facts(&v, "responses");
     assert!(f.prompt().messages.iter().all(|(_, text)| text.is_empty()));
@@ -533,46 +527,10 @@ fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
     assert!(!p.messages[0].1.contains("ENC_BLOB_123"));
 }
 
-/// A single text-bearing reasoning part (in EITHER `content[]` or `summary[]` alone) must come
-/// through the reader's own walk still BORROWED. This one always tested `proto/openai_responses`,
-/// which is the surviving implementation — so it stays where it is and gains importance.
-#[test]
-fn responses_single_part_reasoning_text_borrows() {
-    let content_only = serde_json::json!({
-        "type": "reasoning",
-        "content": [{"type": "reasoning_text", "text": "one part"}]
-    });
-    assert!(matches!(
-        crate::proto::openai_responses::read_reasoning_text(&content_only),
-        std::borrow::Cow::Borrowed(_)
-    ));
-
-    let summary_only = serde_json::json!({
-        "type": "reasoning",
-        "summary": [{"type": "summary_text", "text": "just a summary"}]
-    });
-    assert!(matches!(
-        crate::proto::openai_responses::read_reasoning_text(&summary_only),
-        std::borrow::Cow::Borrowed(_)
-    ));
-}
-
-/// Two `content[]` parts + one `summary[]` part must still allocate — and concatenate
-/// content-array-then-summary-array, with NO separator (the deliberate separator-less concat).
-#[test]
-fn responses_multi_part_reasoning_text_concatenates() {
-    let item = serde_json::json!({
-        "type": "reasoning",
-        "content": [
-            {"type": "reasoning_text", "text": "first "},
-            {"type": "reasoning_text", "text": "second "}
-        ],
-        "summary": [{"type": "summary_text", "text": "third"}]
-    });
-    let t = crate::proto::openai_responses::read_reasoning_text(&item);
-    assert!(matches!(t, std::borrow::Cow::Owned(_)));
-    assert_eq!(t.as_ref(), "first second third");
-}
+// `responses_single_part_reasoning_text_borrows` and `responses_multi_part_reasoning_text_concatenates`
+// RELOCATED to `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5
+// Phase 1.5): they named the witnessed `openai_responses::read_reasoning_text` codec fn directly and
+// exercised nothing else, so they now live beside that codec.
 
 /// A Responses `reasoning` item is assistant-authored, and the READER already says so — it maps the
 /// item to a standalone assistant `IrMessage`. Re-pointed here, the projection and the reader agree
@@ -744,30 +702,10 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
 /// over CONTENT KINDS is compiler-enforced and needs no table at all. What a table can still say is
 /// the thing the compiler cannot: every registered protocol has a reader that produces a readable
 /// IR, so a seventh protocol is covered by REGISTERING rather than by an arm added here.
-#[test]
-fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
-    for &proto in crate::proto::known_protocols() {
-        let p = crate::proto::protocol_for(proto)
-            .unwrap_or_else(|| panic!("'{proto}' is in KNOWN_PROTOCOLS but is not registered"));
-        // A minimal, universally-legal body for the dialect's conversation container: whichever key
-        // this protocol reads, an absent one is legal and yields an empty conversation.
-        let empty: Value = serde_json::json!({"messages": [], "contents": [], "input": []});
-        let ir = p
-            .reader()
-            .read_request(&empty)
-            .unwrap_or_else(|e| panic!("'{proto}' cannot read an empty conversation: {e:?}"));
-        let shape = ir.shape();
-        assert_eq!(
-            shape.turn_count, 0,
-            "'{proto}' invented turns for an empty conversation"
-        );
-        assert_eq!(shape.text_chars, 0);
-        assert!(
-            crate::ir::project(&ir).is_empty(),
-            "'{proto}' projected content for an empty conversation"
-        );
-    }
-}
+// `every_known_protocol_has_a_declared_reasoning_wire_shape` RELOCATED to `busbar-llm`
+// (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5): it drove the
+// witnessed codec (`protocol_for(...).reader()`) and named the concrete IR (`ir.shape()`,
+// `ir::project`), so it now lives beside the codec/IR it exercises.
 
 /// The write-back is NOT index-aligned, so a `prompt: rw` hook that ECHOES the projection it
 /// received writes reasoning text — or, for an opaque turn, the non-content marker — into a REAL,

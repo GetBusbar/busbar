@@ -256,11 +256,12 @@ fn test_ingress_error_bedrock_amzn_headers() {
         .headers()
         .get("x-amzn-errortype")
         .and_then(|h| h.to_str().ok());
+    // `KIND_RATE_LIMIT` maps to `ThrottlingException`, pinned as a literal so this core test names no
+    // dialect module; the mapping's identity is proven beside the bedrock codec in `busbar-llm`
+    // (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5).
     assert_eq!(
         errtype,
-        Some(crate::proto::bedrock::error_kind_to_bedrock_type(
-            KIND_RATE_LIMIT
-        )),
+        Some("ThrottlingException"),
         "x-amzn-errortype mirrors the body __type"
     );
 
@@ -1144,8 +1145,12 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     );
 
     let translate = crate::proto::StreamTranslate::new("gemini", "openai").expect("translator");
-    let json_array: Box<dyn crate::proto::ArrayStreamFramer> =
-        Box::new(crate::proto::gemini::GeminiJsonArrayFramer::new());
+    // Neutral seam: the array-stream framer is built the exact way production builds it
+    // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
+    let json_array: Box<dyn crate::proto::ArrayStreamFramer> = crate::proto::decl_for("gemini")
+        .and_then(|d| d.dialect())
+        .and_then(|dc| dc.make_array_stream_framer())
+        .expect("gemini dialect builds an array-stream framer");
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse: streaming
@@ -2584,7 +2589,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
         "model": "pg",
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "stream": true,
-        crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY: true
+        (crate::proto::array_stream_shim_key_for(crate::proto::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
     }))
     .unwrap();
     let resp = forward_with_pool(
@@ -2676,7 +2681,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
         "model": "leastbad-g",
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "stream": true,
-        crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY: true
+        (crate::proto::array_stream_shim_key_for(crate::proto::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
     }))
     .unwrap();
     let resp = forward_with_pool(

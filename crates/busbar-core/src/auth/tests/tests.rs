@@ -162,22 +162,10 @@ fn assert_uuid_v4_shaped(id: &str) {
     );
 }
 
-#[test]
-fn test_synth_amzn_request_id_is_uuid_v4() {
-    // Regression for the flat-32-hex-no-dashes format: a Bedrock x-amzn-RequestId must be a
-    // CSPRNG UUID-v4, matching real AWS. The auth path now mints this id through the CANONICAL
-    // `crate::proto::bedrock::synth_amzn_request_id` (via `proxy::ingress_error` →
-    // `attach_bedrock_error_headers`), not a private copy — assert the canonical fn's shape so the
-    // bedrock auth-failure header contract stays covered. Two consecutive ids must differ
-    // (entropy-sourced, not a predictable timestamp||counter).
-    let a = crate::proto::bedrock::synth_amzn_request_id()
-        .expect("entropy must be available under test");
-    let b = crate::proto::bedrock::synth_amzn_request_id()
-        .expect("entropy must be available under test");
-    assert_uuid_v4_shaped(&a);
-    assert_uuid_v4_shaped(&b);
-    assert_ne!(a, b, "consecutive synthetic request ids must differ");
-}
+// `test_synth_amzn_request_id_is_uuid_v4` RELOCATED to `busbar-llm`
+// (`src/tests/proto/phase1_5_relocated_tests.rs`, plane-extraction §5 Phase 1.5): it named the
+// witnessed `bedrock::synth_amzn_request_id` codec fn directly, so it now lives beside that codec.
+// `assert_uuid_v4_shaped` stays here — its other callers below still use it.
 
 #[test]
 fn test_constant_time_eq_same() {
@@ -904,9 +892,11 @@ fn test_vendor_auth_failure_message_is_plausible_per_proto() {
         vendor_auth_failure_message("responses"),
         "Incorrect API key provided."
     );
+    // Byte-for-byte the gemini codec's `GEMINI_BAD_KEY_MESSAGE`, pinned as a literal (like the five
+    // siblings above) so this core auth test names no dialect module; gemini owns the const's value.
     assert_eq!(
         vendor_auth_failure_message("gemini"),
-        crate::proto::gemini::GEMINI_BAD_KEY_MESSAGE
+        "API key not valid. Please pass a valid API key."
     );
     assert_eq!(vendor_auth_failure_message("cohere"), "invalid api token");
     // AWS conveys AccessDenied via __type / x-amzn-errortype, not a message string.

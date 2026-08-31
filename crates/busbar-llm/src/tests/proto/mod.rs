@@ -64,6 +64,8 @@ pub(crate) use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 
 #[path = "adversarial_tests.rs"]
 mod adversarial_tests;
+#[path = "phase1_5_relocated_tests.rs"]
+mod phase1_5_relocated_tests;
 #[path = "context_length_tests.rs"]
 mod context_length_tests;
 #[path = "gemini_integration_tests.rs"]
