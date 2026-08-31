@@ -46,6 +46,21 @@ cd "$(dirname "$0")/.."
 
 TARBALL_DEFAULT="/tmp/busbar-target.tzst"
 
+# A MISSING SIBLING IS FATAL ON THE SOAK, and this is set HERE rather than in `qa-gate.yml` because
+# of how `workflow_run` resolves workflow files: the gate that actually fires after a push to `qa`
+# is the one on the DEFAULT branch, not the one in the commit being gated. A policy written in the
+# workflow therefore cannot take effect until it has already shipped — so a qa-gate improvement
+# could never gate the release that carried it, and the run would go green having done less than
+# anyone reading it thinks. `qa-gate-dispatch-lint.py` exists to catch exactly that, and its own
+# remedy is this: gate LOGIC belongs in this script, which rides the commit.
+#
+# The two contexts still want different answers, and they still get them. `release-check.sh`
+# defaults to 0, so a developer running it directly is informed about a missing sibling rather than
+# blocked — locally that is a fact of life. Reaching this script at all IS the soak, whether it is
+# a runner or a person, and on the soak a missing sibling is a hole in the evidence a release is
+# about to be cut on. By-design segment skips are unaffected: `not-in-segment` is not a coverage gap.
+export BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS="${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-1}"
+
 log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 die()  { printf '\033[31mqa-gate-run: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -176,14 +191,14 @@ cmd_build() {
   log "build once (3/4): link the plugin-loader test binaries"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader --no-run
 
-  # (4/4) The FAST TIER's test binary. Its segments run `cargo test --release -p busbar --bin
-  # busbar`, so without this they link the harness themselves on the far side of the hydrate.
+  # (4/4) The FAST TIER's test binary. Its segments run `cargo test --release -p busbar -p busbar-core
+  # ...`, so without this they link the harness themselves on the far side of the hydrate.
   # PROFILE MUST MATCH THE SEGMENTS. The first two gate runs failed here: the segments ran in DEBUG
   # while everything prebuilt here is RELEASE, so they shared nothing (export rebuilt from scratch,
   # 138s) AND the hook-test cdylib built above into target/release was invisible to a debug test
   # looking in target/debug/deps, which is what starved `hook-bindings` of its plugin.
   log "build once (4/4): link the busbar test binary the fast tier runs"
-  cargo test --release -p busbar --bin busbar --no-run
+  cargo test --release -p busbar -p busbar-core --no-run
 
   [ -x target/release/busbar ] || die "target/release/busbar missing after build"
   [ -x target/release/busbar-plugin-pack ] || die "target/release/busbar-plugin-pack missing after build"
@@ -214,7 +229,7 @@ cmd_build() {
 #
 # The obvious fix is to `touch` the restored target/ so the artifacts are newer than the sources.
 # THAT DOES NOT WORK, and it was measured rather than assumed. On this workspace, against
-# `cargo build --release -p busbar-plugin-abi` with every source file freshly re-stamped:
+# `cargo build --release -p busbar-plugin` with every source file freshly re-stamped:
 #     naive restore, no normalisation  ->  2 units recompiled
 #     touch the restored target/       -> 18 units recompiled   (strictly WORSE)
 #     age the SOURCES instead          ->  0 units recompiled   (and stable on a second run)

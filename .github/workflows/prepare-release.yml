@@ -4,11 +4,14 @@ name: Prepare release (on dev)
 # Dispatch this (from `dev`) with a version (e.g. 1.5.1) and it does every chore that used to be
 # manual + error-prone, commits the result to `dev`, and STOPS. It does NOT tag.
 #
-# The tag — and therefore the actual release (binaries, SBOM, OpenAPI asset, attestation, Docker,
-# and the downstream cascade) — is cut automatically by tag-on-main.yml when this bumped version
-# reaches `main`. Branch model: prepare here on dev → promote dev→qa (qa-gate.yml full ~2h gate) →
-# promote qa→main (tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version → release.yml +
-# docker.yml + 19-repo dispatch).
+# Branch model (the qa/main split): prepare here on dev → promote dev→qa, where EVERYTHING is
+# built and proven (ci.yml full tier + qa-gate.yml's full plugin soak + release-stage.yml, which
+# builds all five binaries onto a DRAFT release, stages the PGO Docker image under a throwaway
+# `staging-<sha12>` tag, runs every verifier, and records the staged digest) → fast-forward
+# qa→main, where release.yml PROMOTES ONLY: it re-verifies the recorded digest and then tags,
+# publishes the qa-built draft, retags the staged image as X.Y.Z + latest (no rebuild — main
+# ships the exact bytes qa verified), and fans out. Iterate on qa as many times as it takes; each
+# push re-stages, and only the iteration fast-forwarded to main ever ships.
 #
 # What it automates (each of these bit us at least once):
 #   1. Bump crates/busbar/Cargo.toml + Cargo.lock.
@@ -37,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Validate version + not already released
         # The input reaches the shell via `env:` (a plain variable), NEVER via `${{ }}` inside
@@ -58,15 +61,27 @@ jobs:
           cargo update -p busbar --precise "$V"
 
       - name: Regenerate committed OpenAPI schema
-        run: UPDATE_OPENAPI=1 cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file
+        run: UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
 
       - name: Roll the CHANGELOG
         run: python3 .github/scripts/roll_changelog.py "$V" CHANGELOG.md
 
       - name: Sanity — build + the drift/emit gates pass before we tag
         run: |
+          set -euo pipefail
           cargo build -p busbar --quiet
-          cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file --quiet
+          # FLOOR ON THE MATCH COUNT. `cargo test <filter>` is a SUBSTRING filter, and a filter that
+          # matches NOTHING prints "running 0 tests / test result: ok" and EXITS 0. Rename or move
+          # `openapi_json_matches_committed_file` and this step — the last gate before the release is
+          # tagged — goes green having run no test at all, and we tag a stale committed openapi.json
+          # that the runtime then serves. Asserting the test actually ran is the whole point.
+          out="$(cargo test -p busbar -p busbar-core --features openapi-schema \
+                   openapi_json_matches_committed_file 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
+            echo "::error::the OpenAPI drift test did not run (renamed, moved, or filtered to zero)."
+            echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter."
+            exit 1
+          }
 
       - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
         run: |

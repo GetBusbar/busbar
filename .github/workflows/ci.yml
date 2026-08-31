@@ -1,13 +1,51 @@
 name: CI
 
+# TWO TIERS, AND WHY.
+#
+# This workflow used to trigger on `push` to main/dev/qa ONLY, plus `pull_request`. That left every
+# feature branch COMPLETELY UNGATED until someone opened a PR. During 1.5.4 development two work
+# items were reported green from local runs and had never been CI-verified at all; the gap was only
+# discovered when the PR was opened, days of work later. "It passed locally" is not a CI result, and
+# a branch nobody has opened a PR for is exactly where that mistake is cheapest to make and most
+# expensive to discover.
+#
+# So: `branches: ['**']`, and EVERY branch push now runs CI. But the full set is 12 jobs including a
+# Windows runner, a release-mode timing gate, a loom model and a full-history migration corpus, and
+# paying all of that on every intermediate commit of a long-lived feature branch is real money for
+# very little marginal signal. So pushes to NON-PROMOTION branches run the FAST TIER:
+#
+#   FAST TIER (every branch push)   structure lint, fmt/clippy/build/test, config-stability,
+#                                   public-hygiene. This answers the only questions that matter
+#                                   mid-feature: does it build, does it lint, do the tests pass, is
+#                                   the layout/config-grammar/public-prose still clean.
+#   FULL TIER (dev, qa, main, and   everything above PLUS openapi-schema, migration-corpus,
+#   EVERY pull request, and         executable-config, no-default-features, no-plugins-gate,
+#   workflow_dispatch)              txn-guards, timing, windows.
+#
+# THE TRADEOFF, STATED PLAINLY: a Windows-only or featureless-build-only regression is now caught at
+# PR time rather than at push time. That is exactly where it was caught before this change, so the
+# fast tier costs nothing anyone had; it is pure addition. The cost paid is that a branch with an
+# open PR runs the fast tier (push) alongside the full tier (pull_request) for the same commit. The
+# two events land in DIFFERENT concurrency groups (`github.ref` is `refs/heads/<branch>` for push and
+# `refs/pull/N/merge` for pull_request) and they are deliberately NOT unified: a shared group would
+# let the cheap push run cancel the full PR run that the required checks depend on. Four duplicated
+# jobs is the accepted price of never again shipping an unverified branch.
+#
+# ESCAPE HATCH: `workflow_dispatch` forces the FULL tier on any ref, so a feature branch can buy the
+# whole gate before opening a PR without waiting for one:
+#   gh workflow run ci.yml -R GetBusbar/busbar --ref feat/my-branch
+#
+# `branches:` never matches tag pushes, so the release tag (v1.5.3 et al) still does not run CI here.
 on:
   push:
-    branches: [main, dev, qa]
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
 
 # Without this, every push queues a fully independent run that competes for the same runners
 # instead of cancelling the one it superseded -- qa-gate.yml already has this; ci.yml never did,
 # so a burst of rapid pushes (e.g. iterating on a CI fix) pays for N full runs instead of 1.
+# Doubly load-bearing now that every branch push triggers a run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +55,54 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # WHICH TIER RAN, SAID OUT LOUD. A green check mark is read as "the gate passed", and after this
+  # change a green check on a feature branch means something WEAKER than a green check on a PR.
+  # An operator who cannot see the difference will assume the strong one, which is the precise
+  # mistake this workflow's two tiers otherwise re-introduce in a new place. So every run states its
+  # own tier in the job summary and names the jobs it did NOT run. Costs one echo; buys the run's
+  # verdict being self-describing instead of needing someone to remember the rule.
+  gate-tier:
+    name: gate tier (what this run actually proved)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Declare the tier
+        # Ref and event come in as ENV, not as `${{ }}` spliced into the script text. A branch name
+        # is attacker-influenced data (anyone who can open a PR picks it) and GitHub allows plenty of
+        # shell metacharacters in one; splicing it into a `[ ... ]` test is a script-injection seam
+        # that happens to be quiet until someone names a branch to exploit it.
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "push" ] || \
+             [ "$REF" = "refs/heads/main" ] || \
+             [ "$REF" = "refs/heads/dev" ] || \
+             [ "$REF" = "refs/heads/qa" ]; then
+            {
+              echo "### CI tier: FULL"
+              echo ""
+              echo "Every CI job ran. Event \`$EVENT\`, ref \`$REF\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### CI tier: FAST"
+              echo ""
+              echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
+              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene."
+              echo ""
+              echo "It did NOT run: openapi-schema, migration-corpus, executable-config,"
+              echo "no-default-features, no-plugins-gate, txn-guards, timing, windows."
+              echo ""
+              echo "Those run on every pull request, on dev/qa/main, and on demand via"
+              echo "\`gh workflow run ci.yml -R GetBusbar/busbar --ref $REF_NAME\`."
+              echo ""
+              echo "A green check here is NOT the full gate. Do not promote on it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+
   # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
   # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
   # test ran, and the `Test` step is the only place BUSBAR_TEST_POSTGRES_URL / VALKEY_URL are set
@@ -47,11 +133,99 @@ jobs:
         run: scripts/release-script-lint.sh --selftest
       - name: Release-script lint
         run: scripts/release-script-lint.sh
+      # RELEASE-ORDER lint: nothing may be tagged until it has been verified from the consumer side,
+      # and nothing may be cut from a red commit. Both of those live in the SHAPE of the workflow
+      # graph (which job depends on which), which is edited by people in a hurry during an incident
+      # and has no other place to be asserted. Self-test runs FIRST, and it earns its place: it
+      # caught this lint's own `--draft` rule passing against a release that had had `--draft`
+      # deleted, because `--draft=false` elsewhere in the file contained the substring.
+      - name: Release-order lint self-test
+        run: python3 scripts/release-order-lint.py --selftest
+      - name: Release-order lint
+        run: python3 scripts/release-order-lint.py --root .
+      # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
+      # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
+      # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the
+      # filing step ended on an `echo` so the run stayed GREEN while the release was broken, and a
+      # long-lived mutable issue needed a whole second job to close it again. The replacement is a
+      # red check plus a run summary. This lint stops the filing coming back. Self-test runs FIRST,
+      # and it includes a comment-only fixture because the workflows now EXPLAIN the ban in prose —
+      # a lint its own explanation fails is a lint people learn to skip.
+      - name: No-self-filed-issues lint self-test
+        run: scripts/no-self-filed-issues-lint.sh --selftest
+      - name: No-self-filed-issues lint
+        run: scripts/no-self-filed-issues-lint.sh
+      # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
+      # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
+      # public", so that property is re-proven on every push rather than argued once in a comment.
+      - name: Release-order proof (a failure leaves nothing public)
+        run: python3 scripts/release-order-lint.py --prove
+      # CHANGELOG lint: the newest entry carries a version AND a date, always. This has shipped
+      # wrong more than once and been reported more than once, which is what makes it a gate rather
+      # than a reminder. The specific fault was a headless blob at the top of the published page:
+      # the site's `## [Unreleased]` strip was terminated by `\Z`, which JavaScript has no anchor
+      # for — it matched the literal letter `z` under `/i`, cut the section mid-word, and left the
+      # remainder on the page with no heading, so no version and no date. That half is fixed in the
+      # site repo; this guards the source shape the site can only render what it is given. Self-test
+      # runs FIRST: never trust the lint's verdict before proving the lint still fires.
+      - name: Changelog lint self-test (every rule proven RED)
+        run: python3 scripts/changelog-lint.py --selftest
+      - name: Changelog lint
+        run: python3 scripts/changelog-lint.py --root .
+      # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
+      # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
+      # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and
+      # `tracing` were each declared two different ways and agreed purely by luck. It sits in the
+      # FAST tier deliberately: a manifest can drift on any branch push, and this costs one python
+      # process. Self-test runs FIRST and covers dev-dependencies and
+      # `[target.'cfg(...)'.dependencies]` explicitly, because a rule enforced only on
+      # `[dependencies]` is a rule scoped to where the bug was first seen — and the jemalloc pins,
+      # the ones that differ per shipped target, live in a target table.
+      - name: Workspace-deps lint self-test
+        run: python3 scripts/workspace-deps-lint.py --selftest
+      - name: Workspace-deps lint
+        run: python3 scripts/workspace-deps-lint.py --root .
+      # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
+      # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
+      # promoted commit's. That has already cost a silent green: measured on qa c736177 the
+      # auto-fired gate ran ONE job while the segmentation umbrella sat unused, and the run passed
+      # having done far less than anyone believed. Gate LOGIC now rides the commit (the dispatcher
+      # checks out the triggering SHA and runs scripts/qa-gate-run.sh from there), but everything
+      # GitHub reads BEFORE a checkout exists — `on:`, concurrency, permissions, the needs/if graph,
+      # the matrix expression — still comes from `main` and cannot.
+      #
+      # This compares the PARSED structure, not the bytes, so comments drift freely while the run
+      # graph may not. That split is what stops the check deadlocking: `main` only moves at a
+      # release, so a byte-identical rule would make every prose edit red until the very release it
+      # is meant to gate. Self-test first, as everywhere else here.
+      - name: qa-gate dispatcher drift self-test
+        run: python3 scripts/qa-gate-dispatch-lint.py --selftest
+      # `fetch-depth: 0` is not set on this job's checkout, so origin/main may be absent; fetch it
+      # explicitly rather than letting the lint fail closed for a reason that is not drift.
+      - name: Fetch the default branch (the dispatcher that will actually fire)
+        run: git fetch --no-tags --depth=1 origin main
+      - name: qa-gate dispatcher drift
+        run: python3 scripts/qa-gate-dispatch-lint.py
+      # ARTIFACT CONTRACT wholeness. The contract is data (.github/artifact-contract.json) and the
+      # verifier implements it, so the two can drift: a row declared with no implementation is a
+      # property everybody believes is checked and nobody checks, and a check outside the contract is
+      # invisible to anyone reading it. The guard asserts SET EQUALITY both ways plus a row floor,
+      # and this self-test proves that guard still discriminates rather than merely returning the
+      # rows unchanged. Its eight cases each construct one malformation and require it be refused.
+      - name: Artifact-contract wholeness self-test
+        run: python3 scripts/verify-artifact.py --selftest
+      # RELEASE-CHECK VERDICT ACCOUNTING. release-check.sh used to end with an unconditional
+      # "RELEASE GATE PASSED" banner even when phases had not run at all, so a green gate did not
+      # prove those phases executed. This selftest proves the two are now distinguishable: a
+      # coverage gap changes the banner, names the phase, and is fatal under --require-siblings,
+      # while a by-design segment skip stays a clean pass. Offline, no gate run, seconds.
+      - name: Release-check verdict self-test
+        run: scripts/release-check.sh --selftest
       # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
       # `advanced.response_headers` opt-in. Self-test runs FIRST (never trust the lint's verdict before
-      # proving the scanner still catches a real bypass), then it scans crates/busbar/src.
+      # proving the scanner still catches a real bypass), then it scans crates/busbar-core/src.
       - name: Response-header lint self-test
         run: scripts/response-header-lint.sh --selftest
       - name: Response-header lint
@@ -69,7 +243,7 @@ jobs:
       # where an operator's credentials legitimately live and the reads are READ-ONLY scope. Added
       # after the SAME defect was found in FOUR independent projections (see the script header).
       # Self-test runs FIRST (never trust the lint's verdict before proving the scanner still catches
-      # a real leak), then it scans crates/busbar/src/admin.
+      # a real leak), then it scans crates/busbar-core/src/admin.
       - name: Settings-leak lint self-test
         run: scripts/settings-leak-lint.sh --selftest
       - name: Settings-leak lint
@@ -80,7 +254,7 @@ jobs:
       # runtime polling anything, `/healthz` included. Added after the SAME defect was found in five
       # independent places, the last of them on the ANONYMOUSLY-reachable `/auth/token` (see the
       # script header). Self-test runs FIRST (never trust the lint's verdict before proving the
-      # scanner still catches a real inline call), then it scans crates/busbar/src.
+      # scanner still catches a real inline call), then it scans crates/busbar-core/src.
       - name: Blocking-FFI lint self-test
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
@@ -104,18 +278,56 @@ jobs:
       # Same "prove the gate before you trust its verdict" discipline as the lints above.
       - name: qa-gate segmentation self-test
         run: scripts/qa-segments.sh --selftest
+      # NEUTRAL-PURITY lint — the enforcement gate for the plane ABI. The plane ABI is the ONE
+      # surface between core and a plane; every side channel (a `#[path=…/busbar-<plane>/…]` witness
+      # include, a `busbar_{llm,mcp,a2a}::` symbol, a concrete plane key/dialect/record-type in a
+      # neutral crate, or a plane crate reaching BACK into busbar_core:: implementation) is what let
+      # the boundary drift when nothing watched it. Self-test runs FIRST (never trust the scanner's
+      # verdict before it re-proves it flags the four planted side channels and passes the allow-listed
+      # / comment / test fixtures). Then the tree is scanned in `--check` (BLOCKING) mode: the extraction
+      # is COMPLETE (the baseline drained from ~1236 to 0), the `plane-purity` qa segment is now ARMED
+      # (reserved→active), so this step fails RED on ANY side channel — the boundary can never drift
+      # unwatched again. The deletion test then proves the strong form: each plane crate is physically
+      # removable (`git rm -r`) with the neutral crates + bin still compiling — no neutral→plane edge.
+      - name: Plane-purity lint self-test (the side-channel scanner cannot be lied to)
+        run: scripts/plane-purity-lint.sh --selftest
+      - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
+        run: scripts/plane-purity-lint.sh --check
+      - name: Plane deletion test (each plane crate is strong-form removable)
+        run: scripts/plane-delete-test.sh --all
 
   check:
     name: fmt · clippy · build · test
     runs-on: ubuntu-latest
+    # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
+    # test leaves the job printing nothing until someone notices and cancels by hand. A green run
+    # takes ~13 minutes warm, ~40 cold; 75 bounds the damage while leaving cold-cache headroom.
+    # The per-test-binary watchdog on the Test step below is the layer that NAMES the hang — this
+    # ceiling is only the backstop for everything else.
+    timeout-minutes: 75
     # Live-DB service containers for the store-postgres / store-valkey roundtrip tests. Without these
     # the roundtrip tests skip (their URLs are unset) and the two 1.5.0 store backends ship with ZERO
     # CI coverage of the delete_key cascade + credential cleanup. The tests read BUSBAR_TEST_POSTGRES_URL
     # / VALKEY_URL (set on the Test step below) and, because `CI` is set in Actions, HARD-FAIL rather
     # than silently skip if a service is misconfigured - so this coverage cannot vanish unnoticed.
     services:
+      # PINNED BY DIGEST for the same reason as release.yml's gate: `postgres:16` and
+      # `valkey/valkey:8` are moving tags, and these containers are load-bearing (without them the
+      # store roundtrip tests hard-fail rather than skip). What they resolve to must be a fact about
+      # the commit, not about the day. Re-pin with `docker buildx imagetools inspect <tag>`; the
+      # monthly-refresh PR is the natural place.
+      #
+      # NO `credentials:` HERE, DELIBERATELY, AND IT LEAVES HALF THE HOLE OPEN. Authenticating would
+      # raise Docker Hub's anonymous per-IP rate limit, which is the half a digest pin cannot fix --
+      # but this workflow runs on `pull_request`, where secrets are withheld from fork runs, so an
+      # unconditional `credentials:` block would hand every fork PR empty credentials. release.yml's
+      # gate (push to main only) IS authenticated. Closing this half properly means either
+      # restricting the credentials to non-fork events, which GitHub does not allow on a service
+      # container, or mirroring both images into GHCR and pulling from there. Written down rather
+      # than quietly left, because `branch-green` requires this workflow green: a throttled pull
+      # here stops a release.
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
         env:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
@@ -129,7 +341,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
         ports:
           - 6379:6379
         options: >-
@@ -146,7 +358,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
 
@@ -168,7 +380,110 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-        run: cargo test --workspace --locked --verbose
+          # Same two-number floor as the windows job. This is the PRIMARY unix suite; with the
+          # service containers wired it runs a SUPERSET of the windows workspace (it adds the
+          # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run). MIN carries
+          # slack; EXPECTED warns.
+          #
+          # The A2A/MCP/LLM plane crates are honest test targets, and `cargo test --workspace`
+          # activates their `test-support` suites through feature unification, so one workspace run
+          # collects the full superset — excluding the two plane crates drops ~1123 tests, matching
+          # their test-support counts, which confirms those suites do run here. EXPECTED is the count
+          # that run produces on the linux runner (5723 at the last measured commit); MIN carries slack
+          # below it. RAISE both as the suite grows; lower only when a diff explains the drop.
+          UNIX_MIN_TESTS: "5650"
+          UNIX_EXPECTED_TESTS: "5723"
+          # THE PER-TEST-BINARY HANG CEILING for the watchdog below. This is a HANG guard (a hung
+          # test runs unbounded), NOT a per-test timeout knob to tune a flake away with — when it
+          # fires, the step fails and names the tests that never finished.
+          #
+          # Sizing reality: the `busbar_core` lib-test binary is a MONOLITH that runs the whole
+          # workspace's dual-compiled dialect suites (field-coverage carry, input-hardening,
+          # adversarial, fidelity goldens) as ONE process — ~3900 tests aggregating to ~330s on this
+          # runner (it was already 295s before the 1.6.0 field-coverage + hardening work, i.e. at the
+          # old 300s edge). So this ceiling gates AGGREGATE binary lifetime, not a single slow test;
+          # 600s keeps a genuine hang (unbounded) caught within ~10 min while giving the legitimately
+          # grown suite real headroom. If it fires with named finished counts near the total, the
+          # binary grew — raise deliberately (as here) or split it; do not treat a full-but-slow run
+          # as a hang.
+          WATCHDOG_TEST_TIMEOUT_SECS: "600"
+        run: |
+          set -uo pipefail
+          # THE HANG WATCHDOG. A test that never finishes used to leave this job SILENT until the
+          # runner's 6-hour ceiling or a manual cancel: one hung test, 576/577 complete, process
+          # alive but idle, and the log's only clue was libtest's own over-60-seconds warning
+          # scrolling past 50 minutes earlier. cargo now runs in the background writing the same
+          # log `tee` used to write (rc discipline unchanged: the exit code is cargo's own, taken
+          # from `wait`, never laundered; a `tail --pid` keeps the live stream). A sideband loop
+          # watches for any TEST BINARY alive past WATCHDOG_TEST_TIMEOUT_SECS, and on breach it
+          # captures a gdb all-thread backtrace of the still-live stuck process, NAMES the tests
+          # that started-or-queued and never finished (the binary's --list minus the log's
+          # completed lines), and fails the step — a red with a name and a stack instead of an
+          # hours-long silence. A clean run pays one `ps` scan per 15s and never installs gdb;
+          # the totals accounting below is unchanged.
+          cargo test --workspace --locked --verbose > "$RUNNER_TEMP/unix-test.log" 2>&1 &
+          cargo_pid=$!
+          tail --pid="$cargo_pid" -n +1 -F "$RUNNER_TEMP/unix-test.log" &
+          tail_pid=$!
+          watchdog_fired=0
+          while kill -0 "$cargo_pid" 2>/dev/null; do
+            sleep 15
+            # argv[0]-anchored so a long rustc/cc invocation (whose ARGUMENTS also name
+            # target/debug/deps) can never be mistaken for a stuck test binary. No awk `exit`:
+            # an early exit SIGPIPEs `ps` and, under pipefail, fails the substitution.
+            stuck=$(ps -eo pid,etimes,args | awk -v lim="$WATCHDOG_TEST_TIMEOUT_SECS" \
+              '$2 > lim && $3 ~ /target\/debug\/deps\// && !found {print $1; found=1}' || true)
+            [ -z "${stuck:-}" ] && continue
+            bin=$(readlink -f "/proc/$stuck/exe" 2>/dev/null || true)
+            echo "::error::test watchdog: ${bin:-pid $stuck} still running after ${WATCHDOG_TEST_TIMEOUT_SECS}s — capturing state, then failing"
+            # gdb is installed lazily, ONLY on the hang path — a clean run never pays for it.
+            sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+            sudo gdb -p "$stuck" -batch -ex 'set pagination off' -ex 'thread apply all bt' || true
+            if [ -n "${bin:-}" ] && [ -x "$bin" ]; then
+              "$bin" --list 2>/dev/null | sed -n 's/: test$//p' | sort > /tmp/wd-collected.txt || true
+              grep -oE '^test [A-Za-z0-9_:]+ \.\.\. (ok|FAILED|ignored)' "$RUNNER_TEMP/unix-test.log" \
+                | awk '{print $2}' | sort -u > /tmp/wd-completed.txt || true
+              echo "::error::tests in this binary that started (or were queued) and never finished:"
+              comm -23 /tmp/wd-collected.txt /tmp/wd-completed.txt | sed 's/^/::error::    /' || true
+            fi
+            kill -9 "$stuck" 2>/dev/null || true
+            watchdog_fired=1
+            break
+          done
+          rc=0; wait "$cargo_pid" || rc=$?
+          kill "$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          if [ "$watchdog_fired" -ne 0 ]; then
+            echo "::error::the test run was ended by the hang watchdog — see the named tests and the backtrace above."
+            exit 90
+          fi
+
+          # SUM across every test binary — `test result: ok. N passed` prints once per binary, so a
+          # single-line grep would floor one binary and miss a whole suite (a cfg gate, a dropped
+          # target) compiling to nothing while still printing `ok` and exiting 0.
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/unix-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "unix: ${total} tests passed across the workspace (floor: ${UNIX_MIN_TESTS}, expected: ${UNIX_EXPECTED_TESTS})"
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED on unix (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::warning::unix ran ${total} tests, ${UNIX_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER UNIX_EXPECTED_TESTS in this job."
+            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
+          elif [ "$total" -gt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::notice::unix ran ${total} tests, above the recorded ${UNIX_EXPECTED_TESTS}. Raise UNIX_EXPECTED_TESTS."
+          fi
+          if [ "$total" -lt "$UNIX_MIN_TESTS" ]; then
+            echo "::error::the unix test suite ran ${total} tests, below its floor of ${UNIX_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass. Either a suite stopped being built/collected, or a cfg gate erased one."
+            echo "::error::If the drop is intended, LOWER the UNIX_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
 
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
@@ -194,20 +509,37 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
-        run: cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `openapi` is a SUBSTRING filter; a filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
+          # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
+          # that quietly collapsed to a single surviving test would still be a coverage hole.
+          out="$(cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
+          if [ "$n" -lt 8 ]; then
+            echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
+            echo "::error::A zero/low-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter"
+            echo "::error::(or lower this floor deliberately, in the same commit that removes tests)."
+            exit 1
+          fi
+          echo "OpenAPI suite: ${n} tests ran (floor 8)"
 
   # CONFIG-STABILITY gate. 1.5.3 is the LAST config-breaking release; after
   # it the config grammar is FROZEN and every future feature may add only NEW OPTIONAL keys/sections/
@@ -230,12 +562,15 @@ jobs:
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Corpus is present and covers the tags
@@ -272,6 +607,53 @@ jobs:
         env:
           CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: scripts/config-stability-gate.sh --check
+
+  # GENERATED-ARTIFACT DRIFT gate. Sibling to the openapi (`openapi-schema`) and config-schema
+  # (`config-stability`) drift guards, closing the third and fourth committed-but-generated files
+  # that had NO CI guard at all: `qa/field-inventory.json` and `qa/method-inventory.json`.
+  #
+  # THE HOLE THIS CLOSES. Both files are GENERATED — field-inventory from the vendored dialect
+  # schemas in `qa/field-schemas/`, method-inventory from rmcp's `model.rs` + a2a's vendored
+  # `a2a.proto`. The Rust coverage tests (`field_coverage.rs`, `method_coverage.rs`) READ the
+  # committed JSON and assert properties OF it — so a STALE inventory (a schema/method moved and
+  # nobody re-ran `--write`) is read as gospel and the tests still pass. The generators ship a
+  # `--check` mode written expressly "fail if the committed file is stale (CI)", but until now
+  # nothing in CI ran it. That is exactly the class the 1.4.1 openapi and the config-stability
+  # snapshot guards exist for: a hand-edit (a version bump, a schema tweak) that skips the regen
+  # chore lands a stale generated artifact and main goes red later, or worse, silently ships it.
+  #
+  # Regen-is-clean, enforced: `--check` re-derives from source in memory and fails RED naming the
+  # `--write` command if the committed file differs. Self-test FIRST (the sibling convention) so a
+  # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
+  # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
+  generated-artifact-drift:
+    name: generated-artifact drift (field · method inventories regen-clean)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
+      # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
+      # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
+      # dependency's source (only a compile does), so this job used to pass ONLY when the runner
+      # happened to have rmcp cached, and drew a red the first time it didn't. Extract it
+      # deterministically: `cargo fetch` downloads the `.crate`, `cargo check -p rmcp` unpacks its
+      # source into `registry/src/` (and rust-cache keeps it warm for later runs).
+      - name: Extract rmcp source (the method-inventory derivation reads it)
+        run: |
+          cargo fetch --locked
+          cargo check -p rmcp --locked
+      - name: field-inventory self-test (derivation cannot be lied to)
+        run: python3 scripts/field-inventory.py --selftest
+      - name: field-inventory drift (committed == fresh derivation)
+        run: python3 scripts/field-inventory.py --check
+      - name: method-inventory self-test (derivation cannot be lied to)
+        run: python3 scripts/method-inventory.py --selftest
+      - name: method-inventory drift (committed == fresh derivation)
+        run: python3 scripts/method-inventory.py --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
@@ -321,10 +703,13 @@ jobs:
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build busbar (the validator this gate judges with)
@@ -334,7 +719,9 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 scripts/executable-config-lint.py --busbar target/debug/busbar --selftest
       - name: Executable-config gate
-        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root .
+        # --min-docs: the gate is vacuously green over an empty extraction set. 50 documents are
+        # found today; the floor is 40 so genuine churn passes and a collapsed extractor cannot.
+        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root . --min-docs 40
 
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in auth plugin
   # COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that provably
@@ -350,9 +737,12 @@ jobs:
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -361,7 +751,99 @@ jobs:
       - name: Build (no-default-features)
         run: cargo build --no-default-features --locked --verbose
       - name: Test (no-default-features)
-        run: cargo test --no-default-features --locked --verbose
+        # A reduced-feature build must still RUN tests — a feature gate that erases the whole
+        # no-default-features suite would otherwise print `ok` and exit 0 (vacuous green). The
+        # count here is deliberately a floor of >0 rather than a measured high-water: this build
+        # excludes optional features, so its total legitimately differs from the full workspace and
+        # a tight number would false-red on feature churn. PIPESTATUS[0] is cargo's own exit.
+        run: |
+          set -uo pipefail
+          cargo test --no-default-features --locked --verbose 2>&1 | tee "$RUNNER_TEMP/ndf-test.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/ndf-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "no-default-features: ${total} tests passed"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --no-default-features FAILED (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt 1 ]; then
+            echo "::error::the no-default-features suite ran ZERO tests — a feature gate erased it."
+            echo "::error::A zero-test 'cargo test' prints 'ok' and exits 0. This is NOT a pass."
+            exit 1
+          fi
+      # THE PROTOCOL DELETION GATE (step 4 of 1.6.0; the LLM protocol is one extracted plugin
+      # carrying its dialects, plus mcp on its own leg — one leg per PROTOCOL). Builds the binary WITHOUT ONE extracted protocol
+      # crate at a time and proves the deletion at boot, not just at compile: the deleted binary
+      # must come up, answer its operator surface, refuse that dialect's `protocol:` config with the
+      # unknown-protocol refusal naming the remaining dialects, and still validate the dialects that
+      # remain — "fewer protocols is a valid busbar" (owner ruling R-D), executed rather than
+      # asserted. Lives in this job because it is the same reduced-feature axis with the same
+      # toolchain + cache warm.
+      - name: Protocol deletion gate
+        run: scripts/proto-deletion-gate.sh
+
+  # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
+  #
+  # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
+  # busbar-core, busbar-substrate, busbar-api — must still COMPILE (and the binary boots serving no P
+  # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
+  # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
+  # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
+  # boot-proving `Protocol deletion gate` above (which builds and boots the whole BIN): this leg proves
+  # the neutral ABI crates themselves need no plane crate to compile, one plane at a time.
+  #
+  # WHY A DEDICATED JOB / MATRIX: the whole point of the extraction is that each plane is independently
+  # removable, so each removal is an independent fact about the tree and gets its own matrix leg — a
+  # leg that goes red names exactly which plane the neutral crates still can't compile without.
+  #
+  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into core
+  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live. So the
+  # per-plane "llm off" leg cannot be expressed until a `plane-llm` feature lands; TODO: add an
+  # `llm` matrix leg (features "plane-mcp,plane-a2a") the moment that feature exists. Until then the
+  # ALL-PLANES-OFF leg (`--no-default-features`) is the closest expressible "serves no protocols"
+  # neutral build, and it is the owner's literal requirement ("core serving no protocols is valid").
+  #
+  # STRONG FORM: scripts/plane-delete-test.sh PHYSICALLY REMOVES the crate from the workspace members +
+  # `dep:` lines in a scratch checkout, then builds the neutral crates + bin and boot-smokes that the
+  # plane reports absent. It is wired as its own gate (`plane-delete-test.sh --all`) and passes for all
+  # three planes; this weak form is the per-plane compile-level complement, asserted on every matrix leg.
+  deletion-test-matrix:
+    name: deletion-test (neutral crates compile with a plane removed)
+    runs-on: ubuntu-latest
+    # FULL TIER ONLY (same axis + cost profile as no-default-features). Skipped on pushes to
+    # non-promotion branches; runs on every pull request, on dev/qa/main, and on workflow_dispatch.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mcp removed (a2a kept)
+            features: plane-a2a
+          - name: a2a removed (mcp kept)
+            features: plane-mcp
+          - name: all planes off (core serves no protocols)
+            features: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build neutral crates — ${{ matrix.name }}
+        # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
+        # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
+        # busbar-api carries no plane features and is simply built neutral alongside. A red here means
+        # a neutral crate still needs the removed plane crate to compile — a deletion-test failure.
+        run: |
+          set -euo pipefail
+          FEATS="${{ matrix.features }}"
+          if [ -n "$FEATS" ]; then
+            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+              --no-default-features --features "$FEATS" --locked --verbose
+          else
+            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+              --no-default-features --locked --verbose
+          fi
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops
@@ -385,9 +867,12 @@ jobs:
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
@@ -402,9 +887,12 @@ jobs:
   txn-guards:
     name: txn compile fence · loom model
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
@@ -418,17 +906,46 @@ jobs:
   timing:
     name: timing gate (release)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Hot-path timing gate
-        run: cargo test --release --locked timing_gate -- --ignored
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `timing_gate` is a SUBSTRING filter and these tests are
+          # `#[ignore]`d, so this job is their ONLY execution anywhere. A filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0 — rename the tests and the hot-path
+          # timing gate is green forever having measured nothing, with no other job to notice.
+          out="$(cargo test --release --locked timing_gate -- --ignored 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
+            echo "::error::the hot-path timing gate ran ZERO tests (renamed, moved, or un-ignored?)."
+            echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass."
+            exit 1
+          }
 
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
+  #
+  # WINDOWS IS A PUBLISHED RELEASE TARGET, not a nice-to-have: `.github/release-targets.json` ships
+  # `x86_64-pc-windows-msvc`, which is the DEFAULT HOST TARGET of `windows-latest` — so this job
+  # builds the same triple the release does, with no `--target` needed.
+  #
+  # WHAT THIS JOB DOES NOT PROVE, stated so a green check is not over-read. The most
+  # platform-sensitive subsystem in the tree is the stdio MCP transport (process spawn, pipes, child
+  # teardown), and its tests are `#[cfg(unix)]` because the fixture children are `/bin/sh` scripts
+  # (see crates/busbar-mcp/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
+  # this job is green while the spawn half is unexecuted on Windows. `cargo test` cannot notice that
+  # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
+  # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.
   windows:
-    name: windows build · test
+    name: windows build · clippy · test
     runs-on: windows-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     env:
       # TWO numbers, in ONE place, so a change to either is unmissable in a diff.
       #
@@ -442,22 +959,30 @@ jobs:
       # whole suite disappear. So: the hard floor has slack, and the high-water mark carries the
       # sensitivity, as a warning that costs nothing to be wrong about.
       #
-      # BOTH ARE MEASURED, NOT GUESSED — and measured on THIS branch's suite. windows-latest
-      # observed `3387 tests passed across the workspace` for main's 1.5.4 tree (CI run
-      # 31828339952). dev's ci.yml carries 4700/4755 for the larger 1.6.0 suite; when dev promotes
-      # here through qa, its numbers ride along in its own copy of this file and are correct for
-      # the suite they arrive with. Pinning dev's numbers on main's smaller suite makes a required
-      # check permanently red, which is how these two values were first calibrated.
-      #
-      # RAISE THESE AS THE SUITE GROWS. Lowering either is only correct when a diff explains why.
-      WINDOWS_MIN_TESTS: "3300"
-      WINDOWS_EXPECTED_TESTS: "3387"
+      # RECOMPUTED for the post-plane-extraction topology (see the unix `check` job for the full
+      # rationale): the A2A/MCP/LLM `test-support` suites run under `cargo test --workspace` here too
+      # (feature unification), so windows collects the same superset MINUS the cfg(unix)-only tests.
+      # EXPECTED is the count the windows runner produced at the last measured commit (5686); MIN keeps
+      # generous slack below it. RAISE both as the suite grows; lower only when a diff explains the drop.
+      WINDOWS_MIN_TESTS: "5620"
+      WINDOWS_EXPECTED_TESTS: "5686"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --verbose
+      # CLIPPY ON WINDOWS, which `build` above does not subsume in either direction. `cargo build`
+      # compiles lib+bin targets only, so a `#[cfg(windows)]` branch reachable only from a test or an
+      # example is never even parsed by it; and clippy carries lint passes rustc does not. The
+      # platform-gated code in this tree is exactly the shape that goes stale unseen — a
+      # `#[cfg(unix)]` import whose `#[cfg(windows)]` twin was never added is a warning HERE and
+      # nowhere else. `-D warnings` matches the workspace-wide RUSTFLAGS this workflow already sets,
+      # so this adds a gate and relaxes none.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --verbose -- -D warnings
       - name: Test
         # `shell: bash` is REQUIRED and not a style choice: `run:` on a windows runner defaults to
         # pwsh, where none of the pipeline below parses.
@@ -497,6 +1022,172 @@ jobs:
             echo "::error::If the drop is intended, LOWER the WINDOWS_MIN_TESTS floor in this job deliberately."
             exit 1
           fi
+      # THE BLIND SPOT, PRINTED INTO THIS RUN'S OWN SUMMARY. Deliberately NOT a gate — it asserts
+      # nothing and cannot fail the job — because what it reports is a known, accepted, written-down
+      # gap and turning it red would only teach people to route around it.
+      #
+      # It exists because of an asymmetry no gate can fix from here: a `#[cfg(unix)]` test compiles
+      # to NOTHING on this runner, so the green check above is green partly because those tests were
+      # never built, let alone run. `cargo test` cannot notice that — a test that does not exist
+      # cannot fail — and the gap is therefore invisible at exactly the moment someone reads the
+      # check mark and concludes "Windows is covered". The comment at the top of this job says so
+      # once, in a file nobody opens while looking at a green tick; this puts the same sentence, with
+      # the CURRENT file list rather than a remembered one, in front of whoever is reading the run.
+      #
+      # `|| true` on the grep: no match is exit 1 for grep, which would fail the step for the BEST
+      # possible reason (no unix-only tests left), and a step that fails on success is worse than no
+      # step at all.
+      - name: Windows blind spots (informational, never a gate)
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Windows blind spots in this run"
+            echo
+            echo "\`cargo test\` above passed. These test items are \`#[cfg(unix)]\`, so on this"
+            echo "runner they compiled to nothing and did NOT run. Green here does not cover them."
+            echo
+            echo '```'
+            grep -rn --include='*.rs' -E '^\s*#!?\[cfg\(unix\)\]' crates/ || true
+            echo '```'
+            echo
+            echo "The largest of these is the stdio MCP transport (spawn, pipes, child teardown):"
+            echo "its fixture children are \`/bin/sh\` scripts. Closing it needs cmd.exe fixtures,"
+            echo "which is real work and not a CI edit. See docs/operations.md, 'Running on Windows'."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # COVERAGE — instrumented run of the same workspace suite `check` runs, uploaded to Codecov for
+  # the README badge and per-PR line-coverage context. Deliberately ADDITIVE and NON-GATING:
+  #
+  #   * It is NOT in the ci-umbrella `needs`/RESULTS below, so it is never a required check and can
+  #     never turn `dev`/`qa`/`main` red. Coverage reporting is an OBSERVATION, not a correctness
+  #     gate — the correctness gate is `check`, which this must never be able to mask or block.
+  #   * It is a SEPARATE job, not a step folded into `check`, on purpose: `cargo llvm-cov` compiles
+  #     with `-C instrument-coverage` and drops `*.profraw` files, which would trip `check`'s
+  #     "working tree clean" assertion. Isolating it keeps that assertion honest.
+  #   * The upload uses `fail_ci_if_error: false` so a Codecov outage or a tokenless-rate-limit is a
+  #     no-op here, not a red job — a reporting dependency must never be able to fail the build.
+  #   * FULL TIER ONLY, same `if:` as windows/openapi/etc., so a feature-branch push doesn't pay for
+  #     a full instrumented rebuild; it runs on every PR and on dev/qa/main/dispatch.
+  #
+  # Same digest-pinned postgres/valkey services + BUSBAR_TEST_POSTGRES_URL / VALKEY_URL as `check`,
+  # so the store-postgres / store-valkey roundtrip tests are covered here too rather than skipped.
+  coverage:
+    name: coverage (llvm-cov · codecov)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Collect coverage (workspace, live-DB tests wired)
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          VALKEY_URL: redis://localhost:6379
+        # `--ignore-run-fail`: this job REPORTS coverage, it does not RE-GATE tests — the `check`
+        # job is the real test gate and passes the full suite. A few subprocess/stdio integration
+        # tests (crates/busbar/tests/mcp_stdio_serve.rs) are timing/behaviour-sensitive and flake
+        # ONLY under llvm-cov's whole-workspace instrumentation; without this flag their flake would
+        # fail this job and no coverage would ever upload. The report is still generated from every
+        # test that ran. A real regression is caught by `check`, not here.
+        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+      - name: Upload to Codecov (never fails the build)
+        uses: codecov/codecov-action@v5
+        with:
+          # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
+          # "Token required because branch is protected". This org-level secret authenticates
+          # the upload on every branch. Still never gates CI (fail_ci_if_error: false).
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          slug: GetBusbar/busbar
+          fail_ci_if_error: false
+
+  # ── PERF + BUILD-PARITY GATE ─────────────────────────────────────────────────────────────────
+  #
+  # The deterministic defence against the class of incident that motivated it: a ~20% throughput gap
+  # between two releases that was mostly a BUILD-CONFIG mismatch (a non-optimized binary masquerading
+  # as a code regression) plus one real per-request allocation regression that no test flagged. This
+  # job makes both structurally impossible to ship:
+  #
+  #   1. BUILD PARITY (structural). `scripts/profile-lock.sh` locks `[profile.release]` to the
+  #      optimized posture (opt-level 3 / lto fat / codegen-units 1 / strip / debug-assertions off);
+  #      the build-provenance STAMP (`busbar --build-info`, from crates/busbar/build.rs) makes every
+  #      binary self-report its posture, and `scripts/build-provenance-gate.sh` asserts a real
+  #      release build reports `profile=release opt-level=3 debug-assertions=false`. Weakening the
+  #      profile, or a binary built the wrong way, turns this RED. (The PGO=true assertion lives on
+  #      the release/docker workflow, where a PGO binary is actually built — dev CI is not PGO.)
+  #   2. PERF REGRESSION (deterministic). The allocation-count gate
+  #      (`busbar-core/src/proxy/tests/alloc_gate.rs`) drives one openai>openai passthrough request
+  #      through the real forward path and asserts the per-request heap-allocation count has not
+  #      regressed past a committed bound — machine-independent, non-flaky, unlike a wall-clock RPS
+  #      gate. It also runs inside the `check` job's `cargo test --workspace`; running it here by name
+  #      makes it a VISIBLE required gate with its own red/green, per the self-test discipline the
+  #      other gate jobs follow.
+  #
+  # FULL TIER: runs on every PR, on dev/qa/main, and on dispatch — same guard as the other gate jobs.
+  perf-build-gate:
+    name: perf + build-parity gate
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
+      # (same discipline as structure-lint.sh et al).
+      - name: profile-lock self-test
+        run: scripts/profile-lock.sh --selftest
+      - name: build-provenance gate self-test
+        run: scripts/build-provenance-gate.sh --selftest
+
+      # STRUCTURAL: the release profile must be the locked optimized posture (source-level; lto and the
+      # profile debug-assertions bit are not exposed to a build script, so they are locked here).
+      - name: profile-lock ([profile.release] is the optimized posture)
+        run: scripts/profile-lock.sh
+
+      # THE STAMP, PROVEN ON A REAL RELEASE BINARY. A plain release build (no BUSBAR_PGO) must report
+      # profile=release, opt-level=3, debug-assertions=false, pgo=false. A debug/non-optimized binary
+      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent.
+      - name: Build busbar (release) + assert build-provenance stamp
+        run: |
+          cargo build -p busbar --release --locked
+          scripts/build-provenance-gate.sh target/release/busbar release false
+
+      # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
+      - name: Allocation-count perf gate (openai>openai forward path)
+        run: cargo test -p busbar-core --lib alloc_gate -- --nocapture
 
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
@@ -507,11 +1198,15 @@ jobs:
   # never silently drop out of the gate — it turns this job red instead.
   #
   # `if: always()` so it reports even when a need FAILED, was CANCELLED, or was SKIPPED. It then
-  # asserts each need's result itself. The rule on THIS branch's ci.yml is simple: this workflow
-  # has no job-level `if:` anywhere, so every job runs on every trigger, and NOTHING may skip —
-  # a skipped required job must never read as a pass. (dev's ci.yml carries a fast/full tier split
-  # with a documented skip allowlist; when that arrives here via normal promotion it brings its own
-  # umbrella. Until then, any skip is RED.)
+  # asserts each need's result itself. The rules, and why:
+  #   * failure / cancelled  → RED, always.
+  #   * skipped              → RED, UNLESS the job is a full-tier-only job AND this is a fast-tier
+  #                            run (a feature-branch push). On qa/main/dev/PR/dispatch every job
+  #                            runs, so on those refs NOTHING may skip — a skipped required job must
+  #                            never read as a pass. This is the whole point of the gate.
+  # Because the umbrella is a required context ONLY on `qa` and `main` (both FULL_TIER), the
+  # allowlist below never fires there: it exists solely so a feature-branch push still gets an
+  # honest-green umbrella without pretending the full tier ran.
   #
   # It reports ALL offenders (the loop never short-circuits), reads each need's own `result`
   # (never a pipe's exit), and fails once at the end with a count.
@@ -519,11 +1214,13 @@ jobs:
     name: ci umbrella
     if: always()
     needs:
+      - gate-tier
       - structure-lint
       - check
       - openapi-schema
       - migration-corpus
       - config-stability
+      - generated-artifact-drift
       - public-hygiene
       - executable-config-lint
       - no-default-features
@@ -531,35 +1228,47 @@ jobs:
       - txn-guards
       - timing
       - windows
+      - perf-build-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      # jobkey|result — one line per need, read back in the loop below. Every job in this workflow
-      # is listed; adding a job to this file without adding it here leaves it un-gated, which is
-      # why the needs list and this list are adjacent and identical.
+      # 'true' on any run where the full tier is expected to execute: every event except a push,
+      # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
+      # so "expected to run" and "required to have run" cannot drift apart.
+      FULL_TIER: ${{ (github.event_name != 'push') || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref) }}
+      # jobkey|tier|result — tier is 'fast' (always runs) or 'full' (skips on a fast-tier push).
       RESULTS: |
-        structure-lint|${{ needs.structure-lint.result }}
-        check|${{ needs.check.result }}
-        openapi-schema|${{ needs.openapi-schema.result }}
-        migration-corpus|${{ needs.migration-corpus.result }}
-        config-stability|${{ needs.config-stability.result }}
-        public-hygiene|${{ needs.public-hygiene.result }}
-        executable-config-lint|${{ needs.executable-config-lint.result }}
-        no-default-features|${{ needs.no-default-features.result }}
-        no-plugins-gate|${{ needs.no-plugins-gate.result }}
-        txn-guards|${{ needs.txn-guards.result }}
-        timing|${{ needs.timing.result }}
-        windows|${{ needs.windows.result }}
+        gate-tier|fast|${{ needs.gate-tier.result }}
+        structure-lint|fast|${{ needs.structure-lint.result }}
+        check|fast|${{ needs.check.result }}
+        config-stability|fast|${{ needs.config-stability.result }}
+        generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
+        public-hygiene|fast|${{ needs.public-hygiene.result }}
+        openapi-schema|full|${{ needs.openapi-schema.result }}
+        migration-corpus|full|${{ needs.migration-corpus.result }}
+        executable-config-lint|full|${{ needs.executable-config-lint.result }}
+        no-default-features|full|${{ needs.no-default-features.result }}
+        no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
+        txn-guards|full|${{ needs.txn-guards.result }}
+        timing|full|${{ needs.timing.result }}
+        windows|full|${{ needs.windows.result }}
+        perf-build-gate|full|${{ needs.perf-build-gate.result }}
     steps:
-      - name: Assert every required job reported green (no skip is ever allowed here)
+      - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
           set -u
           fails=0
-          echo "ci umbrella: every job in this workflow must have run and passed."
-          while IFS='|' read -r job result; do
+          if [ "$FULL_TIER" = "true" ]; then
+            echo "ci umbrella — FULL tier: every job must have run and passed."
+          else
+            echo "ci umbrella — fast tier: full-tier-only jobs may be skipped; fast-tier jobs must pass."
+          fi
+          while IFS='|' read -r job tier result; do
             [ -n "$job" ] || continue
             if [ "$result" = "success" ]; then
               status="OK"
+            elif [ "$result" = "skipped" ] && [ "$tier" = "full" ] && [ "$FULL_TIER" != "true" ]; then
+              status="skipped (full-tier job on a fast-tier run — allowed)"
             else
               status="RED (${result})"
               fails=$((fails + 1))

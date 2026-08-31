@@ -111,7 +111,7 @@ EOF
 # i.e. it stopped testing signing at all:
 #   * auth — `auth.chain:` is a list of BARE NAMES into `identity-providers:`; a name with no
 #     definition there is "auth.chain references '<alias>', which is not defined in
-#     `identity-providers:`" (resolve_auth, crates/busbar/src/config/mod.rs). A plugin-backed provider
+#     `identity-providers:`" (resolve_auth, crates/busbar-core/src/config/mod.rs). A plugin-backed provider
 #     needs only `module:`; `token:` is the built-in admin-tokens credential and is REJECTED on any
 #     other module, so it must not appear here.
 #   * hook — top-level `global_hooks:` was REMOVED; hooks are a named-definition map (`hooks: <name>:

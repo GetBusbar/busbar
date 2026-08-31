@@ -1,0 +1,25 @@
+# SINGLE SOURCE OF TRUTH for the Rust toolchain — local dev and CI MUST agree.
+#
+# History this file exists to prevent: every workflow used `dtolnay/rust-toolchain@stable`, so when
+# upstream stable rolled to 1.98 CI silently moved with it and clippy began rejecting code that
+# passed on the older pin developers still had locally. A floating `@stable` means "whatever the
+# newest release is the day the job runs" — by definition it drifts, and the drift is invisible
+# until a lint fails on a green-locally branch.
+#
+# Now the toolchain is pinned in ONE place:
+#   * this file  — rustup honours it for EVERY `cargo`/`clippy`/`rustfmt` invocation in this repo,
+#                  so a plain `cargo build` here uses exactly the CI toolchain, no flags required;
+#   * the CI jobs — every `dtolnay/rust-toolchain@1.98.0` step names the SAME version, so the runner
+#                  installs precisely this toolchain (with the components below) rather than floating.
+#
+# To move the toolchain: bump the version HERE and in the `dtolnay/rust-toolchain@<version>` action
+# refs across .github/workflows/ (they are meant to match this channel). Do it deliberately, in a PR,
+# never as a silent side effect of a new upstream release.
+#
+# 1.98.0 == the version CI already resolved `@stable` to; pinning it changes nothing about today's
+# builds, it only stops tomorrow's from moving underneath us. (Crate `rust-version = 1.97` is the
+# MSRV floor we promise to support; it is intentionally <= this build pin.)
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

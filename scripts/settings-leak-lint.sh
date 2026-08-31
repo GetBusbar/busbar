@@ -21,11 +21,11 @@
 # Every one of them was a NEW projection added later, by someone who had not read the previous
 # retraction. A fifth projection will be written the same way; this makes it fail the build instead.
 #
-# WHAT IT SCANS: `crates/busbar/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
+# WHAT IT SCANS: `crates/busbar-core/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
 # navigated and exempt exactly the way structure-lint.sh / response-header-lint.sh /
 # tracing-lint.sh treat them).
 #
-# THE SCAN ROOT USED TO BE `crates/busbar/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
+# THE SCAN ROOT USED TO BE `crates/busbar-core/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
 # could not back: an admin handler serializes whatever type it is handed, and nothing requires that
 # type to be DECLARED under `admin/`. A view struct born in `hooks/`, `governance/` or `config/` and
 # returned by an admin handler was invisible to this lint while being exactly the defect it exists
@@ -203,7 +203,39 @@ hdr "no engine type reaching an admin read carries a raw operator settings bag"
 # The WHOLE engine crate, not just `admin/**`: an admin handler serializes whatever type it is
 # handed, and that type may be declared anywhere in the crate (see the scan-root note in the header).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src -name '*.rs' -not -path '*/tests/*' | sort)
+# Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
+CORE="crates/busbar-core/src"
+BIN="crates/busbar/src"
+# ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED (see scripts/plane-roots.sh for the whole argument).
+# 1.6.0's R-E makes the MCP and A2A planes plugin CRATES. They are 71 of the 238 files below and the
+# scan floor is 100, so if they leave `$CORE` the count falls to 167, CLEARS THE FLOOR, and this
+# lint goes on printing `ok` over a tree it no longer reads — and the raw settings bag this lint
+# exists to catch is exactly the shape a plane's upstream credential handling reaches for. The
+# floor catches a root that MOVED; only this catches a root that SPLIT.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  hdr "result"
+  note "settings-leak-lint FAILED — PLANE ROOT UNRESOLVED"
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  exit 1
+fi
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
+
+# ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
+# Rename `crates/busbar`, move the engine, or mistype the root and this lint reports `ok` forever
+# while nothing is scanned. The floor is not `> 0` (one file is as vacuous as none): it tracks the
+# real tree (123 files when written) with slack for genuine consolidation.
+SCAN_FLOOR=100
+if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
+  hdr "result"
+  note "settings-leak-lint FAILED — SCAN ROOT EMPTY OR MOVED"
+  note "found ${#CANDIDATES[@]} non-test .rs files under ${CORE}, expected >= ${SCAN_FLOOR}."
+  note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
+  note "If the engine crate legitimately moved, update the find root above AND this floor together."
+  exit 1
+fi
+note "scan set: ${#CANDIDATES[@]} files under ${CORE} (floor ${SCAN_FLOOR})"
 
 hits=""
 for f in "${CANDIDATES[@]}"; do

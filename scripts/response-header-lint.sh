@@ -106,15 +106,58 @@ scan_rule() {
 # One row per busbar-injected header (or header-writing idiom). `pattern` is an ERE matched against
 # CODE (comments/tests already excluded); `what` is the printed violation label; `allow` is the
 # comma-separated list of the header's ONE sanctioned definition/emission file(s).
-SRC_DIR="crates/busbar/src"
+# Core/bin split roots (step 3.7): CORE is the engine library root, BIN the thin binary root.
+CORE="crates/busbar-core/src"
+BIN="crates/busbar/src"
+SRC_DIR="$CORE"
 HDR_ROUTE_POLICY_FILE="${SRC_DIR}/proxy/mod.rs"
 HDR_ROUTE_WIRE_FILE="${SRC_DIR}/proxy/wire.rs"
-HDR_SERVER_TIMING_FILE="${SRC_DIR}/main.rs"
+HDR_SERVER_TIMING_FILE="${SRC_DIR}/router.rs"
 
 # Candidate set: every busbar .rs file except integration-test-only trees (`*/tests/*`, name-navigated
 # and exempt from every choke-point rule the same way structure-lint.sh treats them).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" -name '*.rs' -not -path '*/tests/*' | sort)
+# ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED (see scripts/plane-roots.sh for the whole argument).
+# 1.6.0's R-E makes the MCP and A2A planes plugin CRATES; they are 71 of the 238 files below against
+# a scan floor of 100, so their departure would leave the floor cleared and this lint reporting `ok`
+# over a tree it no longer reads. Both planes emit response headers on their own front doors, which
+# is precisely the population of "one gated definition site per header" this lint counts.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  hdr "result"
+  note "response-header-lint FAILED — PLANE ROOT UNRESOLVED"
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  exit 1
+fi
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
+
+# ── SCAN FLOOR — every rule below is "for each candidate file, assert the header has ONE gated
+# site", which is VACUOUSLY TRUE over zero candidates: `scan_rule` with no file arguments does not
+# even scan the tree, it reads stdin (empty in CI), and every rule prints `ok`. Rename or move
+# `crates/busbar-core/src` and this lint passes forever having opened nothing. The floor is not `> 0`
+# — one surviving file is as vacuous as none — it tracks the real tree (123 files when written).
+SCAN_FLOOR=100
+if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
+  hdr "result"
+  note "response-header-lint FAILED — SCAN ROOT EMPTY OR MOVED"
+  note "found ${#CANDIDATES[@]} non-test .rs files under ${SRC_DIR}, expected >= ${SCAN_FLOOR}."
+  note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
+  note "If the engine crate legitimately moved, update SRC_DIR above AND this floor together."
+  exit 1
+fi
+# The rule table names the ONE sanctioned emission site per header. If one of those files no longer
+# exists the table is stale and its `allow` column can no longer describe reality — fail loudly
+# rather than let the allowlist quietly match nothing.
+for _hdr_file in "$HDR_ROUTE_POLICY_FILE" "$HDR_ROUTE_WIRE_FILE" "$HDR_SERVER_TIMING_FILE"; do
+  if [ ! -f "$_hdr_file" ]; then
+    hdr "result"
+    note "response-header-lint FAILED — sanctioned emission site missing: ${_hdr_file}"
+    note "The rule table's allowlist names a file that no longer exists; update the table."
+    exit 1
+  fi
+done
+note "scan set: ${#CANDIDATES[@]} files under ${SRC_DIR} (floor ${SCAN_FLOOR})"
 
 fail=0
 
