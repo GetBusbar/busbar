@@ -106,7 +106,11 @@ impl RequestCtx {
     ) -> Result<Vec<WeightedLane>, &'static str> {
         let mut cands = cands;
         for r in &self.active_restricts {
-            let members = app.pool_runtime.get(pool_name).map(|rt| &rt.members);
+            let members = app
+                .engine_tables()
+                .pool_runtime()
+                .get(pool_name)
+                .map(|rt| &rt.members);
             let restricted: Vec<WeightedLane> = cands
                 .iter()
                 .filter(|wl| {
@@ -278,7 +282,7 @@ pub(crate) async fn pick_among(
         .iter()
         .map(|wl| LaneCandidate {
             wl,
-            model: app.lanes[wl.idx].model.as_str(),
+            model: app.engine_tables().lanes()[wl.idx].model.as_str(),
             pool: pool_name,
         })
         .collect();

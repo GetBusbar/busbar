@@ -623,7 +623,11 @@ pub(crate) async fn decide_policy_order(
     // allocation cost lives entirely behind the flag — a shape-only pool never runs this.
     let prompt = enforce_content_cap(send_prompt.then(|| facts.prompt()));
 
-    let member_meta = app.pool_runtime.get(pool_name).map(|r| &r.members);
+    let member_meta = app
+        .engine_tables()
+        .pool_runtime()
+        .get(pool_name)
+        .map(|r| &r.members);
 
     let req = RoutingRequest {
         request_id: request_ctx.request_id,
@@ -661,7 +665,7 @@ pub(crate) async fn decide_policy_order(
     let candidates: Vec<Candidate> = live
         .iter()
         .map(|wl| {
-            let lane = &app.lanes[wl.idx];
+            let lane = &app.engine_tables().lanes()[wl.idx];
             let meta = member_meta.and_then(|m| m.get(&wl.idx));
             let mut signals = busbar_api::SignalBag::new();
             if !requested.is_empty() {

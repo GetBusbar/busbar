@@ -224,7 +224,7 @@ pub(crate) async fn handle_queue(
 
     // `busbar_pool_queued` depth accounting — RAII, decremented on EVERY exit (dispatch, shed, or a
     // dropped future on client disconnect), so the gauge can never leak a phantom waiter.
-    let _depth = app.queued_depth.park(pool);
+    let _depth = app.engine_tables().queued_depth().park(pool);
 
     loop {
         // Build one `acquire_owned()` future per still-viable AtCapacity candidate. An unbounded lane
@@ -326,7 +326,7 @@ pub(crate) async fn handle_queue(
                 // it before dropping the lane rather than swallowing it.
                 tracing::debug!(
                     pool = %pool,
-                    lane = %app.lanes[lane].model,
+                    lane = %app.engine_tables().lanes()[lane].model,
                     reason = reason.variant_name(),
                     "on_exhausted queue: won a freed permit but the lane's breaker denied dispatch; \
                      dropping it from the wait set"
@@ -498,7 +498,7 @@ pub(crate) async fn forward_once(
                     .unwrap_or(false)
             })
             .unwrap_or(false);
-    let egress_name = app.lanes[i].protocol;
+    let egress_name = app.engine_tables().lanes()[i].protocol;
 
     // Breaker config for THIS degraded attempt's routing pool cell — resolved the same way the main
     // forward path resolves `breaker_cfg` (per-pool settings, ADR-0002 default fallback). All breaker
@@ -524,7 +524,7 @@ pub(crate) async fn forward_once(
         req_content_type,
         // Honor the pool member's `reasoning` override (as the hot path does via
         // `effective_reasoning`), falling back to the lane-level flag.
-        reasoning_override.unwrap_or(app.lanes[i].reasoning),
+        reasoning_override.unwrap_or(app.engine_tables().lanes()[i].reasoning),
         body,
         // This degraded/fallback path resolves no governance key (and `caller_token` is a raw bearer
         // secret, never a principal id), so the audit principal is `"anonymous"`.
@@ -539,7 +539,7 @@ pub(crate) async fn forward_once(
     };
 
     // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
-    let key = match app.pool_upstream_creds(pool) {
+    let key = match app.engine_tables().pool_upstream_creds(pool) {
         // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
         // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
         // (a SECURITY boundary): borrowing the operator key would let an unauthenticated caller
@@ -549,7 +549,7 @@ pub(crate) async fn forward_once(
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
         crate::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        crate::auth::UpstreamCreds::Own => app.lanes[i].api_key.expose_secret(),
+        crate::auth::UpstreamCreds::Own => app.engine_tables().lanes()[i].api_key.expose_secret(),
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
@@ -559,7 +559,8 @@ pub(crate) async fn forward_once(
     // filters unsupported lanes before the degraded path is reached); bail safely — the armed
     // `probe_guard` releases any single-flight probe this lane won on drop (same probe contract as
     // forward_once's other pre-dispatch exits).
-    let Some(target) = app.lanes[i].egress_target(op.operation, wants_stream) else {
+    let Some(target) = app.engine_tables().lanes()[i].egress_target(op.operation, wants_stream)
+    else {
         return Ok(ingress_error(
             ingress_protocol,
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -568,7 +569,7 @@ pub(crate) async fn forward_once(
         ));
     };
     let signing_ctx = crate::proto::SigningContext {
-        host: &app.lanes[i].signing_host,
+        host: &app.engine_tables().lanes()[i].signing_host,
         canonical_uri: &target.canonical_uri,
         body: &payload,
         timestamp_epoch: now(),
@@ -576,9 +577,16 @@ pub(crate) async fn forward_once(
     };
     // Mirrors the main forward path: Own-mode on a lane-constant credential clones the
     // boot-prebuilt map; Passthrough / non-constant credentials build live.
-    let egress_auth = match (&app.lanes[i].prebuilt_auth, app.pool_upstream_creds(pool)) {
+    let egress_auth = match (
+        &app.engine_tables().lanes()[i].prebuilt_auth,
+        app.engine_tables().pool_upstream_creds(pool),
+    ) {
         (Some(pre), crate::auth::UpstreamCreds::Own) => pre.clone(),
-        _ => convert_headers(lane_auth_headers(&app.lanes[i], key, &signing_ctx)),
+        _ => convert_headers(lane_auth_headers(
+            &app.engine_tables().lanes()[i],
+            key,
+            &signing_ctx,
+        )),
     };
 
     // Egress Content-Type — mirror the main forward path exactly (it was hardcoded APPLICATION_JSON
@@ -652,7 +660,7 @@ pub(crate) async fn forward_once(
     // BOTH send arms (the attempt cap, when smaller, still fires first inside).
     let send_fut = async {
         let send = app.client.get().request(hreq);
-        match app.lanes[i].attempt_timeout_ms {
+        match app.engine_tables().lanes()[i].attempt_timeout_ms {
             Some(ms) => {
                 let cap = attempt_cap(ms, timeout_secs);
                 match tokio::time::timeout(cap, send).await {
@@ -675,7 +683,7 @@ pub(crate) async fn forward_once(
             diag_debug!(
                 ATTEMPT_TIMEOUT_DEGRADED,
                 pool = %pool,
-                lane = %app.lanes[i].model,
+                lane = %app.engine_tables().lanes()[i].model,
                 attempt_timeout_ms = ms,
                 "no response headers within the attempt cap (degraded path)"
             );
@@ -759,7 +767,10 @@ pub(crate) async fn forward_once(
                     .unwrap_or_else(|| {
                         crate::breaker::RawUpstreamError::from_status(status.as_u16())
                     });
-                    let sig = crate::breaker::normalize_raw_error(&raw, &app.lanes[i].error_map);
+                    let sig = crate::breaker::normalize_raw_error(
+                        &raw,
+                        &app.engine_tables().lanes()[i].error_map,
+                    );
                     matches!(
                         crate::breaker::classify(&sig),
                         crate::breaker::Disposition::TransientUpstream
@@ -1074,7 +1085,7 @@ pub(crate) async fn handle_fallback_pool(
         return handle_status_503(&app, &[], now(), pool_name, ingress_protocol);
     }
 
-    let Some(fallback_cands) = app.fallback_pools.get(pool_name).cloned() else {
+    let Some(fallback_cands) = app.engine_tables().fallback_pools().get(pool_name).cloned() else {
         // Fallback pool not configured — cascade to Status503.
         return handle_status_503(&app, &[], now(), pool_name, ingress_protocol);
     };
@@ -1110,12 +1121,16 @@ pub(crate) async fn handle_fallback_pool(
         .pool_runtime
         .get(pool_name)
         .and_then(|r| r.failover.as_ref())
-        .or(app.failover_cfg.as_ref())
+        .or(app.engine_tables().failover_cfg().as_ref())
         .and_then(|f| f.exclusions.as_ref())
     {
         Some(excl) => fallback_cands
             .into_iter()
-            .filter(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model))
+            .filter(|wl| {
+                !excl
+                    .iter()
+                    .any(|m| m == &app.engine_tables().lanes()[wl.idx].model)
+            })
             .collect(),
         None => fallback_cands,
     };
@@ -1257,7 +1272,7 @@ pub(crate) async fn handle_least_bad(
     // exhaustion signal proper is the 503 shed path + breaker telemetry.
     tracing::debug!(
         pool = %pool,
-        lane = %app.lanes[soonest_idx].model,
+        lane = %app.engine_tables().lanes()[soonest_idx].model,
         cooldown_remaining_s = app.store.cooldown_remaining_in(pool, soonest_idx, now),
         "least-bad mode: routing to a degraded member (pool exhausted)"
     );

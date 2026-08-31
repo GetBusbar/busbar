@@ -888,6 +888,43 @@ impl<'a> EngineTables<'a> {
     pub(crate) fn by_model(&self) -> &'a HashMap<String, usize> {
         &self.app.by_model
     }
+
+    /// The lane table — each resolved upstream (model, provider, dialect, credential, egress target).
+    pub(crate) fn lanes(&self) -> &'a [Lane] {
+        &self.app.lanes
+    }
+
+    /// The global default failover config (the fallback for pools that set none), if configured.
+    /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
+    pub(crate) fn failover_cfg(&self) -> &'a Option<crate::config::FailoverCfg> {
+        &self.app.failover_cfg
+    }
+
+    /// Per-pool runtime (resolved members / per-pool `upstream_credentials:` override state).
+    pub(crate) fn pool_runtime(&self) -> &'a HashMap<String, PoolRuntime> {
+        &self.app.pool_runtime
+    }
+
+    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
+    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+        self.app.upstream_creds()
+    }
+
+    /// The upstream-credential mode for `pool` — its own `upstream_credentials:` override, else the
+    /// all-pools default (the scalar combine rule). Identical to [`App::pool_upstream_creds`].
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        self.app.pool_upstream_creds(pool)
+    }
+
+    /// The fallback-pool routing table — a pool's `on_exhausted = fallback_pool:<name>` target set.
+    pub(crate) fn fallback_pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
+        &self.app.fallback_pools
+    }
+
+    /// The per-pool queue-depth gauge (the `on_exhausted = queue` waiter park counter).
+    pub(crate) fn queued_depth(&self) -> &'a std::sync::Arc<QueuedDepth> {
+        &self.app.queued_depth
+    }
 }
 
 impl App {
