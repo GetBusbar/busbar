@@ -474,14 +474,30 @@ pub(crate) fn plane_key_index(key: &str) -> u8 {
 /// registration order — the same order a plane encodes when it stamps a `TargetRef.scope_kind`. So a
 /// host entitlement slot resolves the opaque numeric kind to its string without core spelling any
 /// plane's kind token. `None` (fail-closed) for an index past the registered kinds.
+///
+/// The index is a bijection over the DISTINCT kinds, base first: a plane that also declares the
+/// neutral base kind (the LLM plane grants over `"pool"`, which `busbar_api` already treats as the
+/// unconditional `BUILTIN_POOL_KIND`) must NOT re-count it. Without this dedup the base `"pool"` and
+/// the LLM decl's `"pool"` would occupy indices 0 AND 1, shifting every later plane's kind up by one
+/// so a `pool` grant would wrongly resolve an `mcp_server` target (entitlement escalation). Folding a
+/// re-declared base onto its existing index 0 keeps each grant target mapped to the RIGHT plane's kind.
 pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
-    // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data.
+    // `"pool"` is the neutral base kind (not a plane token); the plane kinds follow it as data,
+    // de-duplicated in first-seen order so a re-declared base does not create a phantom index.
+    let mut seen: Vec<&'static str> = Vec::new();
     std::iter::once("pool")
         .chain(
             plane_decls()
                 .iter()
                 .flat_map(|d| d.scope_kinds.iter().copied()),
         )
+        .filter(|k| {
+            let fresh = !seen.contains(k);
+            if fresh {
+                seen.push(k);
+            }
+            fresh
+        })
         .nth(idx as usize)
 }
 

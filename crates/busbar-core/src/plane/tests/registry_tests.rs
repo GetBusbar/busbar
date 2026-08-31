@@ -222,6 +222,14 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
 /// dissolved: the by-key indirection reads its declaration rather than restating any fact.
 #[test]
 fn every_plane_key_answers_from_its_declaration() {
+    // This is the one registry test that reads the PROCESS plane list (`plane_decl_for`), so it is the
+    // one a sibling's `register_test_plane` can perturb: a plane test-kit registers its `&PLANE_DECL`
+    // whenever it builds a plane, and that leaked registration would shadow the built-in this asserts
+    // against. Isolate the process registry for the assertion so the suite is order-independent — the
+    // guard clears the registered set and holds the serial lock, so no sibling registration races or
+    // leaks in, and restores it on drop. (Do NOT resolve against the built-ins directly instead: the
+    // point is that the PRODUCTION by-key resolver answers from the declaration.)
+    let _isolation = busbar_substrate::plane::registry::TestRegistryIsolation::empty();
     for decl in builtin_plane_decls() {
         let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
         assert!(std::ptr::eq(resolved, *decl));

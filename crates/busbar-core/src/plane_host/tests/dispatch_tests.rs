@@ -232,11 +232,45 @@ fn entitlement_check_denies_a_target_outside_the_grant() {
         );
         // Cross-kind is fail-closed: a pool-only grant does not cover an mcp_server target.
         let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
-        assert!(!entitlement_check(host, &caller, &server));
+        assert!(
+            !entitlement_check(host, &caller, &server),
+            "a `pool` grant must NOT cover an `mcp_server` target — scope_kind 1 resolves to \
+             \"mcp_server\", not a phantom second \"pool\""
+        );
         // An unknown caller id is denied.
         let stranger = caller_ref(b"nobody", 0);
         let fast = target_ref(b"fast", 0);
         assert!(!entitlement_check(host, &stranger, &fast));
+    });
+}
+
+#[test]
+fn entitlement_check_mcp_server_grant_does_not_cover_a_pool() {
+    // The vice-versa of the cross-kind fail-closed proof: a key scoped to an `mcp_server` grant
+    // does NOT satisfy a `pool` (scope_kind 0) target. This pins the scope-kind index bijection —
+    // `mcp_server` is index 1, `pool` is index 0 — so the two kinds never alias each other.
+    let key = scoped_key(
+        "k-1",
+        Some(vec![busbar_api::ScopeRef {
+            kind: "mcp_server".to_string(),
+            value: "fast".to_string(),
+        }]),
+    );
+    let app = app_with_key(&key);
+    with_dispatch_scope(&app, |host, _vt| {
+        let caller = caller_ref(b"k-1", 0);
+        // The grant DOES cover the matching mcp_server target (sanity: the grant is live).
+        let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
+        assert!(
+            entitlement_check(host, &caller, &server),
+            "the key's mcp_server grant covers `fast` → entitled"
+        );
+        // …but it must NOT cover a `pool` target of the same value.
+        let pool = target_ref(b"fast", 0); // scope_kind 0 = "pool"
+        assert!(
+            !entitlement_check(host, &caller, &pool),
+            "an `mcp_server` grant must NOT cover a `pool` target"
+        );
     });
 }
 

@@ -500,16 +500,73 @@ pub struct PlaneDecl {
 static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
     std::sync::Mutex::new(Vec::new());
 
+/// THE PROCESS-WIDE TEST-REGISTRY SERIAL LOCK. Held by [`TestRegistryIsolation`] for the whole body of
+/// a test that asserts against the BUILT-IN plane set, and taken briefly by every [`register_test_plane`]
+/// call, so a sibling test's registration (which the composition-root-shaped plane test-kits perform
+/// whenever they build a plane) cannot race — or leak into — that assertion. A separate lock from
+/// `TEST_REGISTERED`'s own so the guard can hold it across reads that themselves lock `TEST_REGISTERED`
+/// without self-deadlocking; the lock ORDER is always serial-then-registered.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTRY_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
 /// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
 /// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
 /// fixture registry matches a shipped "busbar with this plane" binary. The storage lives HERE, on the
 /// neutral substrate, so a plane crate names no `busbar_core::` implementation to register itself.
+///
+/// Takes the [`TEST_REGISTRY_SERIAL`] lock around the mutation so a concurrent [`TestRegistryIsolation`]
+/// either observes this registration in full or excludes it for its whole lifetime — never a torn view.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_plane(decl: &'static PlaneDecl) {
+    let _serial = TEST_REGISTRY_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
     if !reg.iter().any(|d| d.key == decl.key) {
         reg.push(decl);
+    }
+}
+
+/// TEST-SUPPORT SEAM — ISOLATE THE PROCESS PLANE REGISTRY for one test. RAII: construction takes the
+/// process [`TEST_REGISTRY_SERIAL`] lock and snapshots-then-clears the registered planes, so a test that
+/// asserts against the built-in plane set sees a registry with no sibling's [`register_test_plane`]
+/// leaked into it. While the guard is alive that lock is held, so any parallel registration BLOCKS
+/// rather than mutating the set mid-assertion. On drop it restores the snapshot and releases the lock —
+/// so the isolation is scoped to exactly the test that asked for it and the suite stays order-independent.
+///
+/// `busbar-core`'s `plane_decls()` re-folds on every read and memoises by the registered-set COUNT, so
+/// clearing the set here makes that memo recompute against the built-ins alone with nothing else to do.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the registry stays isolated only while the guard is alive"]
+pub struct TestRegistryIsolation {
+    _serial: std::sync::MutexGuard<'static, ()>,
+    saved: Vec<&'static PlaneDecl>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TestRegistryIsolation {
+    /// Take the serial lock, snapshot the registered planes, and clear them for the guard's lifetime.
+    pub fn empty() -> Self {
+        let serial = TEST_REGISTRY_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved = {
+            let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *reg)
+        };
+        Self {
+            _serial: serial,
+            saved,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for TestRegistryIsolation {
+    fn drop(&mut self) {
+        let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+        *reg = std::mem::take(&mut self.saved);
     }
 }
 
