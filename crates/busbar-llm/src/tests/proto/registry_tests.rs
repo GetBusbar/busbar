@@ -45,6 +45,7 @@ fn builtins() -> Registry {
 /// pins the same sequence on the real binary.
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
+    crate::ensure_test_protocols_registered();
     assert_eq!(
         busbar_core::proto::known_protocols(),
         &[
@@ -69,6 +70,7 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 /// six codecs, the fold must find them.
 #[test]
 fn the_derived_protocol_list_is_not_empty() {
+    crate::ensure_test_protocols_registered();
     assert!(
         !busbar_core::proto::known_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
@@ -80,6 +82,7 @@ fn the_derived_protocol_list_is_not_empty() {
 /// folded from the declarations at boot; the VALUES may not have changed while the mechanism did.
 #[test]
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
+    crate::ensure_test_protocols_registered();
     assert_eq!(
         busbar_core::proto::streaming_content_types(),
         &["application/vnd.amazon.eventstream", "text/event-stream"],
@@ -110,6 +113,7 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
 /// every declaration and every operation, so neither can drift.
 #[test]
 fn the_declared_verbs_are_the_verbs_the_handler_serves() {
+    crate::ensure_test_protocols_registered();
     for decl in builtins().decls() {
         let handler = decl
             .handler

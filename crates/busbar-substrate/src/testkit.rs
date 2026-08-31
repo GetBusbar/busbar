@@ -50,9 +50,11 @@ pub trait TestAppSeam {
     /// (the A2A plane derives its card/discovery origins from it).
     fn configured_public_url(&self) -> Option<&str>;
 
-    /// busbar's PUBLIC A2A card-issuer key off the fixture's governance, as the neutral [`CardIssuer`]
-    /// — computed exactly as production's boot fold. `None` when no governance / no card key.
-    fn a2a_card_issuer(&self) -> Option<CardIssuer>;
+    /// busbar's PUBLIC card-issuer key off the fixture's governance, as the neutral [`CardIssuer`] —
+    /// computed exactly as production's boot fold. A KEYED capability (the requesting plane's decl
+    /// `key`), mirroring the other keyed seams so the method names no plane; `None` when no governance
+    /// / no card key. Only the card-issuing plane asks, under its own key.
+    fn card_issuer(&self, plane_key: &'static str) -> Option<CardIssuer>;
 
     /// Install a pre-built, type-erased plane runtime under its plane decl `key` (or the per-generation
     /// runtime-slot companion). `build()` moves the accumulated map into the App's type-erased slots.
@@ -65,23 +67,22 @@ pub trait TestAppSeam {
     /// returns), so `build()` wires the audience check naming no plane type.
     fn admit_plane(&mut self, key: &'static str, admission: PlaneAdmission);
 
-    /// Hand `build()` the MCP plane's per-server hook SPECS as plain strings (`(name, own-hooks)` pairs
-    /// + the section hook list); `build()` resolves them through the SAME resolver production uses.
-    fn set_mcp_container_hooks(
+    /// Hand `build()` plane `plane_key`'s per-container hook SPECS as plain strings (`(name, own-hooks)`
+    /// pairs + the section hook list); `build()` resolves them through the SAME resolver production uses
+    /// and files the resulting gate map under `plane_key`. KEYED by the plane's decl `key` — the neutral
+    /// twin of the generic `plane_gates`/`plane_pools` keying — so one method serves every plane's
+    /// container-gate section (`tools:` for MCP, `agents:` for A2A) naming no plane.
+    fn set_container_hooks(
         &mut self,
+        plane_key: &'static str,
         containers: Vec<(String, Vec<String>)>,
         section: Vec<String>,
     );
 
-    /// The A2A twin of [`Self::set_mcp_container_hooks`], over `agents:`.
-    fn set_a2a_container_hooks(
-        &mut self,
-        containers: Vec<(String, Vec<String>)>,
-        section: Vec<String>,
-    );
-
-    /// Set the type-erased `agents:` config the built App carries; core names no A2A config type.
-    fn set_agent_defs_any(&mut self, defs: Arc<dyn Any + Send + Sync>);
+    /// Set plane `plane_key`'s type-erased named-definition config the built App carries (the `agents:`
+    /// defs the A2A plane erases); core names no plane config type. KEYED like [`Self::set_container_hooks`]
+    /// so this one method serves any plane's section-defs handle.
+    fn set_plane_defs_any(&mut self, plane_key: &'static str, defs: Arc<dyn Any + Send + Sync>);
 }
 
 /// TYPED SUGAR over the object-safe [`TestAppSeam`] scratch accessors — a blanket-implemented

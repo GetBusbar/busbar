@@ -433,8 +433,12 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 // the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a plane
 // registered by any test before it reads the list is visible regardless of test order, and the
 // `&'static` contract holds. Bounded: at most one leak per distinct plane (≤ the plane count).
+// Keyed on the PAIR `(installed_len, registered_len)`, not their sum: a set that GREW `installed` by
+// one while `register_test_plane`'s set SHRANK by one (the isolation guard's snapshot/restore) sums to
+// the same total but folds to a different list, and a lone sum would alias the two and hand back a
+// stale leak. The pair distinguishes them for the price of one extra `usize`.
 #[cfg(any(test, feature = "test-support"))]
-static TEST_MEMO: std::sync::Mutex<Option<(usize, &'static [&'static PlaneDecl])>> =
+static TEST_MEMO: std::sync::Mutex<Option<((usize, usize), &'static [&'static PlaneDecl])>> =
     std::sync::Mutex::new(None);
 
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
@@ -448,8 +452,8 @@ pub use busbar_substrate::plane::registry::register_test_plane;
 pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
     let reg = busbar_substrate::plane::registry::test_registered_planes();
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
-    let want = reg.len() + installed.len();
-    let mut memo = TEST_MEMO.lock().unwrap();
+    let want = (installed.len(), reg.len());
+    let mut memo = TEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((n, slice)) = *memo {
         if n == want {
             return slice;
@@ -508,6 +512,33 @@ pub(crate) fn scope_kind_at(idx: u32) -> Option<&'static str> {
             fresh
         })
         .nth(idx as usize)
+}
+
+/// THE ABI SCOPE-KIND INDEX for a kind string — the exact INVERSE of [`scope_kind_at`], sharing its
+/// first-seen dedup so the two can never skew. Any encoder that must stamp a `TargetRef.scope_kind`
+/// routes through here rather than re-deriving the numbering, which is what keeps the pool↛mcp_server
+/// entitlement escalation closed: if the encode side and the [`scope_kind_at`] decode side computed
+/// the base-first dedup independently they could drift, and a `pool` grant could resolve an
+/// `mcp_server` target. Fail-closed (`None`) for a kind no registered plane declares.
+pub(crate) fn scope_kind_index(kind: &str) -> Option<u32> {
+    // The identical sequence `scope_kind_at` indexes: the neutral base kind first, then each plane's
+    // declared kinds, de-duplicated in first-seen order. `position` over it is the inverse of `nth`.
+    let mut seen: Vec<&'static str> = Vec::new();
+    std::iter::once("pool")
+        .chain(
+            plane_decls()
+                .iter()
+                .flat_map(|d| d.scope_kinds.iter().copied()),
+        )
+        .filter(|k| {
+            let fresh = !seen.contains(k);
+            if fresh {
+                seen.push(k);
+            }
+            fresh
+        })
+        .position(|k| k == kind)
+        .map(|i| i as u32)
 }
 
 /// The stable decl `key` of the plane at ABI registration index `idx`, or `None` when out of range —

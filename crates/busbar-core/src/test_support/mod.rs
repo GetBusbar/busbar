@@ -815,7 +815,7 @@ pub struct TestApp {
     no_plugin_routes: bool,
     /// THE PLANE INSTALL SEAM: the pre-built, type-erased plane runtimes `build()` moves into the
     /// App's [`crate::state::App::plane_slots`], keyed by each plane's decl key (and the MCP
-    /// per-generation runtime under [`crate::state::MCP_RUNTIME_SLOT`]). Filled from OUTSIDE core by
+    /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
     /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
     /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
     /// the `busbar-mcp` / `busbar-a2a` test-kits own their own construction.
@@ -825,21 +825,22 @@ pub struct TestApp {
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
     plane_dispatch: crate::plane::PlaneDispatch,
-    /// The type-erased `agents:` config handle the built App carries on [`crate::state::App::agent_defs`].
-    /// `None` ⇒ the neutral empty placeholder (`Arc::new(())`), which no test-path consumer downcasts —
-    /// the A2A plane reads its `AgentsCfg` off its own runtime object, not off this handle. The A2A
-    /// test-kit sets the real erased `AgentsCfg` here for production fidelity.
-    agent_defs_any: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// NEUTRAL per-container hook SPECS for the MCP and A2A planes — `(container_name, own_hook_names)`
-    /// pairs plus the section-level hook list — handed here by each plane's test-kit as plain strings
-    /// off its typed config, so `build()` resolves the gates against its OWN `hook_registry`/`hook_env`
+    /// The type-erased section-defs config handles the built App carries, KEYED by the owning plane's
+    /// decl key (mirroring `plane_gates`/`plane_pools`). The agents-section plane's entry becomes
+    /// [`crate::state::App::agent_defs`]; an absent key ⇒ the neutral empty placeholder (`Arc::new(())`),
+    /// which no test-path consumer downcasts — the A2A plane reads its `AgentsCfg` off its own runtime
+    /// object, not off this handle. Each plane's test-kit sets its real erased defs here for fidelity.
+    plane_defs_any:
+        std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
+    /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
+    /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
+    /// its typed config, so `build()` resolves the gates against its OWN `hook_registry`/`hook_env`
     /// through the public `hooks::resolve_container_gates` (exactly as production does) without ever
     /// naming a plane-typed config section. Resolving at build time (not in the test-kit) keeps the
     /// resolution reading the same registry/env the fixture was given, regardless of builder order.
-    mcp_container_hooks: Vec<(String, Vec<String>)>,
-    mcp_section_hooks: Vec<String>,
-    a2a_container_hooks: Vec<(String, Vec<String>)>,
-    a2a_section_hooks: Vec<String>,
+    container_hooks:
+        std::collections::BTreeMap<&'static str, (Vec<(String, Vec<String>)>, Vec<String>)>,
     /// POST-BUILD hooks a plane's test-kit registers to run against the finished `App` (e.g. the MCP
     /// plane's durable-demotion replay, which names `mcp::demotion` and so cannot live in core).
     #[allow(clippy::type_complexity)]
@@ -852,7 +853,7 @@ pub struct TestApp {
     /// PER-PLANE FINALIZERS run at the TOP of `build()`. Each is registered ONCE by a plane's test-kit
     /// (via [`TestApp::register_plane_finalizer`]); it reads its accumulated [`plane_scratch`] and
     /// drives the neutral install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`,
-    /// `set_*_container_hooks`, `set_agent_defs_any`, `on_built`). This is the doorway that keeps the
+    /// `set_container_hooks`, `set_plane_defs_any`, `on_built`). This is the doorway that keeps the
     /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
@@ -905,11 +906,8 @@ impl TestApp {
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
             plane_dispatch: crate::plane::PlaneDispatch::default(),
-            agent_defs_any: None,
-            mcp_container_hooks: Vec::new(),
-            mcp_section_hooks: Vec::new(),
-            a2a_container_hooks: Vec::new(),
-            a2a_section_hooks: Vec::new(),
+            plane_defs_any: std::collections::BTreeMap::new(),
+            container_hooks: std::collections::BTreeMap::new(),
             post_build: Vec::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
@@ -929,12 +927,12 @@ impl TestApp {
     /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
     /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
     /// `pub` governance accessor.
-    pub fn a2a_card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
+    pub fn card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
         self.governance.as_ref().and_then(|g| g.a2a_card_issuer())
     }
 
     /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
-    /// `key` (or the MCP per-generation runtime under [`crate::state::MCP_RUNTIME_SLOT`]). `build()`
+    /// `key` (or the MCP per-generation runtime under [`crate::state::runtime_slot_key`]). `build()`
     /// moves the accumulated map into [`crate::state::App::plane_slots`], so this is the one doorway a
     /// plane runtime enters the built App's type-erased slot — the seam each plane's test-kit drives so
     /// core's fixture names no plane runtime type.
@@ -970,41 +968,32 @@ impl TestApp {
         self
     }
 
-    /// NEUTRAL GATE SEAM — hand `build()` the MCP plane's per-server hook SPECS as plain strings
-    /// (`(server_name, own_hook_names)` pairs + the section `tools.hooks:` list). `build()` resolves
-    /// them against its own `hook_registry`/`hook_env` through the public
-    /// `crate::hooks::resolve_container_gates`, exactly as production does, so no MCP-typed config
-    /// section enters core.
-    pub fn set_mcp_container_hooks(
+    /// NEUTRAL GATE SEAM — hand `build()` plane `plane_key`'s per-container hook SPECS as plain strings
+    /// (`(container_name, own_hook_names)` pairs + the section hook list, e.g. `tools.hooks:`/`agents.hooks:`).
+    /// `build()` resolves them against its own `hook_registry`/`hook_env` through the public
+    /// `crate::hooks::resolve_container_gates`, exactly as production does, and files the gate map under
+    /// `plane_key` — so no plane-typed config section enters core and one method serves every plane.
+    pub fn set_container_hooks(
         &mut self,
+        plane_key: &'static str,
         containers: Vec<(String, Vec<String>)>,
         section: Vec<String>,
     ) -> &mut Self {
-        self.mcp_container_hooks = containers;
-        self.mcp_section_hooks = section;
+        self.container_hooks.insert(plane_key, (containers, section));
         self
     }
 
-    /// NEUTRAL GATE SEAM — the A2A twin of [`TestApp::set_mcp_container_hooks`], over `agents:`.
-    pub fn set_a2a_container_hooks(
+    /// NEUTRAL SECTION-DEFS SEAM — set plane `plane_key`'s type-erased named-definition config the built
+    /// App carries (the A2A plane's `agents:` defs become [`crate::state::App::agent_defs`]). The plane's
+    /// test-kit erases its own config and hands it here KEYED, so core names no plane config type. No
+    /// test-path consumer downcasts the handle (the plane reads its config off its runtime object); it
+    /// exists for production fidelity.
+    pub fn set_plane_defs_any(
         &mut self,
-        containers: Vec<(String, Vec<String>)>,
-        section: Vec<String>,
-    ) -> &mut Self {
-        self.a2a_container_hooks = containers;
-        self.a2a_section_hooks = section;
-        self
-    }
-
-    /// NEUTRAL AGENTS-HANDLE SEAM — set the type-erased `agents:` config the built App carries on
-    /// [`crate::state::App::agent_defs`]. The A2A test-kit erases its own `AgentsCfg` and hands it here,
-    /// so core names no A2A config type. No test-path consumer downcasts this handle (the A2A plane
-    /// reads its `AgentsCfg` off its runtime object); it exists for production fidelity.
-    pub fn set_agent_defs_any(
-        &mut self,
+        plane_key: &'static str,
         defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     ) -> &mut Self {
-        self.agent_defs_any = Some(defs);
+        self.plane_defs_any.insert(plane_key, defs);
         self
     }
 
@@ -1438,41 +1427,53 @@ impl TestApp {
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
             )
         });
-        // THE MCP AND A2A GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry and env
-        // this fixture was given. The per-container hook SPECS arrive as neutral strings from each
-        // plane's test-kit (`set_mcp_container_hooks`/`set_a2a_container_hooks`); `build()` runs the
-        // SAME `resolve_container_gates` production uses over them, so a test that hand-assembled a gate
-        // chain could not attach a hook the real resolver would have skipped.
-        let mcp_server_gates = crate::hooks::resolve_container_gates(
-            self.mcp_container_hooks
-                .iter()
-                .map(|(n, h)| (n.as_str(), h.as_slice())),
-            &self.mcp_section_hooks,
-            &self.hook_registry,
-            &hook_env,
-            0,
-        );
-        let a2a_agent_gates = crate::hooks::resolve_container_gates(
-            self.a2a_container_hooks
-                .iter()
-                .map(|(n, h)| (n.as_str(), h.as_slice())),
-            &self.a2a_section_hooks,
-            &self.hook_registry,
-            &hook_env,
-            0,
-        );
+        // THE PER-PLANE CONTAINER GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry
+        // and env this fixture was given. The per-container hook SPECS arrive KEYED by plane decl key
+        // from each plane's test-kit (`set_container_hooks`); `build()` runs the SAME
+        // `resolve_container_gates` production uses over them, so a test that hand-assembled a gate
+        // chain could not attach a hook the real resolver would have skipped. Keyed here by each owning
+        // plane's DECL KEY (resolved from the registry, never a literal) — the `tools:` section's plane
+        // and the `agents:` section's plane — so an absent/compiled-out plane simply gets no entry,
+        // which the gate read treats identically to the former empty-value entry. Computed BEFORE the
+        // `App` literal so it holds no borrow of `self` across the moves the literal performs.
+        let plane_gates_map: crate::state::PlaneGateMap = {
+            let mut m = std::collections::BTreeMap::new();
+            for section in [
+                crate::config::named_map::NamedMapSection::Tools,
+                crate::config::named_map::NamedMapSection::Agents,
+            ] {
+                if let Some(decl) =
+                    crate::plane::registry::plane_decl_for_config_section(section.key())
+                {
+                    let (containers, section_hooks) =
+                        self.container_hooks.get(decl.key).cloned().unwrap_or_default();
+                    let gates = crate::hooks::resolve_container_gates(
+                        containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                        &section_hooks,
+                        &self.hook_registry,
+                        &hook_env,
+                        0,
+                    );
+                    m.insert(decl.key, gates);
+                }
+            }
+            m
+        };
         let app = std::sync::Arc::new(crate::state::App {
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
-            // it via `set_agent_defs_any`; absent that, a neutral empty placeholder no test-path
-            // consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
-            agent_defs: self
-                .agent_defs_any
-                .take()
-                .unwrap_or_else(|| std::sync::Arc::new(())),
+            // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
+            // the plane that owns the `agents:` section (resolved from the registry, never a literal),
+            // exactly as `plane_pools`/`plane_gates` below. Absent that, a neutral empty placeholder no
+            // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
+            agent_defs: crate::plane::registry::plane_decl_for_config_section(
+                crate::config::named_map::NamedMapSection::Agents.key(),
+            )
+            .and_then(|decl| self.plane_defs_any.remove(decl.key))
+            .unwrap_or_else(|| std::sync::Arc::new(())),
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
@@ -1522,24 +1523,7 @@ impl TestApp {
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
-            plane_gates: {
-                // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named
-                // as a literal — exactly as production `appbuild`: the `tools:` section's plane takes
-                // the MCP gate map, the `agents:` section's plane the A2A one. A compiled-out plane has
-                // no decl for its section, so its (empty) gate map is simply not inserted.
-                let mut m = std::collections::BTreeMap::new();
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                    crate::config::named_map::NamedMapSection::Tools.key(),
-                ) {
-                    m.insert(decl.key, mcp_server_gates);
-                }
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                    crate::config::named_map::NamedMapSection::Agents.key(),
-                ) {
-                    m.insert(decl.key, a2a_agent_gates);
-                }
-                m
-            },
+            plane_gates: plane_gates_map,
             hook_env,
             hook_registry: self.hook_registry,
             requested_signals,
@@ -2137,8 +2121,11 @@ impl busbar_substrate::testkit::TestAppSeam for TestApp {
         TestApp::configured_public_url(self)
     }
 
-    fn a2a_card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
-        TestApp::a2a_card_issuer(self)
+    fn card_issuer(
+        &self,
+        _plane_key: &'static str,
+    ) -> Option<busbar_substrate::plane::registry::CardIssuer> {
+        TestApp::card_issuer(self)
     }
 
     fn install_plane_runtime(
@@ -2161,23 +2148,20 @@ impl busbar_substrate::testkit::TestAppSeam for TestApp {
         TestApp::admit_plane(self, key, admission);
     }
 
-    fn set_mcp_container_hooks(
+    fn set_container_hooks(
         &mut self,
+        plane_key: &'static str,
         containers: Vec<(String, Vec<String>)>,
         section: Vec<String>,
     ) {
-        TestApp::set_mcp_container_hooks(self, containers, section);
+        TestApp::set_container_hooks(self, plane_key, containers, section);
     }
 
-    fn set_a2a_container_hooks(
+    fn set_plane_defs_any(
         &mut self,
-        containers: Vec<(String, Vec<String>)>,
-        section: Vec<String>,
+        plane_key: &'static str,
+        defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     ) {
-        TestApp::set_a2a_container_hooks(self, containers, section);
-    }
-
-    fn set_agent_defs_any(&mut self, defs: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
-        TestApp::set_agent_defs_any(self, defs);
+        TestApp::set_plane_defs_any(self, plane_key, defs);
     }
 }

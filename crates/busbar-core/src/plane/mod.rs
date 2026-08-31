@@ -138,6 +138,13 @@ pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 /// `registry::builtin_plane_decls`, so exactly one residual is always present.
 pub(crate) fn residual_key() -> &'static str {
     let decls = registry::plane_decls();
+    // The residual is FIRST-WINS: with two residual decls the `find` below would silently pick one
+    // and the other's paths would fall through nowhere. At most one plane may flag itself residual.
+    debug_assert!(
+        decls.iter().filter(|d| d.residual).count() <= 1,
+        "more than one registered plane declares itself residual — the residual catch-all must be \
+         unique or `residual_key`/`is_residual` first-win nondeterministically"
+    );
     // Prefer the plane that DECLARES itself residual (the LLM plane, always present in a production
     // or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane for the one
     // build where no residual is flagged: the `test-support`-only dependency-copy of core the plane

@@ -113,7 +113,8 @@ fn build_with_hook_makes_an_mcp_attach_live() {
     // builder, so this in-crate unit test names no plane config type across the crate boundary (the
     // full end-to-end `.mcp_server(...)` path is covered by `tests/plane_integration.rs`).
     let mut builder = TestApp::new().hook_env(env);
-    builder.set_mcp_container_hooks(
+    builder.set_container_hooks(
+        busbar_mcp::PLANE_DECL.key,
         vec![("fs".to_string(), vec!["screen".to_string()])],
         Vec::new(),
     );

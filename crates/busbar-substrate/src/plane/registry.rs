@@ -517,6 +517,17 @@ static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
 #[cfg(any(test, feature = "test-support"))]
 static TEST_REGISTRY_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// THE THREAD THAT CURRENTLY HOLDS A [`TestRegistryIsolation`], if any. The isolating test reads the
+/// process plane list (`plane_decl_for` → [`test_registered_planes`]) ON ITS OWN THREAD while holding
+/// the guard, and `std`'s `Mutex` is not reentrant, so that thread MUST NOT re-take
+/// [`TEST_REGISTRY_SERIAL`] on the read path or it would self-deadlock. Every OTHER thread's reader
+/// takes the serial lock and so blocks for the guard's whole lifetime — the fix for the reader gap
+/// where a concurrent reader could observe the emptied set. Recorded under its own tiny mutex,
+/// consulted first on every read; `None` outside an isolation.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+
 /// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
 /// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
 /// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
@@ -559,6 +570,12 @@ impl TestRegistryIsolation {
         let serial = TEST_REGISTRY_SERIAL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Record this thread as the isolation owner BEFORE clearing, so this thread's own reads take
+        // the reentrant fast path (no re-lock of the serial it now holds) while every other thread's
+        // reader blocks on the serial for the guard's lifetime.
+        *TEST_ISOLATION_OWNER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
         let saved = {
             let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *reg)
@@ -573,8 +590,15 @@ impl TestRegistryIsolation {
 #[cfg(any(test, feature = "test-support"))]
 impl Drop for TestRegistryIsolation {
     fn drop(&mut self) {
-        let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-        *reg = std::mem::take(&mut self.saved);
+        {
+            let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+            *reg = std::mem::take(&mut self.saved);
+        }
+        // Clear the owner while the serial is still held (`_serial` drops after this body), so a
+        // foreign reader unblocking on serial release always sees the restored set, never the owner.
+        *TEST_ISOLATION_OWNER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -583,6 +607,24 @@ impl Drop for TestRegistryIsolation {
 /// process registry.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_registered_planes() -> Vec<&'static PlaneDecl> {
+    // If THIS thread owns the active isolation it already holds the serial lock exclusively and sees
+    // the (emptied) set it installed — read straight through, since re-taking the non-reentrant serial
+    // would self-deadlock. EVERY OTHER thread takes the serial lock, so a reader concurrent with an
+    // isolation blocks for the guard's whole lifetime and never observes the emptied set (the reader
+    // gap this closes) — releasing only after the guard restores the snapshot.
+    let owned_by_us = *TEST_ISOLATION_OWNER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        == Some(std::thread::current().id());
+    let _serial = if owned_by_us {
+        None
+    } else {
+        Some(
+            TEST_REGISTRY_SERIAL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    };
     TEST_REGISTERED
         .lock()
         .unwrap_or_else(|e| e.into_inner())

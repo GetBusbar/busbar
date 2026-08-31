@@ -6,9 +6,10 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the MCP resource/runtime itself (naming
 //! `crate::mcp::*` back INTO core through the `#[path]` dual-compile). Now those builder methods live
-//! here as an extension trait on the neutral `busbar_core::test_support::TestApp`, and they lower to
-//! the real, externally-linked `busbar-mcp` crate through core's neutral install seams
-//! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_mcp_container_hooks`, `on_built`).
+//! here as an extension trait over the neutral `busbar_substrate::testkit::TestAppSeam` (which core
+//! implements for its `TestApp`), and they lower to the real, externally-linked `busbar-mcp` crate
+//! through core's neutral install seams
+//! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`, `on_built`).
 //!
 //! The fluent chain (`TestApp::new().mcp(&cfg).mcp_server("s", def)…build()`) is preserved by
 //! accumulating into a per-plane [`McpScratch`] stashed in `TestApp`'s type-erased scratch, plus ONE
@@ -114,7 +115,11 @@ fn finalize(app: &mut dyn TestAppSeam) {
         .iter()
         .map(|(n, d)| (n.clone(), d.hooks.clone()))
         .collect();
-    app.set_mcp_container_hooks(containers, scratch.tool_defs.all_server_hooks.clone());
+    app.set_container_hooks(
+        crate::PLANE_DECL.key,
+        containers,
+        scratch.tool_defs.all_server_hooks.clone(),
+    );
 
     // The durable-MCP-trust boot REPLAY (recorded demotions → live sightings cache) is NOT wired here:
     // it reads the generic plane store DIRECTLY and mints a host over the built app, both of which a

@@ -6,10 +6,11 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the A2A plane runtime itself (naming
 //! `crate::a2a::*` back INTO core through the `#[path]` dual-compile). Now the `agents:` builder
-//! methods live here as an extension trait on the neutral `busbar_core::test_support::TestApp`, and
-//! they lower to the real, externally-linked `busbar-a2a` crate through core's neutral install seams
-//! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_a2a_container_hooks`,
-//! `set_agent_defs_any`), reading `public_url` / the card issuer back through the neutral getters.
+//! methods live here as an extension trait over the neutral `busbar_substrate::testkit::TestAppSeam`
+//! (which core implements for its `TestApp`), and they lower to the real, externally-linked
+//! `busbar-a2a` crate through core's neutral install seams
+//! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`,
+//! `set_plane_defs_any`), reading `public_url` / the card issuer back through the neutral getters.
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
@@ -70,7 +71,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
 
     // Always carry the type-erased `agents:` handle onto the App (production fidelity; no test-path
     // consumer downcasts it — the plane reads its `AgentsCfg` off its runtime object).
-    app.set_agent_defs_any(Arc::new(scratch.agent_defs.clone()));
+    app.set_plane_defs_any(crate::PLANE_DECL.key, Arc::new(scratch.agent_defs.clone()));
 
     // The per-agent hook SPECS as neutral strings — core resolves the gates like production does.
     let containers: Vec<(String, Vec<String>)> = scratch
@@ -79,12 +80,16 @@ fn finalize(app: &mut dyn TestAppSeam) {
         .iter()
         .map(|(n, d)| (n.clone(), d.hooks.clone()))
         .collect();
-    app.set_a2a_container_hooks(containers, scratch.agent_defs.all_agent_hooks.clone());
+    app.set_container_hooks(
+        crate::PLANE_DECL.key,
+        containers,
+        scratch.agent_defs.all_agent_hooks.clone(),
+    );
 
     // THE A2A RUNTIME, when a receiving side is configured. MIRROR production's `a2a_start` hook:
     // stamp busbar's PUBLIC card-issuer key (off governance, via the neutral getter) onto the plane.
     if let Some(plane) = A2aPlane::from_config(&scratch.agent_defs, app.configured_public_url()) {
-        if let Some(issuer) = app.a2a_card_issuer() {
+        if let Some(issuer) = app.card_issuer(crate::PLANE_DECL.key) {
             plane.set_card_issuer(issuer);
         }
         let admission = plane.admission();

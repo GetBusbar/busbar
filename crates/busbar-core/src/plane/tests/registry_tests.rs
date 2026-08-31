@@ -323,6 +323,44 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
     );
 }
 
+/// **THE SCOPE-KIND CODEC ROUND-TRIPS, so encode and decode cannot skew.** `scope_kind_at` (decode)
+/// and `scope_kind_index` (encode) each apply the base-first, first-seen dedup independently; if they
+/// ever disagreed a `pool` grant could resolve an `mcp_server` target (the entitlement escalation the
+/// dedup exists to prevent). This pins `scope_kind_at(scope_kind_index(k)) == k` over the FULL builtin
+/// kind set — the neutral base plus every registered plane's declared kinds — so any future encoder
+/// that routes through `scope_kind_index` is proven to invert the decoder here.
+#[test]
+fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
+    use crate::plane::registry::{scope_kind_at, scope_kind_index};
+    // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
+    // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
+    // is covered with no edit here.
+    let kinds: Vec<&'static str> = std::iter::once("pool")
+        .chain(
+            builtin_plane_decls()
+                .iter()
+                .flat_map(|d| d.scope_kinds.iter().copied()),
+        )
+        .collect();
+    assert!(kinds.len() > 1, "the builtin kind set must be non-trivial");
+    for k in kinds {
+        let idx =
+            scope_kind_index(k).unwrap_or_else(|| panic!("'{k}' is a declared kind but has no index"));
+        assert_eq!(
+            scope_kind_at(idx),
+            Some(k),
+            "encode/decode skew: index {idx} for '{k}' does not decode back to it"
+        );
+    }
+    // A kind no plane declares is fail-closed on the encode side, matching `scope_kind_at`'s
+    // out-of-range `None` on the decode side.
+    assert_eq!(
+        scope_kind_index("no-plane-declares-this"),
+        None,
+        "an undeclared kind must have no index (fail-closed)"
+    );
+}
+
 /// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
 /// installed after another layer resolved against the smaller (built-ins-only) set would mean two
 /// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
