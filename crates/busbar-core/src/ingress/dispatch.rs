@@ -176,8 +176,13 @@ pub(crate) async fn operation_ingress(
 /// THE UNIVERSAL RESOLVED CORE — every operation, chat included, from the moment the model is known:
 /// governance → candidates → affinity → the one engine. `gemini_api_version` shapes the gemini
 /// dialect's model-not-found echo; everything else is operation- and protocol-blind.
+///
+/// THE ONE GAUNTLET (1.6 vision): this is the single canonical entry every arrival converges on once
+/// the model is resolved. It is surfaced as [`crate::operation::run`] — the name the plane hooks
+/// (M2–M5) grow onto — while [`operation_resolved`] remains a thin delegator preserving the existing
+/// ingress call surface. Today the two are byte-identical; the gauntlet body lives here.
 #[allow(clippy::too_many_arguments)]
-pub async fn operation_resolved(
+pub async fn run(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &'static str,
@@ -274,6 +279,45 @@ pub async fn operation_resolved(
     )
     .await;
     finish_admitted(app, gov, proto, model, started, charged_at, resp, charged)
+}
+
+/// The stable ingress name for the resolved-operation gauntlet, retained as a thin delegator to the
+/// canonical [`run`] (surfaced as [`crate::operation::run`]). Signature- and behavior-identical to
+/// `run`: its three callers — `operation_ingress`, the ingress core's chat entry, and the
+/// MCP-sampling veneer in `plane_host` — plus the `pub use dispatch::operation_resolved` re-export
+/// keep their exact call surface while `run` becomes the single entry the plane hooks grow onto.
+#[allow(clippy::too_many_arguments)]
+pub async fn operation_resolved(
+    app: &Arc<App>,
+    gov: &crate::governance::GovCtx,
+    proto: &'static str,
+    operation: crate::operation::Operation,
+    op_handler: &'static dyn crate::handlers::OperationHandler,
+    model: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+    parsed_v: Option<crate::proxy::LazyBody>,
+    caller_token: Option<&str>,
+    started: Instant,
+    charged_at: u64,
+    gemini_api_version: Option<&str>,
+) -> Response {
+    run(
+        app,
+        gov,
+        proto,
+        operation,
+        op_handler,
+        model,
+        headers,
+        body,
+        parsed_v,
+        caller_token,
+        started,
+        charged_at,
+        gemini_api_version,
+    )
+    .await
 }
 
 // (The per-operation axum wrappers are gone: the protocol catch-all `protocol_dispatch` resolves the

@@ -177,7 +177,16 @@ pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
-pub use busbar_api::operation;
+// `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
+// from `busbar-api` so `crate::operation::Operation` and `busbar_core::operation::*` are unchanged
+// for every existing user. Core makes it a local module (rather than a bare `pub use`) to hang THE
+// ONE GAUNTLET on it: `operation::run` is the single canonical resolved-operation entry every
+// arrival converges on — the named seam the plane hooks (1.6 M2–M5) grow onto — with the body living
+// in `ingress::dispatch::run` where it can reach the ingress core's private helpers.
+pub mod operation {
+    pub use crate::ingress::dispatch::run;
+    pub use busbar_api::operation::*;
+}
 
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
