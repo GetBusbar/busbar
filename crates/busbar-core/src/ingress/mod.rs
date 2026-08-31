@@ -377,10 +377,31 @@ fn governance_guard(
     started: Instant,
     charged_at: u64,
 ) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
-    // A governance rejection fires BEFORE the model is resolved to a configured pool, so the raw
-    // client-supplied `pool` string must be mapped to the bounded metric label (metrics.rs)
-    // before it reaches `finish` (which stamps it onto REQUESTS_TOTAL / the duration histogram /
-    // the request-log webhook). Passing it raw was an unbounded-cardinality DoS vector.
+    // The gauntlet's stage-2 (destination) then stage-4 (budget door) run in this fixed order — the
+    // pre-admission checks MUST all fire before the door charges (nothing may reject an
+    // already-charged request). The named/adhoc convenience handlers reach the pair through this
+    // wrapper; `operation::run` (the LLM gauntlet) drives the same two halves as a plane hook + the
+    // shared budget door, so all three callers share one implementation and cannot drift.
+    destination_guard(app, gov, proto, pool, started, charged_at)?;
+    admission_door(app, gov, proto, pool, started, charged_at)
+}
+
+/// STAGE 2 (design §10, the LLM plane's `verify_destination`) — the PRE-ADMISSION destination
+/// verification: the requested pool ACL (`pool_authorized`), every reachable fallback pool's ACL
+/// (`fallback_pools_authorized`), and the fail-closed unpriced-model gate. Every check that can
+/// reject fires here, BEFORE the budget door, so no rejection can ever land after a charge. `Ok(())`
+/// clears the request to admission; `Err(resp)` is the protocol-native rejection already routed
+/// through `finish_rejected` (so it still emits REQUESTS_TOTAL / the duration histogram / the
+/// request-log webhook). The raw client-supplied `pool` is mapped to the bounded metric label BEFORE
+/// it reaches `finish` — passing it raw was an unbounded-cardinality DoS vector.
+fn destination_guard(
+    app: &Arc<App>,
+    gov: &crate::governance::GovCtx,
+    proto: &'static str,
+    pool: &str,
+    started: Instant,
+    charged_at: u64,
+) -> Result<(), Box<Response>> {
     let label = pool_label(app, pool);
     if let Some(resp) = pool_authorized(gov, pool, proto) {
         return Err(Box::new(finish_rejected(
@@ -421,10 +442,24 @@ fn governance_guard(
             app, gov, proto, label, started, charged_at, resp,
         )));
     }
-    // The atomic group-limit ADMISSION runs LAST: it CHARGES every chain bucket on admit, so
-    // nothing may reject an already-charged request after it. On rejection nothing was charged →
-    // `finish_rejected` (no refund). On admission the returned grant reports whether the charge
-    // LANDED (`Some` = refund on non-2xx) and holds the `concurrent` in-flight gauges.
+    Ok(())
+}
+
+/// STAGE 4 (design §10) — THE single budget-admission door, SHARED gauntlet core (never a plane
+/// hook). The atomic group-limit ADMISSION runs here, after stage 2: it CHARGES every chain bucket
+/// on admit, so nothing may reject an already-charged request after it. On rejection nothing was
+/// charged → `finish_rejected` (no refund). On admission the returned grant reports whether the
+/// charge LANDED (`Some` = refund on non-2xx) and holds the `concurrent` in-flight gauges;
+/// `effective_pool` is `Some` when a budget `on_exhaust: downgrade` re-pooled the admission.
+fn admission_door(
+    app: &Arc<App>,
+    gov: &crate::governance::GovCtx,
+    proto: &'static str,
+    pool: &str,
+    started: Instant,
+    charged_at: u64,
+) -> Result<(Option<crate::governance::AdmitGrant>, Option<String>), Box<Response>> {
+    let label = pool_label(app, pool);
     match admit_check(app, gov, proto, pool, charged_at) {
         Err(resp) => Err(Box::new(finish_rejected(
             app, gov, proto, label, started, charged_at, *resp,

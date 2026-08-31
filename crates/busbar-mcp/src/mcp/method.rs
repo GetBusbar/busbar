@@ -216,7 +216,7 @@ pub(crate) async fn dispatch(
     match method {
         "server/discover" => Some(discover(ctx, id)),
         "tools/list" => Some(tools_list(ctx, id)),
-        "tools/call" => Some(tools_call(ctx, params, id).await),
+        "tools/call" => Some(tools_call_via_gauntlet(ctx, params, id).await),
         "prompts/list" => Some(prompts_list(ctx, id)),
         "prompts/get" => Some(prompts_get(ctx, params, id)),
         "resources/list" => Some(resources_list(ctx, id)),
@@ -1171,6 +1171,68 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
             },
         )
         .await;
+}
+
+/// The MCP `tools/call` plane — this protocol's sibling on the NEUTRAL shared gauntlet sequence
+/// ([`busbar_substrate::plane_host::run_gauntlet`]), the SAME sequence the LLM native plane rides.
+///
+/// MCP's destination trust/scope entry (`verify_on_call` freshens the sightings that the entitlement
+/// `resolve` then reads) is ASYNC and INTERLEAVED with resolve/re-validation, and its per-round
+/// budget-admission, breaker and metering (`charge_round`) run PER UPSTREAM ROUND inside the reroute
+/// engine — none of it can be hoisted to the shared sequence's SYNC pre-admission `verify_destination`
+/// without reordering.
+/// So, per Option A, the whole of [`tools_call`] stays inside `drive` VERBATIM (byte-identical: same
+/// order, same per-round metering, same reroute/breaker, same JSON-RPC envelope, same call-log/audit),
+/// and `verify_destination` is a structural `Proceed` — MCP already enforces verify-before-admit
+/// internally; riding the seam expresses that on the ONE shared path so LLM and MCP are siblings.
+struct ToolCallPlane<'a> {
+    ctx: &'a Ctx<'a>,
+    params: Option<&'a serde_json::Value>,
+    id: Option<serde_json::Value>,
+}
+
+#[async_trait::async_trait]
+impl busbar_substrate::plane_host::GauntletPlane for ToolCallPlane<'_> {
+    fn verify_destination(
+        &self,
+        _req: &busbar_substrate::plane_host::GauntletRequest<'_>,
+    ) -> busbar_substrate::plane_host::VerifyOutcome {
+        // See the type doc: MCP's trust/scope entry is async + interleaved with resolve, so it stays
+        // inside `drive` (byte-identical). The shared sequence's sync pre-admission gate is a no-op.
+        busbar_substrate::plane_host::VerifyOutcome::Proceed
+    }
+
+    async fn drive(
+        self: Box<Self>,
+        _req: busbar_substrate::plane_host::GauntletRequest<'_>,
+    ) -> Response {
+        // The whole of `tools_call`, VERBATIM — admission/breaker/per-round metering/reroute/envelope/
+        // call-log all unchanged, driven off `ctx`. The shared `GauntletRequest` is informational on
+        // this path (the engine reads `ctx`, not `req`).
+        tools_call(self.ctx, self.params, self.id).await
+    }
+}
+
+/// Route one `tools/call` through the shared gauntlet sequence — the seam entry the dispatch arm
+/// calls instead of [`tools_call`] directly. Threads the resolved identity + the tool name (as the
+/// destination label) into the neutral [`busbar_substrate::plane_host::GauntletRequest`]; the MCP
+/// plane's `drive` reads `ctx` rather than `req`, so behaviour is byte-identical to calling
+/// `tools_call` inline while the OUTER sequence now runs through `run_gauntlet`.
+async fn tools_call_via_gauntlet(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    let req = busbar_substrate::plane_host::GauntletRequest {
+        gov: ctx.gov,
+        destination: string_param(params, "name").unwrap_or(""),
+        correlation_id: 0,
+        charged_at: 0,
+        started: std::time::Instant::now(),
+    };
+    ctx.host
+        .run_gauntlet(req, Box::new(ToolCallPlane { ctx, params, id }))
+        .await
 }
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
