@@ -4661,15 +4661,12 @@ pub fn resolve(
             if deploy.models.contains_key(name) {
                 return Some(crate::plane::RESIDUAL_KEY);
             }
-            // The `tools:` noun exists only when its plane is compiled in; with `plane-mcp` off
-            // no name resolves there (a `tools:` section is refused earlier).
-            #[cfg(feature = "plane-mcp")]
+            // The plane registry nouns read through their always-present type-erased seam. With the
+            // owning plane compiled out the seam holds a `RawPlaneSection`, whose `contains_def` is
+            // empty (a present section is refused earlier), so no name resolves there.
             if deploy.tools.0.contains_def(name) {
                 return Some(tools_section);
             }
-            // The `agents:` noun exists only when its plane is compiled in; with `plane-a2a` off
-            // no name resolves there (an `agents:` section is refused earlier).
-            #[cfg(feature = "plane-a2a")]
             if deploy.agents.0.contains_def(name) {
                 return Some(agents_section);
             }
@@ -4768,14 +4765,14 @@ pub fn resolve(
     // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
     // `plane::config`'s, shared with the `tools:` plane below.
     //
-    // The whole block reads the typed `agents:` registry; it exists only when the A2A plane is
-    // compiled in. With `plane-a2a` off there is no `agents:` content to validate (an `agents:`
-    // section is refused earlier as naming an absent plane), so it is compiled out entirely.
+    // The whole block reads the `agents:` registry through its always-present type-erased seam.
+    // With the owning plane compiled out the seam holds a `RawPlaneSection` whose `container_gates`
+    // is empty (a present `agents:` section is refused earlier as naming an absent plane), so the
+    // loops below do nothing — the same as the per-plane feature gate compiling this out entirely.
     // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
     // reference is an operator believing a control is attached that is not, so it is an error and
     // not a warning, exactly as it is for `auth.chain`. Both the section-level attach and each
     // agent's own list are read through the neutral `container_gates` seam, in registry order.
-    #[cfg(feature = "plane-a2a")]
     {
         let g = deploy.agents.0.container_gates();
         if let Err(e) = crate::plane::config::validate_section_hooks(
@@ -4806,31 +4803,11 @@ pub fn resolve(
     // Whether `m` names an MCP `tools:` server. Always false when the MCP plane is compiled out:
     // there is no `tools:` registry then, and no pool is inferred onto the MCP plane, so
     // `tool_pools_derived` is empty and the first loop below never iterates.
-    let is_tool_member = |m: &str| -> bool {
-        #[cfg(feature = "plane-mcp")]
-        {
-            deploy.tools.0.contains_def(m)
-        }
-        #[cfg(not(feature = "plane-mcp"))]
-        {
-            let _ = m;
-            false
-        }
-    };
+    let is_tool_member = |m: &str| -> bool { deploy.tools.0.contains_def(m) };
     // Whether `m` names an A2A `agents:` registration. Always false when the A2A plane is compiled
     // out: there is no `agents:` registry then, and no pool is inferred onto the A2A plane, so
     // `agent_pools_derived` is empty and the second loop below never iterates.
-    let is_agent_member = |m: &str| -> bool {
-        #[cfg(feature = "plane-a2a")]
-        {
-            deploy.agents.0.contains_def(m)
-        }
-        #[cfg(not(feature = "plane-a2a"))]
-        {
-            let _ = m;
-            false
-        }
-    };
+    let is_agent_member = |m: &str| -> bool { deploy.agents.0.contains_def(m) };
     for (pool, def) in &tool_pools_derived {
         check_failover_pool(
             &mut errors,
@@ -4905,10 +4882,10 @@ pub fn resolve(
     // silently dropped attachment. A dropped reference leaves an operator believing a control is
     // attached that is not, which is worse than the typo it came from.
     //
-    // The whole block reads the typed `tools:` registry; it exists only when the MCP plane is
-    // compiled in. With `plane-mcp` off there is no `tools:` content to validate (a `tools:` section
-    // is refused earlier as naming an absent plane), so it is compiled out entirely.
-    #[cfg(feature = "plane-mcp")]
+    // The whole block reads the `tools:` registry through its always-present type-erased seam. With
+    // the owning plane compiled out the seam holds a `RawPlaneSection` whose `container_gates` is
+    // empty (a present `tools:` section is refused earlier as naming an absent plane), so the loops
+    // below do nothing — the same as the per-plane feature gate compiling this out entirely.
     {
         let g = deploy.tools.0.container_gates();
         if let Err(e) = crate::plane::config::validate_section_hooks(
@@ -4937,33 +4914,34 @@ pub fn resolve(
     // exists — file base plus whatever the admin API applied — and it is the single point boot,
     // `--validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all pass
     // through, so a config that boots is exactly the config that validates.
-    #[cfg(feature = "plane-mcp")]
+    // `validate_registry` runs through the always-present seam; a compiled-out `RawPlaneSection`
+    // answers `Ok(())`, so this is a no-op when the plane is absent.
     if let Err(e) = deploy.tools.0.validate_registry() {
         errors.push(e);
     }
-    // With this plane compiled out, a present `tools:` section names a registry this build cannot
-    // serve: refuse it (the config deletion-gate leg), naming the SECTION (its plane-declared grammar
-    // key) rather than a hard-coded plane, rather than silently ignore an operator's registry.
-    #[cfg(not(feature = "plane-mcp"))]
-    if deploy.tools.0.is_present() {
-        let section = crate::config::named_map::NamedMapSection::Tools.key();
-        errors.push(format!(
-            "`{section}:` is configured, but this build was compiled without the plane that owns \
-             it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove \
-             the `{section}:` block."
-        ));
-    }
-    // With this plane compiled out, a present `agents:` section names a registry this build cannot
-    // serve: refuse it (the config deletion-gate leg), naming the SECTION rather than a hard-coded
-    // plane, exactly as `tools:`/the endpoint block are refused with their plane off.
-    #[cfg(not(feature = "plane-a2a"))]
-    if deploy.agents.0.is_present() {
-        let section = crate::config::named_map::NamedMapSection::Agents.key();
-        errors.push(format!(
-            "`{section}:` is configured, but this build was compiled without the plane that owns \
-             it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove \
-             the `{section}:` block."
-        ));
+    // A present plane registry section whose owning plane is NOT registered names a registry this
+    // build cannot serve: refuse it (the config deletion-gate leg), naming the SECTION (its
+    // plane-declared grammar key) rather than a hard-coded plane. With the plane registered the decl
+    // is present and this never fires; with it compiled out the `RawPlaneSection` reports
+    // `is_present()` for a section the operator wrote, and there is no decl for it.
+    for section in [
+        crate::config::named_map::NamedMapSection::Tools,
+        crate::config::named_map::NamedMapSection::Agents,
+    ] {
+        let present = match section {
+            crate::config::named_map::NamedMapSection::Tools => deploy.tools.0.is_present(),
+            crate::config::named_map::NamedMapSection::Agents => deploy.agents.0.is_present(),
+            _ => false,
+        };
+        if present && crate::plane::registry::plane_decl_for_config_section(section.key()).is_none()
+        {
+            let section = section.key();
+            errors.push(format!(
+                "`{section}:` is configured, but this build was compiled without the plane that \
+                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
+                 remove the `{section}:` block."
+            ));
+        }
     }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates

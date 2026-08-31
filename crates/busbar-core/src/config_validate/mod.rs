@@ -1575,18 +1575,12 @@ fn reserved_admin_name(name: &str) -> bool {
 fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
     let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
-    // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off no name
-    // resolves to a `tools:` server (a `tools:` section is refused at resolve).
-    #[cfg(feature = "plane-mcp")]
+    // The plane registry nouns read through their always-present type-erased seam. With the owning
+    // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
+    // section is refused at resolve), so no name resolves there — the same answer the per-plane
+    // feature gate gave, without naming a plane.
     let tools: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    #[cfg(not(feature = "plane-mcp"))]
-    let tools: BTreeSet<&str> = BTreeSet::new();
-    // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off no name
-    // resolves to an agent (an `agents:` section is refused at resolve).
-    #[cfg(feature = "plane-a2a")]
     let agents: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
-    #[cfg(not(feature = "plane-a2a"))]
-    let agents: BTreeSet<&str> = BTreeSet::new();
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
     for (a, b, name_a, name_b) in [

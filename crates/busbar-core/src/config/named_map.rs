@@ -138,32 +138,12 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
-            NamedMapSection::Tools => {
-                #[cfg(feature = "plane-mcp")]
-                {
-                    deploy.tools.0.contains_def(name)
-                }
-                // With the MCP plane compiled out there is no `tools:` registry (a `tools:` section
-                // is refused at resolve), so no name is base-config-defined on it.
-                #[cfg(not(feature = "plane-mcp"))]
-                {
-                    let _ = (deploy, name);
-                    false
-                }
-            }
-            NamedMapSection::Agents => {
-                #[cfg(feature = "plane-a2a")]
-                {
-                    deploy.agents.0.contains_def(name)
-                }
-                // With the A2A plane compiled out there is no `agents:` registry (an `agents:`
-                // section is refused at resolve), so no name is base-config-defined on it.
-                #[cfg(not(feature = "plane-a2a"))]
-                {
-                    let _ = (deploy, name);
-                    false
-                }
-            }
+            // A plane registry section reads through its always-present type-erased seam. With the
+            // owning plane compiled out the seam holds a `RawPlaneSection`, whose `contains_def` is
+            // empty (a present section is refused at resolve), so no name is base-config-defined on
+            // it — the same answer the per-plane feature gate used to give, without naming a plane.
+            NamedMapSection::Tools => deploy.tools.0.contains_def(name),
+            NamedMapSection::Agents => deploy.agents.0.contains_def(name),
         }
     }
 
@@ -188,28 +168,11 @@ impl NamedMapSection {
                 .export
                 .get(name)
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
-            NamedMapSection::Tools => {
-                #[cfg(feature = "plane-mcp")]
-                {
-                    deploy.tools.0.entry_document(name)
-                }
-                #[cfg(not(feature = "plane-mcp"))]
-                {
-                    let _ = (deploy, name);
-                    None
-                }
-            }
-            NamedMapSection::Agents => {
-                #[cfg(feature = "plane-a2a")]
-                {
-                    deploy.agents.0.entry_document(name)
-                }
-                #[cfg(not(feature = "plane-a2a"))]
-                {
-                    let _ = (deploy, name);
-                    None
-                }
-            }
+            // The plane registry sections project through their always-present seam; a compiled-out
+            // plane's `RawPlaneSection` has no entry document (`None`), the same answer the feature
+            // gate gave.
+            NamedMapSection::Tools => deploy.tools.0.entry_document(name),
+            NamedMapSection::Agents => deploy.agents.0.entry_document(name),
         }
     }
 
@@ -264,65 +227,32 @@ impl NamedMapSection {
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
-            #[cfg(feature = "plane-mcp")]
-            NamedMapSection::Tools => {
-                // THE VALUE RULES, run through the MCP plane's `config_validate` seam rather than a
-                // named `crate::mcp::config::validate_server` call — the write path enforces exactly
-                // the grammar boot enforces (the plane's own `Deserialize`/boot reaches the identical
-                // function), so the API rejects exactly what `config.yaml` rejects, and core names no
-                // plane validate function here. Without this an `unpinned` server carrying key
-                // material, or a `stdio` transport nothing implements, would be persisted and then
-                // refused by boot. The typed parse below still builds the object the overlay
-                // installs; that config STRUCT leaves core with the plane at the physical relocation,
-                // not at this seam. The `config_validate` hook has already run the plane's OWN
-                // `deny_unknown_fields` parse (the identical `invalid `tools.<name>` definition`
-                // wording) and value rules, so the typed parse that builds the object is deferred to
-                // `install`'s `PlaneCfg::insert_def` and core names no `crate::mcp` entry type here.
+            // A PLANE REGISTRY SECTION (`tools:`/`agents:`), routed through the OWNING PLANE's
+            // `config_validate` seam resolved by config section — so the write path enforces exactly
+            // the grammar boot enforces (the plane's own `Deserialize`/boot reaches the identical
+            // function) and core names no `crate::mcp`/`crate::a2a` validate function. Without this an
+            // `unpinned` server carrying key material, a `stdio` transport nothing implements, or a
+            // `jws_issuer_key` pin with nothing to verify against would be persisted and then refused
+            // by boot. The typed parse that builds the object the overlay installs is deferred to
+            // `install`'s `PlaneCfg::insert_def`, so core names no plane entry type here.
+            //
+            // With the section's owning plane compiled out there is no registered decl: a definition
+            // then names a plane this build does not carry, refused HERE exactly as `resolve` refuses
+            // a present `tools:`/`agents:` section — naming the SECTION (its plane-declared grammar
+            // key), not a hard-coded plane.
+            NamedMapSection::Tools | NamedMapSection::Agents => {
+                if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
+                    let section = self.key();
+                    return Err(format!(
+                        "`{section}.{name}`: this build was compiled without the plane that owns the \
+                         `{section}:` section, so it cannot register this definition."
+                    ));
+                }
                 plane_config_validate(self, name, def)?;
                 Ok(NamedDef::Plane {
                     section: self,
                     def: def.clone(),
                 })
-            }
-            // With the MCP plane compiled out, a `tools:` definition names a plane this build does
-            // not carry — refuse it, exactly as `resolve` refuses a `tools:` section.
-            #[cfg(not(feature = "plane-mcp"))]
-            NamedMapSection::Tools => {
-                let _ = def;
-                Err(format!(
-                    "`tools.{name}`: this build was compiled without the MCP plane (feature \
-                     `plane-mcp` is off), so it cannot register an MCP server."
-                ))
-            }
-            #[cfg(feature = "plane-a2a")]
-            NamedMapSection::Agents => {
-                // THE SAME VALUE RULES BOOT APPLIES, routed through the A2A plane's `config_validate`
-                // seam rather than a named `crate::a2a::config::validate_agent` call: the pin's
-                // mechanism must match the material it carries, the durations must parse, and no hook
-                // reference may reach onto another plane. Without this the API would accept a
-                // `jws_issuer_key` pin with nothing to verify against, and the operator would read a
-                // registration as protected when it is not. The typed parse below still builds the
-                // object the overlay installs; that config STRUCT leaves core with the plane at the
-                // physical relocation, not at this seam.
-                // The `config_validate` hook has already run the plane's OWN `deny_unknown_fields`
-                // parse (the identical `invalid `agents.<name>` definition` wording) and value rules,
-                // so the typed parse that builds the object is deferred to `install`'s
-                // `PlaneCfg::insert_def` and core names no `crate::a2a` entry type here.
-                plane_config_validate(self, name, def)?;
-                Ok(NamedDef::Plane {
-                    section: self,
-                    def: def.clone(),
-                })
-            }
-            // With the A2A plane compiled out, an `agents:` definition names a plane this build does
-            // not carry — refuse it, exactly as `resolve` refuses an `agents:` section.
-            #[cfg(not(feature = "plane-a2a"))]
-            NamedMapSection::Agents => {
-                let _ = def;
-                Err(format!(
-                    "`agents.{name}`: this build was compiled without the A2A plane (feature \
-                     `plane-a2a` is off), so it cannot register an agent."
-                ))
             }
         }
     }
@@ -396,8 +326,8 @@ impl NamedMapSection {
 /// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a `tools:`/`agents:` write to the plane's own validator without naming a
 /// `crate::mcp`/`crate::a2a` validate function. A section whose plane declares no validator (none of
-/// the sections that reach this helper) validates vacuously.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+/// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
+/// refused by the caller before it reaches here.
 fn plane_config_validate(
     section: NamedMapSection,
     name: &str,
@@ -422,8 +352,7 @@ pub(crate) enum NamedDef {
     // `config_validate` value rules (and its `deny_unknown_fields` parse) on `def`; `install` hands it
     // straight back to the section's `PlaneCfg::insert_def`, which does the typed parse and insert
     // byte-identically. Absent when NEITHER plane is compiled in (nothing parses a `tools:`/`agents:`
-    // definition then — both arms refuse with a compiled-out message before constructing this).
-    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+    // definition then — `parse_def` refuses with a compiled-out message before constructing this).
     Plane {
         section: NamedMapSection,
         def: serde_json::Value,
@@ -445,7 +374,6 @@ impl NamedDef {
                 deploy.export.insert(name.to_string(), cfg);
                 Ok(())
             }
-            #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
             NamedDef::Plane { section, def } => match section {
                 NamedMapSection::Tools => deploy.tools.0.insert_def(name, &def),
                 NamedMapSection::Agents => deploy.agents.0.insert_def(name, &def),
