@@ -48,29 +48,21 @@ pub struct McpCallRecord {
 }
 
 impl McpCallRecord {
-    /// Serialize this record into the opaque `call` [`PlaneRecord`] envelope. `serde_json`, matching
-    /// the store plugins' decode, so the bytes round-trip identically across the plugin ABI. The
-    /// `call` kind hangs off its principal via `parent` and is ordered by the record's own `seq`.
-    pub fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
-        Ok(PlaneRecord {
-            kind: KIND_CALL.to_string(),
-            id: self.principal.clone(),
-            parent: Some(self.principal.clone()),
-            seq: self.seq,
-            ts: self.ts,
-            // The `call` kind's retention drops ALL rows older than a cutoff, so disposition is
-            // immaterial to the purge and is left `Active`.
-            disposition: PlaneDisposition::Active,
-            body: encode(self)?,
-        })
-    }
+    // NB: there is deliberately NO plane-side `to_plane_record` WRITER for the call record. The
+    // engine owns the append: a `call` chain is persisted ONLY as the neutral `{seq, prev_hash, hash,
+    // content}` journal body (see [`Self::from_journal_body`]), NOT as a serde-serialized
+    // `McpCallRecord`. A writer that serialized this struct into a `PlaneRecord` body would emit a
+    // shape the actual reader (`from_journal_body`) cannot parse — a footgun, so it does not exist.
+    // The plane owns only the READ-BACK of what the engine wrote.
 
     /// The list selector that reads one principal's `call` chain back, oldest-first.
     pub fn parent_selector(principal: &str) -> PlaneSelector {
         PlaneSelector::Parent(principal.to_string())
     }
 
-    /// Reconstruct a record from an opaque `call` body — the inverse of [`Self::to_plane_record`].
+    /// Reconstruct a record from an opaque serde `call` body — the inverse of a plain `serde_json`
+    /// serialization of this struct. NOT the engine's persisted shape (that is the neutral journal
+    /// body — see [`Self::from_journal_body`]); this decodes a bare `McpCallRecord` where one is held.
     pub fn from_body(body: &[u8]) -> StoreResult<Self> {
         decode(body)
     }
@@ -212,49 +204,65 @@ fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
 mod tests {
     use super::*;
 
+    /// The call record is read back ONLY through the ACTUAL persisted shape — the neutral
+    /// `{seq, prev_hash, hash, content}` journal body the engine's call-log seam writes — so this
+    /// round-trips THAT body through [`McpCallRecord::from_journal_body`], the real reader path, and
+    /// asserts every digest-faithful field is reconstructed. There is no plane-side writer for the
+    /// call record (see the note on `impl McpCallRecord`); the body is built here exactly as the seam
+    /// frames it (a LengthPrefixed field suffix inside the neutral envelope).
     #[test]
-    fn mcp_call_record_round_trips_through_the_plane_record_envelope() {
-        let rec = McpCallRecord {
-            principal: "key-1".into(),
-            seq: 3,
-            ts: 1000,
-            server: "fs".into(),
-            tool: "fs_read".into(),
-            outcome: "dispatched".into(),
-            reason: String::new(),
-            tool_digest: "sha256:aaa".into(),
-            pin_generation: 7,
-            request_id: "req-1".into(),
-            prev_hash: "prev".into(),
-            hash: "deadbeef".into(),
-        };
-        let env = rec.to_plane_record().unwrap();
-        assert_eq!(env.kind, KIND_CALL);
-        assert_eq!(env.id, "key-1");
-        assert_eq!(env.parent.as_deref(), Some("key-1"));
-        assert_eq!(env.seq, 3);
-        assert_eq!(McpCallRecord::from_body(&env.body).unwrap(), rec);
-        // Every field is on the wire, so a rename is a visible diff rather than a silent data loss.
-        let json = String::from_utf8(env.body).unwrap();
-        for field in [
-            "principal",
-            "seq",
-            "ts",
-            "server",
-            "tool",
-            "outcome",
-            "reason",
-            "tool_digest",
-            "pin_generation",
-            "request_id",
-            "prev_hash",
-            "hash",
-        ] {
-            assert!(
-                json.contains(field),
-                "`{field}` must be on the wire: {json}"
-            );
+    fn mcp_call_record_round_trips_through_the_actual_journal_reader() {
+        fn lp_text(out: &mut Vec<u8>, s: &str) {
+            out.extend_from_slice(&(s.len() as u64).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
         }
+        fn lp_num(out: &mut Vec<u8>, v: u64) {
+            let b = v.to_be_bytes();
+            out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+            out.extend_from_slice(&b);
+        }
+        let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
+            (1000u64, "fs", "fs_read", "dispatched", "", "sha256:aaa", 7u64);
+        // The pre-framed content SUFFIX the record's digest is sealed over: ts, server, tool, outcome,
+        // reason, tool_digest, pin_generation — the exact order and framing the seam writes.
+        let mut content = Vec::new();
+        lp_num(&mut content, ts);
+        lp_text(&mut content, server);
+        lp_text(&mut content, tool);
+        lp_text(&mut content, outcome);
+        lp_text(&mut content, reason);
+        lp_text(&mut content, tool_digest);
+        lp_num(&mut content, pin_generation);
+        // The neutral envelope the engine persists, encoded the same way (`serde_json`) the reader
+        // decodes it. `content` is a `Vec<u8>` — serde renders it as a JSON byte array.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "seq": 3u64,
+            "prev_hash": "prev",
+            "hash": "deadbeef",
+            "content": content,
+        }))
+        .unwrap();
+
+        let got = McpCallRecord::from_journal_body("key-1", &body).unwrap();
+        assert_eq!(
+            got,
+            McpCallRecord {
+                principal: "key-1".into(),
+                seq: 3,
+                ts,
+                server: server.into(),
+                tool: tool.into(),
+                outcome: outcome.into(),
+                reason: reason.into(),
+                tool_digest: tool_digest.into(),
+                pin_generation,
+                // The request id is a join key, never in the digest and so never in the neutral body:
+                // it comes back EMPTY through the real reader.
+                request_id: String::new(),
+                prev_hash: "prev".into(),
+                hash: "deadbeef".into(),
+            }
+        );
     }
 
     #[test]
