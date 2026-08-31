@@ -119,6 +119,34 @@ pub struct HttpEndpointResponse {
     pub body: Vec<u8>,
 }
 
+/// The safe HTTP status a host relay must use for a plugin-chosen status, so an out-of-range or
+/// nonsensical value maps to `502` (Bad Gateway) rather than panicking. `502` is the neutral
+/// "upstream (here, the plugin) misbehaved" code, matching the relay's existing over-cap rejection.
+///
+/// The vulnerability this closes: a naive relay doing `StatusCode::from_u16(status).unwrap()` PANICS
+/// on attacker data — `from_u16` rejects anything outside `100..=999`, and `0` / `65535` / `9` are
+/// all trivially plugin-chosen. Validating at the plugin-response boundary means the relay never sees
+/// an unrepresentable status. The accepted range is the real HTTP status range (`100..=599`), a
+/// strict subset of what `StatusCode::from_u16` accepts, so the result can never itself fail a later
+/// `from_u16`.
+#[must_use]
+pub fn safe_relay_status(status: u16) -> u16 {
+    match status {
+        100..=599 => status,
+        _ => 502,
+    }
+}
+
+impl HttpEndpointResponse {
+    /// The plugin-chosen [`status`](Self::status), VALIDATED via [`safe_relay_status`] — a real HTTP
+    /// status code, or `502` when the plugin returned an out-of-range value. THE conversion a host
+    /// relay must use instead of `StatusCode::from_u16(self.status).unwrap()`.
+    #[must_use]
+    pub fn safe_status(&self) -> u16 {
+        safe_relay_status(self.status)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/http_endpoint_tests.rs"]
 mod tests;

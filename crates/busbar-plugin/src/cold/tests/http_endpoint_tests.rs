@@ -69,3 +69,38 @@ fn request_response_json_roundtrip() {
     let back: HttpEndpointResponse = serde_json::from_slice(&j).unwrap();
     assert_eq!(serde_json::to_vec(&back).unwrap(), j);
 }
+
+/// Plugin#6 regression: a plugin-chosen `status` is validated at the response boundary. An
+/// out-of-range value maps to `502`, never to a status that would panic a host relay's
+/// `StatusCode::from_u16(status).unwrap()`; a real HTTP status passes through unchanged.
+#[test]
+fn out_of_range_plugin_status_maps_to_502() {
+    // Out-of-range / nonsensical statuses all become 502.
+    for bad in [0u16, 9, 99, 600, 999, 65535] {
+        assert_eq!(
+            safe_relay_status(bad),
+            502,
+            "status {bad} must clamp to 502"
+        );
+        let resp = HttpEndpointResponse {
+            status: bad,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        assert_eq!(resp.safe_status(), 502);
+        // Proof it never panics a real relay conversion.
+        assert!(axum_status_ok(resp.safe_status()));
+    }
+    // Real HTTP statuses pass through untouched.
+    for ok in [100u16, 200, 204, 302, 404, 429, 500, 599] {
+        assert_eq!(safe_relay_status(ok), ok);
+        assert!(axum_status_ok(ok));
+    }
+}
+
+/// The relay contract, checked without an `http` dep (busbar-plugin carries none): a validated status
+/// is always in `100..=599`, a strict subset of the `100..=999` a host relay's `StatusCode::from_u16`
+/// accepts — so the conversion the real relay performs can never fail (never `.unwrap()`-panic).
+fn axum_status_ok(status: u16) -> bool {
+    (100..=599).contains(&status)
+}
