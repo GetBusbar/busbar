@@ -33,7 +33,7 @@ pub fn install_test_seams() {
     );
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
 }
 
 /// The A2A plane's accumulated fixture state, mutated across the fluent chain and consumed once by
@@ -57,7 +57,7 @@ fn scratch(app: &mut TestApp) -> &mut A2aScratch {
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build`/`build_a2a_plane_runtime` did.
 fn finalize(app: &mut TestApp) {
     // Register this plane in the process registry the way production's composition root does.
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     let scratch = app.take_plane_scratch::<A2aScratch>(SCRATCH_KEY);
 
     // Always carry the type-erased `agents:` handle onto the App (production fidelity; no test-path

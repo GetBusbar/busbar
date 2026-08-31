@@ -488,3 +488,38 @@ pub struct PlaneDecl {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     pub default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
 }
+
+// ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────
+// A plane's `testkit` registers its `&'static PlaneDecl` here — a SUBSTRATE type — exactly as
+// production's composition root `install_planes` does, so the extracted plane crates reach the neutral
+// ABI (`busbar_substrate::plane::registry::register_test_plane`) rather than back into
+// `busbar_core::plane::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
+// its built-ins on every read, so a plane registered by any test before it reads the list is visible
+// regardless of test order.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
+/// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
+/// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
+/// fixture registry matches a shipped "busbar with this plane" binary. The storage lives HERE, on the
+/// neutral substrate, so a plane crate names no `busbar_core::` implementation to register itself.
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_test_plane(decl: &'static PlaneDecl) {
+    let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+    if !reg.iter().any(|d| d.key == decl.key) {
+        reg.push(decl);
+    }
+}
+
+/// TEST-SUPPORT SEAM — the planes registered through [`register_test_plane`], snapshot in registration
+/// order. `busbar-core`'s test-support `plane_decls()` reads this to fold the extracted planes into the
+/// process registry.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_registered_planes() -> Vec<&'static PlaneDecl> {
+    TEST_REGISTERED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}

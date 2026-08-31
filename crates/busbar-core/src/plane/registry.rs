@@ -417,33 +417,27 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 
 // ── TEST-SUPPORT PLANE REGISTRATION ──────────────────────────────────────────────────────────────
 // The extracted plane crates can't be hard-coded into `BUILTIN_PLANE_DECLS` (core cannot name them),
-// so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` here,
-// exactly as production's composition root `install_planes`. `plane_decls()` folds the registered set
-// ahead of the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a
-// plane registered by any test before it reads the list is visible regardless of test order, and the
+// so under the test-support surface each plane's `testkit` REGISTERS its `&'static PlaneDecl` through
+// the NEUTRAL seam [`busbar_substrate::plane::registry::register_test_plane`] — the storage lives on
+// the substrate so a plane crate names no `busbar_core::` implementation to register itself, exactly
+// as production's composition root `install_planes`. `plane_decls()` folds the registered set ahead of
+// the built-ins on every read, recomputing (and leaking once) only when the set GROWS — so a plane
+// registered by any test before it reads the list is visible regardless of test order, and the
 // `&'static` contract holds. Bounded: at most one leak per distinct plane (≤ the plane count).
-#[cfg(any(test, feature = "test-support"))]
-static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
-    std::sync::Mutex::new(Vec::new());
 #[cfg(any(test, feature = "test-support"))]
 static TEST_MEMO: std::sync::Mutex<Option<(usize, &'static [&'static PlaneDecl])>> =
     std::sync::Mutex::new(None);
 
-/// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry, the way
-/// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
-/// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
-/// fixture registry matches a shipped "busbar with this plane" binary.
+/// TEST-SUPPORT SEAM — register an extracted plane's declaration into the process registry. Re-exported
+/// from the neutral substrate ([`busbar_substrate::plane::registry::register_test_plane`], which owns
+/// the storage) so core's own test-support callers keep one stable path; the plane crates call the
+/// substrate function directly.
 #[cfg(any(test, feature = "test-support"))]
-pub fn register_test_plane(decl: &'static PlaneDecl) {
-    let mut reg = TEST_REGISTERED.lock().unwrap();
-    if !reg.iter().any(|d| d.key == decl.key) {
-        reg.push(decl);
-    }
-}
+pub use busbar_substrate::plane::registry::register_test_plane;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
-    let reg = TEST_REGISTERED.lock().unwrap();
+    let reg = busbar_substrate::plane::registry::test_registered_planes();
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     let want = reg.len() + installed.len();
     let mut memo = TEST_MEMO.lock().unwrap();

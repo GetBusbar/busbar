@@ -29,7 +29,7 @@ const SCRATCH_KEY: &str = "mcp";
 /// finalizer (every plane-building test) AND directly by MCP config/admin tests that validate documents
 /// WITHOUT building a plane (they reach the same `config_sections()` fold).
 pub fn install_test_seams() {
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_substrate::plane::config::install_plane_sections(
         busbar_core::plane::config::config_sections,
     );

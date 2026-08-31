@@ -303,7 +303,7 @@ fn a_cross_plane_hook_reference_is_refused() {
         busbar_core::plane::config::config_sections,
     );
     // Make the `pools:` (LLM) plane a section this test binary knows about — see [`LLM_POOLS_STANDIN`].
-    busbar_core::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
+    busbar_substrate::plane::registry::register_test_plane(&LLM_POOLS_STANDIN);
     for bad in [
         "pools.fast",
         "agents.planner",
