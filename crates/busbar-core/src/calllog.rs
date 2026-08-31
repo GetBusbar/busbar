@@ -161,7 +161,6 @@ extern "C-unwind" fn reframe_call_ffi(
 /// [`MAX_TRACKED_PRINCIPALS`] positions. Uses the WITHIN-CORE capped register (the ABI descriptor
 /// carries no LRU cap, and this crate must not touch the hot ABI); the host attaches the durable sink
 /// from `app.governance` at register time.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub fn register_call_stream(app: &Arc<crate::state::App>) {
     register_call_stream_as(KIND_ID_CALL, app);
 }
@@ -171,7 +170,6 @@ pub fn register_call_stream(app: &Arc<crate::state::App>) {
 /// CORE-side here (the returned [`Restored`] and the [`PlaneStore`] the read walks are both core types
 /// a plane cannot name), so a plane's boot hook calls THIS instead of naming
 /// `crate::plane_host::with_dispatch_scope`. Byte-identical to the in-place restore it replaced.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub fn restore_from_store_over(
     app: &Arc<crate::state::App>,
     store: &dyn PlaneStore,
@@ -181,7 +179,6 @@ pub fn restore_from_store_over(
 
 /// Register the `call` stream under an ARBITRARY `kind_id` — production pins [`KIND_ID_CALL`], a TEST
 /// drives over a FRESH id so parallel tests never share one process-global chain.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn register_call_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
     let kind = KIND_CALL.as_bytes();
     let desc = JournalStreamDesc {
@@ -228,7 +225,7 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 // `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
 // without reaching into `busbar_core::calllog`); re-exported here so in-core call sites and
 // the legacy `busbar_core::calllog::REASON_HOOK_REJECTED` path are unchanged.
-#[cfg_attr(not(feature = "plane-mcp"), allow(unused_imports))]
+#[allow(unused_imports)]
 pub use crate::audit::vocab::{
     OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_HOOK_REJECTED,
     REASON_MALFORMED, REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
@@ -265,7 +262,6 @@ const CALL_DIGESTS_SCOPE: bool = true;
 /// under LengthPrefixed). The field ORDER is the tail of the call digest fields: ts, server,
 /// tool, outcome, reason, tool_digest, pin_generation. `request_id` is EXCLUDED, matching the digest
 /// (a join key absent on paths with no inbound request must not be able to break an intact chain).
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 fn call_suffix(
     ts: u64,
     server: &str,
@@ -298,7 +294,7 @@ fn call_suffix(
 /// Parse a LengthPrefixed call SUFFIX back into its typed fields — the exact inverse of
 /// [`call_suffix`], for reconstructing a typed the call record from a stored neutral body. Fails
 /// closed on a truncated/oversized field rather than reading past the buffer.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[allow(dead_code)]
 fn parse_call_suffix(
     content: &[u8],
 ) -> StoreResult<(u64, String, String, String, String, String, u64)> {
@@ -354,7 +350,6 @@ fn parse_call_suffix(
 /// pre-framed `content` suffix verbatim, so no typed reconstruction is needed to rebuild the digest
 /// stream. (A pre-1.6 a typed serde body is not neutral and is a plane-side grandfather
 /// concern — see the handoff note; core no longer names that type.)
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
     let nb = decode::<NeutralBody>(body)?;
     Ok(PlaneJournalRecord::from_parts(
@@ -375,7 +370,7 @@ fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// the digest and so never in the neutral content. `principal` is the chain scope, supplied by the
 /// caller (the store parent), never read from a neutral body. Core names no plane record type; a
 /// plane crate reconstructs its typed the call record from this where it wants one.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult<CallRecorded> {
     let nb = decode::<NeutralBody>(body)?;
     let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
@@ -555,7 +550,7 @@ impl PlaneCallLog {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
                     principal = %principal,
-                    "the durable MCP call log enumerates this principal but returned NO records \
+                    "the durable per-call log enumerates this principal but returned NO records \
                      for it; the chain is being reopened at seq 1 and the discrepancy is reported \
                      rather than skipped silently"
                 );
@@ -567,7 +562,7 @@ impl PlaneCallLog {
                     crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
                     principal = %brk.scope,
                     break_detail = %brk,
-                    "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
+                    "per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
                      do not verify against their own hash chain. They are still restored and \
                      the chain resumes from the broken tail; refusing to restore them would let \
                      anyone able to write to the store DELETE a caller's history by corrupting \
@@ -595,9 +590,7 @@ impl PlaneCallLog {
             principal,
             &packed,
         )
-        .map_err(|()| {
-            StoreError("MCP per-call chain seed failed at the durable seam".to_string())
-        })?;
+        .map_err(|()| StoreError("per-call chain seed failed at the durable seam".to_string()))?;
         if hdr.broke == 0 {
             return Ok(None);
         }
@@ -776,7 +769,7 @@ impl PlaneCallLog {
     #[allow(dead_code)]
     pub(crate) fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
         crate::plane_host::journal::compact_via_seam(host, self.kind_id, before).map_err(|()| {
-            StoreError("MCP per-call log compaction failed at the durable seam".to_string())
+            StoreError("per-call log compaction failed at the durable seam".to_string())
         })
     }
 }
@@ -825,7 +818,7 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
                 server = %server,
                 tool = %tool,
                 outcome = %outcome,
-                "mcp per-call record appended"
+                "per-call record appended"
             );
         }
         Err(e) => {
@@ -838,7 +831,7 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
                     tool = %tool,
                     outcome = %outcome,
                     error = %e,
-                    "the durable MCP per-call record could NOT be written: this call is being served and \
+                    "the durable per-call record could NOT be written: this call is being served and \
                      its evidence is being LOST. The chain position is unchanged, so the chain stays \
                      contiguous — what is missing is this record, not the ones after it."
                 );
@@ -851,7 +844,7 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
                     tool = %tool,
                     outcome = %outcome,
                     error = %e,
-                    "the durable MCP per-call record could NOT be written: this call is being served and \
+                    "the durable per-call record could NOT be written: this call is being served and \
                      its evidence is being LOST. The chain position is unchanged, so the chain stays \
                      contiguous — what is missing is this record, not the ones after it."
                 );
@@ -864,7 +857,6 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
 /// client-leg verb path that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It
 /// swallows a durable-write failure the same way [`emit`] does (evidence, not admission), so the
 /// deferred path's behaviour matches the production emitter but for the host it never had.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub fn emit_hostless(principal: &str, input: CallInput) {
     let (server, tool, outcome, request_id) = (
         input.server.clone(),
@@ -881,7 +873,7 @@ pub fn emit_hostless(principal: &str, input: CallInput) {
             tool = %tool,
             outcome = %outcome,
             error = %e,
-            "the durable MCP per-call record could NOT be written on the client-leg path; its \
+            "the durable per-call record could NOT be written on the client-leg path; its \
              evidence is being LOST. The chain position is unchanged, so the chain stays contiguous."
         );
     }
