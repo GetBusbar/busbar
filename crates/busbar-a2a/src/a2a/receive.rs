@@ -743,6 +743,58 @@ pub(super) enum Target {
 }
 use Target::{FromCatalogue, Named};
 
+/// The A2A invoke path as this protocol's sibling on the NEUTRAL shared gauntlet sequence
+/// ([`busbar_substrate::plane_host::run_gauntlet`]) — the SAME sequence the LLM native plane and the
+/// MCP `tools/call` plane ride. (`A2aInvokePlane`, not `A2aPlane`: the latter is this crate's
+/// `PlaneDecl` registration type.)
+///
+/// A2A's destination/agent verification (catalogue `select`/`admit`, the hook gate, the per-hop
+/// credential mint) is ASYNC and INTERLEAVED with admission inside the relay engine — it cannot be
+/// hoisted to the shared sequence's SYNC pre-admission `verify_destination` without reordering. So,
+/// per Option A, the whole of [`invoke_inner`] stays inside `drive` VERBATIM (byte-identical: same
+/// agent select/admit, same hook gate, same per-hop `mint_from` credential, same relay hop, same
+/// per-hop metering, same provenance chain / task-durable behaviour), and `verify_destination` is a
+/// structural `Proceed`. Riding the seam expresses verify-before-admit + the audit-correlation join
+/// on the ONE shared path, making all three planes siblings (the §11a symmetry milestone).
+struct A2aInvokePlane {
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    principal: busbar_api::AuthPrincipal,
+    target: Target,
+    wire: Wire,
+    body: axum::body::Bytes,
+}
+
+#[async_trait::async_trait]
+impl busbar_substrate::plane_host::GauntletPlane for A2aInvokePlane {
+    fn verify_destination(
+        &self,
+        _req: &busbar_substrate::plane_host::GauntletRequest<'_>,
+    ) -> busbar_substrate::plane_host::VerifyOutcome {
+        // See the type doc: A2A's agent verification is async + interleaved with admission, so it stays
+        // inside `drive` (byte-identical). The shared sequence's sync pre-admission gate is a no-op.
+        busbar_substrate::plane_host::VerifyOutcome::Proceed
+    }
+
+    async fn drive(
+        self: Box<Self>,
+        req: busbar_substrate::plane_host::GauntletRequest<'_>,
+    ) -> Response {
+        // The whole of `invoke_inner`, VERBATIM — protocol pre-checks, agent select/admit, hook gate,
+        // per-hop credential mint, relay, per-hop metering and the provenance chain all unchanged. The
+        // owned `gov` the sequence lifted out is restored by cloning `req.gov` (a refcount bump on the
+        // `Arc<VirtualKey>`, value-identical), so `invoke_inner` sees the exact same governance ctx.
+        invoke_inner(
+            self.engine_host,
+            req.gov.clone(),
+            self.principal,
+            self.target,
+            self.wire,
+            self.body,
+        )
+        .await
+    }
+}
+
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
 /// `transport` is the leg the request arrived on — [`busbar_substrate::transport::Transport::JsonRpc`],
@@ -766,7 +818,30 @@ pub(super) async fn invoke(
 ) -> Response {
     let started = std::time::Instant::now();
     let observed = Arc::clone(&engine_host);
-    let mut answered = invoke_inner(engine_host, gov, principal, target, wire, body).await;
+    // A2A rides the SHARED gauntlet sequence as a sibling of the LLM and MCP planes: the outer
+    // verify-before-admit ORDER is core-enforced by `run_gauntlet`, while the plane owns its drive
+    // (the whole of `invoke_inner`, byte-identical — see `A2aInvokePlane`). `gov` stays owned here and
+    // is borrowed into the neutral request; the plane's `drive` clones it for `invoke_inner`.
+    let req = busbar_substrate::plane_host::GauntletRequest {
+        gov: &gov,
+        // The routing target is client-supplied; the drive reads it off the plane, not the request,
+        // so this destination label is unused on the A2A path (verify_destination is a no-op).
+        destination: "",
+        correlation_id: 0,
+        charged_at: 0,
+        started,
+    };
+    let mut answered = busbar_substrate::plane_host::run_gauntlet(
+        req,
+        Box::new(A2aInvokePlane {
+            engine_host,
+            principal,
+            target,
+            wire,
+            body,
+        }),
+    )
+    .await;
     observed.request_finished(
         "a2a",
         transport.name(),
