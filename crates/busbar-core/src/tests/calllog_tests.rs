@@ -18,14 +18,44 @@
 //!    proven nothing at all.
 
 use super::super::calllog::{
-    CallInput, CallTestHarness, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
+    call_record_from_body, call_record_to_journal_body, CallInput, CallRecorded, CallTestHarness,
+    PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
-use crate::plane::store::StoreNamedTestExt;
-// The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
-// type — so the tests reach for them where they live rather than through a plane re-export.
+// The chain, the verifier and the break vocabulary are CORE's — the neutral `CallRecorded` is the
+// only record type these tests name — so they reach for them where they live rather than through a
+// plane re-export.
 use crate::audit::ChainBreakKind;
-use busbar_api::{McpCallRecord, Store};
+use crate::plane::store::KIND_CALL;
+use busbar_api::{PlaneSelector, Store, StoreResult};
 use std::sync::Arc;
+
+/// TEST-ONLY named-vocabulary call-log store extension — the per-call twin of the A2A task test-ext,
+/// kept beside the battery that uses it now that the neutral `StoreNamedTestExt` is gone. It reads and
+/// writes the `call` stream through the generic `PlaneRecord` ABI, decoding each opaque neutral journal
+/// body into the neutral [`CallRecorded`] the seam persists.
+trait CallStoreTestExt: Store {
+    fn append_mcp_call(&self, rec: &CallRecorded) -> StoreResult<()> {
+        self.append_plane_record(&busbar_api::PlaneRecord {
+            kind: KIND_CALL.to_string(),
+            id: rec.principal.clone(),
+            parent: Some(rec.principal.clone()),
+            seq: rec.seq,
+            ts: rec.ts,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: call_record_to_journal_body(rec)?,
+        })
+    }
+    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<CallRecorded>> {
+        self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .iter()
+            .map(|b| call_record_from_body(principal, b))
+            .collect()
+    }
+    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
+        self.list_plane_record_parents(KIND_CALL)
+    }
+}
+impl<T: Store + ?Sized> CallStoreTestExt for T {}
 
 // ── the two stores these tests are held against ──────────────────────────────────────────────
 
@@ -45,9 +75,8 @@ struct DurableCallStore {
     /// The chained calls as the OPAQUE stored BODIES a durable backend holds — the neutral
     /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)` so a read-back
     /// comes out in chain order and a re-write at the same position overwrites (a real backend's
-    /// primary key). A typed view is reconstructed on read via
-    /// [`crate::calllog::mcp_call_record_from_body`] (which also reads legacy serde bodies), so
-    /// "durable" here is byte-for-byte what a real store keeps.
+    /// primary key). A typed view is reconstructed on read via [`call_record_from_body`], so "durable"
+    /// here is byte-for-byte what a real store keeps.
     calls: std::sync::Mutex<std::collections::BTreeMap<(String, u64), Vec<u8>>>,
     /// When set, an append fails with this message instead of persisting. The write-failure axis: an
     /// evidence record that cannot be written must not burn a sequence number.
@@ -71,22 +100,21 @@ impl DurableCallStore {
     /// closure receives the backend's own stored record, exactly as an operator with write access to
     /// the backing table would have it.
     ///
-    /// The stored body is opaque (the neutral seam envelope), so the edit is staged by reconstructing
-    /// the typed row, applying the caller's mutation, and RE-PERSISTING it as a LEGACY
-    /// `serde(McpCallRecord)` body with its `hash` LEFT STALE. Legacy (not neutral) because the tamper
-    /// battery edits `principal` too — the chain SCOPE, which the neutral body does not carry — and an
-    /// operator editing the backing table would edit a full row; the legacy shape preserves every
-    /// field under the seam's own old-store read-compat path, so the read-back reflects the tamper and
-    /// the stale digest is exactly what `verify_chain` recomputes and catches.
-    fn tamper(&self, principal: &str, seq: u64, edit: impl FnOnce(&mut McpCallRecord)) {
+    /// The stored body is the opaque neutral seam envelope (`{seq, prev_hash, hash, content}`), so the
+    /// edit is staged by reconstructing the typed row, applying the caller's mutation, and RE-FRAMING
+    /// it into a neutral body — via [`call_record_to_journal_body`], the inverse of the read decode —
+    /// with its `hash` LEFT STALE. A rewritten payload under an unchanged digest is exactly the tamper
+    /// `verify_chain` recomputes and catches. `principal` is the chain SCOPE (the store parent), not a
+    /// field of the neutral body, so it cannot be edited here — the foreign-scope battery relabels a
+    /// READ-BACK row instead (a `CallRecorded` carries its scope; the persisted body never does).
+    fn tamper(&self, principal: &str, seq: u64, edit: impl FnOnce(&mut CallRecorded)) {
         let mut calls = self.calls.lock().unwrap();
         let body = calls
             .get_mut(&(principal.to_string(), seq))
             .expect("tampering with a row the store actually holds");
-        let mut row = crate::calllog::mcp_call_record_from_body(principal, body)
-            .expect("the row to tamper with decodes");
+        let mut row = call_record_from_body(principal, body).expect("the row to tamper with decodes");
         edit(&mut row);
-        *body = crate::plane::store::encode(&row).expect("the tampered row re-encodes");
+        *body = call_record_to_journal_body(&row).expect("the tampered row re-encodes");
     }
 
     /// Remove a PERSISTED row — the splice-out tamper.
@@ -186,7 +214,7 @@ impl Store for DurableCallStore {
                 // The stored body is opaque, so the retention axis (`ts`) is read by reconstructing
                 // the typed row — the neutral append leaves the envelope's `ts` sidecar at 0.
                 calls.retain(|(principal, _), body| {
-                    let ts = crate::calllog::mcp_call_record_from_body(principal, body)
+                    let ts = call_record_from_body(principal, body)
                         .map(|r| r.ts)
                         .unwrap_or(0);
                     ts >= before
@@ -214,12 +242,12 @@ impl DurableCallStore {
         }
         let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
         let slot = (principal.clone(), record.seq);
-        let incoming = crate::calllog::mcp_call_record_from_body(&principal, &record.body)?;
+        let incoming = call_record_from_body(&principal, &record.body)?;
         let mut calls = self.calls.lock().unwrap();
         match calls.get(&slot) {
             Some(existing_body) => {
                 let existing =
-                    crate::calllog::mcp_call_record_from_body(&principal, existing_body)?;
+                    call_record_from_body(&principal, existing_body)?;
                 if same_call_ignoring_request_id(&existing, &incoming) {
                     // The retry: the same call re-presented, so nothing is lost by succeeding.
                     Ok(())
@@ -243,8 +271,8 @@ impl DurableCallStore {
 /// Two calls are the SAME chain record when every chained field plus the link matches — `request_id`
 /// is excluded because it is a join key the neutral seam does not persist, so a record read back from
 /// a neutral body and the same record re-presented as a legacy body differ only there.
-fn same_call_ignoring_request_id(a: &McpCallRecord, b: &McpCallRecord) -> bool {
-    let McpCallRecord {
+fn same_call_ignoring_request_id(a: &CallRecorded, b: &CallRecorded) -> bool {
+    let CallRecorded {
         principal,
         seq,
         ts,
@@ -354,7 +382,7 @@ fn refused(ts: u64, tool: &str, reason: &str) -> CallInput {
 
 /// Write three calls through a log attached to `store`, then DROP the log. Returns what was written,
 /// so the read-back can be compared against it field by field.
-fn write_then_drop(store: &Arc<dyn Store>) -> Vec<McpCallRecord> {
+fn write_then_drop(store: &Arc<dyn Store>) -> Vec<CallRecorded> {
     let log = CallTestHarness::over(store.clone());
     let a = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -370,11 +398,11 @@ fn write_then_drop(store: &Arc<dyn Store>) -> Vec<McpCallRecord> {
     vec![a, b, c]
 }
 
-/// Field-by-field equality, written as a DESTRUCTURING bind so a field added to `McpCallRecord`
+/// Field-by-field equality, written as a DESTRUCTURING bind so a field added to `CallRecorded`
 /// later fails to compile here rather than silently going unchecked. A whole-struct `assert_eq!`
 /// would compare a new field too, but would not force anyone to decide what it should survive as.
-fn assert_same_record(got: &McpCallRecord, want: &McpCallRecord, at: &str) {
-    let McpCallRecord {
+fn assert_same_record(got: &CallRecorded, want: &CallRecorded, at: &str) {
+    let CallRecorded {
         principal,
         seq,
         ts,
@@ -721,13 +749,15 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
     write_then_drop(&store);
-    // The backend's principal COLUMN is corrupted: the row still sits at this principal's chain
-    // position, but claims to belong to somebody else. That is what the store hands back, so that is
-    // what the verifier is asked about.
-    backing.tamper(P, 2, |row| row.principal = "key_beta".to_string());
 
-    let chain = store.list_mcp_calls(P).expect("read");
+    // The chain SCOPE is the store PARENT, not a field of the persisted body (the neutral seam carries
+    // no `principal`), so a foreign row is one the store hands back UNDER this principal's parent that
+    // nonetheless belongs to another chain. Read the real persisted chain back and relabel the middle
+    // record's scope — a `CallRecorded` carries its own `principal` — which is exactly the row a
+    // corrupted principal column, or a mis-keyed backend, would return in this principal's list.
+    let mut chain = store.list_mcp_calls(P).expect("read");
     assert_eq!(chain.len(), 3, "all three rows are still returned for {P}");
+    chain[1].principal = "key_beta".to_string();
     let brk = crate::calllog::verify_call_rows(&chain).expect_err("the foreign row is detected");
     assert_eq!(
         brk.kind,
@@ -898,7 +928,7 @@ impl NamesOnePrincipalWithNoRows {
 /// record's fields rather than a handful of spot checks, so a field added later cannot quietly land
 /// outside the digest.
 ///
-/// The list is built by DESTRUCTURING the record, so adding a field to `McpCallRecord` fails to
+/// The list is built by DESTRUCTURING the record, so adding a field to `CallRecorded` fails to
 /// compile here until somebody decides which side of the line it belongs on. The counts are exact
 /// equalities, not floors: "how many fields are chained" is a number that must be re-decided, never
 /// merely met.
@@ -912,7 +942,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
             .expect("the base record mints through the seam")
     };
     // Exhaustive by construction: this bind fails to compile if a field is added.
-    let McpCallRecord {
+    let CallRecorded {
         principal: _,
         seq: _,
         ts: _,
@@ -931,7 +961,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
     // then the engine-side `verify_principal_chain` — the same door production reads a chain through —
     // is the arbiter. A chained field breaks the chain; a field outside the digest reframes to the
     // same bytes and still verifies.
-    fn perturbation_breaks(edit: impl FnOnce(&mut McpCallRecord)) -> bool {
+    fn perturbation_breaks(edit: impl FnOnce(&mut CallRecorded)) -> bool {
         let backing = Arc::new(DurableCallStore::new());
         let store: Arc<dyn Store> = backing.clone();
         let log = CallTestHarness::over(store.clone());
@@ -948,7 +978,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
     }
     let mut chained_fields = 0;
     let mut ignored_fields = 0;
-    let mut mutate = |name: &str, edit: fn(&mut McpCallRecord)| {
+    let mut mutate = |name: &str, edit: fn(&mut CallRecorded)| {
         let broken = perturbation_breaks(edit);
         if broken {
             chained_fields += 1;

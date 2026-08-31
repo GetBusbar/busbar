@@ -391,6 +391,32 @@ pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult
     })
 }
 
+/// TEST ONLY: the INVERSE of [`call_record_from_body`] — render a neutral `{seq, prev_hash, hash,
+/// content}` journal body from a typed [`CallRecorded`], framing its chained fields with the SAME
+/// [`call_suffix`] the seam seals over. This is what the durability/tamper batteries persist and edit:
+/// re-encoding an edited record with its `hash` LEFT UNCHANGED stages exactly the "rewritten payload
+/// under a stale digest" tamper that [`verify_chain`] recomputes and catches. `request_id` and
+/// `principal` are NOT in the body — the join key is never in the digest, and the scope is the store
+/// parent — so they do not round-trip through it.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn call_record_to_journal_body(rec: &CallRecorded) -> StoreResult<Vec<u8>> {
+    let content = call_suffix(
+        rec.ts,
+        &rec.server,
+        &rec.tool,
+        &rec.outcome,
+        &rec.reason,
+        &rec.tool_digest,
+        rec.pin_generation,
+    );
+    crate::plane::store::encode(&NeutralBody {
+        seq: rec.seq,
+        prev_hash: rec.prev_hash.clone(),
+        hash: rec.hash.clone(),
+        content,
+    })
+}
+
 /// TEST ONLY: verify a chain presented as neutral [`CallRecorded`] rows by reframing each into the
 /// neutral journal record the seam persists and running the ONE verifier. Core names no plane record
 /// type; a test that holds typed the call records converts them to [`CallRecorded`] first. The scope,
