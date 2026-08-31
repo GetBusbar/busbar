@@ -526,3 +526,45 @@ fn anthropic_stream_ping_same_proto_carry() {
         "a ping must expand to zero IR stream events, got {events:?}"
     );
 }
+
+// Chat#4: Anthropic's Messages API models none of `frequency_penalty`/`presence_penalty`/`seed`/`n`.
+// A cross-protocol source carrying them must have each dropped OBSERVABLY — a per-control `warn!` and
+// a `dropped_egress_controls` entry — not silently as before (the writer never referenced them).
+#[test]
+fn anthropic_drops_penalties_seed_n_observably() {
+    use busbar_core::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let ir = crate::ir::IrRequest {
+        frequency_penalty: Some(0.5),
+        presence_penalty: Some(0.25),
+        seed: Some(42),
+        n: Some(3),
+        ..Default::default()
+    };
+
+    let cap = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(sub, || AnthropicWriter.write_request(&ir));
+
+    // None of the four leaks onto the Anthropic wire.
+    for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
+        assert!(
+            out.get(field).is_none(),
+            "{field} must not be emitted on the Anthropic wire: {out}"
+        );
+        assert!(
+            cap.contains(field),
+            "dropping {field} on Anthropic egress must warn: {:?}",
+            cap.messages()
+        );
+    }
+    // …and each is reported to the cross-protocol seam for audit.
+    let dropped = AnthropicWriter.dropped_egress_controls(&ir);
+    for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
+        assert!(
+            dropped.contains(&field),
+            "{field} must be reported by dropped_egress_controls: {dropped:?}"
+        );
+    }
+}

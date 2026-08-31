@@ -1021,3 +1021,33 @@ fn top_logprobs_carries_responses_roundtrip_and_cross_to_openai() {
         "the OpenAI writer must force the enabling logprobs flag: {openai}"
     );
 }
+
+// Chat#4: the Responses create API models none of `frequency_penalty`/`presence_penalty`/`seed`/`n`.
+// A cross-protocol source carrying them must have each dropped OBSERVABLY — a per-control `warn!` and
+// a `dropped_egress_controls` entry — not silently as before.
+#[test]
+fn responses_drops_penalties_seed_n_observably() {
+    let ir = crate::ir::IrRequest {
+        frequency_penalty: Some(0.5),
+        presence_penalty: Some(0.25),
+        seed: Some(42),
+        n: Some(3),
+        ..Default::default()
+    };
+    let (_out, cap) = with_warns(|| write_req(&ir));
+    for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
+        assert!(
+            cap.contains(field),
+            "dropping {field} on Responses egress must warn: {:?}",
+            cap.messages()
+        );
+    }
+    // …and each is reported to the cross-protocol seam for audit.
+    let dropped = ResponsesWriter.dropped_egress_controls(&ir);
+    for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
+        assert!(
+            dropped.contains(&field),
+            "{field} must be reported by dropped_egress_controls: {dropped:?}"
+        );
+    }
+}

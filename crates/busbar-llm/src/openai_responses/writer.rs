@@ -11,6 +11,32 @@ impl ProtocolWriter for ResponsesWriter {
         "/v1/responses"
     }
 
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        // Mirrors the `write_request` drop-warns: the `/v1/responses` create API models `top_p` and
+        // `top_logprobs` but NOT `top_k`, `stop`, `frequency_penalty`, `presence_penalty`, `seed`, or
+        // `n`, so a cross-protocol request carrying any of them has that control dropped on egress.
+        let mut dropped = Vec::new();
+        if req.top_k.is_some() {
+            dropped.push("top_k");
+        }
+        if !req.stop.is_empty() {
+            dropped.push("stop");
+        }
+        if req.frequency_penalty.is_some() {
+            dropped.push("frequency_penalty");
+        }
+        if req.presence_penalty.is_some() {
+            dropped.push("presence_penalty");
+        }
+        if req.seed.is_some() {
+            dropped.push("seed");
+        }
+        if req.n.is_some() {
+            dropped.push("n");
+        }
+        dropped
+    }
+
     /// The Responses API carries turns in `input`, which may be a LIST of items or a bare string
     /// (one implicit user turn). Either is replaced by the EasyInputMessage list the reply renders
     /// to; only an absent `input` is fail-safe-untouched.
@@ -521,7 +547,41 @@ impl ProtocolWriter for ResponsesWriter {
         // `ResponseCreateParamsBase`: only `temperature`/`top_p`/`top_logprobs`/`text` are present).
         // They are lossy-by-target on this surface, so they are intentionally NOT emitted — emitting an
         // unsupported param would 400 a real `/v1/responses` call. A cross-protocol source that carried
-        // them simply loses them here (a target-capability omission, not a leak).
+        // them loses them here (a target-capability omission, not a leak) — but that drop must be
+        // OBSERVABLE: emit a `warn!` per control (mirroring the top_k/stop drop-warns above) instead of
+        // the prior silent drop, and report them via `dropped_egress_controls` for the seam audit.
+        if let Some(frequency_penalty) = req.frequency_penalty {
+            tracing::warn!(
+                parameter = "frequency_penalty",
+                frequency_penalty,
+                "responses writer: the /v1/responses API models no `frequency_penalty`; \
+                 dropping it (lossy-by-target)"
+            );
+        }
+        if let Some(presence_penalty) = req.presence_penalty {
+            tracing::warn!(
+                parameter = "presence_penalty",
+                presence_penalty,
+                "responses writer: the /v1/responses API models no `presence_penalty`; \
+                 dropping it (lossy-by-target)"
+            );
+        }
+        if let Some(seed) = req.seed {
+            tracing::warn!(
+                parameter = "seed",
+                seed,
+                "responses writer: the /v1/responses API models no `seed`; \
+                 dropping it (lossy-by-target)"
+            );
+        }
+        if let Some(n) = req.n {
+            tracing::warn!(
+                parameter = "n",
+                n,
+                "responses writer: the /v1/responses API models no `n` candidate-count; \
+                 dropping it (lossy-by-target)"
+            );
+        }
 
         // STOP: the Responses create API has NO `stop`/`stop_sequences` param (same verification as
         // sampling above — no stop field exists on `ResponseCreateParamsBase`). So stop sequences

@@ -111,13 +111,26 @@ impl ProtocolWriter for AnthropicWriter {
     }
 
     fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
-        // Mirrors the `write_request` warn: Anthropic's Messages API has no native `response_format`
-        // field, so a cross-protocol request carrying one has that structured-output directive dropped.
+        // Mirrors the `write_request` warns: Anthropic's Messages API has no native `response_format`
+        // field, nor the OpenAI-family sampling controls `frequency_penalty`/`presence_penalty`/`seed`/
+        // `n`, so a cross-protocol request carrying any of them has that control dropped on egress.
+        let mut dropped = Vec::new();
         if req.response_format.is_some() {
-            vec!["response_format"]
-        } else {
-            Vec::new()
+            dropped.push("response_format");
         }
+        if req.frequency_penalty.is_some() {
+            dropped.push("frequency_penalty");
+        }
+        if req.presence_penalty.is_some() {
+            dropped.push("presence_penalty");
+        }
+        if req.seed.is_some() {
+            dropped.push("seed");
+        }
+        if req.n.is_some() {
+            dropped.push("n");
+        }
+        dropped
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
@@ -352,6 +365,45 @@ impl ProtocolWriter for AnthropicWriter {
                 "dropping response_format on Anthropic egress: the Messages API has no native \
                  response_format field and tool-forcing is not implemented in this pass; the \
                  structured-output directive from a cross-protocol request is NOT forwarded"
+            );
+        }
+        // SAMPLING CONTROLS with no Anthropic Messages analog: `frequency_penalty`,
+        // `presence_penalty`, `seed`, `n`. Anthropic models none of them, so a cross-protocol request
+        // (e.g. an OpenAI/Responses caller) carrying any is dropped here. The drop is intentional (the
+        // reader never sets these on a same-protocol path — same-protocol relays the raw body and
+        // never reaches this writer), but it must be OBSERVABLE: emit a `warn!` for each (mirroring the
+        // response_format/top_k/reasoning drop-with-warn convention) instead of the prior silent drop,
+        // and report them via `dropped_egress_controls` so the cross-protocol seam audits each one.
+        if let Some(frequency_penalty) = req.frequency_penalty {
+            tracing::warn!(
+                parameter = "frequency_penalty",
+                frequency_penalty,
+                "dropping frequency_penalty on Anthropic egress: the Messages API models no such \
+                 sampling control (lossy-by-target)"
+            );
+        }
+        if let Some(presence_penalty) = req.presence_penalty {
+            tracing::warn!(
+                parameter = "presence_penalty",
+                presence_penalty,
+                "dropping presence_penalty on Anthropic egress: the Messages API models no such \
+                 sampling control (lossy-by-target)"
+            );
+        }
+        if let Some(seed) = req.seed {
+            tracing::warn!(
+                parameter = "seed",
+                seed,
+                "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling \
+                 seed (lossy-by-target)"
+            );
+        }
+        if let Some(n) = req.n {
+            tracing::warn!(
+                parameter = "n",
+                n,
+                "dropping n on Anthropic egress: the Messages API returns a single completion and \
+                 models no candidate-count parameter (lossy-by-target)"
             );
         }
         // Carry the end-user identifier into Anthropic's spelling (`metadata.user_id`). Emitted
