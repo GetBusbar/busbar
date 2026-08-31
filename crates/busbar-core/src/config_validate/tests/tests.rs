@@ -5348,3 +5348,74 @@ fn test_auth_policy_valid_block_passes() {
     let errs = policy_errors(&root_with_auth_policy(policy));
     assert!(errs.is_empty(), "a valid policy adds no error: {errs:?}");
 }
+
+/// A CANONICAL empty built-in secret ref (`{ module: env, settings: { key: "" } }` /
+/// `{ module: file, settings: { path: "" } }`) must FAIL `--validate`.
+///
+/// The empty-value rejection historically lived ONLY in the `{ env: "" }` / `{ file: "" }` sugar
+/// deserializer, so the canonical form slipped through: `env_var()` / `file_path()` returned
+/// `Some("")`, `check_secret` only tested `.is_none()`, and the config passed `--validate` as "ok"
+/// then fail-closed at boot (`std::env::var("")` → Err). A clean validate must imply a clean boot,
+/// so the empty canonical form has to be rejected here, mirroring the sugar check.
+#[test]
+fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
+    // The canonical form deserializes fine — the deserializer's non-empty guard is sugar-only, so
+    // this is exactly the shape that used to slip past `--validate`.
+    let empty_env: config::SecretRef =
+        serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
+            .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
+    assert_eq!(
+        empty_env.env_var(),
+        Some(""),
+        "precondition: Some(\"\"), not None"
+    );
+
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = empty_env;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .expect_err("an empty canonical env secret key must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("providers.acme.api_key")
+            && e.contains("'env'")
+            && e.to_lowercase().contains("non-empty")),
+        "expected a non-empty settings.key error naming providers.acme.api_key; got: {errs:?}"
+    );
+
+    // The `file` module's empty path must fail the same way.
+    let empty_file: config::SecretRef =
+        serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
+            .expect("canonical empty-path file ref deserializes");
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = empty_file;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .expect_err("an empty canonical file path must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("providers.acme.api_key")
+            && e.contains("'file'")
+            && e.to_lowercase().contains("non-empty")),
+        "expected a non-empty settings.path error naming providers.acme.api_key; got: {errs:?}"
+    );
+
+    // CONTROL: a non-empty canonical key must NOT trip the empty-secret error. (`whitespace-only`
+    // is treated as empty, mirroring the sugar `trim().is_empty()` check.)
+    let good: config::SecretRef =
+        serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
+            .expect("canonical non-empty env ref deserializes");
+    let mut providers = HashMap::new();
+    let mut p = make_provider("anthropic", "https://api.anthropic.com", "IGNORED");
+    p.api_key = good;
+    providers.insert("acme".to_string(), p);
+    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
+        "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
+    );
+}

@@ -1469,14 +1469,36 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // validates config structure without secrets present); resolution failures are boot-time
     // fail-closed errors.
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
-        if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
-            errors.push(format!(
-                "{what}: secret module 'env' requires settings.key (the environment variable name)"
-            ));
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE && r.file_path().is_none() {
-            errors.push(format!(
-                "{what}: secret module 'file' requires settings.path (the file to read)"
-            ));
+        // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
+        // `{ file: "" }` sugar already rejects an empty value in the deserializer
+        // (secret-ref/src/lib.rs), but the CANONICAL `{ module: env, settings: { key: "" } }` form
+        // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
+        // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
+        // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
+        // Reject both the MISSING and the EMPTY cases here, mirroring the sugar check.
+        if r.module == crate::config::secret::SECRET_MODULE_ENV {
+            match r.env_var() {
+                None => errors.push(format!(
+                    "{what}: secret module 'env' requires settings.key (the environment variable \
+                     name)"
+                )),
+                Some(v) if v.trim().is_empty() => errors.push(format!(
+                    "{what}: secret module 'env' requires a NON-EMPTY settings.key (the \
+                     environment variable name)"
+                )),
+                Some(_) => {}
+            }
+        } else if r.module == crate::config::secret::SECRET_MODULE_FILE {
+            match r.file_path() {
+                None => errors.push(format!(
+                    "{what}: secret module 'file' requires settings.path (the file to read)"
+                )),
+                Some(v) if v.trim().is_empty() => errors.push(format!(
+                    "{what}: secret module 'file' requires a NON-EMPTY settings.path (the file to \
+                     read)"
+                )),
+                Some(_) => {}
+            }
         }
         // A non-built-in module name (a `kind: secret` plugin reference) is NOT rejected here: its
         // existence is proven against the registry in `validate_secret_refs` at plugin pre-flight.
