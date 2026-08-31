@@ -563,7 +563,7 @@ pub const CONFIG_POOL_HETEROGENEOUS: Diagnostic = Diagnostic {
     title: "Heterogeneous pool (cross-protocol failover may not preserve all features)",
     severity: Severity::Actionable,
     summary: "A pool's members span more than one upstream protocol, so cross-protocol failover \
-              within the pool translates requests and responses via busbar's internal representation \
+              within the pool translates requests and replies via busbar's internal representation \
               (IR) and may not preserve every provider-specific feature. Advisory: the pool is valid \
               and serves, but mixed protocols carry a fidelity caveat.",
     action: "None required if intentional. If a feature is being lost across failover, split the \
@@ -621,7 +621,7 @@ pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
     summary: "A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is \
               `passthrough`, under which the upstream key is the caller's own token (or empty), so \
               the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
-              Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static \
+              passthrough provider that itself signs per-request via SigV4 and needs no static \
               key, hence a warning rather than a hard reject.",
     action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
              chain). Otherwise clear the referenced provider secret so the config reflects that no \
@@ -1053,7 +1053,7 @@ pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
               serious crypto-library inconsistency. busbar returns an empty signature, which the \
               upstream rejects.",
     action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress (e.g. Bedrock) fails to authenticate until it is resolved.",
+             egress fails to authenticate until it is resolved.",
     since: "1.6.0",
     retired: false,
 };
@@ -1256,8 +1256,8 @@ pub const CROSSPROTO_TRANSLATION_CAP_EXCEEDED: Diagnostic = Diagnostic {
               cannot be translated into the client's protocol and the client receives a 500 with \
               no completion. This is busbar's OWN cap, not an upstream fault, so tokens are not \
               charged and the breaker success stands.",
-    action: "None — self-heals per request. If it recurs for legitimate large responses, raise \
-             the translated-body cap (`limits`) so those responses translate.",
+    action: "None — self-heals per request. If it recurs for legitimately large replies, raise \
+             the translated-body cap (`limits`) so those replies translate.",
     since: "1.6.0",
     retired: false,
 };
@@ -1753,22 +1753,22 @@ pub const PLUGIN_LOADED_UNVERIFIED: Diagnostic = Diagnostic {
 
 // ── 7000 — Plane protocols ──────────────────────────────────────────────────────────────────────
 
-/// The RAM (ephemeral) store was resolved while a STATEFUL plane (MCP tools / A2A agents) is
-/// configured, so in-flight MCP/A2A task state is dropped on restart.
+/// The RAM (ephemeral) store was resolved while a STATEFUL plane (one carrying per-task state) is
+/// configured, so in-flight plane task state is dropped on restart.
 pub const STATEFUL_PLANE_EPHEMERAL_STORE: Diagnostic = Diagnostic {
     code: 7030,
     class: Class::Plane,
     slug: "stateful-plane-ephemeral-store",
-    title: "Stateful plane on the in-memory store — MCP/A2A task state is lost on restart",
+    title: "Stateful plane on the in-memory store — plane task state is lost on restart",
     severity: Severity::Actionable,
     summary: "busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — \
-              an MCP tool (or tool-pool) and/or an A2A agent (or agent-pool). MCP and A2A carry \
+              a plane subject (a tool, an agent, or a pool of them). Such planes carry \
               per-task state that lives only in RAM with this store, so it is DROPPED on restart: a \
               task that was mid-flight when the process restarts will break on its next request. \
-              LLM-only deployments are stateless and are deliberately NOT warned — a restart costs \
+              Stateless planes are deliberately NOT warned — a restart costs \
               them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a \
               durable store is opt-in and RAM is the convenience default.",
-    action: "Configure a durable store (sqlite/postgres) so MCP/A2A task state survives a restart. \
+    action: "Configure a durable store (sqlite/postgres) so plane task state survives a restart. \
              No action is needed if losing in-flight task state on restart is acceptable for this \
              deployment.",
     since: "1.6.0",
@@ -2203,9 +2203,9 @@ pub const EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE: Diagnostic = Diagnostic {
     severity: Severity::BenignRecurring,
     summary: "An event-stream `:event-type` header exceeded the AWS type-7 string cap, so busbar \
               dropped the frame rather than emit a malformed one. This is unreachable for any real \
-              Bedrock event name (the only caller-supplied value on the frame); it guards the data \
+              upstream event name (the only caller-supplied value on the frame); it guards the data \
               path and fires per-frame, so it is emitted at debug.",
-    action: "None — self-heals per frame; a real Bedrock event name never trips it. Sustained \
+    action: "None — self-heals per frame; a real upstream event name never trips it. Sustained \
              occurrence would mean a caller is supplying an over-long event-type, worth checking the \
              ingress path.",
     since: "1.6.0",
@@ -2238,7 +2238,7 @@ pub const EVENTSTREAM_FRAME_OVERSIZE: Diagnostic = Diagnostic {
     severity: Severity::BenignRecurring,
     summary: "An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it \
               rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK \
-              than no frame). Unreachable for any real Bedrock ConverseStream delta; it only guards \
+              than no frame). Unreachable for any real upstream event-stream delta; it only guards \
               a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.",
     action: "None — self-heals per frame; dropping is graceful (nothing is emitted for that event). \
              Sustained occurrence would indicate an upstream emitting abnormally large single \
@@ -2251,9 +2251,9 @@ pub const PLANE_TASK_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     code: 2041,
     class: Class::Audit,
     slug: "plane-task-chain-verify-failed",
-    title: "A2A per-task provenance chain failed hash-chain verification on restore (tamper)",
+    title: "Per-task provenance chain failed hash-chain verification on restore (tamper)",
     severity: Severity::Actionable,
-    summary: "A persisted A2A task's provenance events were read at boot but do NOT verify against \
+    summary: "A persisted plane task's provenance events were read at boot but do NOT verify against \
               their own hash chain, which is tamper evidence — the persisted events were altered, or \
               the store is corrupt. The chain is resumed from the broken tail rather than refused, \
               so that corrupting one event cannot silently stop all further provenance for the task.",
@@ -2268,9 +2268,9 @@ pub const PLANE_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     code: 2042,
     class: Class::Audit,
     slug: "plane-calllog-chain-verify-failed",
-    title: "MCP per-call records failed hash-chain verification on restore (tamper evidence)",
+    title: "Plane per-call records failed hash-chain verification on restore (tamper evidence)",
     severity: Severity::Actionable,
-    summary: "A principal's persisted MCP per-call records were read at boot but do NOT verify \
+    summary: "A principal's persisted plane per-call records were read at boot but do NOT verify \
               against their own hash chain, which is tamper evidence. They are still restored and \
               the chain resumes from the broken tail, because refusing here would convert a \
               detection control into a deletion primitive — anyone able to write to the store could \
@@ -2487,7 +2487,7 @@ pub const IR_DROP_PROMPT_CACHE: Diagnostic = Diagnostic {
               logged at debug.",
     action:
         "None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache \
-             markers (e.g. Claude on Bedrock).",
+             markers.",
     since: "1.6.0",
     retired: false,
 };
@@ -2516,11 +2516,11 @@ pub const IR_DROP_HOSTED_TOOLS: Diagnostic = Diagnostic {
     slug: "ir-drop-hosted-tools",
     title: "Cross-protocol transcode dropped hosted (built-in) tools",
     severity: Severity::BenignRecurring,
-    summary: "One or more Responses hosted (built-in) tools were dropped on the cross-protocol seam \
-              because they have no function-tool equivalent for a non-Responses backend; forwarding \
+    summary: "One or more provider-hosted (built-in) tools were dropped on the cross-protocol seam \
+              because they have no function-tool equivalent on a backend that does not host them; forwarding \
               them would emit a malformed empty-name function tool the upstream rejects. Fires per \
               request, logged at debug.",
-    action: "None — self-heals. Route hosted-tool requests to a Responses lane to use them.",
+    action: "None — self-heals. Route hosted-tool requests to a lane whose backend hosts them.",
     since: "1.6.0",
     retired: false,
 };
@@ -2529,13 +2529,13 @@ pub const IR_DROP_MESSAGE_NAME: Diagnostic = Diagnostic {
     code: 7083,
     class: Class::Plane,
     slug: "ir-drop-message-name",
-    title: "Cross-protocol transcode dropped OpenAI messages[].name",
+    title: "Cross-protocol transcode dropped per-message participant names (messages[].name)",
     severity: Severity::BenignRecurring,
-    summary: "OpenAI per-message participant names (`messages[].name`) were dropped on the \
+    summary: "Per-message participant names (`messages[].name`) were dropped on the \
               cross-protocol seam because no target protocol models a per-message speaker name, so a \
               multi-speaker transcript reaches the backend with its speaker labels removed. Fires \
               per request, logged at debug.",
-    action: "None — self-heals. Put the speaker in the message text, or route to an openai lane.",
+    action: "None — self-heals. Put the speaker in the message text, or route to a same-protocol lane that models them.",
     since: "1.6.0",
     retired: false,
 };
@@ -2544,14 +2544,14 @@ pub const IR_DROP_CACHED_CONTENT: Diagnostic = Diagnostic {
     code: 7084,
     class: Class::Plane,
     slug: "ir-drop-cached-content",
-    title: "Cross-protocol transcode dropped Gemini cachedContent",
+    title: "Cross-protocol transcode dropped a provider cachedContent reference",
     severity: Severity::BenignRecurring,
     summary:
-        "A Gemini `cachedContent` reference was dropped on the cross-protocol seam because the \
-              referenced context cache lives server-side at Google and cannot be projected into \
+        "A provider `cachedContent` reference was dropped on the cross-protocol seam because the \
+              referenced context cache lives server-side at the origin provider and cannot be projected into \
               `contents`: the backend answers on the visible history only and the caller is billed \
               full uncached input. Fires per request, logged at debug.",
-    action: "None — self-heals. Route cachedContent requests to a Gemini lane to use the cache.",
+    action: "None — self-heals. Route cachedContent requests to a same-protocol lane to use the cache.",
     since: "1.6.0",
     retired: false,
 };
@@ -2614,7 +2614,7 @@ pub const PROTO_DROP_PROVIDER_METADATA: Diagnostic = Diagnostic {
     title: "Cross-protocol transcode dropped response-side provider metadata",
     severity: Severity::BenignRecurring,
     summary:
-        "Response-side provider metadata (a Bedrock guardrail `trace`, a Gemini `safetyRatings`) \
+        "Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRatings`) \
               was dropped on the cross-protocol seam because it is a vendor-scoped artifact the \
               caller's protocol has no shape to receive. Fires per response on the affected seam, \
               logged at debug.",
@@ -2628,9 +2628,9 @@ pub const PLANE_TASK_ROW_UNREADABLE: Diagnostic = Diagnostic {
     code: 7089,
     class: Class::Plane,
     slug: "plane-task-row-unreadable",
-    title: "Persisted A2A task row could not be read back (not resumable)",
+    title: "Persisted plane task row could not be read back (not resumable)",
     severity: Severity::Actionable,
-    summary: "A persisted A2A task row could not be decoded at boot, so that task is NOT resumable \
+    summary: "A persisted plane task row could not be decoded at boot, so that task is NOT resumable \
               and is reported rather than skipped silently. Usually an engine-version mismatch or a \
               corrupt row.",
     action: "Note the task id. If many rows are unreadable, suspect a store format mismatch after an \
@@ -2645,7 +2645,8 @@ pub const PLANE_SSRF_CALLBACK_AT_STORE: Diagnostic = Diagnostic {
     slug: "plane-ssrf-callback-at-store",
     title: "SSRF-refused push callback reached the task store (dropped)",
     severity: Severity::Actionable,
-    summary: "A push callback URL that the SSRF guard refuses reached the A2A task store and was \
+    summary:
+        "A push callback URL that the SSRF guard refuses reached the plane task store and was \
               dropped there. The store is the last line of defence — a callback should have been \
               validated by the caller before it got this far, so reaching the store means a caller \
               path skipped validation.",
@@ -2678,10 +2679,10 @@ pub const PLANE_CALLLOG_EMPTY_CHAIN: Diagnostic = Diagnostic {
     code: 7092,
     class: Class::Plane,
     slug: "plane-calllog-empty-chain",
-    title: "Durable MCP call log enumerates a principal with NO records",
+    title: "Durable plane call log enumerates a principal with NO records",
     severity: Severity::Actionable,
     summary:
-        "The durable MCP call log named a principal and then produced no records for it, so its \
+        "The durable plane call log named a principal and then produced no records for it, so its \
               chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The \
               verifier alone cannot distinguish this from a caller's evidence being deleted \
               wholesale.",
@@ -2696,9 +2697,9 @@ pub const PLANE_CALLLOG_WRITE_FAILED: Diagnostic = Diagnostic {
     code: 7093,
     class: Class::Plane,
     slug: "plane-calllog-write-failed",
-    title: "Durable MCP per-call record could not be written (evidence lost)",
+    title: "Durable plane per-call record could not be written (evidence lost)",
     severity: Severity::Actionable,
-    summary: "The durable MCP per-call record could NOT be written, so this call is being served but \
+    summary: "The durable plane per-call record could NOT be written, so this call is being served but \
               its evidence is being lost. The chain position is unchanged, so the chain stays \
               contiguous — what is missing is this one record, not the ones after it. This can recur \
               per request during a store outage, so it warns on the transition into the failing \
@@ -2713,9 +2714,9 @@ pub const PLANE_DEMOTION_WRITE_FAILED: Diagnostic = Diagnostic {
     code: 7094,
     class: Class::Plane,
     slug: "plane-demotion-write-failed",
-    title: "Durable MCP demotion record could not be written",
+    title: "Durable plane demotion record could not be written",
     severity: Severity::Actionable,
-    summary: "The durable MCP demotion record could NOT be written, so this upstream is demoted only \
+    summary: "The durable plane demotion record could NOT be written, so this upstream is demoted only \
               in the current process and a restart will re-open it until the next sweep looks again. \
               Usually a durable store-write outage.",
     action: "Restore the durable governance store's write path so demotions persist across restarts.",
@@ -2727,9 +2728,9 @@ pub const PLANE_DEMOTION_CLEAR_FAILED: Diagnostic = Diagnostic {
     code: 7095,
     class: Class::Plane,
     slug: "plane-demotion-clear-failed",
-    title: "Durable MCP demotion record could not be cleared",
+    title: "Durable plane demotion record could not be cleared",
     severity: Severity::Actionable,
-    summary: "The durable MCP demotion record for an upstream could NOT be cleared even though it is \
+    summary: "The durable plane demotion record for an upstream could NOT be cleared even though it is \
               serving again in the current process, so a restart would re-establish a quarantine the \
               operator has already worked. Usually a durable store-write outage.",
     action: "Restore the durable governance store's write path so a cleared demotion does not \
@@ -2742,9 +2743,9 @@ pub const PLANE_DEMOTIONS_UNREAD: Diagnostic = Diagnostic {
     code: 7096,
     class: Class::Plane,
     slug: "plane-demotions-unread",
-    title: "Durable MCP demotion records could not be read at boot",
+    title: "Durable plane demotion records could not be read at boot",
     severity: Severity::Actionable,
-    summary: "The durable MCP demotion records could NOT be read at boot, so any upstream this \
+    summary: "The durable plane demotion records could NOT be read at boot, so any upstream this \
               deployment had demoted is re-opened until the first sweep looks again. Usually a \
               durable store-read outage.",
     action:
@@ -2760,8 +2761,8 @@ pub const TRUST_VERIFY_REFUSED_ON_DRIFT: Diagnostic = Diagnostic {
     slug: "trust-verify-refused-on-drift",
     title: "Verify-on-call refused a call because the upstream's advertised surface drifted",
     severity: Severity::BenignRecurring,
-    summary: "On the request path, verify-on-call re-fetched the upstream's advertised surface (an \
-              MCP tool's name+args+description, or an A2A agent card) within `verify_ttl` and found \
+    summary: "On the request path, verify-on-call re-fetched the upstream's advertised surface (a \
+              tool's name+args+description, or an agent card) within `verify_ttl` and found \
               it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE \
               dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so \
               persistent drift does not spam.",
@@ -2793,7 +2794,8 @@ pub const PLANE_TASK_ABANDON_UNRECORDED: Diagnostic = Diagnostic {
     code: 7099,
     class: Class::Plane,
     slug: "plane-task-abandon-unrecorded",
-    title: "Abandoned A2A task could not be transitioned to canceled (durable store write failed)",
+    title:
+        "Abandoned plane task could not be transitioned to canceled (durable store write failed)",
     severity: Severity::Actionable,
     summary: "The submit-time retention sweep found an ACTIVE task idle past the abandonment \
               ceiling (24h since its last update) and tried to settle it as `canceled` through the \
@@ -2944,12 +2946,12 @@ pub const PLANE_BREAKER_TRIPPED: Diagnostic = Diagnostic {
     slug: "plane-breaker-tripped",
     title: "Plane breaker tripped (upstream target failing; dispatches fast-fail)",
     severity: Severity::Actionable,
-    summary: "A non-LLM plane target's circuit breaker transitioned Closed→Open because the upstream \
+    summary: "A plane target's circuit breaker transitioned Closed→Open because the upstream \
               target is failing, so further dispatches fast-fail until the half-open probe recovers \
               it. Names the specific target (every plane target shares one degenerate lane, so \
               without this the operator would not learn WHICH server is down). Emitted once per \
               logical trip, not per failure.",
-    action: "Investigate the named plane target's health (the tool/agent/MCP server it fronts). \
+    action: "Investigate the named plane target's health (the tool, agent, or server it fronts). \
              Traffic to it fast-fails until the breaker's half-open probe finds it healthy again.",
     since: "1.6.0",
     retired: false,
@@ -2961,7 +2963,7 @@ pub const PLANE_BREAKER_HARD_DOWN: Diagnostic = Diagnostic {
     slug: "plane-breaker-hard-down",
     title: "Plane breaker tripped hard-down (definitive auth/billing failure; sticky cooldown)",
     severity: Severity::Actionable,
-    summary: "A non-LLM plane target answered a DEFINITIVE failure (auth/billing), so busbar trips \
+    summary: "A plane target answered a DEFINITIVE failure (auth/billing), so busbar trips \
               its breaker hard-down: dispatches fast-fail for a sticky cooldown rather than keep \
               retrying a target that will keep rejecting. Emitted per hard-down disposition for the \
               named target.",

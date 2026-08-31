@@ -119,24 +119,24 @@ The persisted durable audit log was read at boot but does NOT verify against its
 **What to do:** Treat the durable audit store as compromised until explained: capture it for forensic review before it is overwritten. A verification failure means someone or something rewrote persisted audit history; restore the store from a trusted backup once the cause is understood. The running node audits only to its ephemeral ring until a verifiable durable log is restored.
 
 <a id="plane-task-chain-verify-failed"></a>
-### BUSBAR-2041 — A2A per-task provenance chain failed hash-chain verification on restore (tamper)
+### BUSBAR-2041 — Per-task provenance chain failed hash-chain verification on restore (tamper)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-task-chain-verify-failed`
 
-A persisted A2A task's provenance events were read at boot but do NOT verify against their own hash chain, which is tamper evidence — the persisted events were altered, or the store is corrupt. The chain is resumed from the broken tail rather than refused, so that corrupting one event cannot silently stop all further provenance for the task.
+A persisted plane task's provenance events were read at boot but do NOT verify against their own hash chain, which is tamper evidence — the persisted events were altered, or the store is corrupt. The chain is resumed from the broken tail rather than refused, so that corrupting one event cannot silently stop all further provenance for the task.
 
 **What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
 
 <a id="plane-calllog-chain-verify-failed"></a>
-### BUSBAR-2042 — MCP per-call records failed hash-chain verification on restore (tamper evidence)
+### BUSBAR-2042 — Plane per-call records failed hash-chain verification on restore (tamper evidence)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-chain-verify-failed`
 
-A principal's persisted MCP per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
+A principal's persisted plane per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
 
 **What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
 
@@ -270,7 +270,7 @@ A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. I
 - **Since:** 1.6.0
 - **Slug:** `config-pool-heterogeneous`
 
-A pool's members span more than one upstream protocol, so cross-protocol failover within the pool translates requests and responses via busbar's internal representation (IR) and may not preserve every provider-specific feature. Advisory: the pool is valid and serves, but mixed protocols carry a fidelity caveat.
+A pool's members span more than one upstream protocol, so cross-protocol failover within the pool translates requests and replies via busbar's internal representation (IR) and may not preserve every provider-specific feature. Advisory: the pool is valid and serves, but mixed protocols carry a fidelity caveat.
 
 **What to do:** None required if intentional. If a feature is being lost across failover, split the pool so each pool is single-protocol, keeping cross-protocol members in a fallback tier rather than the same failover pool.
 
@@ -303,7 +303,7 @@ The auth chain names the built-in `keys` verifier while `auth.admin_auth` is exp
 - **Since:** 1.6.0
 - **Slug:** `config-passthrough-unused-apikey`
 
-A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key, hence a warning rather than a hard reject.
+A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate passthrough provider that itself signs per-request via SigV4 and needs no static key, hence a warning rather than a hard reject.
 
 **What to do:** If you intended static-key gating, use `upstream_credentials: own` (plus an auth chain). Otherwise clear the referenced provider secret so the config reflects that no static key is used on that passthrough provider.
 
@@ -637,7 +637,7 @@ The oauth_as authorization-server sweep of expired records failed for a tick —
 
 Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.
 
-**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress (e.g. Bedrock) fails to authenticate until it is resolved.
+**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress fails to authenticate until it is resolved.
 
 <a id="oauth-as-ephemeral-signing-key"></a>
 ### BUSBAR-4025 — oauth_as generated an ephemeral ES256 signing key (tokens die on restart)
@@ -815,7 +815,7 @@ On a cross-protocol non-streaming route, the upstream body failed mid-transfer, 
 
 A cross-protocol non-streaming success body exceeded busbar's translation cap, so it cannot be translated into the client's protocol and the client receives a 500 with no completion. This is busbar's OWN cap, not an upstream fault, so tokens are not charged and the breaker success stands.
 
-**What to do:** None — self-heals per request. If it recurs for legitimate large responses, raise the translated-body cap (`limits`) so those responses translate.
+**What to do:** None — self-heals per request. If it recurs for legitimately large replies, raise the translated-body cap (`limits`) so those replies translate.
 
 <a id="crossproto-binary-codec-failed"></a>
 ### BUSBAR-5012 — Cross-protocol binary response failed the egress codec (read_response)
@@ -1110,9 +1110,9 @@ During a /metrics scrape, reading a group budget bucket's ledger from the store 
 - **Since:** 1.6.0
 - **Slug:** `plane-breaker-tripped`
 
-A non-LLM plane target's circuit breaker transitioned Closed→Open because the upstream target is failing, so further dispatches fast-fail until the half-open probe recovers it. Names the specific target (every plane target shares one degenerate lane, so without this the operator would not learn WHICH server is down). Emitted once per logical trip, not per failure.
+A plane target's circuit breaker transitioned Closed→Open because the upstream target is failing, so further dispatches fast-fail until the half-open probe recovers it. Names the specific target (every plane target shares one degenerate lane, so without this the operator would not learn WHICH server is down). Emitted once per logical trip, not per failure.
 
-**What to do:** Investigate the named plane target's health (the tool/agent/MCP server it fronts). Traffic to it fast-fails until the breaker's half-open probe finds it healthy again.
+**What to do:** Investigate the named plane target's health (the tool, agent, or server it fronts). Traffic to it fast-fails until the breaker's half-open probe finds it healthy again.
 
 <a id="plane-breaker-hard-down"></a>
 ### BUSBAR-5039 — Plane breaker tripped hard-down (definitive auth/billing failure; sticky cooldown)
@@ -1121,7 +1121,7 @@ A non-LLM plane target's circuit breaker transitioned Closed→Open because the 
 - **Since:** 1.6.0
 - **Slug:** `plane-breaker-hard-down`
 
-A non-LLM plane target answered a DEFINITIVE failure (auth/billing), so busbar trips its breaker hard-down: dispatches fast-fail for a sticky cooldown rather than keep retrying a target that will keep rejecting. Emitted per hard-down disposition for the named target.
+A plane target answered a DEFINITIVE failure (auth/billing), so busbar trips its breaker hard-down: dispatches fast-fail for a sticky cooldown rather than keep retrying a target that will keep rejecting. Emitted per hard-down disposition for the named target.
 
 **What to do:** Fix the named target's credentials or billing/quota with its provider — a hard-down is a definitive rejection, not a transient blip. It recovers via the half-open probe once the underlying auth/billing fault is resolved.
 
@@ -1306,15 +1306,15 @@ A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the 
 ## 7xxx — Plane protocols
 
 <a id="stateful-plane-ephemeral-store"></a>
-### BUSBAR-7030 — Stateful plane on the in-memory store — MCP/A2A task state is lost on restart
+### BUSBAR-7030 — Stateful plane on the in-memory store — plane task state is lost on restart
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `stateful-plane-ephemeral-store`
 
-busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — an MCP tool (or tool-pool) and/or an A2A agent (or agent-pool). MCP and A2A carry per-task state that lives only in RAM with this store, so it is DROPPED on restart: a task that was mid-flight when the process restarts will break on its next request. LLM-only deployments are stateless and are deliberately NOT warned — a restart costs them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a durable store is opt-in and RAM is the convenience default.
+busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — a plane subject (a tool, an agent, or a pool of them). Such planes carry per-task state that lives only in RAM with this store, so it is DROPPED on restart: a task that was mid-flight when the process restarts will break on its next request. Stateless planes are deliberately NOT warned — a restart costs them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a durable store is opt-in and RAM is the convenience default.
 
-**What to do:** Configure a durable store (sqlite/postgres) so MCP/A2A task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
+**What to do:** Configure a durable store (sqlite/postgres) so plane task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
 
 <a id="webhook-exporter-disabled"></a>
 ### BUSBAR-7070 — Webhook log exporter disabled (invalid configuration)
@@ -1435,7 +1435,7 @@ A request's reasoning/thinking parameter was dropped on the cross-protocol seam 
 
 Prompt-cache breakpoints were cleared on the cross-protocol seam because the target lane's dialect gates its cache marker per model and the lane does not declare the capability; the request proceeds uncached. Fires per request on the affected seam, logged at debug.
 
-**What to do:** None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache markers (e.g. Claude on Bedrock).
+**What to do:** None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache markers.
 
 <a id="ir-drop-cache-control-over-cap"></a>
 ### BUSBAR-7081 — Cross-protocol transcode dropped cache_control breakpoints past the dialect cap
@@ -1455,31 +1455,31 @@ The request carried more cache_control breakpoints than the egress dialect allow
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-hosted-tools`
 
-One or more Responses hosted (built-in) tools were dropped on the cross-protocol seam because they have no function-tool equivalent for a non-Responses backend; forwarding them would emit a malformed empty-name function tool the upstream rejects. Fires per request, logged at debug.
+One or more provider-hosted (built-in) tools were dropped on the cross-protocol seam because they have no function-tool equivalent on a backend that does not host them; forwarding them would emit a malformed empty-name function tool the upstream rejects. Fires per request, logged at debug.
 
-**What to do:** None — self-heals. Route hosted-tool requests to a Responses lane to use them.
+**What to do:** None — self-heals. Route hosted-tool requests to a lane whose backend hosts them.
 
 <a id="ir-drop-message-name"></a>
-### BUSBAR-7083 — Cross-protocol transcode dropped OpenAI messages[].name
+### BUSBAR-7083 — Cross-protocol transcode dropped per-message participant names (messages[].name)
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-message-name`
 
-OpenAI per-message participant names (`messages[].name`) were dropped on the cross-protocol seam because no target protocol models a per-message speaker name, so a multi-speaker transcript reaches the backend with its speaker labels removed. Fires per request, logged at debug.
+Per-message participant names (`messages[].name`) were dropped on the cross-protocol seam because no target protocol models a per-message speaker name, so a multi-speaker transcript reaches the backend with its speaker labels removed. Fires per request, logged at debug.
 
-**What to do:** None — self-heals. Put the speaker in the message text, or route to an openai lane.
+**What to do:** None — self-heals. Put the speaker in the message text, or route to a same-protocol lane that models them.
 
 <a id="ir-drop-cached-content"></a>
-### BUSBAR-7084 — Cross-protocol transcode dropped Gemini cachedContent
+### BUSBAR-7084 — Cross-protocol transcode dropped a provider cachedContent reference
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-cached-content`
 
-A Gemini `cachedContent` reference was dropped on the cross-protocol seam because the referenced context cache lives server-side at Google and cannot be projected into `contents`: the backend answers on the visible history only and the caller is billed full uncached input. Fires per request, logged at debug.
+A provider `cachedContent` reference was dropped on the cross-protocol seam because the referenced context cache lives server-side at the origin provider and cannot be projected into `contents`: the backend answers on the visible history only and the caller is billed full uncached input. Fires per request, logged at debug.
 
-**What to do:** None — self-heals. Route cachedContent requests to a Gemini lane to use the cache.
+**What to do:** None — self-heals. Route cachedContent requests to a same-protocol lane to use the cache.
 
 <a id="ir-drop-unmodeled-keys"></a>
 ### BUSBAR-7085 — Cross-protocol transcode dropped unmodeled request keys
@@ -1521,18 +1521,18 @@ An egress authorization credential contained bytes that are not valid in an HTTP
 - **Since:** 1.6.0
 - **Slug:** `proto-drop-provider-metadata`
 
-Response-side provider metadata (a Bedrock guardrail `trace`, a Gemini `safetyRatings`) was dropped on the cross-protocol seam because it is a vendor-scoped artifact the caller's protocol has no shape to receive. Fires per response on the affected seam, logged at debug.
+Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRatings`) was dropped on the cross-protocol seam because it is a vendor-scoped artifact the caller's protocol has no shape to receive. Fires per response on the affected seam, logged at debug.
 
 **What to do:** None — self-heals. If this metadata is compliance evidence, route the request to a same-protocol lane where the upstream body reaches the client verbatim.
 
 <a id="plane-task-row-unreadable"></a>
-### BUSBAR-7089 — Persisted A2A task row could not be read back (not resumable)
+### BUSBAR-7089 — Persisted plane task row could not be read back (not resumable)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-task-row-unreadable`
 
-A persisted A2A task row could not be decoded at boot, so that task is NOT resumable and is reported rather than skipped silently. Usually an engine-version mismatch or a corrupt row.
+A persisted plane task row could not be decoded at boot, so that task is NOT resumable and is reported rather than skipped silently. Usually an engine-version mismatch or a corrupt row.
 
 **What to do:** Note the task id. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the store for review.
 
@@ -1543,7 +1543,7 @@ A persisted A2A task row could not be decoded at boot, so that task is NOT resum
 - **Since:** 1.6.0
 - **Slug:** `plane-ssrf-callback-at-store`
 
-A push callback URL that the SSRF guard refuses reached the A2A task store and was dropped there. The store is the last line of defence — a callback should have been validated by the caller before it got this far, so reaching the store means a caller path skipped validation.
+A push callback URL that the SSRF guard refuses reached the plane task store and was dropped there. The store is the last line of defence — a callback should have been validated by the caller before it got this far, so reaching the store means a caller path skipped validation.
 
 **What to do:** Find the caller that stored this callback without validating it (a code-level defect in a submission path) and add the SSRF check before the store.
 
@@ -1559,57 +1559,57 @@ The shared spent-approval ledger could not be reached, so an approval redemption
 **What to do:** Restore connectivity to the shared spent-approval ledger's durable store. Until then, approval redemptions fail closed by design.
 
 <a id="plane-calllog-empty-chain"></a>
-### BUSBAR-7092 — Durable MCP call log enumerates a principal with NO records
+### BUSBAR-7092 — Durable plane call log enumerates a principal with NO records
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-empty-chain`
 
-The durable MCP call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
+The durable plane call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
 
 **What to do:** Confirm whether this principal was expected to have call history. If it was, treat the store as possibly tampered and capture it for review before it is overwritten.
 
 <a id="plane-calllog-write-failed"></a>
-### BUSBAR-7093 — Durable MCP per-call record could not be written (evidence lost)
+### BUSBAR-7093 — Durable plane per-call record could not be written (evidence lost)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-write-failed`
 
-The durable MCP per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
+The durable plane per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
 
 **What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
 
 <a id="plane-demotion-write-failed"></a>
-### BUSBAR-7094 — Durable MCP demotion record could not be written
+### BUSBAR-7094 — Durable plane demotion record could not be written
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-demotion-write-failed`
 
-The durable MCP demotion record could NOT be written, so this upstream is demoted only in the current process and a restart will re-open it until the next sweep looks again. Usually a durable store-write outage.
+The durable plane demotion record could NOT be written, so this upstream is demoted only in the current process and a restart will re-open it until the next sweep looks again. Usually a durable store-write outage.
 
 **What to do:** Restore the durable governance store's write path so demotions persist across restarts.
 
 <a id="plane-demotion-clear-failed"></a>
-### BUSBAR-7095 — Durable MCP demotion record could not be cleared
+### BUSBAR-7095 — Durable plane demotion record could not be cleared
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-demotion-clear-failed`
 
-The durable MCP demotion record for an upstream could NOT be cleared even though it is serving again in the current process, so a restart would re-establish a quarantine the operator has already worked. Usually a durable store-write outage.
+The durable plane demotion record for an upstream could NOT be cleared even though it is serving again in the current process, so a restart would re-establish a quarantine the operator has already worked. Usually a durable store-write outage.
 
 **What to do:** Restore the durable governance store's write path so a cleared demotion does not reappear after a restart.
 
 <a id="plane-demotions-unread"></a>
-### BUSBAR-7096 — Durable MCP demotion records could not be read at boot
+### BUSBAR-7096 — Durable plane demotion records could not be read at boot
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-demotions-unread`
 
-The durable MCP demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.
+The durable plane demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.
 
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
@@ -1620,7 +1620,7 @@ The durable MCP demotion records could NOT be read at boot, so any upstream this
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-refused-on-drift`
 
-On the request path, verify-on-call re-fetched the upstream's advertised surface (an MCP tool's name+args+description, or an A2A agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.
+On the request path, verify-on-call re-fetched the upstream's advertised surface (a tool's name+args+description, or an agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.
 
 **What to do:** Review the change on the trust surface and re-approve the new fingerprint if it is legitimate, or investigate the upstream if it is not.
 
@@ -1636,7 +1636,7 @@ On the request path, verify-on-call needed to re-verify an upstream whose record
 **What to do:** Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.
 
 <a id="plane-task-abandon-unrecorded"></a>
-### BUSBAR-7099 — Abandoned A2A task could not be transitioned to canceled (durable store write failed)
+### BUSBAR-7099 — Abandoned plane task could not be transitioned to canceled (durable store write failed)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
@@ -1899,9 +1899,9 @@ The telemetry bank's pre-registered slot table reached its cap, so further label
 - **Since:** 1.6.0
 - **Slug:** `eventstream-eventtype-header-oversize`
 
-An event-stream `:event-type` header exceeded the AWS type-7 string cap, so busbar dropped the frame rather than emit a malformed one. This is unreachable for any real Bedrock event name (the only caller-supplied value on the frame); it guards the data path and fires per-frame, so it is emitted at debug.
+An event-stream `:event-type` header exceeded the AWS type-7 string cap, so busbar dropped the frame rather than emit a malformed one. This is unreachable for any real upstream event name (the only caller-supplied value on the frame); it guards the data path and fires per-frame, so it is emitted at debug.
 
-**What to do:** None — self-heals per frame; a real Bedrock event name never trips it. Sustained occurrence would mean a caller is supplying an over-long event-type, worth checking the ingress path.
+**What to do:** None — self-heals per frame; a real upstream event name never trips it. Sustained occurrence would mean a caller is supplying an over-long event-type, worth checking the ingress path.
 
 <a id="eventstream-exceptiontype-header-oversize"></a>
 ### BUSBAR-9005 — Event-stream :exception-type header exceeds the string cap (frame dropped)
@@ -1921,7 +1921,7 @@ An event-stream `:exception-type` header exceeded the AWS type-7 string cap, so 
 - **Since:** 1.6.0
 - **Slug:** `eventstream-frame-oversize`
 
-An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK than no frame). Unreachable for any real Bedrock ConverseStream delta; it only guards a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.
+An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK than no frame). Unreachable for any real upstream event-stream delta; it only guards a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.
 
 **What to do:** None — self-heals per frame; dropping is graceful (nothing is emitted for that event). Sustained occurrence would indicate an upstream emitting abnormally large single events, worth investigating that lane.
 

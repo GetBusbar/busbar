@@ -43,22 +43,10 @@ const MIGRATED_FILES: &[&str] = &[
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",
-    // The A2A plane's sources moved to the `busbar-a2a` crate (the plane extraction). Unlike the MCP
-    // entries below (dropped), these are REPOINTED to the sibling crate so core keeps enforcing their
-    // uncoded-diagnostic floor — the same files, at their new home, read relative to this manifest.
-    "../busbar-a2a/src/a2a/mod.rs",
-    "../busbar-a2a/src/a2a/serve.rs",
-    "../busbar-a2a/src/a2a/route.rs",
-    "../busbar-a2a/src/a2a/transport.rs",
-    "../busbar-a2a/src/a2a/pushback.rs",
-    "../busbar-a2a/src/a2a/receive.rs",
-    "../busbar-a2a/src/a2a/local.rs",
-    "../busbar-a2a/src/a2a/verbs.rs",
-    "../busbar-a2a/src/a2a/pushdeliver.rs",
-    "../busbar-a2a/src/a2a/originate.rs",
-    "../busbar-a2a/src/a2a/plane.rs",
-    // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); their uncoded-diagnostic
-    // floor is enforced by that crate's own suite now, so core no longer scans them here.
+    // The A2A and MCP plane sources moved to the sibling `busbar-a2a` / `busbar-mcp` crates (the plane
+    // extraction). Core does NOT scan a plane crate's tree — a neutral crate must name no plane path
+    // (plane-purity §2.1); each plane crate enforces its own uncoded-diagnostic floor. So neither the
+    // A2A nor the MCP sources are listed here.
     "src/export/webhook.rs",
     "src/export/file.rs",
     "src/ir/mod.rs",
