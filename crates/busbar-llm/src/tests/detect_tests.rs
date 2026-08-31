@@ -1,10 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/proto/detect.rs`.
+//! Detection tests for the LLM plugin — RELOCATED from `busbar-core`'s `proto/detect.rs` and
+//! `proto/tests/tests.rs` because they NAME DIALECTS, which a neutral crate's tests must not.
+//!
+//! They exercise the generic detection fold (`busbar_core::proto::detect_protocol` /
+//! `residual_dialect_for_path`) through THIS plugin's registered `ProtocolDecl::claims` /
+//! `residual_claims` predicates — the same registry a shipped binary folds. The assertions are
+//! BYTE-IDENTICAL to the ones the core `if`-ladder carried: this is the proof the ladder→predicate
+//! move changed no routing. (The registry the test sees is core's `test-support` built-in table,
+//! whose netted dialect rows carry these very predicates.)
 
-use super::*;
 use axum::http::{HeaderMap, HeaderValue};
+use busbar_core::handlers::request_handler;
+use busbar_core::operation::Operation;
+use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
 
 fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
     let mut h = HeaderMap::new();
@@ -15,12 +25,11 @@ fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
 }
 
 /// The resolver table, exercised through the REAL two-step pipeline:
-/// Router IDs the protocol, then that protocol's `RequestHandler::resolve_operation` decides the
+/// the fold IDs the protocol, then that protocol's `RequestHandler::resolve_operation` decides the
 /// operation. Includes collision defaults and the ordering (an Anthropic request to a shared path
 /// must not fall through to OpenAI).
 #[test]
 fn resolver_table() {
-    use crate::operation::Operation;
     // (path, headers, expected (protocol, operation)) — aliased to keep the type readable.
     type ResolverCase = (
         &'static str,
@@ -109,8 +118,8 @@ fn resolver_table() {
         ("/healthz", &[], None),
     ];
     for (path, headers, expect) in cases {
-        let got = protocol_id(path, &hm(headers)).and_then(|proto| {
-            crate::handlers::request_handler(proto)
+        let got = detect_protocol(path, &hm(headers)).and_then(|proto| {
+            request_handler(proto)
                 .and_then(|rh| rh.resolve_operation(path, b""))
                 .map(|op| (proto, op))
         });
@@ -134,9 +143,9 @@ fn resolver_table() {
              ("gemini", Operation::CHAT)),
         ];
     for (path, body, (want_proto, want_op)) in body_cases {
-        let proto = protocol_id(path, &hm(&[])).expect(path);
+        let proto = detect_protocol(path, &hm(&[])).expect(path);
         assert_eq!(proto, *want_proto, "protocol for {path:?}");
-        let op = crate::handlers::request_handler(proto)
+        let op = request_handler(proto)
             .and_then(|rh| rh.resolve_operation(path, body))
             .expect(path);
         assert_eq!(op, *want_op, "operation for {path:?} with body");
@@ -146,6 +155,73 @@ fn resolver_table() {
 #[test]
 fn mandatory_header_beats_path_ordering() {
     // an Anthropic request to a path that also looks bearer-ish must resolve Anthropic, not fall through.
-    let p = protocol_id("/v1/messages", &hm(&[("anthropic-version", "2023-06-01")])).unwrap();
+    let p = detect_protocol("/v1/messages", &hm(&[("anthropic-version", "2023-06-01")])).unwrap();
     assert_eq!(p, "anthropic");
+}
+
+/// Conformance (`residual_dialect_for_path`): a `GET /v1/models/<id>` whose id legitimately
+/// CONTAINS a colon (OpenAI fine-tuned `ft:...`, deployment-style `gpt-4o:deployment`) must
+/// classify as OpenAI — NOT Gemini — so `model.retrieve` gets an OpenAI-decodable error envelope.
+/// Only the known Gemini ACTION suffixes (`:generateContent`, …) are Gemini.
+#[test]
+fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
+    // OpenAI fine-tuned model id (multiple colons) on the model.retrieve path → OpenAI.
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
+        Some("openai"),
+        "a colon-bearing OpenAI fine-tuned model id must stay OpenAI"
+    );
+    // Azure-style deployment id with a colon → OpenAI.
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gpt-4o:deployment"),
+        Some("openai")
+    );
+    // Plain model id (no colon) → OpenAI.
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gpt-4o"),
+        Some("openai")
+    );
+    // A genuine Gemini action suffix → Gemini.
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gemini-pro:generateContent"),
+        Some("gemini"),
+        "the Gemini :generateContent action suffix still classifies as Gemini"
+    );
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gemini-pro:streamGenerateContent"),
+        Some("gemini")
+    );
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/text-embedding-004:embedContent"),
+        Some("gemini")
+    );
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gemini-pro:countTokens"),
+        Some("gemini")
+    );
+}
+
+/// A PATH THAT NAMES NO DIALECT ANSWERS `None`, and that is the whole of the change: the classifier
+/// used to end in `else { openai }`, so it asserted an OpenAI identity for every path it did not
+/// recognise — including `/mcp`, a path an operator may have MOUNTED as another plane entirely. The
+/// site composing a reply decides what to say to an unknown caller (`ingress::native`); the
+/// classifier's job is to say what it knows, and here it knows nothing.
+#[test]
+fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
+    for path in [
+        "/",
+        "/stats",
+        "/mcp",
+        "/mcp/anything",
+        "/a2a",
+        "/totally/unknown/path",
+        // `/model/...` without a Converse suffix: the arm exists and deliberately declines.
+        "/model/foo/bar",
+    ] {
+        assert_eq!(
+            residual_dialect_for_path(path),
+            None,
+            "`{path}` names no LLM dialect — the classifier must say so, not answer `openai`"
+        );
+    }
 }

@@ -141,6 +141,14 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
     models_list_envelope: None,
+    // MCP is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint — so it claims
+    // no router or residual rung, and core's detection fold never resolves to it from a path/header
+    // sniff. It contributes no untranslatable vendor response metadata and is not the residual
+    // default.
+    claims: None,
+    residual_claims: None,
+    residual_default: false,
+    vendor_response_metadata: None,
 };
 
 // ══ THE NOTIFICATION HALF ════════════════════════════════════════════════════════════════════════

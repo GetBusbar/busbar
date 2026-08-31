@@ -30,6 +30,29 @@ pub fn protocol() -> Protocol {
     Protocol::new(PROTO_COHERE, CohereReader, CohereWriter)
 }
 
+/// COHERE'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the v2/v1 chat paths
+/// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
+/// 9). Lower strength binds tighter — the shared ladder positions.
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
+        return Some(ClaimStrength(8));
+    }
+    if path.ends_with("/v2/embed") || path.ends_with("/v2/rerank") {
+        return Some(ClaimStrength(9));
+    }
+    None
+}
+
+/// COHERE'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: an
+/// exact `/v2/chat` names Cohere (rung 50).
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    if path == "/v2/chat" {
+        return Some(busbar_core::proto::ClaimStrength(50));
+    }
+    None
+}
+
 /// COHERE'S DECLARATION.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_COHERE,
@@ -46,7 +69,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_core::operation::Operation::EMBEDDINGS,
         busbar_core::operation::Operation::RERANK,
     ],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
@@ -77,7 +100,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // exactly like Anthropic/Bedrock. Without this a batched upstream delta would arrive as more
     // than one citation for a single-object writer to drop.
     max_citations_per_delta: Some(1),
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_COHERE,
+    // Cohere Python SDK UA. RELEASE OBLIGATION: re-verify/bump per release;
+    // `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    egress_user_agent: "cohere-python/5.11.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
@@ -92,6 +117,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: None,
 };
 
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by

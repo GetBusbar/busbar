@@ -245,21 +245,13 @@ pub(crate) fn lane_auth_headers(
 // against the latest published SDK release (PyPI / Crates.io / etc.) and bump as needed; the test
 // guard ensures this block can never change unnoticed.
 //
-// Anthropic Python SDK UA shape (api.anthropic.com). The official SDK is Stainless-generated and
-// emits `<Title>/Python <ver>` — `Anthropic/Python <ver>` — the SAME grammar as the OpenAI SDK below,
-// NOT a `anthropic-sdk-python/<ver>` shape (which no released Anthropic SDK has ever sent). Emitting
-// the wrong shape was a wire tell that distinguished busbar-proxied traffic from a native client on
-// the User-Agent alone — the egress-UA tests now also assert the shared `<Title>/Python <ver>` grammar.
-pub const EGRESS_UA_ANTHROPIC: &str = "Anthropic/Python 0.39.0";
-// OpenAI Python SDK shape; the Responses API is served by the same SDK/UA.
-pub const EGRESS_UA_OPENAI: &str = "OpenAI/Python 1.54.0";
-// Google GenAI SDK shape (generativelanguage.googleapis.com).
-pub const EGRESS_UA_GEMINI: &str = "google-genai-sdk/0.8.0 gl-python/3.11";
-// AWS Bedrock is reached via boto3/botocore.
-pub const EGRESS_UA_BEDROCK: &str = "Boto3/1.35.0 md/Botocore#1.35.0";
-// Cohere Python SDK shape (api.cohere.com).
-pub const EGRESS_UA_COHERE: &str = "cohere-python/5.11.0";
-// Unknown/foreign egress protocol default UA — MOVED DOWN to the neutral substrate
+// The per-dialect native-SDK `User-Agent` strings RELOCATED to the LLM plugin: each is stated inline
+// on its own `busbar_llm::<dialect>::DECL.egress_user_agent` (a dialect's backend fingerprint is the
+// dialect's own vocabulary and must not live in this neutral crate), with the release-time re-verify
+// obligation carried in the doc on each decl field. Core reads whichever value the registered decl
+// declares through `egress_user_agent(name)` below and names none of them.
+// Unknown/foreign egress protocol default UA — the neutral substrate default
+// (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // crate (`busbar-mcp`) states it as its `ProtocolDecl::egress_user_agent` default without reaching
 // into core. Re-exported through `crate::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`

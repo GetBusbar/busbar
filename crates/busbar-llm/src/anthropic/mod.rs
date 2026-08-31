@@ -96,6 +96,33 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// discovered by a `match` in core. Handed to `install_protocols` by the composition root (the
 /// `busbar` binary); in `busbar-core`'s test/`test-support` builds it is instead the cfg-gated
 /// built-in row, so the fixture registry the tests see matches the registry a shipped binary has.
+/// ANTHROPIC'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the mandatory
+/// `anthropic-version`/`anthropic-beta` headers (rung 2), the `x-api-key` credential header that is
+/// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
+/// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
+        return Some(ClaimStrength(2));
+    }
+    if h.contains_key("x-api-key") {
+        return Some(ClaimStrength(4));
+    }
+    if path.contains("/v1/messages") {
+        return Some(ClaimStrength(11));
+    }
+    None
+}
+
+/// ANTHROPIC'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
+/// `/v1/messages` path (exact or model-prefixed) names Anthropic (rung 40).
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    if path == "/v1/messages" || path.ends_with("/v1/messages") {
+        return Some(busbar_core::proto::ClaimStrength(40));
+    }
+    None
+}
+
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_ANTHROPIC,
     codec: {
@@ -107,7 +134,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::AnthropicRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `toolu_…` is Anthropic's documented native tool-call id shape.
@@ -131,7 +158,11 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_ANTHROPIC,
+    // The plausible native-SDK UA for THIS dialect's egress (a backend-facing fingerprint guard). The
+    // Anthropic Python SDK is Stainless-generated and emits `<Title>/Python <ver>`. RELEASE
+    // OBLIGATION: re-verify each version against the latest published SDK before a release and bump
+    // (the `test_egress_ua_versions_are_pinned_and_present` guard forces the change to be conscious).
+    egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
@@ -144,6 +175,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_native_path_not_found: false,
     egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: None,
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

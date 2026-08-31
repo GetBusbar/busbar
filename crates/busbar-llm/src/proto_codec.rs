@@ -24,6 +24,16 @@ use crate::ir::IrStreamEvent;
 #[cfg(any(test, feature = "test-support"))]
 use busbar_core::breaker::CanonicalSignal;
 
+/// THE TOP-LEVEL body keys the six LLM chat dialects point-read on the pre-materialized path: `model`
+/// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
+/// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
+/// (chat's body affinity key). Declared ONCE here and referenced by all six `ProtocolDecl`s rather
+/// than spelled six times: they are one shared fact about the chat body shape. RELOCATED out of
+/// `busbar_core::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
+/// unions whatever `head_keys` each registered decl declares and names none. Reached by the dialects
+/// as a bare name through their `use super::proto_codec::*` (which resolves in both compile shapes).
+pub const LLM_CHAT_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
+
 // The dialect reader/writer structs the `Protocol::<dialect>()` test-fixture shims below construct.
 // Reached via `super::` so the path resolves in BOTH compile shapes (busbar-llm root standalone,
 // `core::proto` when netted). These `use`s carried over from `proto/mod.rs` with the fixtures.

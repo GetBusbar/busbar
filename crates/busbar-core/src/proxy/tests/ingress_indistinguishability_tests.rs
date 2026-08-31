@@ -144,7 +144,9 @@ fn test_egress_ua_versions_are_pinned_and_present() {
     // `<Title>/Python <ver>` grammar. Emitting a different shape for one (the old
     // `anthropic-sdk-python/<ver>`) was a wire tell distinguishing proxied from native traffic.
     // Assert BOTH match the shared grammar so the anthropic UA can never silently drift back.
-    for ua in [super::EGRESS_UA_ANTHROPIC, super::EGRESS_UA_OPENAI] {
+    // Read the two Python-SDK UAs through the registry wrapper (their literals now live on the LLM
+    // plugin's decls, not on a core `EGRESS_UA_*` const this test could name).
+    for ua in [egress_user_agent("anthropic"), egress_user_agent("openai")] {
         let (title, rest) = ua.split_once('/').expect("Python-SDK UA contains a '/'");
         assert!(
             title.chars().next().is_some_and(|c| c.is_ascii_uppercase()),

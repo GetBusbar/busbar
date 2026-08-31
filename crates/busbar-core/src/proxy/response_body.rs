@@ -170,8 +170,9 @@ where
         let _t = busbar_timing::timeit!("rb_first_byte_body_new");
         // Resolve the ingress protocol ONCE: it supplies both the binary-eventstream flag AND the
         // interned `&'static` name we store (no per-response allocation for the name). An unknown
-        // ingress protocol falls back to `openai` — the exact default `ingress_error` /
-        // `mid_stream_error_bytes` already use for framing, so the fallback is behavior-preserving.
+        // ingress protocol falls back to the registry's RESIDUAL DEFAULT dialect — the exact default
+        // `ingress_error` / `mid_stream_error_bytes` already use for framing, so the fallback is
+        // behavior-preserving — and core spells no dialect name to state it.
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
         let ingress_decl = crate::proto::decl_for(ingress_protocol);
@@ -186,7 +187,10 @@ where
             // Dispatches through the `ingress_is_eventstream` vtable method so this constructor carries
             // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
             ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
-            ingress_protocol: ingress_decl.map(|d| d.name).unwrap_or("openai"),
+            ingress_protocol: ingress_decl
+                .map(|d| d.name)
+                .or_else(crate::proto::residual_default_dialect)
+                .unwrap_or_default(),
             op,
             permit: Some(permit),
             app: Some(app),

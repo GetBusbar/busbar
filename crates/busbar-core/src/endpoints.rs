@@ -228,14 +228,30 @@ fn list_models_dialect(
     // list-models envelope shapes (OpenAI's `{object:"list",data}`, Anthropic's paginated `{data,
     // has_more,…}`, Gemini's `{models}`) are LLM-specific and now live with the dialects in
     // `busbar-llm` behind `ProtocolDecl::models_list_envelope` — core names none of them here.
-    let dialect = if headers.contains_key("anthropic-version") {
-        crate::proto::PROTO_ANTHROPIC
-    } else if gemini_path || headers.contains_key("x-goog-api-key") {
-        crate::proto::PROTO_GEMINI
+    // The dialect selection is the generic detection fold, restricted to the two fingerprints this
+    // shared noun disambiguates on (the Anthropic version header, the Gemini key header / `/v1beta`
+    // path) and defaulting to the registry's residual dialect — so core spells NO dialect name here.
+    // Restricting the sniff to those two headers (rather than the full router headers) keeps this
+    // byte-identical to the prior three-arm `if`: an incidental `x-api-key`/SigV4 on a models-list
+    // GET must not steer the envelope, only the two fingerprints the SDKs actually send here do.
+    let mut sniff = axum::http::HeaderMap::new();
+    if let Some(v) = headers.get("anthropic-version") {
+        sniff.insert("anthropic-version", v.clone());
+    }
+    if let Some(v) = headers.get("x-goog-api-key") {
+        sniff.insert("x-goog-api-key", v.clone());
+    }
+    let sniff_path = if gemini_path {
+        "/v1beta/models/"
     } else {
-        crate::proto::PROTO_OPENAI
+        "/v1/models"
     };
-    match crate::proto::decl_for(dialect).and_then(|d| d.models_list_envelope) {
+    let dialect = crate::proto::detect_protocol(sniff_path, &sniff)
+        .or_else(crate::proto::residual_default_dialect);
+    match dialect
+        .and_then(crate::proto::decl_for)
+        .and_then(|d| d.models_list_envelope)
+    {
         Some(build) => Json(build(&names)).into_response(),
         // Unreachable while the LLM protocols are installed (they always declare this builder). If a
         // build ships without them, `/v1/models` still resolves but has no dialect to render for — an

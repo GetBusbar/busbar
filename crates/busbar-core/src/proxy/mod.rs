@@ -124,7 +124,10 @@ mod response_body;
 mod select;
 pub(crate) mod usage;
 mod wire;
-pub use egress::*;
+// `pub(crate)` (was `pub`): egress.rs no longer exposes any `pub` item — the per-dialect
+// `EGRESS_UA_*` consts it once surfaced at `busbar_core::proxy::*` relocated to the LLM plugin's
+// decls — so every remaining egress name is crate-internal and this re-export is too.
+pub(crate) use egress::*;
 // THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
 // one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
 // re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's

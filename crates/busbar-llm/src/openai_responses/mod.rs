@@ -35,6 +35,24 @@ pub fn protocol() -> Protocol {
     Protocol::new(PROTO_RESPONSES, ResponsesReader, ResponsesWriter)
 }
 
+/// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
+/// `/v1/responses` (rung 10).
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    if path.ends_with("/v1/responses") {
+        return Some(busbar_core::proto::ClaimStrength(10));
+    }
+    None
+}
+
+/// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
+/// an exact `/v1/responses` (rung 60).
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    if path == "/v1/responses" {
+        return Some(busbar_core::proto::ClaimStrength(60));
+    }
+    None
+}
+
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
@@ -48,7 +66,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
@@ -70,7 +88,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_OPENAI,
+    // Same OpenAI Python SDK UA as the Chat surface (one vendor, two surfaces). RELEASE OBLIGATION:
+    // re-verify/bump per release; `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
@@ -85,6 +105,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
     // resolves to the OpenAI Chat envelope.
     models_list_envelope: None,
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: None,
 };
 use std::sync::OnceLock;
 

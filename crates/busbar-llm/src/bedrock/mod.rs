@@ -32,6 +32,50 @@ pub fn protocol() -> Protocol {
     Protocol::new(PROTO_BEDROCK, BedrockReader, BedrockWriter)
 }
 
+/// BEDROCK'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the AWS SigV4
+/// `Authorization: AWS4-HMAC-SHA256…` signature is the TIGHTEST claim of any dialect (rung 1,
+/// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
+/// path (rung 13). Lower strength binds tighter — the shared ladder positions.
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if h.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
+    {
+        return Some(ClaimStrength(1));
+    }
+    if path.contains("/converse") {
+        return Some(ClaimStrength(12));
+    }
+    if path.starts_with("/model/") && path.ends_with("/invoke") {
+        return Some(ClaimStrength(13));
+    }
+    None
+}
+
+/// BEDROCK'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
+/// `/model/{id}/converse[-stream]` path names Bedrock (rung 30). The `/converse`-suffix requirement
+/// is load-bearing: a non-Converse `/model/…` path must NOT wear a Bedrock envelope.
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    if path.starts_with("/model/")
+        && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
+    {
+        return Some(busbar_core::proto::ClaimStrength(30));
+    }
+    None
+}
+
+/// BEDROCK'S RESPONSE-side untranslatable metadata: the guardrail assessment arrives under a
+/// top-level `trace` (`trace.guardrail`), present only when the request asked for it. Reported so the
+/// cross-protocol seam LOGS the drop — a guardrail assessment is an AWS account artifact no other
+/// protocol can carry. The top-level lookup is Bedrock's own shape and stays here, off core.
+fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
+    ["trace"]
+        .into_iter()
+        .filter(|k| body.get(k).is_some())
+        .collect()
+}
+
 /// BEDROCK'S DECLARATION. The only protocol declaring SigV4 ingress auth and a non-SSE streaming
 /// content type — the two facts core used to learn by allocating a reader and a writer to ask.
 pub const DECL: ProtocolDecl = ProtocolDecl {
@@ -50,7 +94,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_core::operation::Operation::IMAGE,
         busbar_core::operation::Operation::RERANK,
     ],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
     streaming_content_type: Some(APPLICATION_VND_AMAZON_EVENTSTREAM),
     array_stream_shim_key: None,
@@ -82,7 +126,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: true,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_BEDROCK,
+    // AWS Bedrock is reached via boto3/botocore. RELEASE OBLIGATION: re-verify/bump per release;
+    // `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
     auth_failure_status_and_kind: (axum::http::StatusCode::FORBIDDEN, "auth"),
     ingress_relays_amzn_headers: true,
@@ -95,6 +141,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_stream_accept: APPLICATION_VND_AMAZON_EVENTSTREAM,
     // No list-models surface: Bedrock's model discovery is not a `/v1/models` GET.
     models_list_envelope: None,
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: Some(vendor_response_metadata),
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):

@@ -268,6 +268,10 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     has_native_path_not_found: false,
     egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: None,
+    claims: None,
+    residual_claims: None,
+    residual_default: false,
+    vendor_response_metadata: None,
 };
 
 impl RequestHandler for TelexHandler {
@@ -476,6 +480,10 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         has_native_path_not_found: false,
         egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
         models_list_envelope: None,
+        claims: None,
+        residual_claims: None,
+        residual_default: false,
+        vendor_response_metadata: None,
     }
 }
 

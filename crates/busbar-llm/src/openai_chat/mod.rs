@@ -55,6 +55,40 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
     serde_json::json!({ "object": "list", "data": data })
 }
 
+/// OPENAI'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: `/v1/chat/completions`
+/// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
+/// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
+fn claims(_h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if path.ends_with("/v1/chat/completions") {
+        return Some(ClaimStrength(7));
+    }
+    if path.ends_with("/v1/embeddings")
+        || path.ends_with("/v1/moderations")
+        || path.contains("/v1/images/")
+        || path.contains("/v1/audio/")
+    {
+        return Some(ClaimStrength(14));
+    }
+    None
+}
+
+/// OPENAI'S RESIDUAL DETECTION — its arms of the headerless `residual_dialect_for_path` ladder. It
+/// owns the OpenAI-compatible default: a `/v1/models/{id}` that no sibling claimed more tightly
+/// (rung 25, LOOSER than Gemini's `/v1/models/{id}:{action}` at rung 20, so a genuine Gemini action
+/// wins and only a colon-less or non-action id falls here) and an exact `/v1/chat/completions` (rung
+/// 55). The broad `/v1/models/` catch is what makes a colon-bearing OpenAI fine-tune id stay OpenAI.
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if path.starts_with("/v1/models/") {
+        return Some(ClaimStrength(25));
+    }
+    if path == "/v1/chat/completions" {
+        return Some(ClaimStrength(55));
+    }
+    None
+}
+
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_OPENAI,
@@ -74,7 +108,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_core::operation::Operation::TRANSCRIPTION,
         busbar_core::operation::Operation::SPEECH,
     ],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
@@ -97,7 +131,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: false,
     emits_sse_done_terminator: true,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_OPENAI,
+    // OpenAI Python SDK UA (the Responses surface shares it). RELEASE OBLIGATION: re-verify/bump per
+    // release; the `test_egress_ua_versions_are_pinned_and_present` guard forces a conscious change.
+    egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
@@ -110,6 +146,12 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_native_path_not_found: false,
     egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    // THE OPENAI-COMPATIBLE RESIDUAL: the one dialect core falls back to when no fingerprint claims a
+    // request yet a dialect must be named (a bare `GET /v1/models`, an un-resolved degraded response).
+    residual_default: true,
+    vendor_response_metadata: None,
 };
 
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most

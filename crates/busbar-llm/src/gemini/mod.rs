@@ -50,6 +50,65 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
     serde_json::json!({ "models": models })
 }
 
+/// GEMINI'S ROUTER DETECTION — its rungs of the old `busbar-core` `protocol_id` ladder, stated here
+/// so core folds them without naming Gemini: the mandatory-unique `x-goog-api-key` header (rung 3,
+/// tighter than the shared path suffixes), then the `:{action}` path verbs (rung 5), then the
+/// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
+/// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
+fn claims(h: &axum::http::HeaderMap, path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if h.contains_key("x-goog-api-key") {
+        return Some(ClaimStrength(3));
+    }
+    if path.contains(":generateContent")
+        || path.contains(":streamGenerateContent")
+        || path.contains(":embedContent")
+        || path.contains(":batchEmbedContents")
+        || path.contains(":predict")
+    {
+        return Some(ClaimStrength(5));
+    }
+    if path.starts_with("/v1/models/") || path.starts_with("/v1beta/models/") {
+        return Some(ClaimStrength(6));
+    }
+    None
+}
+
+/// The Gemini ACTION suffixes the RESIDUAL classifier recognises on the shared `/v1/models/{id}`
+/// surface — DISTINCT from the router's `:{verb}` set above (this is the drop-through error-envelope
+/// question, not the routing one): a `/v1/models/{id}` whose last segment ends in one of these is
+/// Gemini; any other colon-bearing id (an OpenAI fine-tune) is not, and falls to the OpenAI residual.
+const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
+    ":generateContent",
+    ":streamGenerateContent",
+    ":countTokens",
+    ":embedContent",
+    ":batchGenerateContent",
+    ":generateAnswer",
+    ":batchEmbedContents",
+];
+
+/// GEMINI'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: the
+/// whole `/v1beta/models…` surface is Gemini-only (rung 10), and a `/v1/models/{id}` whose last
+/// segment carries a genuine Gemini action suffix is Gemini (rung 20, tighter than the OpenAI
+/// `/v1/models/` catch at rung 25).
+fn residual_claims(path: &str) -> Option<busbar_core::proto::ClaimStrength> {
+    use busbar_core::proto::ClaimStrength;
+    if path.starts_with("/v1beta/models") {
+        return Some(ClaimStrength(10));
+    }
+    if path.starts_with("/v1/models/") {
+        let last_segment = path.rsplit('/').next().unwrap_or("");
+        if GEMINI_RESIDUAL_ACTIONS
+            .iter()
+            .any(|a| last_segment.ends_with(a))
+        {
+            return Some(ClaimStrength(20));
+        }
+    }
+    None
+}
+
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
@@ -70,7 +129,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_core::operation::Operation::TRANSCRIPTION,
         busbar_core::operation::Operation::SPEECH,
     ],
-    head_keys: LLM_HEAD_KEYS,
+    head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
@@ -99,7 +158,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_GEMINI,
+    // Google GenAI SDK UA. RELEASE OBLIGATION: re-verify/bump per release;
+    // `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::BAD_REQUEST,
@@ -112,7 +173,26 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     has_native_path_not_found: true,
     egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
+    claims: Some(claims),
+    residual_claims: Some(residual_claims),
+    residual_default: false,
+    vendor_response_metadata: Some(vendor_response_metadata),
 };
+
+/// GEMINI'S RESPONSE-side untranslatable metadata: `safetyRatings` (Google's own harm-category
+/// vocabulary) live under `candidates[].safetyRatings`, present only when the request asked for them.
+/// Reported so the cross-protocol seam can LOG that they were dropped — no other protocol can carry
+/// them. The nested `candidates[]` lookup is Gemini's own shape and stays here, off core.
+fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
+    ["safetyRatings"]
+        .into_iter()
+        .filter(|k| {
+            body.get("candidates")
+                .and_then(|c| c.as_array())
+                .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
+        })
+        .collect()
+}
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the

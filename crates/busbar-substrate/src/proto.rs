@@ -12,6 +12,38 @@
 /// OpenAI error `type` for a missing or invalid API key.
 pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
 
+/// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
+/// binds TIGHTER — it names an earlier rung of the historical detection ladder (a mandatory-unique
+/// auth header binds tighter than a path verb, which binds tighter than a bare path suffix). The
+/// fold picks the tightest claim across the registered protocols; a tie breaks by registration
+/// order. Opaque to core: only the relative order is meaningful, and each protocol owns the rungs it
+/// claims. This is the datum that let the hand-ordered `if`-ladder in `busbar-core`'s
+/// `proto::detect::protocol_id` become a fold over per-decl predicates — each dialect's specific
+/// header/path sniff now states its own rungs on [`ProtocolDecl::claims`], and core names no dialect.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct ClaimStrength(pub u16);
+
+/// The ROUTER detection predicate a protocol supplies: `(headers, path) -> Option<ClaimStrength>`,
+/// `Some` at the tightest rung this protocol claims for that request, `None` when it does not claim
+/// it at all. The generic fold in `busbar-core` folds every registered protocol's predicate in
+/// registration order and keeps the tightest claim. Relocated here with [`ProtocolDecl`] so a
+/// dialect crate names it without reaching into `busbar-core`.
+pub type ClaimsFn = fn(&axum::http::HeaderMap, &str) -> Option<ClaimStrength>;
+
+/// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
+/// path SHAPE ALONE (no headers). Narrower than [`ClaimsFn`] — it is the arm the mount table falls
+/// through to when deciding which native error envelope an UNMOUNTED path should wear, and it owns
+/// its dialect's slice of the `/v1/models/{id}` colon disambiguation. `None` when the protocol names
+/// no residual for that path.
+pub type ResidualClaimsFn = fn(&str) -> Option<ClaimStrength>;
+
+/// A protocol's RESPONSE-side vendor-metadata reporter: given a response body, the vendor-scoped
+/// field names present that NO other protocol in the matrix can express (a Gemini `safetyRatings`, a
+/// Bedrock guardrail `trace`). Core calls it on the cross-protocol response seam to LOG the drop; the
+/// per-dialect lookup SHAPE (Gemini reads `candidates[].k`, Bedrock a top-level key) stays with the
+/// dialect. `None` for a protocol that carries no such artifact.
+pub type VendorResponseMetadataFn = fn(&serde_json::Value) -> Vec<&'static str>;
+
 /// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 /// verification itself stays in the auth layer, which has the governance key lookup and the shared
 /// signing helpers. This replaces `ProtocolReader::uses_sigv4_ingress_auth()`, which was the same
@@ -331,6 +363,35 @@ pub struct ProtocolDecl {
     /// for a protocol that serves no model-discovery surface. Given the visible model/pool names
     /// (already governance-filtered and ordered by core), it returns the dialect-shaped JSON body.
     pub models_list_envelope: Option<fn(&[&str]) -> serde_json::Value>,
+
+    /// THE ROUTER detection predicate — how (and how tightly) this protocol claims an inbound
+    /// `(headers, path)`. `None` for a protocol identified by its explicit mount rather than a wire
+    /// fingerprint (MCP). The generic fold in `busbar_core::proto::detect` folds this over every
+    /// registered protocol in registration order and keeps the tightest [`ClaimStrength`], which is
+    /// exactly what the old `busbar-core`-resident `protocol_id` if-ladder computed by hand. Each
+    /// dialect states only ITS OWN rungs here, so the router names no dialect.
+    pub claims: Option<ClaimsFn>,
+
+    /// THE RESIDUAL detection predicate — how (and how tightly) this protocol claims a path from its
+    /// SHAPE ALONE, the arm `busbar_core::proto::residual_dialect_for_path` folds when the mount
+    /// table has declined a path and a native error envelope must still be chosen. `None` when this
+    /// protocol names no residual path. Replaces this dialect's arm of the core-resident
+    /// `residual_dialect_for_path` ladder.
+    pub residual_claims: Option<ResidualClaimsFn>,
+
+    /// TRUE for the ONE protocol core falls back to when NO dialect claims a request yet a dialect
+    /// must still be named — the OpenAI-compatible residual the ecosystem defaults to (`GET
+    /// /v1/models` with no fingerprint, an un-resolved ingress on the degraded response path). At
+    /// most one registered protocol sets this; core reads it through the registry so the literal
+    /// default dialect name leaves core entirely.
+    pub residual_default: bool,
+
+    /// THE RESPONSE-side vendor-metadata reporter — the fields this protocol's upstream returns that
+    /// no other protocol can express, reported per response body so the cross-protocol seam can LOG
+    /// the drop. `None` for a protocol with no such vendor-scoped artifact. Replaces the hard-coded
+    /// per-dialect key lists (and their differing lookup shapes) in
+    /// `warn_untranslatable_response_metadata`.
+    pub vendor_response_metadata: Option<VendorResponseMetadataFn>,
 }
 
 impl ProtocolDecl {

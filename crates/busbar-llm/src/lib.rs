@@ -200,6 +200,13 @@ mod plane_decl_identity_tests {
     }
 }
 
+/// THE DETECTION TESTS, relocated here from `busbar-core` because they name dialects: they exercise
+/// the generic detection fold through THIS plugin's registered `claims` / `residual_claims`
+/// predicates, proving the ladder→predicate move is byte-identical.
+#[cfg(test)]
+#[path = "tests/detect_tests.rs"]
+mod detect_tests;
+
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]
 mod write_error_frame_tests;

@@ -63,6 +63,12 @@ pub use busbar_substrate::proto::IngressAuth;
 // core-only `Arrival`) — is SPLIT OFF into a core-owned, protocol-name-keyed side-registration
 // (`crate::ingress::path_ingress`); see there and [`install_protocols_with_path_ingress`].
 pub use busbar_substrate::proto::{EgressAuthHeaders, ProtocolDecl};
+// The generic detection ABI relocated to `busbar_substrate::proto` alongside `ProtocolDecl`: the
+// opaque claim strength and the two predicate types each dialect states on its own decl, so the
+// router/residual detection is a fold over registered predicates and core names no dialect.
+pub use busbar_substrate::proto::{
+    ClaimStrength, ClaimsFn, ResidualClaimsFn, VendorResponseMetadataFn,
+};
 
 /// THE BUILT-INS — one line per protocol, and every line is DATA.
 ///
@@ -412,4 +418,46 @@ pub(crate) fn registry() -> &'static Registry {
 /// declaration is a `&'static` constant that was declared, not built.
 pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
     registry().decl(name)
+}
+
+/// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
+/// speaks, or `None` for a path that names none. This is the mechanism that REPLACED the hand-ordered
+/// `if`-ladder in `proto::detect::protocol_id`: it folds every registered protocol's
+/// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
+/// [`ClaimStrength`]); a tie breaks by registration order (`min_by` keeps the first). The ladder is
+/// no longer core's — each dialect states its own rungs on its decl, and core names no dialect.
+/// Byte-identical to the old ladder because the strengths ARE that ladder's positions.
+pub(crate) fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .filter_map(|d| d.claims.and_then(|c| c(headers, path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
+/// THE GENERIC RESIDUAL DETECTION FOLD — which registered protocol a path names FROM ITS SHAPE ALONE
+/// (no headers), the arm the mount table falls through to. Replaces `proto::residual_dialect_for_path`:
+/// folds every registered protocol's [`ProtocolDecl::residual_claims`] predicate and keeps the
+/// tightest claim, or `None` when no protocol names the path. Byte-identical to the old ladder.
+pub(crate) fn residual_protocol_for_path(path: &str) -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, name)| name)
+}
+
+/// THE REGISTRY-SUPPLIED RESIDUAL DEFAULT — the ONE protocol name core falls back to when no dialect
+/// claimed a request yet a dialect must still be named (a bare `GET /v1/models`, an un-resolved
+/// degraded response). Reads [`ProtocolDecl::residual_default`], so the literal default dialect name
+/// (`"openai"` today) leaves core entirely; `None` when no residual-default protocol is installed
+/// (the all-planes-off deletion configuration), which every caller handles as "name no protocol".
+pub(crate) fn residual_default_protocol() -> Option<&'static str> {
+    registry()
+        .decls()
+        .iter()
+        .find(|d| d.residual_default)
+        .map(|d| d.name)
 }

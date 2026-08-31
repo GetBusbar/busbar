@@ -88,23 +88,14 @@ pub(crate) fn warn_untranslatable_response_metadata(
     ingress: &str,
     body: &serde_json::Value,
 ) {
-    let present: Vec<&str> = match egress {
-        PROTO_GEMINI => ["safetyRatings"]
-            .into_iter()
-            .filter(|k| {
-                body.get("candidates")
-                    .and_then(|c| c.as_array())
-                    .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
-            })
-            .collect(),
-        // Bedrock Converse returns the guardrail assessment under a top-level `trace`
-        // (`trace.guardrail`), present only when the request asked for it.
-        PROTO_BEDROCK => ["trace"]
-            .into_iter()
-            .filter(|k| body.get(k).is_some())
-            .collect(),
-        _ => Vec::new(),
-    };
+    // WHICH fields are present, and the SHAPE of the lookup (Gemini reads `candidates[].k`, Bedrock a
+    // top-level key), are the egress dialect's own knowledge — declared on its
+    // `ProtocolDecl::vendor_response_metadata` and read here by name so core spells no dialect. A
+    // dialect with no such vendor-scoped artifact declares `None` and reports nothing.
+    let present: Vec<&str> = decl_for(egress)
+        .and_then(|d| d.vendor_response_metadata)
+        .map(|report| report(body))
+        .unwrap_or_default();
     if present.is_empty() {
         return;
     }
@@ -145,79 +136,50 @@ pub const BASE62_REJECT_THRESHOLD: u8 = 248;
 /// truth so the abort text a client sees is identical on every framing.
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
-/// THE RESIDUAL ARM of the ingress resolver: which LLM wire dialect a path names, from its shape
-/// alone. `None` when it names none.
+/// THE RESIDUAL ARM of the ingress resolver: which wire dialect a path names, from its shape alone.
+/// `None` when it names none.
 ///
 /// ## This is not the whole answer, and it must not be called as if it were
 ///
 /// The whole answer is [`crate::plane::PlaneDispatch::ingress_of`], and this function is the arm it
 /// reaches only AFTER the mount table has declined the path. That ordering is the fix for a shipped
 /// defect: while this was the canonical classifier, it was consulted for paths a plane had been
-/// MOUNTED on, knew nothing of mounts, and answered `openai` for every one of them — so an
-/// oversized POST to `/mcp` came back in an OpenAI envelope an MCP client cannot decode. A path
-/// shape can only ever answer for the residual, because a mount is a fact about the deployment and
-/// no amount of looking at a URL will reveal it. `ingress_of` is therefore the only caller.
+/// MOUNTED on, knew nothing of mounts, and answered a dialect for every one of them — so an oversized
+/// POST to `/mcp` came back in an LLM envelope an MCP client cannot decode. A path shape can only ever
+/// answer for the residual, because a mount is a fact about the deployment and no amount of looking at
+/// a URL will reveal it. `ingress_of` is therefore the only caller.
 ///
-/// ## There is no `else { openai }` any more, and that is the point
+/// ## There is no `else { <default dialect> }` any more, and that is the point
 ///
-/// The old tail arm claimed every unclassifiable path for OpenAI, which read as a harmless default
-/// and was in fact the resolver asserting a protocol identity for paths that carry none. What to
-/// say to a caller whose dialect is unknown is a decision — a real one, taken in
+/// The old tail arm claimed every unclassifiable path for one dialect, which read as a harmless
+/// default and was in fact the resolver asserting a protocol identity for paths that carry none. What
+/// to say to a caller whose dialect is unknown is a decision — a real one, taken in
 /// `ingress::native_error`, where the alternatives are visible — not something a classifier should
 /// smuggle in as a fallthrough.
 ///
-/// Check order is significant: the more specific Gemini/Bedrock surfaces are tested before the
-/// generic `/v1/messages` / `/v1/chat/completions` suffixes.
+/// ## The ladder is DATA now, and core names no dialect
 ///
-/// The `/model/...` arm REQUIRES the `/converse` or `/converse-stream` suffix before classifying as
-/// bedrock: Bedrock's Converse API is `/model/<id>/converse[-stream]`, so a non-Converse `/model/...`
-/// path (e.g. `/model/foo/bar`, or a pool literally named "model" hitting `/model/v1/messages`) must
-/// NOT be handed a Bedrock-shaped envelope — it falls through to the `/v1/messages` (anthropic) arm
-/// or the OpenAI default, matching what a real client speaking that protocol expects.
-pub(crate) fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
-    Some(if path.starts_with("/v1beta/models") {
-        // `/v1beta/models/...` is a Gemini-only surface (OpenAI has no v1beta), so always Gemini.
-        PROTO_GEMINI
-    } else if path.starts_with("/v1/models/") {
-        // `/v1/models/...` is ambiguous: Gemini packs a `:<action>` into the LAST path segment
-        // (`/v1/models/gemini-pro:generateContent`), whereas the OpenAI SDK's `model.retrieve`
-        // issues `GET /v1/models/{id}`. A naive `contains(':')` mis-classifies OpenAI model ids that
-        // legitimately contain colons (fine-tuned `ft:gpt-3.5-turbo:my-org::abc123`, deployment-style
-        // `gpt-4o:deployment`) as Gemini, handing a real OpenAI `model.retrieve` an undecodable Gemini
-        // error envelope. Distinguish the Gemini `:<action>` form by matching ONLY the known Gemini
-        // method suffixes; anything else (including colon-bearing OpenAI model ids) → OpenAI.
-        let last_segment = path.rsplit('/').next().unwrap_or("");
-        const GEMINI_ACTIONS: [&str; 7] = [
-            ":generateContent",
-            ":streamGenerateContent",
-            ":countTokens",
-            ":embedContent",
-            ":batchGenerateContent",
-            ":generateAnswer",
-            ":batchEmbedContents",
-        ];
-        if GEMINI_ACTIONS.iter().any(|a| last_segment.ends_with(a)) {
-            PROTO_GEMINI
-        } else {
-            PROTO_OPENAI
-        }
-    } else if path.starts_with("/model/")
-        && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
-    {
-        PROTO_BEDROCK
-    } else if path == "/v1/messages" || path.ends_with("/v1/messages") {
-        PROTO_ANTHROPIC
-    } else if path == "/v1/chat/completions" {
-        PROTO_OPENAI
-    } else if path == "/v2/chat" {
-        PROTO_COHERE
-    } else if path == "/v1/responses" {
-        PROTO_RESPONSES
-    } else {
-        // NAMES NO DIALECT. Not "openai by default": the path carries no evidence either way, and
-        // saying so is the whole reason this returns an `Option`.
-        return None;
-    })
+/// This once held a hand-ordered `if`-ladder naming every dialect; it is now a fold over the
+/// registered protocols' own [`ProtocolDecl::residual_claims`] predicates
+/// ([`registry::residual_protocol_for_path`]), so each dialect owns its arm (the `/v1/models/{id}`
+/// colon disambiguation, the `/model/…/converse[-stream]` Bedrock guard, …) and core spells none of
+/// them. Byte-identical to the old ladder — the claim strengths ARE the ladder positions.
+pub fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
+    registry::residual_protocol_for_path(path)
+}
+
+/// THE ROUTER: `(path, headers)` → which wire dialect a request speaks, or `None` for a path that
+/// names none. A public re-export of the generic detection fold ([`registry::detect_protocol`]) so
+/// the protocol plugin can exercise the byte-identical detection contract from its own tests.
+pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'static str> {
+    registry::detect_protocol(path, headers)
+}
+
+/// THE REGISTRY-SUPPLIED RESIDUAL DEFAULT dialect — the name core falls back to when no dialect
+/// claims a request yet one must be named. `None` when no residual-default protocol is installed.
+/// Reads [`ProtocolDecl::residual_default`], so the literal default dialect name leaves core.
+pub(crate) fn residual_default_dialect() -> Option<&'static str> {
+    registry::residual_default_protocol()
 }
 
 /// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim
@@ -811,7 +773,10 @@ use openai_chat::{OpenAiReader, OpenAiWriter};
 use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
 // which does `use super::*`) can state its `DECL` without importing the registry by path.
-pub use registry::{decl_for, IngressAuth, ProtocolDecl};
+pub use registry::{
+    decl_for, ClaimStrength, ClaimsFn, IngressAuth, ProtocolDecl, ResidualClaimsFn,
+    VendorResponseMetadataFn,
+};
 
 /// Canonical protocol-id vocabulary. Every PRODUCTION comparison / match arm / registry insertion on
 /// a protocol name goes through these consts so the router, dispatch, projections, and registry
@@ -823,13 +788,11 @@ pub const PROTO_BEDROCK: &str = "bedrock";
 pub const PROTO_COHERE: &str = "cohere";
 pub const PROTO_RESPONSES: &str = "responses";
 
-/// The TOP-LEVEL body keys the six LLM dialects point-read on the pre-materialized path: `model`
-/// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
-/// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
-/// (chat's body affinity key). Declared ONCE and referenced by all six `ProtocolDecl`s rather than
-/// spelled six times: they are one shared fact about the chat body shape, and a protocol that reads
-/// a different set (MCP reads none) declares its own.
-pub const LLM_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
+// The LLM chat dialects' shared head-key set (`model`/`stream`/`stream_options`/`system`) RELOCATED
+// to the LLM plugin (`busbar_llm::proto_codec::LLM_CHAT_HEAD_KEYS`) — it is LLM vocabulary, so it
+// belongs with the dialects that declare it, not in this neutral crate. Core unions whatever
+// `ProtocolDecl::head_keys` each registered protocol declares (see `registry::Registry::new`) and
+// names none of the keys itself.
 
 /// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
 /// and what the config validator rejects against so an unknown protocol is COLLECTED with every
