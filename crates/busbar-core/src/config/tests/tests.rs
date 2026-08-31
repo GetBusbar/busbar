@@ -856,7 +856,9 @@ fn test_shipped_providers_catalog_valid() {
     assert!(defs.len() >= 10, "catalog should be non-trivial");
     for (name, def) in &defs {
         assert!(
-            crate::proto::protocol_for(&def.protocol).is_some(),
+            // Neutral registry seam: a protocol is KNOWN iff it has a registered declaration
+            // (`decl_for`), reached without naming the witnessed codec (`protocol_for`).
+            crate::proto::decl_for(&def.protocol).is_some(),
             "provider '{name}' names unknown protocol '{}'",
             def.protocol
         );

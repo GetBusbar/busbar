@@ -64,6 +64,8 @@ pub(crate) use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 
 #[path = "adversarial_tests.rs"]
 mod adversarial_tests;
+#[path = "billing_parity_tests.rs"]
+mod billing_parity_tests;
 #[path = "context_length_tests.rs"]
 mod context_length_tests;
 #[path = "cross_protocol_extra_tests.rs"]
@@ -94,6 +96,8 @@ mod same_proto_fidelity_tests;
 mod stop_reason_matrix_tests;
 #[path = "stream_fanout_tests.rs"]
 mod stream_fanout_tests;
+#[path = "stream_tap_usage_tests.rs"]
+mod stream_tap_usage_tests;
 #[path = "stream_translate_tests.rs"]
 mod stream_translate_tests;
 #[path = "tests.rs"]

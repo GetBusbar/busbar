@@ -124,10 +124,15 @@ fn upstream_model_override_rewrites_body_and_url_model() {
             .upstream_model("upstream.real/model"),
         )
         .build();
-    let proto = crate::proto::protocol_for(app.lanes[0].protocol).expect("lane protocol resolves");
-    let writer = proto.writer();
+    // Neutral registry seam: resolve the lane's egress codec by NAME through the installed
+    // registry (`decl_for(name).dialect()`), as production does — never the witnessed
+    // `protocol_for(name).writer()`. `DialectCodec::upstream_path_for_stream` delegates to
+    // `writer().upstream_path_for_stream`, so this is byte-identical to the pre-relocation path.
+    let dialect = crate::proto::decl_for(app.lanes[0].protocol)
+        .and_then(|d| d.dialect())
+        .expect("lane protocol resolves");
     assert_eq!(
-            writer.upstream_path_for_stream(app.lanes[0].wire_model(), false),
+            dialect.upstream_path_for_stream(app.lanes[0].wire_model(), false),
             "/model/upstream.real/model/converse",
             "URL-model path must embed the upstream_model override (raw; percent-encoding happens at sign/send time)"
         );

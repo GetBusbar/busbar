@@ -1132,7 +1132,12 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
             .collect::<Vec<_>>(),
     );
 
-    let translate = crate::proto::StreamTranslate::new("gemini", "openai").expect("translator");
+    // Neutral seam: build the streaming translator by NAME through the installed factory
+    // (`new_stream_translator`, the exact seam both forward paths use), so this core FirstByteBody
+    // test names no witnessed codec type. `is_sse = true` + ingress != egress reproduces the prior
+    // direct translator construction byte-for-byte.
+    let translate =
+        crate::proto::new_stream_translator("gemini", "openai", true).expect("translator");
     // Neutral seam: the array-stream framer is built the exact way production builds it
     // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
     let json_array: Box<dyn crate::proto::ArrayStreamFramer> = crate::proto::decl_for("gemini")
@@ -1150,7 +1155,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(Box::new(translate)),
+        Some(translate),
         Some(json_array),
         None,  // usage_sink
         false, // budget_spent
@@ -1208,7 +1213,10 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
             .collect::<Vec<_>>(),
     );
 
-    let translate = crate::proto::StreamTranslate::new("anthropic", "openai").expect("translator");
+    // Neutral seam: build the translator by NAME through the installed factory (as production
+    // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
+    let translate =
+        crate::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true,
@@ -1220,7 +1228,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(Box::new(translate)),
+        Some(translate),
         None, // plain SSE — no json-array framer
         None,
         false,
@@ -1311,7 +1319,10 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     items.push(Err(transport_err));
     let inner = Box::pin(futures::stream::iter(items));
 
-    let translate = crate::proto::StreamTranslate::new("openai", "anthropic").expect("translator");
+    // Neutral seam: build the translator by NAME through the installed factory (as production
+    // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
+    let translate =
+        crate::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse
@@ -1323,7 +1334,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(Box::new(translate)),
+        Some(translate),
         None,
         sink,
         false,
@@ -3227,7 +3238,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 }
 
 /// A CROSS-PROTOCOL
-/// stream whose `StreamTranslate` ABORTS after the first byte — its reassembly buffer overran
+/// stream whose translator ABORTS after the first byte — its reassembly buffer overran
 /// `MAX_BUF` (>16MiB without a frame terminator) or it hit a malformed egress prelude — sets NO
 /// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). A
 /// `Poll::Ready(None)` arm that reverses the optimistic 2xx breaker success ONLY on `terminal_error`
@@ -3244,7 +3255,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     use futures::StreamExt as _;
 
     // Lane 0: OpenAI EGRESS. The cross-protocol seam is anthropic INGRESS ← openai EGRESS, so a
-    // `StreamTranslate::new("anthropic", "openai")` is constructed (ingress != egress → Some).
+    // translator is constructed by name (ingress != egress → Some).
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
@@ -3302,7 +3313,9 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 
     // Cross-protocol translator: openai EGRESS SSE → anthropic INGRESS SSE. The tap scans the
     // translated anthropic output for usage.
-    let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
+    // Neutral seam: build the translator by NAME through the installed factory (as production
+    // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
+    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate must construct");
 
     // Inner upstream stream:
@@ -3334,7 +3347,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         0,
         breaker_cfg,
         "p",
-        Some(Box::new(translate)),
+        Some(translate),
         None,
         sink,
         false, // budget_spent: irrelevant to this arm
@@ -3356,7 +3369,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
             app.store.breaker_state_in("p", 0),
             BreakerState::Open { .. }
         ),
-        "a StreamTranslate abort after first byte must record a breaker transient \
+        "a cross-protocol translate abort after first byte must record a breaker transient \
              (cell Closed→Open), not stand as the optimistic 2xx success"
     );
 
@@ -3425,7 +3438,9 @@ async fn test_cancel_drop_bills_partial_tokens() {
         admit: None,
     });
 
-    let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
+    // Neutral seam: build the translator by NAME through the installed factory (as production
+    // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
+    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // A single OpenAI trailing usage-only chunk → translated anthropic message_delta whose usage
     // the tap reads (1000 billable tokens). NO overflow (no abort), NO error frame.
@@ -3450,7 +3465,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
             0,
             Arc::new(BreakerCfg::default()),
             "p",
-            Some(Box::new(translate)),
+            Some(translate),
             None,
             sink,
             false,
@@ -3530,7 +3545,9 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         admit: None,
     });
 
-    let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
+    // Neutral seam: build the translator by NAME through the installed factory (as production
+    // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
+    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // chunk 1: usage-only OpenAI chunk → translated anthropic usage the tap captures (nonzero).
     // chunk 2: a >MAX_FRAME_BYTES run with NO SSE terminator → translate buffer overflows and
@@ -3559,7 +3576,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             0,
             Arc::new(BreakerCfg::default()),
             "p",
-            Some(Box::new(translate)),
+            Some(translate),
             None,
             sink,
             false,

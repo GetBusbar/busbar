@@ -937,9 +937,11 @@ fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
             expected,
             "router ingress path '{path}' must map to '{expected}', not the fallback"
         );
-        // And the resolved proto must be a real protocol (never the dead `None` arm).
+        // And the resolved proto must be a real protocol (never the dead `None` arm). Neutral
+        // registry seam: a KNOWN protocol has a registered declaration (`decl_for`), reached
+        // without naming the witnessed codec (`protocol_for`).
         assert!(
-            crate::proto::protocol_for(residual_dialect(path)).is_some(),
+            crate::proto::decl_for(residual_dialect(path)).is_some(),
             "proto for '{path}' must resolve to a known protocol"
         );
     }

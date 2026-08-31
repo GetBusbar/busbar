@@ -357,11 +357,13 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     let ingress = "gemini";
     let egress = "openai";
     strip_router_shim_keys(&mut v, egress);
-    // Neutral seam: resolve the egress writer by NAME from the installed registry (as production
-    // does), so this core strip/rewrite-ordering test names no dialect codec constructor.
-    crate::proto::protocol_for(crate::proto::PROTO_OPENAI)
+    // Neutral seam: resolve the egress codec by NAME from the installed registry
+    // (`decl_for(name).dialect()`, as production does), so this core strip/rewrite-ordering test
+    // names no witnessed codec. `DialectCodec::rewrite_model_if_needed` delegates to
+    // `writer().rewrite_model_if_needed` — byte-identical.
+    crate::proto::decl_for(crate::proto::PROTO_OPENAI)
+        .and_then(|d| d.dialect())
         .expect("openai codec registered")
-        .writer()
         .rewrite_model_if_needed(&mut v, "gpt-4o");
     if ingress == egress {
         strip_same_protocol_model_shim(&mut v, ingress);
@@ -386,9 +388,9 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     let ingress = "gemini";
     let egress = "gemini";
     strip_router_shim_keys(&mut v, egress);
-    crate::proto::protocol_for(crate::proto::PROTO_GEMINI)
+    crate::proto::decl_for(crate::proto::PROTO_GEMINI)
+        .and_then(|d| d.dialect())
         .expect("gemini codec registered")
-        .writer()
         .rewrite_model_if_needed(&mut v, "gemini-1.5-pro");
     if ingress == egress {
         strip_same_protocol_model_shim(&mut v, ingress);

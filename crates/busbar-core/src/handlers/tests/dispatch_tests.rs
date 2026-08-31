@@ -144,7 +144,13 @@ fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
     const STATUSES: [u16; 12] = [400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 529];
 
     for protocol in crate::proto::known_protocols() {
-        let p = crate::proto::protocol_for(protocol)
+        // Neutral registry seam: resolve the protocol's error-attribution codec by NAME through
+        // the installed registry (`decl_for(name).dialect()`), as production does — never the
+        // witnessed `protocol_for(name).reader()`. `DialectCodec::extract_error(status, body)`
+        // delegates to `reader().extract_error(StatusCode::from_u16(status)…, body)`, so this
+        // `want` is byte-identical to the pre-relocation reader path (every STATUS below is valid).
+        let dialect = crate::proto::decl_for(protocol)
+            .and_then(|d| d.dialect())
             .unwrap_or_else(|| panic!("{protocol} is a registered protocol"));
         for operation in ALL_OPERATIONS {
             let Some(cell) =
@@ -155,10 +161,7 @@ fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
             for status in STATUSES {
                 for body in BODIES {
                     let got = cell.extract_error(status, body);
-                    let want = p.reader().extract_error(
-                        axum::http::StatusCode::from_u16(status).expect("a valid status"),
-                        body,
-                    );
+                    let want = dialect.extract_error(status, body);
                     assert_eq!(
                         (
                             got.http_status,

@@ -222,16 +222,11 @@ mod on_exhausted_tests;
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 
-/// BILLING PARITY GATE. Asserts the IR-derived usage (`StreamTranslate::usage()`, the value billing
-/// is routed through) produces EXACTLY the billed (input, output) tokens for
-/// every {streaming, non-stream} × {same-proto, cross-proto} path. Responses STREAMING is the
-/// subtlest case: it nests usage under `response.usage` rather than at the top level, so a reader
-/// that looks only at the top level reports 0 and under-bills. The asserted number pins the
-/// correctly-nested read.
-#[cfg(test)]
-#[path = "tests/billing_parity_tests.rs"]
-mod billing_parity_tests;
-
+// BILLING PARITY GATE relocated to `busbar-llm` (`src/tests/proto/billing_parity_tests.rs`,
+// plane-extraction §5 / Phase 1.6): it drives the witnessed `StreamTranslate` + dialect readers
+// to assert the IR-derived usage (`translate.usage()` / `reader().read_response().usage`) equals
+// the billed (input, output) tokens for every {streaming, non-stream} × {same-proto, cross-proto}
+// path, so it lives beside the codec it exercises. Byte-identical assertions.
 #[cfg(test)]
 #[path = "tests/mid_stream_error_tests.rs"]
 mod mid_stream_error_tests;

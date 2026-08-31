@@ -1,4 +1,17 @@
-use crate::proto::StreamTranslate;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! BILLING PARITY GATE, RELOCATED HERE from `busbar-core`'s `proxy/tests/billing_parity_tests.rs`
+//! (plane-extraction §5 / Phase 1.6). It drives the witnessed `StreamTranslate` and the dialect
+//! readers directly to assert the IR-derived usage (`translate.usage()` / `reader().read_response()`)
+//! produces EXACTLY the billed (input, output) tokens for every {streaming, non-stream} ×
+//! {same-proto, cross-proto} path — so it names the codec vocabulary a neutral crate's tests must
+//! not, and lives beside the types it exercises. Every assertion is BYTE-IDENTICAL to the
+//! pre-relocation suite; only the paths were repointed (`crate::proto::{StreamTranslate,
+//! protocol_for,SSE_DONE_FRAME}` → the `super::*` prelude, `crate::eventstream`/`crate::json` →
+//! their `busbar_substrate::` home).
+
+use super::*;
 
 /// Drive a SAME-PROTOCOL streaming translator with `frames` and return the IR A-tap (input, output)
 /// tokens — the exact value the streaming billing arm reads via `translate.usage()`.
@@ -26,8 +39,8 @@ fn cross_proto_usage(ingress: &str, egress: &str, frames: &[&[u8]]) -> (u64, u64
 /// Decode a NON-STREAM body through `proto`'s reader (the same-proto non-stream billing path #4:
 /// the body is relayed verbatim, billing reads `ir.usage`) and return the billed (input, output).
 fn nonstream_usage(proto: &str, body: &[u8]) -> (u64, u64) {
-    let p = crate::proto::protocol_for(proto).expect("known proto");
-    let v: serde_json::Value = crate::json::parse(body).expect("json body");
+    let p = protocol_for(proto).expect("known proto");
+    let v: serde_json::Value = busbar_substrate::json::parse(body).expect("json body");
     let ir = p.reader().read_response(&v).expect("read_response");
     (ir.usage.input_tokens, ir.usage.output_tokens)
 }
@@ -62,7 +75,7 @@ fn stream_same_proto_openai_include_usage_split() {
                     b"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
                     b"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
                     b"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":9,\"total_tokens\":22}}\n\n",
-                    crate::proto::SSE_DONE_FRAME,
+                    SSE_DONE_FRAME,
                 ],
             ),
             (13, 9),
@@ -103,7 +116,7 @@ fn stream_same_proto_cohere() {
 fn stream_same_proto_bedrock_binary_eventstream() {
     // Bedrock binary eventstream same-proto: the A-tap reads the IR decoded from the binary frames.
     // Prior byte-scanner numbers: (31, 12).
-    use crate::eventstream::encode_frame;
+    use busbar_substrate::eventstream::encode_frame;
     let mut start = Vec::new();
     start.extend(encode_frame("messageStart", br#"{"role":"assistant"}"#));
     let mut stop = Vec::new();
