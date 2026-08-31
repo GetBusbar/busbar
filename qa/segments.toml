@@ -238,3 +238,19 @@ tier   = "fast"
 # The self-test (proving the scanner catches the four planted side channels) also runs per-push in
 # ci.yml, so the scanner's own honesty is continuously verified alongside the tree verdict.
 run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"
+
+[[segment]]
+id     = "plane-grep"
+status = "active"
+tier   = "fast"
+# THE SUBSTRING DIALECT-NAME NEUTRALITY METER (scripts/plane-grep-gate.sh) — the stricter companion to
+# plane-purity above. Where plane-purity bans the plane KEYS + the six dialect names as WHOLE WORDS,
+# this gate bans the dialect names as SUBSTRINGS in production .rs outside busbar-llm (comments, tests,
+# and the neutral busbar-api Operation enum excluded), catching the `gemini_api_version` / `openai_*` /
+# `/v1/…`-adjacent leakage word-boundary rules miss. RUNS REPORT-ONLY for now (GREP_GATE_REPORT_ONLY=1,
+# the script default): it PRINTS the current debt (violation count + offending file:line) and EXITS 0,
+# so it lands non-blocking and measures the debt the "Protocols as Plugins" R3/R4/R5 work drives to 0.
+# Arming the hard gate is a one-flag flip (GREP_GATE_REPORT_ONLY=0) once the count reaches zero — no
+# code edit. The --selftest (proving the scanner catches a planted gemini_api_version + busbar_a2a::Foo)
+# runs FIRST, so the scanner's own honesty is verified alongside the report.
+run    = "scripts/plane-grep-gate.sh --selftest && GREP_GATE_REPORT_ONLY=1 scripts/plane-grep-gate.sh --report"
