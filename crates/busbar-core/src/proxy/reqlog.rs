@@ -60,8 +60,8 @@
 //! store method exists. What IS true of it today: within one process lifetime the window is
 //! append-only, hash-linked and verifiable, so an in-process edit of a retained record is detected.
 //!
-//! NOT MOUNTED — the operator-facing read surface. [`LlmRequestLog::verify_principal_chain`] and
-//! [`LlmRequestLog::records_for`] have no admin verb, exactly as `calllog`'s equivalents do
+//! NOT MOUNTED — the operator-facing read surface. [`RequestLog::verify_principal_chain`] and
+//! [`RequestLog::records_for`] have no admin verb, exactly as `calllog`'s equivalents do
 //! not; each carries its own `#[allow(dead_code)]` and its own note rather than a module-wide
 //! blanket, so the next thing to lose its caller BREAKS THE BUILD instead of joining a silent
 //! amnesty. It is a REAL GAP and it is named here.
@@ -87,7 +87,7 @@ pub(crate) use crate::audit::vocab::{
 
 /// This stream's chain: one per principal. A type alias over the core mechanism — there is no second
 /// implementation behind it.
-pub(crate) type RequestChain = crate::audit::Chain<LlmRequestRecord>;
+pub(crate) type RequestChain = crate::audit::Chain<RequestRecord>;
 
 /// The scope an UNGOVERNED request is chained under. A fixed engine-chosen string, never anything a
 /// caller can influence, so no request can be steered into a governed principal's chain.
@@ -105,7 +105,7 @@ pub(crate) const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 ///
 /// Eviction is oldest-first GLOBALLY, so what is retained for any one principal is a contiguous
 /// SUFFIX of that principal's chain — which is exactly the shape [`verify_window`] verifies, and the
-/// reason [`LlmRequestLog::verify_principal_chain`] uses the window verifier rather than
+/// reason [`RequestLog::verify_principal_chain`] uses the window verifier rather than
 /// [`crate::audit::verify_chain`]: the head has legitimately been pruned, and a caller holding a
 /// whole chain that used the lenient entry point would be silently excusing a missing head.
 const MAX_RETAINED_REQUESTS: usize = 2048;
@@ -151,7 +151,7 @@ pub(crate) struct RequestInput {
 /// NOT persisted (see the header): a type in the plugin ABI that no store method takes would be an
 /// invitation to believe a durable path exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LlmRequestRecord {
+pub(crate) struct RequestRecord {
     pub(crate) principal: String,
     pub(crate) seq: u64,
     pub(crate) ts: u64,
@@ -164,7 +164,7 @@ pub(crate) struct LlmRequestRecord {
     pub(crate) hash: String,
 }
 
-impl ChainedRecord for LlmRequestRecord {
+impl ChainedRecord for RequestRecord {
     type Input = RequestInput;
 
     const LABELS: &'static ChainLabels = &ChainLabels {
@@ -197,7 +197,7 @@ impl ChainedRecord for LlmRequestRecord {
     }
 
     fn link(scope: &str, seq: u64, prev_hash: String, input: RequestInput) -> Self {
-        LlmRequestRecord {
+        RequestRecord {
             principal: scope.to_string(),
             seq,
             ts: input.ts,
@@ -282,7 +282,7 @@ pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'st
 /// process retains.
 /// The log's guarded state: chain positions and the retained window, under ONE lock.
 ///
-/// One `Mutex` rather than the two this had (`chains` + `ring`), because [`LlmRequestLog::record`]
+/// One `Mutex` rather than the two this had (`chains` + `ring`), because [`RequestLog::record`]
 /// sits on the plane's per-request terminal and always takes both in sequence — two acquisitions,
 /// two releases, and (measured on the board cell) two contended atomic round-trips per request
 /// where one suffices. No caller ever wants one half without the other: the append and the
@@ -300,11 +300,11 @@ struct LogState {
     /// evicted-then-returning contract.
     chains: IndexMap<String, RequestChain>,
     /// The retained records, oldest first, across every principal. See [`MAX_RETAINED_REQUESTS`].
-    ring: VecDeque<LlmRequestRecord>,
+    ring: VecDeque<RequestRecord>,
 }
 
 #[derive(Default)]
-pub(crate) struct LlmRequestLog {
+pub(crate) struct RequestLog {
     state: Mutex<LogState>,
 }
 
@@ -314,10 +314,10 @@ pub(crate) struct LlmRequestLog {
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse
 /// than no chain at all.
-pub(crate) static REQUESTS: std::sync::LazyLock<LlmRequestLog> =
-    std::sync::LazyLock::new(LlmRequestLog::new);
+pub(crate) static REQUESTS: std::sync::LazyLock<RequestLog> =
+    std::sync::LazyLock::new(RequestLog::new);
 
-impl LlmRequestLog {
+impl RequestLog {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -387,7 +387,7 @@ impl LlmRequestLog {
     /// amnestied. The tests drive the PRODUCTION path and then read through here, which is the only
     /// thing that can distinguish "the plane chains its requests" from "the chain works".
     #[allow(dead_code)]
-    pub(crate) fn records_for(&self, principal: &str) -> Vec<LlmRequestRecord> {
+    pub(crate) fn records_for(&self, principal: &str) -> Vec<RequestRecord> {
         self.state()
             .ring
             .iter()

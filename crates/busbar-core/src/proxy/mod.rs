@@ -146,7 +146,7 @@ pub use busbar_substrate::egress::engine::{
 /// arms a build can fail on — so the panic path here is unreachable by construction.
 pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
     busbar_substrate::egress::engine::build_client(spec)
-        .expect("the LLM-lane engine posture has no failing build arm")
+        .expect("the base egress engine posture has no failing build arm")
 }
 pub(crate) use engine::*;
 pub(crate) use hooks::*;

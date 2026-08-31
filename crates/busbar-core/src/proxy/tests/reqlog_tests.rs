@@ -112,7 +112,7 @@ fn the_outcome_words_follow_the_terminal_and_the_unguessable_reason_stays_empty(
 /// this asserts on the verification and not merely on the length.
 #[test]
 fn the_ring_is_bounded_and_the_surviving_suffix_still_verifies() {
-    let log = LlmRequestLog::new();
+    let log = RequestLog::new();
     let principal = "key-bounded";
     for i in 0..(MAX_RETAINED_REQUESTS + 10) {
         log.record(principal, an_input(200 + (i % 3) as u16));
@@ -142,7 +142,7 @@ fn the_ring_is_bounded_and_the_surviving_suffix_still_verifies() {
 /// least-recently-used chain.
 #[test]
 fn the_chain_position_map_stays_bounded_and_evicts_least_recently_used() {
-    let log = LlmRequestLog::new();
+    let log = RequestLog::new();
     let overflow_by = 100;
     // `hot` records FIRST — with no LRU touch it would sit at the front and be evicted first.
     let hot = "key-hot";

@@ -30,8 +30,8 @@
 
 use crate::governance::{GovState, MemoryStore};
 use crate::proxy::reqlog::{
-    LlmRequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED,
-    REASON_NOT_GRANTED, REQUESTS,
+    RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
+    REQUESTS,
 };
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
@@ -158,7 +158,7 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
     handle.abort();
     server.shutdown().await;
 
-    let records: Vec<LlmRequestRecord> = REQUESTS.records_for(&key_id);
+    let records: Vec<RequestRecord> = REQUESTS.records_for(&key_id);
     assert_eq!(
         records.len(),
         2,
