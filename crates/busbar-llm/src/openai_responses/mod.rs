@@ -151,9 +151,9 @@ const MAX_OPEN_TOOLS: usize = busbar_core::proto::openai_family::OPENAI_FAMILY_M
 const TEXT_INDEX_KEY_OFFSET: usize = 1_000;
 
 /// Base62 alphabet the native Responses ids draw their opaque suffix from — the shared
-/// single-source-of-truth atom (see `busbar_core::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synthesize_item_id`] and [`synthesize_response_id`].
-const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
 
 /// Width of the opaque base62 suffix on a synthesized item id (`msg_…`/`fc_…`). Native Responses
 /// item ids carry a long opaque random token with no positional structure; 48 base62 chars matches
@@ -277,7 +277,7 @@ fn synth_token<const N: usize>() -> String {
     // Largest multiple of 62 that fits in a u8 (62 * 4). A byte in `0..REJECT_THRESHOLD` maps to a
     // base62 digit with NO modular bias; a byte >= this threshold (248..=255) is rejected so every
     // base62 character stays equiprobable. See the docstring for the bias rationale.
-    const REJECT_THRESHOLD: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD;
+    const REJECT_THRESHOLD: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
 
     let mut token = [b'0'; N];
     for slot in token.iter_mut() {
@@ -550,7 +550,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
 /// rule.
-fn responses_error_code(err: &busbar_core::proto::IrError) -> String {
+fn responses_error_code(err: &busbar_substrate::proto::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
             return s.to_string();
@@ -606,7 +606,7 @@ pub struct ResponsesReader;
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -638,7 +638,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }

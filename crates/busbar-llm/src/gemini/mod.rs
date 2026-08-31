@@ -348,8 +348,8 @@ pub(crate) struct GeminiReader;
 /// Gemini `responseId` draws from (e.g. `PXmFaPzVMI…`). Carries no `-`/`_`, so no separator or
 /// hyphen leaks the synthetic boundary the old `{:x}-{:x}` form exposed.
 /// Base62 alphabet for the synthesized `responseId` — the shared single-source-of-truth atom (see
-/// `busbar_core::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
-const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
+/// `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
+const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
 
 /// Width of a synthesized Gemini `responseId`. Native Gemini bodies/streams carry a short opaque
 /// base64url-style token (~11–16 chars) with NO positional structure; 16 base62 chars stays in that
@@ -361,7 +361,7 @@ const RESPONSE_ID_TOKEN_LEN: usize = 16;
 /// of 62 that fits in a `u8` is `4 * 62 = 248`. Any random byte `>= 248` is in the partial final
 /// block (`248..=255` → residues `0..=7`) that would otherwise be over-represented by a bare
 /// `byte % 62`, so we reject and resample those to keep the symbol distribution uniform.
-const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD;
+const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD;
 
 /// Mint a Gemini-shaped `responseId` for the cross-protocol path where the backend supplied none.
 ///
@@ -1718,7 +1718,8 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty() || data_str == busbar_core::proto::SSE_DONE_SENTINEL {
+                    if data_str.is_empty() || data_str == busbar_substrate::proto::SSE_DONE_SENTINEL
+                    {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }
                     // Validate the payload is JSON before forwarding so a malformed frame cannot

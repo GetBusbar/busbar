@@ -147,7 +147,7 @@ impl ProtocolReader for CohereReader {
         let _t = busbar_timing::timeit!("cohere_read_request");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -158,7 +158,7 @@ impl ProtocolReader for CohereReader {
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
 
@@ -172,7 +172,9 @@ impl ProtocolReader for CohereReader {
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         })
                     }
@@ -188,7 +190,9 @@ impl ProtocolReader for CohereReader {
                     if !cv.is_null() && !cv.is_string() && !cv.is_array() {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         });
                     }
@@ -364,7 +368,8 @@ impl ProtocolReader for CohereReader {
                                         .ok_or(IrError {
                                             class: StatusClass::ClientError,
                                             provider_signal: Some(
-                                                busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                                busbar_substrate::proto::SIGNAL_IR_PARSE
+                                                    .to_string(),
                                             ),
                                             retry_after: None,
                                         })?
@@ -516,7 +521,7 @@ impl ProtocolReader for CohereReader {
         } else {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -669,7 +674,7 @@ impl ProtocolReader for CohereReader {
         state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
-        if data.as_str() == Some(busbar_core::proto::SSE_DONE_SENTINEL) || !data.is_object() {
+        if data.as_str() == Some(busbar_substrate::proto::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 
@@ -1079,12 +1084,12 @@ impl ProtocolReader for CohereReader {
         let _t = busbar_timing::timeit!("cohere_read_response");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
         let message_val = obj.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 

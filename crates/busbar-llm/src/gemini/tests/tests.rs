@@ -2197,7 +2197,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
 #[test]
 fn test_stream_error_emits_full_google_rpc_status() {
     let writer = GeminiWriter;
-    let err = busbar_core::proto::IrError {
+    let err = busbar_substrate::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -2226,7 +2226,7 @@ fn test_stream_error_emits_full_google_rpc_status() {
 #[test]
 fn test_stream_error_server_error_maps_internal() {
     let writer = GeminiWriter;
-    let err = busbar_core::proto::IrError {
+    let err = busbar_substrate::proto::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,

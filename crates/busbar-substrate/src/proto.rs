@@ -12,6 +12,110 @@
 /// OpenAI error `type` for a missing or invalid API key.
 pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
 
+// ── Neutral protocol atoms relocated DOWN from `busbar-core` (`proto`) so the `busbar-llm` dialect
+//    crate names them WITHOUT reaching into `busbar-core` (the reverse-edge rule, plane-extraction
+//    §6.2). Each is dependency-free (a busbar-internal label, an SSE sentinel, a header name, a pure
+//    byte/JSON helper) or names only substrate types (`breaker::CanonicalSignal`, `axum::http`, the
+//    substrate diagnostics catalog). `busbar-core` re-exports each from its historical
+//    `proto::…` path so every in-core / plugin caller compiles unchanged; values are byte-identical
+//    to the pre-move definitions.
+
+/// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
+/// layer reads to classify a translation/parse error). A busbar-internal signal, NOT a wire shape, so
+/// it lives in the agnostic proto layer; the per-protocol readers reference it rather than re-spelling
+/// the literal.
+pub const SIGNAL_IR_PARSE: &str = "ir_parse";
+
+/// The OpenAI-style SSE stream terminator sentinel (`data: [DONE]`). The bare token is matched by the
+/// cross-protocol streaming core and several readers; the full framed bytes are emitted on egress.
+/// Shared here so no reader/writer re-spells either form.
+pub const SSE_DONE_SENTINEL: &str = "[DONE]";
+/// The full framed `data: [DONE]\n\n` bytes emitted on egress. See [`SSE_DONE_SENTINEL`].
+pub const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
+
+/// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
+/// builders across protocols; named once so no builder re-spells it.
+pub const HDR_AUTHORIZATION: &str = "authorization";
+
+/// An IR-level error, currently an alias for `CanonicalSignal` (the normalized error signal).
+pub type IrError = crate::breaker::CanonicalSignal;
+
+/// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
+/// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens
+/// (Gemini `responseId`, Responses `msg_`/`fc_`/`resp_` suffixes). Hoisted here as the single source
+/// of truth so the two id generators cannot drift on the character set or the bias-elimination cutoff
+/// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
+/// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
+pub const BASE62_ALPHABET: &[u8; 62] =
+    b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+/// The rejection-sampling threshold paired with [`BASE62_ALPHABET`]; see its docs.
+pub const BASE62_REJECT_THRESHOLD: u8 = 248;
+
+/// Build the `Authorization: Bearer <key>` header pair for the pure-Bearer protocol writers
+/// (OpenAI, `/v1/responses`, Gemini's `x-goog`… aside, Cohere). Shared so the warn+OMIT policy lives
+/// in ONE place rather than being copy-pasted (and drifting) per writer.
+///
+/// `HeaderValue::from_str` rejects ASCII control bytes (a stray CR/LF/NUL a config system may have
+/// injected). We surface a coded diagnostic (naming the protocol so the operator can locate the
+/// misconfigured lane) and OMIT the header entirely (empty Vec) rather than emitting a syntactically
+/// empty `Authorization: ` header (a fingerprinting tell). The key is NEVER logged (it is the secret);
+/// only the protocol name and the fact that the bytes are malformed.
+pub fn bearer_auth_headers(
+    proto: &str,
+    key: &str,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    match axum::http::HeaderValue::from_str(&format!("Bearer {key}")) {
+        Ok(value) => vec![(
+            axum::http::HeaderName::from_static(HDR_AUTHORIZATION),
+            value,
+        )],
+        Err(_) => {
+            crate::diag_debug!(
+                crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
+                protocol = proto,
+                "authorization credential contains invalid header bytes (ASCII control character); \
+                 omitting auth header — upstream will reject with 401"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Project each message's `(role, content)` into a `(String, String)` pair when BOTH are plain
+/// strings, or `None` if any message is missing a string role/content. A neutral serde_json projection
+/// with no protocol knowledge.
+pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
+    messages
+        .iter()
+        .map(|m| {
+            let role = m
+                .get("role")
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            let text = m
+                .get("content")
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            Some((role, text))
+        })
+        .collect()
+}
+
+/// The `event:` name of one SSE frame, BORROWED from the frame bytes — the cheap probe for a
+/// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
+/// Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not UTF-8, and
+/// the LAST `event:` line wins when a frame illegally carries several.
+pub fn sse_event_type(frame: &[u8]) -> &str {
+    let mut name = "";
+    for line in frame.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(b"event:") {
+            name = std::str::from_utf8(rest).map(str::trim).unwrap_or("");
+        }
+    }
+    name
+}
+
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
 /// binds TIGHTER — it names an earlier rung of the historical detection ladder (a mandatory-unique
 /// auth header binds tighter than a path verb, which binds tighter than a bare path suffix). The

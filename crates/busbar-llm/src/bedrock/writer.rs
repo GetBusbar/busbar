@@ -81,7 +81,7 @@ pub fn sigv4_sign_headers(
     };
     let mut out = vec![
         (
-            HeaderName::from_static(busbar_core::proto::HDR_AUTHORIZATION),
+            HeaderName::from_static(busbar_substrate::proto::HDR_AUTHORIZATION),
             authorization_val,
         ),
         (
@@ -149,7 +149,7 @@ impl ProtocolWriter for BedrockWriter {
         if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_core::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_substrate::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -1006,7 +1006,7 @@ impl ProtocolWriter for BedrockWriter {
     /// `write_response_event` Error arm so both stay consistent.
     fn write_response_exception(
         &self,
-        err: &busbar_core::proto::IrError,
+        err: &busbar_substrate::proto::IrError,
     ) -> Option<(String, String)> {
         let (exception_name, message) = bedrock_stream_exception_for(err);
         Some((exception_name.to_string(), message))
@@ -1014,7 +1014,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn write_error_frame(
         &self,
-        err: &busbar_core::proto::IrError,
+        err: &busbar_substrate::proto::IrError,
     ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
         // error is a modeled-exception event-stream frame emitted via `write_response_exception`

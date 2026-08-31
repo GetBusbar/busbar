@@ -1401,7 +1401,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
 fn test_write_response_event_error_names_real_exception() {
     let writer = BedrockWriter;
 
-    let throttle = IrStreamEvent::Error(busbar_core::proto::IrError {
+    let throttle = IrStreamEvent::Error(busbar_substrate::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -1420,7 +1420,7 @@ fn test_write_response_event_error_names_real_exception() {
 
     // A server-class error maps to InternalServerException and falls back to the exception name
     // when no provider_signal is present.
-    let server = IrStreamEvent::Error(busbar_core::proto::IrError {
+    let server = IrStreamEvent::Error(busbar_substrate::proto::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -2720,7 +2720,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
     ];
 
     for (class, expected) in cases {
-        let err = busbar_core::proto::IrError {
+        let err = busbar_substrate::proto::IrError {
             class,
             provider_signal: Some("upstream detail".to_string()),
             retry_after: None,
@@ -2740,7 +2740,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         assert_eq!(msg, "upstream detail", "message prefers provider_signal");
 
         // Fallback event-arm path uses the SAME stream union.
-        let ev = IrStreamEvent::Error(busbar_core::proto::IrError {
+        let ev = IrStreamEvent::Error(busbar_substrate::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -2769,7 +2769,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         StatusClass::Auth,
         StatusClass::Billing,
     ] {
-        let err = busbar_core::proto::IrError {
+        let err = busbar_substrate::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -5972,7 +5972,7 @@ fn cache_usage_is_additive_input_not_reduced() {
 /// reaches a Bedrock client as a typed, decodable exception.
 #[test]
 fn write_response_exception_folds_to_stream_union_members() {
-    let mk = |class| busbar_core::proto::IrError {
+    let mk = |class| busbar_substrate::proto::IrError {
         class,
         provider_signal: None,
         retry_after: None,
@@ -5996,7 +5996,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
     }
     // The message prefers the upstream provider_signal when present.
-    let err = busbar_core::proto::IrError {
+    let err = busbar_substrate::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,

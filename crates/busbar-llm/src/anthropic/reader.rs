@@ -195,7 +195,7 @@ impl ProtocolReader for AnthropicReader {
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -240,7 +240,7 @@ impl ProtocolReader for AnthropicReader {
             // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
             let messages_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for msg_val in messages_arr {
@@ -635,7 +635,7 @@ impl ProtocolReader for AnthropicReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
 
@@ -646,7 +646,7 @@ impl ProtocolReader for AnthropicReader {
             _ => {
                 return Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
                     retry_after: None,
                 })
             }
@@ -655,7 +655,7 @@ impl ProtocolReader for AnthropicReader {
         // Parse content blocks
         let content_val = obj.get("content").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();

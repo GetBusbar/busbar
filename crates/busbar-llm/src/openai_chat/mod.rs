@@ -40,7 +40,7 @@ pub fn protocol() -> Protocol {
 /// wrinkle) and no signing context needed. Retires the `_ => StaticBearer{"openai"}` arm that used
 /// to be `egress_auth::resolve`'s catch-all default.
 fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-    busbar_core::proto::bearer_auth_headers(PROTO_OPENAI, key)
+    busbar_substrate::proto::bearer_auth_headers(PROTO_OPENAI, key)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
@@ -375,9 +375,9 @@ fn write_openai_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
 const COMPLETION_ID_TOKEN_LEN: usize = 24;
 
 /// Base62 alphabet native OpenAI completion ids draw their suffix from — the shared
-/// single-source-of-truth atom (see `busbar_core::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_substrate::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synth_completion_id`].
-const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_substrate::proto::BASE62_ALPHABET;
 
 /// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
 /// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
@@ -487,7 +487,7 @@ pub fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::V
 /// stops and the remaining slots keep their '0' fill, preserving the panic-free contract.
 fn synth_completion_id() -> String {
     // Largest multiple of 62 that fits in a u8; bytes >= this are rejected to keep the draw uniform.
-    const BASE62_REJECT_FLOOR: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
+    const BASE62_REJECT_FLOOR: u8 = busbar_substrate::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
     let mut token = [b'0'; COMPLETION_ID_TOKEN_LEN];
     let mut filled = 0usize;
     // Pull entropy in batches and consume only the in-range bytes. If a batch yields too few usable
@@ -674,7 +674,7 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -693,7 +693,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "image_url" => {
             let image_obj = obj.get("image_url").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -735,7 +735,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "input_audio" => {
             let audio_obj = obj.get("input_audio").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let data = audio_obj
@@ -767,7 +767,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "file" => {
             let file_obj = obj.get("file").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let name = file_obj
@@ -844,7 +844,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
 fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 

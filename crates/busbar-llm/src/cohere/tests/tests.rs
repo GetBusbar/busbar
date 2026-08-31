@@ -1043,7 +1043,7 @@ fn test_synthesized_ids_are_unique() {
 /// A well-formed credential produces a single `Authorization: Bearer <key>` header.
 #[test]
 fn test_auth_headers_valid_key_emits_bearer() {
-    let headers = busbar_core::proto::bearer_auth_headers("cohere", "valid-key-123");
+    let headers = busbar_substrate::proto::bearer_auth_headers("cohere", "valid-key-123");
     assert_eq!(headers.len(), 1, "exactly one auth header");
     assert_eq!(headers[0].0.as_str(), "authorization");
     assert_eq!(
@@ -1059,7 +1059,7 @@ fn test_auth_headers_valid_key_emits_bearer() {
 /// `gemini.rs::test_auth_headers_invalid_key_omits_header_no_empty_value`.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers = busbar_core::proto::bearer_auth_headers("cohere", "bad\nkey");
+    let headers = busbar_substrate::proto::bearer_auth_headers("cohere", "bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid credential must omit the auth header entirely, got {headers:?}"
@@ -1070,7 +1070,7 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
 /// an empty value).
 #[test]
 fn test_auth_headers_control_byte_key_omits_header() {
-    let headers = busbar_core::proto::bearer_auth_headers("cohere", "key\u{0000}bad");
+    let headers = busbar_substrate::proto::bearer_auth_headers("cohere", "key\u{0000}bad");
     assert!(
         headers.is_empty(),
         "a control-byte credential must omit the auth header entirely, got {headers:?}"
@@ -1339,7 +1339,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     let writer = CohereWriter;
 
     // Generic infrastructure error -> ERROR.
-    let infra = IrStreamEvent::Error(busbar_core::proto::IrError {
+    let infra = IrStreamEvent::Error(busbar_substrate::proto::IrError {
         class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: Some("internal_server_error".to_string()),
         retry_after: None,
@@ -1415,7 +1415,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
 
     // Content-moderation signal -> ERROR_TOXIC.
-    let toxic = IrStreamEvent::Error(busbar_core::proto::IrError {
+    let toxic = IrStreamEvent::Error(busbar_substrate::proto::IrError {
         class: busbar_substrate::breaker::StatusClass::ClientError,
         provider_signal: Some("content_filter_safety".to_string()),
         retry_after: None,
@@ -1437,7 +1437,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
 
     // An absent provider_signal still produces a native ERROR termination (never `type: error`).
-    let bare = IrStreamEvent::Error(busbar_core::proto::IrError {
+    let bare = IrStreamEvent::Error(busbar_substrate::proto::IrError {
         class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,

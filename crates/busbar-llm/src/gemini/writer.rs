@@ -91,7 +91,7 @@ impl ProtocolWriter for GeminiWriter {
         if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_core::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_substrate::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs

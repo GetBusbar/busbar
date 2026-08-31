@@ -797,7 +797,7 @@ impl StreamTranslate {
                     if self.same_proto
                         && self.egress.name_static() == busbar_core::proto::PROTO_ANTHROPIC
                         && !matches!(
-                            busbar_core::proto::sse_event_type(frame),
+                            busbar_substrate::proto::sse_event_type(frame),
                             "message_start" | "message_delta" | "error"
                         )
                     {

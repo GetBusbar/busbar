@@ -3205,7 +3205,7 @@ fn singular_read_response_event_delegates_to_fanout() {
 // singular adapter — confirming the delegation is faithful at the empty boundary.
 #[test]
 fn singular_read_response_event_empty_chunk_yields_none() {
-    let done = serde_json::Value::String(busbar_core::proto::SSE_DONE_SENTINEL.to_string());
+    let done = serde_json::Value::String(busbar_substrate::proto::SSE_DONE_SENTINEL.to_string());
     assert!(OpenAiReader.read_response_event("", &done).is_none());
 }
 
@@ -3602,7 +3602,7 @@ fn header_value(headers: &[(HeaderName, HeaderValue)], name: &str) -> Option<Str
 
 #[test]
 fn auth_headers_valid_key_emits_bearer_authorization() {
-    let headers = busbar_core::proto::bearer_auth_headers("openai", "sk-openai-good-key");
+    let headers = busbar_substrate::proto::bearer_auth_headers("openai", "sk-openai-good-key");
     assert_eq!(
         header_value(&headers, "authorization").as_deref(),
         Some("Bearer sk-openai-good-key")
@@ -3617,7 +3617,7 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
     // header entirely (empty Vec) rather than emitting an empty `authorization` value — the empty
     // value was both a syntactically invalid header and a fingerprinting tell. A warn line (not
     // asserted here) tells the operator the lane credential bytes are invalid.
-    let headers = busbar_core::proto::bearer_auth_headers("openai", "sk-openai-bad\nkey");
+    let headers = busbar_substrate::proto::bearer_auth_headers("openai", "sk-openai-bad\nkey");
     assert!(
         header_value(&headers, "authorization").is_none(),
         "invalid key must OMIT the authorization header, not emit an empty value"

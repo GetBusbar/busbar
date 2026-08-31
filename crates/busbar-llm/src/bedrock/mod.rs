@@ -292,7 +292,7 @@ fn attach_bedrock_error_headers(headers: &mut axum::http::HeaderMap, kind: &str)
 /// Shared by `write_response_exception` (the StreamTranslate exception-frame path) and the fallback
 /// `write_response_event` Error arm (also a stream-output context) so both stay consistent. The
 /// message prefers the upstream's `provider_signal`, falling back to the exception name.
-fn bedrock_stream_exception_for(err: &busbar_core::proto::IrError) -> (&'static str, String) {
+fn bedrock_stream_exception_for(err: &busbar_substrate::proto::IrError) -> (&'static str, String) {
     let exception_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
         StatusClass::Overloaded => EXC_SERVICE_UNAVAILABLE,

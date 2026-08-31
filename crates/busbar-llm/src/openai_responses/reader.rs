@@ -97,14 +97,14 @@ impl ProtocolReader for ResponsesReader {
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         if obj.is_empty() {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -133,7 +133,7 @@ impl ProtocolReader for ResponsesReader {
             if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
                 return Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                    provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 });
             }
@@ -215,7 +215,7 @@ impl ProtocolReader for ResponsesReader {
                                 .ok_or(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 })?
@@ -297,7 +297,7 @@ impl ProtocolReader for ResponsesReader {
                                     return Err(IrError {
                                         class: StatusClass::ClientError,
                                         provider_signal: Some(
-                                            busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                            busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
                                         ),
                                         retry_after: None,
                                     });
@@ -417,7 +417,7 @@ impl ProtocolReader for ResponsesReader {
                                 return Err(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 });
@@ -464,7 +464,7 @@ impl ProtocolReader for ResponsesReader {
         } else if !obj.contains_key("instructions") {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -1252,7 +1252,7 @@ impl ProtocolReader for ResponsesReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1451,7 +1451,7 @@ impl ProtocolReader for ResponsesReader {
             // `output` here is a genuine parse failure (malformed body).
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }

@@ -101,7 +101,7 @@ impl ProtocolReader for OpenAiReader {
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -173,7 +173,7 @@ impl ProtocolReader for OpenAiReader {
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
 
@@ -191,7 +191,9 @@ impl ProtocolReader for OpenAiReader {
                     if !cv.is_null() && !cv.is_string() && !cv.is_array() {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         });
                     }
@@ -209,7 +211,9 @@ impl ProtocolReader for OpenAiReader {
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         })
                     }
@@ -291,7 +295,8 @@ impl ProtocolReader for OpenAiReader {
                                         .ok_or(IrError {
                                             class: StatusClass::ClientError,
                                             provider_signal: Some(
-                                                busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                                busbar_substrate::proto::SIGNAL_IR_PARSE
+                                                    .to_string(),
                                             ),
                                             retry_after: None,
                                         })?
@@ -299,7 +304,7 @@ impl ProtocolReader for OpenAiReader {
                                     let func = tc_val.get("function").ok_or(IrError {
                                         class: StatusClass::ClientError,
                                         provider_signal: Some(
-                                            busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                            busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
                                         ),
                                         retry_after: None,
                                     })?;
@@ -583,7 +588,7 @@ impl ProtocolReader for OpenAiReader {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
         // [DONE] sentinel (or any non-object) carries no IR events.
-        if data.as_str() == Some(busbar_core::proto::SSE_DONE_SENTINEL) {
+        if data.as_str() == Some(busbar_substrate::proto::SSE_DONE_SENTINEL) {
             return out;
         }
 
@@ -959,26 +964,26 @@ impl ProtocolReader for OpenAiReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
 
         // Get choices array
         let choices_val = obj.get("choices").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
         let choices = choices_val.as_array().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
 
         if choices.is_empty() {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
                 retry_after: None,
             });
         }
@@ -1001,7 +1006,7 @@ impl ProtocolReader for OpenAiReader {
         // Parse role (should be "assistant")
         let message_val = choice.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
         let _role_str = message_val
@@ -1087,7 +1092,7 @@ impl ProtocolReader for OpenAiReader {
                         .to_string();
                     let func = tc_val.get("function").ok_or(IrError {
                         class: StatusClass::ClientError,
-                        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
+                        provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.into()),
                         retry_after: None,
                     })?;
                     let name = func

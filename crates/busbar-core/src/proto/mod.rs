@@ -19,52 +19,20 @@ pub(crate) use crate::breaker::StatusClass;
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
 // production moved out with the anthropic extraction.
 
-/// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
-/// layer reads to classify a translation/parse error). A busbar-internal signal, NOT a wire shape, so
-/// it lives in the agnostic proto layer; the per-protocol readers reference it rather than re-spelling
-/// the literal.
-pub const SIGNAL_IR_PARSE: &str = "ir_parse";
-
-/// The OpenAI-style SSE stream terminator sentinel (`data: [DONE]`). The bare token is matched by the
-/// cross-protocol streaming core and several readers; the full framed bytes are emitted on egress.
-/// Shared here so no reader/writer re-spells either form.
-pub const SSE_DONE_SENTINEL: &str = "[DONE]";
-pub const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
-
-/// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
-/// builders across protocols; named once so no builder re-spells it.
-pub const HDR_AUTHORIZATION: &str = "authorization";
-
-/// An IR-level error, currently an alias for `CanonicalSignal` (the normalized error signal).
-pub type IrError = crate::breaker::CanonicalSignal;
-
-/// Build the `Authorization: Bearer <key>` header pair for the pure-Bearer protocol writers
-/// (OpenAI, `/v1/responses`, Gemini's `x-goog`… aside, Cohere). Shared so the warn+OMIT policy lives
-/// in ONE place rather than being copy-pasted (and drifting) per writer.
-///
-/// `HeaderValue::from_str` rejects ASCII control bytes (a stray CR/LF/NUL a config system may have
-/// injected). The previous per-writer `unwrap_or_else(HeaderValue::from_static(""))` SILENTLY emitted
-/// a syntactically empty `Authorization: ` header — the upstream then 401s every request on the lane
-/// with no proxy-side signal, and the empty-Bearer form is itself a fingerprinting tell a backend can
-/// compare against well-formed tokens. Instead we surface a coded diagnostic (BUSBAR-7087, naming the
-/// protocol so the operator can locate the misconfigured lane) and OMIT the header entirely (empty
-/// Vec). The request is still sent (the trait can't refuse it here) and the upstream answers 401, but
-/// the log line tells the operator the lane's credential bytes are invalid. The key is NEVER logged (it is the
-/// secret); only the protocol name and the fact that the bytes are malformed.
-pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
-    match HeaderValue::from_str(&format!("Bearer {key}")) {
-        Ok(value) => vec![(HeaderName::from_static(HDR_AUTHORIZATION), value)],
-        Err(_) => {
-            crate::diagnostics::diag_debug!(
-                crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
-                protocol = proto,
-                "authorization credential contains invalid header bytes (ASCII control character); \
-                 omitting auth header — upstream will reject with 401"
-            );
-            Vec::new()
-        }
-    }
-}
+// Neutral protocol atoms RELOCATED DOWN to `busbar-substrate` (`busbar_substrate::proto`) so the
+// `busbar-llm` dialect crate names them without reaching into `busbar-core` (reverse-edge rule,
+// plane-extraction §6.2). Re-exported here at their historical `busbar_core::proto::…` paths so every
+// in-core / plugin / witness-build caller compiles unchanged; the values are byte-identical.
+//
+// - `SIGNAL_IR_PARSE`     — busbar-internal IR-parse `provider_signal` label.
+// - `SSE_DONE_SENTINEL` / `SSE_DONE_FRAME` — the OpenAI-style SSE terminator (bare token + framed bytes).
+// - `HDR_AUTHORIZATION`   — the canonical lowercase `Authorization` header name.
+// - `IrError`             — the IR-level error alias (`breaker::CanonicalSignal`).
+// - `bearer_auth_headers` — the shared `Authorization: Bearer <key>` builder (warn+OMIT on bad bytes).
+pub use busbar_substrate::proto::{
+    bearer_auth_headers, IrError, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
+    SSE_DONE_SENTINEL,
+};
 
 /// Signal the RESPONSE-side provider metadata that this egress dialect carries and no ingress
 /// dialect can express, so it does not vanish from a translated response with nothing in the logs.
@@ -125,9 +93,8 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// of truth so the two id generators cannot drift on the character set or the bias-elimination cutoff
 /// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
 /// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
-pub const BASE62_ALPHABET: &[u8; 62] =
-    b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-pub const BASE62_REJECT_THRESHOLD: u8 = 248;
+// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
+pub use busbar_substrate::proto::{BASE62_ALPHABET, BASE62_REJECT_THRESHOLD};
 
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
 /// translate step failed after first byte). Lives in the proto layer — the lowest common ancestor —
@@ -216,22 +183,8 @@ pub use busbar_substrate::proto::SigningContext;
 /// plain-string content — the re-framing dialects cannot render that faithfully, so their
 /// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
 /// than shipping a half-applied rewrite.
-pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
-    messages
-        .iter()
-        .map(|m| {
-            let role = m
-                .get("role")
-                .and_then(serde_json::Value::as_str)?
-                .to_string();
-            let text = m
-                .get("content")
-                .and_then(serde_json::Value::as_str)?
-                .to_string();
-            Some((role, text))
-        })
-        .collect()
-}
+// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
+pub use busbar_substrate::proto::rewrite_text_pairs;
 
 // `ArrayStreamFramer` (the streaming JSON-array reframer the SSE seam drives) and `DialectCodec` (the
 // 4th neutral per-PROTOCOL computed-codec seam the operation-blind driver reads) RELOCATED to
@@ -370,16 +323,8 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
 /// not. Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not
 /// UTF-8 — the same value `parse_sse_frame` reports for those shapes — and, like it, the LAST
 /// `event:` line wins when a frame illegally carries several.
-pub fn sse_event_type(frame: &[u8]) -> &str {
-    let mut name = "";
-    for line in frame.split(|&b| b == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(rest) = line.strip_prefix(b"event:") {
-            name = std::str::from_utf8(rest).map(str::trim).unwrap_or("");
-        }
-    }
-    name
-}
+// Relocated DOWN to `busbar_substrate::proto`; re-exported here (see the neutral-atoms block above).
+pub use busbar_substrate::proto::sse_event_type;
 
 /// Byte-level removal of a TOP-LEVEL `"usage"` member from a JSON object string, preserving every
 /// other byte exactly. Returns `Some(stripped)` when a single top-level `"usage"` member was found

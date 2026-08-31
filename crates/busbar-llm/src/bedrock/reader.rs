@@ -160,7 +160,7 @@ impl ProtocolReader for BedrockReader {
         let _t = busbar_timing::timeit!("bedrock_read_request");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -274,7 +274,7 @@ impl ProtocolReader for BedrockReader {
             // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
@@ -286,7 +286,9 @@ impl ProtocolReader for BedrockReader {
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         })
                     }
@@ -301,7 +303,9 @@ impl ProtocolReader for BedrockReader {
                     if !cv.is_array() {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(
+                                busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
+                            ),
                             retry_after: None,
                         });
                     }
@@ -326,7 +330,7 @@ impl ProtocolReader for BedrockReader {
                                 .ok_or(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_core::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_substrate::proto::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 })?
@@ -1171,7 +1175,7 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
-                out.push(IrStreamEvent::Error(busbar_core::proto::IrError {
+                out.push(IrStreamEvent::Error(busbar_substrate::proto::IrError {
                     class,
                     provider_signal: message.or_else(|| Some(exc.to_string())),
                     retry_after: None,
@@ -1192,7 +1196,7 @@ impl ProtocolReader for BedrockReader {
         let _t = busbar_timing::timeit!("bedrock_read_response");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1224,13 +1228,13 @@ impl ProtocolReader for BedrockReader {
 
         let output_val = obj.get("output").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         let message_val = output_val.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
