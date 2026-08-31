@@ -294,15 +294,27 @@ pub use registry::{
     VendorResponseMetadataFn,
 };
 
-/// Canonical protocol-id vocabulary. Every PRODUCTION comparison / match arm / registry insertion on
-/// a protocol name goes through these consts so the router, dispatch, projections, and registry
-/// cannot drift on a typo'd literal. Tests keep raw literals by convention (golden-value checks).
-pub const PROTO_ANTHROPIC: &str = "anthropic";
-pub const PROTO_OPENAI: &str = "openai";
-pub const PROTO_GEMINI: &str = "gemini";
-pub const PROTO_BEDROCK: &str = "bedrock";
-pub const PROTO_COHERE: &str = "cohere";
-pub const PROTO_RESPONSES: &str = "responses";
+/// Canonical protocol-id vocabulary — now TEST-ONLY FIXTURES. PRODUCTION core no longer names a
+/// dialect: every request-path site reads the name off the protocol registry instead — the URL-model
+/// arrivals live in `busbar-llm` (gemini/bedrock), the `/v1/messages` convenience surface resolves its
+/// dialect through [`residual_dialect_for_path`], the error-shaping fallback through
+/// [`residual_default_dialect`], and the frozen config lane-default is a frozen-wire literal in
+/// `config`. What remains is core's OWN test binary's fixtures, which name the six dialects by
+/// convention (golden-value checks) — so these consts are confined to test / `test-support` scope,
+/// where a neutral crate naming a dialect is expected, and the neutral PRODUCTION source spells none.
+#[cfg(any(test, feature = "test-support"))]
+mod dialect_test_names {
+    pub const PROTO_ANTHROPIC: &str = "anthropic";
+    pub const PROTO_OPENAI: &str = "openai";
+    pub const PROTO_GEMINI: &str = "gemini";
+    pub const PROTO_BEDROCK: &str = "bedrock";
+    pub const PROTO_COHERE: &str = "cohere";
+    pub const PROTO_RESPONSES: &str = "responses";
+}
+#[cfg(any(test, feature = "test-support"))]
+pub use dialect_test_names::{
+    PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
+};
 
 // The LLM chat dialects' shared head-key set (`model`/`stream`/`stream_options`/`system`) RELOCATED
 // to the LLM plugin (`busbar_llm::proto_codec::LLM_CHAT_HEAD_KEYS`) — it is LLM vocabulary, so it

@@ -30,9 +30,15 @@ use crate::plane::Ingress;
 /// `shaping_wire_format` for why a MOUNTED plane with several dialects must still name one for an
 /// error body, and for what reading `wire_format` here did the day the A2A plane grew a second.
 pub(crate) fn envelope_dialect(ingress: Ingress) -> &'static str {
+    // The residual fallback dialect is the one the protocol registry declares as its
+    // `residual_default` (OpenAI's is "the most widely understood of the six" — declared on its
+    // `ProtocolDecl`, read here so core spells no dialect). A build that registers no such default
+    // (every LLM dialect deleted) has no dialect to shape an unrecognised residual path in, so the
+    // caller gets the generic envelope — the honest deletion behaviour.
     ingress
         .shaping_wire_format()
-        .unwrap_or(crate::proto::PROTO_OPENAI)
+        .or_else(crate::proto::residual_default_dialect)
+        .unwrap_or("")
 }
 
 /// Render `status`/`kind`/`message` in the dialect the resolved `ingress` is spoken in.

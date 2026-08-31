@@ -56,6 +56,13 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
+/// THE PATH-MODEL DIALECT ARRIVALS (gemini/bedrock URL-model ingress), RELOCATED here from
+/// `busbar-core` — the last piece of core→plane entanglement. They parse their own model out of the
+/// URL and reach the core request pipeline through the neutral
+/// [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, so this crate names no `busbar_core::`
+/// item. Registered via [`PATH_INGRESS`].
+pub mod arrival;
+
 /// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
 /// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).
 pub(crate) mod synth_rng;
@@ -198,16 +205,17 @@ pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
 /// asserts at boot that every `has_model_in_url` declaration here (gemini, bedrock) has an arrival —
 /// so a dialect that grows a URL model but forgets its arrival is a loud boot panic, not a silent
 /// fall-through. Only the two URL-model dialects appear; the four body-model dialects resolve their
-/// operation off the body and register nothing. The arrival fns themselves live in `busbar-core`
-/// (`busbar_core::ingress::{gemini_arrival, bedrock_arrival}`); this only states the NAME→fn pairing.
-pub static PATH_INGRESS: &[(&str, busbar_core::ingress::PathIngress)] = &[
+/// operation off the body and register nothing. The arrival fns live in THIS crate
+/// ([`crate::arrival::{gemini_arrival, bedrock_arrival}`]) and reach the core pipeline through the
+/// neutral `ArrivalHost` seam — no `busbar_core::` reference; this states the NAME→fn pairing.
+pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
     (
         crate::proto_codec::PROTO_GEMINI,
-        busbar_core::ingress::gemini_arrival,
+        crate::arrival::gemini_arrival,
     ),
     (
         crate::proto_codec::PROTO_BEDROCK,
-        busbar_core::ingress::bedrock_arrival,
+        crate::arrival::bedrock_arrival,
     ),
 ];
 

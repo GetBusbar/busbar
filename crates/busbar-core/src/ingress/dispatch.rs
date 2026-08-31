@@ -279,24 +279,6 @@ pub async fn operation_resolved(
 // (The per-operation axum wrappers are gone: the protocol catch-all `protocol_dispatch` resolves the
 // operation via the RequestHandler and calls `operation_ingress` directly.)
 
-/// ONE ARRIVAL, as a PATH-MODEL PROTOCOL RECEIVES IT.
-///
-/// Everything the catch-all had already extracted, handed to the protocol that declared it can
-/// serve this path. It is a struct rather than eight arguments because it crosses a FUNCTION
-/// POINTER: a declaration cannot name a signature that grows, and this is the shape the ABI's
-/// `Wire` becomes when the protocols leave core.
-pub struct Arrival {
-    pub(crate) app: Arc<App>,
-    /// The request path, already `to_string`ed by the catch-all. The protocol parses ITS OWN model
-    /// out of this; core does not know how, and that is the point of the seam.
-    pub(crate) path: String,
-    pub(crate) uri: axum::http::Uri,
-    pub(crate) gov: crate::governance::GovCtx,
-    pub(crate) caller: crate::auth::CallerToken,
-    pub(crate) headers: HeaderMap,
-    pub(crate) body: Bytes,
-}
-
 /// THE PROTOCOL CATCH-ALL (design: web server listens for anything). One axum fallback replaces the
 /// per-path protocol routes: the Router does DUMB protocol identification from (path, headers); the
 /// identified protocol's RequestHandler reads path+body and decides the operation; the operation's
@@ -376,12 +358,18 @@ pub(crate) async fn protocol_dispatch(
     // `busbar-substrate` (it named the core-only `Arrival`, which the neutral leaf cannot). Same fn
     // pointer, same boxing, same by-name resolution — see `crate::ingress::path_ingress`.
     if let Some(path_ingress) = crate::ingress::path_ingress::path_ingress_for(proto) {
-        return path_ingress(Arrival {
-            app,
+        // Mint the neutral arrival the dialect crate (`busbar-llm`) receives: its own URL-parsing
+        // reads `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward
+        // pipeline through `host`, threading the core-only `App`/`GovCtx`/`CallerToken` back opaquely
+        // as `ctx` — so it names no `busbar_core::` item and core names no dialect.
+        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+            crate::ingress::arrival_host::ArrivalPayload { app, gov, caller },
+        );
+        return path_ingress(busbar_substrate::ingress::arrival::Arrival {
+            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
+            ctx,
             path,
             uri,
-            gov,
-            caller,
             headers,
             body,
         })
@@ -406,54 +394,6 @@ pub(crate) async fn protocol_dispatch(
             "the requested resource was not found",
         ),
     }
-}
-
-/// POST /model/{model_id}/invoke — Bedrock `InvokeModel` ingress. The path names the model; the
-/// bedrock RequestHandler reads the BODY and decides the operation (`textToImageParams` ⇒ image,
-/// `inputText` ⇒ embeddings). An unrecognized body is a clean 400 in the Bedrock dialect.
-pub(crate) async fn bedrock_invoke(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path(model_id): Path<String>,
-    OriginalUri(uri): OriginalUri,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // Mirror `operation_ingress`'s pre-routing accounting (`dispatch.rs:52-53`): every pre-charge
-    // exit — including this one — must flow through `finish_rejected`, or the request is invisible
-    // to Prometheus/the webhook (the invariant stated at `ingress/mod.rs:319`/`:612-615`).
-    let started = Instant::now();
-    let charged_at = crate::store::now();
-    let Some(operation) = crate::handlers::request_handler(PROTO_BEDROCK)
-        .and_then(|rh| rh.resolve_operation(uri.path(), &body))
-    else {
-        return finish_rejected(
-            &app,
-            &gov,
-            PROTO_BEDROCK,
-            crate::proxy::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            ingress_error(
-                PROTO_BEDROCK,
-                StatusCode::BAD_REQUEST,
-                crate::proxy::KIND_INVALID_REQUEST,
-                "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
-            ),
-        );
-    };
-    operation_ingress(
-        &app,
-        &gov,
-        &caller,
-        &headers,
-        body,
-        PROTO_BEDROCK,
-        operation,
-        Some(model_id),
-    )
-    .await
 }
 
 #[cfg(test)]

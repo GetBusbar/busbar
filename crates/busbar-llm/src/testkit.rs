@@ -18,12 +18,12 @@
 /// underlying substrate registrations dedupe by name/key), so a test may call it freely — including
 /// from several tests in one binary.
 ///
-/// NOTE the asymmetry with production: the `PATH_INGRESS` arrivals (gemini/bedrock URL-model) are NOT
-/// installed here. `busbar_core::ingress::path_ingress::install_path_ingress` is a SET-ONCE seam (it
-/// panics if called twice), so it cannot be driven from a per-test finalizer that many tests hit;
-/// core's own test binary resolves those arrivals through its `BUILTIN_PATH_INGRESS` fixtures instead,
-/// and a body-model `App` (the integration fixtures) needs no arrival at all.
+/// The `PATH_INGRESS` arrivals (gemini/bedrock URL-model) are seeded through the neutral
+/// `set_test_path_ingress` HOOK (idempotent, first-writer-wins), NOT the set-once production
+/// `install_path_ingress` — so a `test-support` consumer that builds a path-model `App` resolves the
+/// gemini/bedrock arrivals, while a body-model `App` (which never resolves one) is unaffected.
 pub fn install_test_seams() {
     busbar_substrate::proto::register_test_protocols(crate::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_substrate::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
 }

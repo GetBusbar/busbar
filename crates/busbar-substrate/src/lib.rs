@@ -59,6 +59,10 @@ pub mod audit {
     pub const MAX_AUDIT_ENTRIES: usize = 1000;
 }
 pub mod ingress {
+    /// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect (gemini/bedrock)
+    /// calls to reach the core request pipeline, and the protocol-name-keyed side-table the composition
+    /// root registers those arrivals through. Core implements `ArrivalHost` over its live `App`.
+    pub mod arrival;
     pub mod jsonrpc;
     // B1: the transport-neutral JSON-RPC ingress SEQUENCE (`serve`), the core-refusal vocabulary and
     // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,

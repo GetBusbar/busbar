@@ -12,7 +12,6 @@ use axum::{
 };
 use serde_json::Value;
 
-use crate::proto::{PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_GEMINI};
 use crate::state::{App, WeightedLane};
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
@@ -863,312 +862,28 @@ pub mod protocol;
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
 pub(crate) mod native;
 
-/// The protocol catch-all. `pub(crate)` for one member: `dispatch::Arrival` is the type a
-/// path-model protocol's declared ingress receives, and a declaration in `proto/` has to be able
-/// to name it.
+/// The protocol catch-all.
 pub mod dispatch;
 // `operation_resolved` is public surface (the MCP plane's ingress reaches it); `protocol_dispatch` is
 // the axum catch-all fallback the core router mounts and nothing outside core names, so it stays
 // crate-private — keeping the confidential `CallerToken` it takes off the public seam.
 pub use dispatch::operation_resolved;
 pub(crate) use dispatch::protocol_dispatch;
-/// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table that carries the arrival
-/// a path-model protocol serves itself, split off `ProtocolDecl` when the decl relocated to
-/// `busbar-substrate` (Batch C-6). `pub` so the composition root installs through it.
+/// CORE'S IMPL of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the request-pipeline
+/// seam a path-model dialect (gemini/bedrock, now in `busbar-llm`) calls back through. Core owns the
+/// resolution/forward/error-shaping; the dialect owns its URL parsing.
+pub(crate) mod arrival_host;
+/// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
+/// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
+/// (`busbar_substrate::ingress::arrival`) so the dialect crate names the registration-pair type
+/// without reaching into `busbar-core`; this module is a thin core-test seeding veneer + re-exports.
 pub mod path_ingress;
 // The registration-pair fn-pointer type, re-exported at `busbar_core::ingress::PathIngress` so the
-// composition root and the extracted protocol crate name it without the `path_ingress::` qualifier.
+// composition root names it without the `path_ingress::` qualifier.
 pub use path_ingress::PathIngress;
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
 #[cfg(test)]
 pub(crate) use dispatch::operation_ingress;
-
-// POST /v1beta/models/*rest — Gemini ingress. The native path packs MODEL and ACTION into the last
-// segment with a colon: `/v1beta/models/{model}:{action}`. axum cannot split on a `:` inside a
-// segment, so we capture the whole tail with a wildcard (`*rest`) and split on the LAST `:`
-// ourselves — model ids never contain `:` but the `:generateContent` separator always does, so the
-// last colon is unambiguous. `streamGenerateContent` ⇒ stream, `generateContent` ⇒ non-stream; any
-// other action is an unknown-or-unsupported native operation → a Gemini-shaped 404. Only the two
-// generate actions are proxied by design: busbar is a generation gateway, so non-generate model
-// methods on this surface (e.g. `countTokens`, `embedContent`, `batchGenerateContent`) are an
-// intentional, documented limitation rather than a relayed call. They return the native NOT_FOUND
-// envelope so the failure mode is at least Gemini-shaped.
-#[tracing::instrument(level = "debug", name = "gemini_ingress", skip_all)]
-/// GEMINI'S PATH-MODEL ARRIVAL, as it is DECLARED on `proto::gemini::DECL`.
-///
-/// The whole of what used to be a `PROTO_GEMINI =>` arm in core: percent-decode the tail that
-/// axum's `{*rest}` wildcard decoded before the route collapse, and hand it to this protocol's own
-/// ingress. Core no longer knows that Gemini keeps its model in the URL — it reads
-/// `ProtocolDecl::path_ingress` and calls what it finds.
-pub fn gemini_arrival(
-    a: dispatch::Arrival,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-    let rest = crate::observability::percent_decode(a.path.split("/models/").nth(1).unwrap_or(""));
-    Box::pin(gemini_ingress(
-        crate::state::CurrentApp(a.app),
-        Path(rest),
-        OriginalUri(a.uri),
-        axum::extract::Extension(a.gov),
-        axum::extract::Extension(a.caller),
-        a.headers,
-        a.body,
-    ))
-}
-
-/// BEDROCK'S PATH-MODEL ARRIVAL, as it is DECLARED on `proto::bedrock::DECL`.
-///
-/// Three shapes under one model path — `converse`, `converse-stream` and `invoke` — plus the native
-/// 404 for anything else under it. All four were a `PROTO_BEDROCK =>` arm in core; all four are
-/// this protocol's own statement about its own URL space now.
-pub fn bedrock_arrival(
-    a: dispatch::Arrival,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-    // axum's Path extractor percent-decoded {model_id} before the collapse; match it.
-    let model = crate::handlers::request_handler(PROTO_BEDROCK)
-        .and_then(|rh| rh.path_model(&a.path))
-        .map(|m| crate::observability::percent_decode(&m))
-        .unwrap_or_default();
-    if a.path.ends_with("/converse") {
-        Box::pin(bedrock_converse(
-            crate::state::CurrentApp(a.app),
-            Path(model),
-            axum::extract::Extension(a.gov),
-            axum::extract::Extension(a.caller),
-            a.headers,
-            a.body,
-        ))
-    } else if a.path.ends_with("/converse-stream") {
-        Box::pin(bedrock_converse_stream(
-            crate::state::CurrentApp(a.app),
-            Path(model),
-            axum::extract::Extension(a.gov),
-            axum::extract::Extension(a.caller),
-            a.headers,
-            a.body,
-        ))
-    } else if a.path.ends_with("/invoke") {
-        Box::pin(dispatch::bedrock_invoke(
-            crate::state::CurrentApp(a.app),
-            Path(model),
-            OriginalUri(a.uri),
-            axum::extract::Extension(a.gov),
-            axum::extract::Extension(a.caller),
-            a.headers,
-            a.body,
-        ))
-    } else {
-        Box::pin(async move {
-            crate::fallback_error_response(
-                &a.app.planes,
-                &a.path,
-                StatusCode::NOT_FOUND,
-                crate::admin::ERR_TYPE_NOT_FOUND,
-                "the requested resource was not found",
-            )
-        })
-    }
-}
-
-pub(crate) async fn gemini_ingress(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path(rest): Path<String>,
-    OriginalUri(uri): OriginalUri,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // The native Gemini error envelope echoes the API version the client actually used in its path
-    // ("v1" for the stable `/v1/models/...` surface, "v1beta" for `/v1beta/models/...`). Hardcoding
-    // "v1beta" is a distinguishability tell: the real Gemini v1 API says "v1" for these same paths.
-    // Derive the version from the matched ingress prefix (both surfaces route here via main.rs); fall
-    // back to "v1beta" only if the path is unexpectedly shaped (it always carries one of the two).
-    let api_version = gemini_api_version(uri.path());
-
-    // Captured BEFORE the path-parse guards so a malformed-path / unsupported-action rejection
-    // (which never reaches `ingress_path_model`, where `started` is otherwise taken) is still
-    // counted through `finish_rejected` — the same pre-routing observability invariant the body/path
-    // cores enforce. Without it, a malformed gemini path was invisible to Prometheus and the webhook.
-    let started = Instant::now();
-    // Header-arrival epoch for this handler's pre-routing `finish_rejected` calls. (The success path
-    // delegates to `ingress_path_model`, which pins its own `charged_at`; these pre-routing
-    // rejections never reach the admission charge, so they use `finish_rejected` — metrics + webhook
-    // but NO refund. The arg is still required for a uniform finish-family signature.) (#29)
-    let charged_at = crate::store::now();
-
-    // `rest` is everything after `/{version}/models/`, e.g. `foo:generateContent`. Split on the LAST
-    // colon into (model, action). A missing colon (or an empty model/action) is NOT necessarily a
-    // malformed Gemini path: the stable `/v1/models/{id}` prefix is SHARED with the OpenAI SDK's
-    // `model.retrieve` (`GET`/`POST /v1/models/{id}`), which carries no `:<action>`. Hardcoding a
-    // Gemini-shaped NOT_FOUND for every colon-less `/v1/models/...` request would hand an OpenAI
-    // client an undecodable Gemini envelope on this ambiguous prefix — and would diverge from the
-    // ingress resolver the fallback/405 handlers use (which maps a colon-less
-    // `/v1/models/{id}` to "openai", `/v1beta/models/...` to "gemini"). Resolve the error
-    // ENVELOPE protocol from that same canonical classifier so a colon-less hit gets the shape its
-    // most-likely client expects: `/v1beta/...` (Gemini-only surface) stays Gemini; a colon-less
-    // `/v1/models/...` (or a `/v1/models/{ft:..:..}` whose colons are NOT a Gemini action suffix)
-    // gets the canonical `not_found_error` OpenAI envelope. There is no `_ =>` catch-all on the
-    // resulting protocol: the classifier returns a registered literal and only "gemini" keeps the
-    // native Gemini NOT_FOUND envelope; every other literal shares the canonical not-found shape.
-    let (model, action) = match rest.rsplit_once(':') {
-        Some((m, a)) if !m.is_empty() && !a.is_empty() => (m, a),
-        _ => {
-            // Pre-routing failure (no parsable model/action in the path): the envelope protocol is
-            // the bounded resolved-dialect literal, which doubles as the bounded metric
-            // `ingress_protocol` label; the model was never resolved, so the `pool` label is the
-            // bounded `"unresolved"` sentinel. Routing through `finish_rejected` keeps this malformed-path
-            // rejection observable in metrics + the webhook instead of a silent early-return.
-            let envelope_proto =
-                crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
-            if crate::proto::decl_for(envelope_proto).is_some_and(|d| d.has_native_path_not_found) {
-                return finish_rejected(
-                    &app,
-                    &gov,
-                    envelope_proto,
-                    crate::proxy::POOL_LABEL_UNRESOLVED,
-                    started,
-                    charged_at,
-                    ingress_error(
-                        envelope_proto,
-                        StatusCode::NOT_FOUND,
-                        crate::proxy::KIND_NOT_FOUND,
-                        &format!(
-                "Invalid resource path: models/{rest} is not found for API version {api_version}."
-            ),
-                    ),
-                );
-            }
-            // Non-Gemini (ambiguous `/v1/models/...` without a Gemini action suffix): emit the
-            // canonical OpenAI-shaped 404 the fallback handler uses for this path, so a GET/POST on
-            // `/v1/models/{id}` produces the SAME envelope shape whether it hits this route or the
-            // method fallback — no GET-vs-POST error-shape divergence a client could probe.
-            return finish_rejected(
-                &app,
-                &gov,
-                envelope_proto,
-                crate::proxy::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
-                    envelope_proto,
-                    StatusCode::NOT_FOUND,
-                    crate::proxy::KIND_NOT_FOUND,
-                    "the requested resource was not found",
-                ),
-            );
-        }
-    };
-
-    // The gemini RequestHandler resolves WHICH operation this request is (path action + body for the
-    // generateContent multiplex) — ONE resolution, and every operation takes the SAME flow below.
-    let operation = crate::handlers::request_handler(PROTO_GEMINI)
-        .and_then(|rh| rh.resolve_operation(uri.path(), &body));
-
-    // Only the two generate actions are proxied (see the route doc above). Any other action is an
-    // intentional limitation and returns a NOT_FOUND envelope. No `_ =>` catch-all: the two
-    // supported actions are listed explicitly, with the unsupported-action fallback handled
-    // afterwards.
-    //
-    // The unsupported-action envelope SHAPE must match the same `PlaneDispatch::ingress_of` resolver
-    // the no-colon branch (and the fallback/405 handlers) use, for the same reason: the stable
-    // `/v1/models/...` prefix is SHARED with the OpenAI surface. `rsplit_once(':')` on an OpenAI
-    // fine-tune id like `ft:gpt-3.5-turbo:my-org::abc` splits a NON-empty `action` (`abc`) that is
-    // NOT a Gemini method — so this branch fires for a request a real OpenAI client made. Classify
-    // by KNOWN Gemini action suffix (what the resolver does): a genuine Gemini method such as
-    // `:countTokens`/`:embedContent` stays Gemini-shaped (a real Gemini NOT_FOUND naming the
-    // unsupported method); a colon-bearing OpenAI id whose tail is not a Gemini action gets the
-    // canonical OpenAI `not_found_error` envelope, so the same path never yields two different error
-    // shapes depending on how the client (Gemini SDK vs OpenAI SDK) reached it.
-    let stream = match (operation.is_some(), action) {
-        (true, "streamGenerateContent") => true,
-        (true, _) => false, // generateContent / embedContent / predict — non-stream in 1.2
-        (false, other) => {
-            // Pre-routing failure (unsupported native action → model never resolved): route through
-            // `finish_rejected` with the bounded resolved-dialect literal as both envelope + metric protocol
-            // and the bounded `"unresolved"` pool label, keeping it observable in metrics + webhook.
-            let envelope_proto =
-                crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
-            if crate::proto::decl_for(envelope_proto).is_some_and(|d| d.has_native_path_not_found) {
-                return finish_rejected(
-                    &app,
-                    &gov,
-                    envelope_proto,
-                    crate::proxy::POOL_LABEL_UNRESOLVED,
-                    started,
-                    charged_at,
-                    ingress_error(
-                        envelope_proto,
-                        StatusCode::NOT_FOUND,
-                        crate::proxy::KIND_NOT_FOUND,
-                        &format!(
-                            "models/{model} is not found for API version {api_version}, \
-                             or is not supported for {other}."
-                        ),
-                    ),
-                );
-            }
-            return finish_rejected(
-                &app,
-                &gov,
-                envelope_proto,
-                crate::proxy::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
-                    envelope_proto,
-                    StatusCode::NOT_FOUND,
-                    crate::proxy::KIND_NOT_FOUND,
-                    "the requested resource was not found",
-                ),
-            );
-        }
-    };
-
-    // `?alt=sse` selects SSE framing for a STREAMING request; its ABSENCE means the native client
-    // expects the JSON-array streaming format. `alt` is the documented Gemini query param; treat any
-    // `alt=sse` token in the raw query as the SSE request (matching the Gemini SDKs, which append
-    // exactly `?alt=sse`). The param is meaningless on a non-stream request, so only a streaming
-    // request without `alt=sse` engages the JSON-array framing.
-    let alt_sse = uri.query().map(query_has_alt_sse).unwrap_or(false);
-    let gemini_json_array = stream && !alt_sse;
-
-    // `operation` is Some here (a None already returned the unsupported-action envelope above);
-    // bail with the standard no-handler 404 rather than assume any operation.
-    let Some(operation) = operation else {
-        return finish_rejected(
-            &app,
-            &gov,
-            PROTO_GEMINI,
-            crate::proxy::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            ingress_error(
-                PROTO_GEMINI,
-                StatusCode::NOT_FOUND,
-                crate::proxy::KIND_NOT_FOUND,
-                "This endpoint does not support that operation.",
-            ),
-        );
-    };
-    ingress_path_model(
-        &app,
-        &gov,
-        &caller,
-        &headers,
-        body,
-        model,
-        operation,
-        stream,
-        gemini_json_array,
-        PROTO_GEMINI,
-        // Thread the path-derived api_version so a model-not-found 404 says
-        // "models/{model} is not found for API version {api_version}, …" (the native Gemini
-        // message), not the OpenAI-style copy — a distinguishability tell for SDKs that match on
-        // `error.message`.
-        Some(api_version),
-    )
-    .await
-}
 
 /// Build the human-readable message for a model/pool-miss 404, in the INGRESS protocol's native
 /// vocabulary. Gemini's real API does NOT use the OpenAI-style "The model '{model}' does not exist…"
@@ -1189,123 +904,6 @@ fn not_found_message(model: &str, gemini_api_version: Option<&str>) -> String {
         ),
         None => format!("The model '{model}' does not exist or you do not have access to it."),
     }
-}
-
-/// The Gemini API version token to echo in the native error envelope, derived from the actual
-/// ingress path the client used. busbar mounts the Gemini surface at both the stable `/v1/models/...`
-/// and the `/v1beta/models/...` prefixes (main.rs); the real Gemini API echoes whichever the caller
-/// sent ("v1" vs "v1beta"). Matching the prefix verbatim keeps the error indistinguishable from the
-/// native API — a client pinned to the stable v1 surface must not see "v1beta" leaked back. Unknown
-/// shapes fall back to "v1beta" (the historical default and the documented full surface).
-fn gemini_api_version(path: &str) -> &'static str {
-    if path.starts_with("/v1beta/") {
-        "v1beta"
-    } else if path.starts_with("/v1/") {
-        "v1"
-    } else {
-        "v1beta"
-    }
-}
-
-/// True when the raw query string carries an `alt=sse` pair (the Gemini SSE-streaming selector).
-/// Scans `&`-separated `key=value` pairs so it is not fooled by another param whose value contains
-/// the substring `alt=sse`.
-fn query_has_alt_sse(query: &str) -> bool {
-    query
-        .split('&')
-        .any(|pair| matches!(pair.split_once('='), Some(("alt", "sse"))))
-}
-
-// POST /model/:modelId/converse — Bedrock Converse ingress (non-streaming). The model lives in the
-// path (URL-encoded — Bedrock model ids contain `.` and `:`), and the non-`-stream` endpoint means
-// stream=false.
-#[tracing::instrument(level = "debug", name = "bedrock_converse", skip_all)]
-pub(crate) async fn bedrock_converse(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path(model_id): Path<String>,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let Some(op) = crate::handlers::request_handler(PROTO_BEDROCK)
-        .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/converse"), &body))
-    else {
-        return ingress_error(
-            PROTO_BEDROCK,
-            StatusCode::NOT_FOUND,
-            crate::proxy::KIND_NOT_FOUND,
-            "This endpoint does not support that operation.",
-        );
-    };
-    bedrock_ingress(&app, &gov, &caller, &headers, body, &model_id, op, false).await
-}
-
-// POST /model/:modelId/converse-stream — Bedrock Converse ingress (streaming, stream=true). The
-// upstream stream is re-encoded into binary `application/vnd.amazon.eventstream` frames (one
-// CRC32-valid frame per event via `eventstream::encode_frame`, wired through
-// `StreamTranslate::ingress_eventstream`) so a native AWS SDK Bedrock client decodes the response as
-// ConverseStream.
-#[tracing::instrument(level = "debug", name = "bedrock_converse_stream", skip_all)]
-pub(crate) async fn bedrock_converse_stream(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path(model_id): Path<String>,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let Some(op) = crate::handlers::request_handler(PROTO_BEDROCK)
-        .and_then(|rh| rh.resolve_operation(&format!("/model/{model_id}/converse-stream"), &body))
-    else {
-        return ingress_error(
-            PROTO_BEDROCK,
-            StatusCode::NOT_FOUND,
-            crate::proxy::KIND_NOT_FOUND,
-            "This endpoint does not support that operation.",
-        );
-    };
-    bedrock_ingress(&app, &gov, &caller, &headers, body, &model_id, op, true).await
-}
-
-/// Shared body for both Bedrock ingress routes: delegate to the path-model core with the
-/// route-selected stream intent.
-///
-/// The `modelId` path segment arrives ALREADY percent-decoded: axum 0.7 runs
-/// `PercentDecodedStr` on every `Path` param before the handler is called (axum-0.7.9
-/// `src/routing/url_params.rs` → `util.rs`), so an AWS SDK's `%3A`-encoded colon is already a
-/// literal `:` here. Re-decoding (the previous `percent_decode(model_id)` call) was wrong: it was a
-/// harmless no-op for today's Bedrock id shapes (which contain `:`/`/`/`.` but no surviving `%`),
-/// but a model id whose first (axum) decode legitimately yielded a literal `%XX` sequence would be
-/// corrupted by a second pass. We therefore use axum's decoded value verbatim. (`percent_decode`
-/// remains as a tested helper for any caller that holds a still-encoded segment.)
-#[allow(clippy::too_many_arguments)]
-async fn bedrock_ingress(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    caller: &crate::auth::CallerToken,
-    headers: &HeaderMap,
-    body: Bytes,
-    model_id: &str,
-    operation: crate::operation::Operation,
-    stream: bool,
-) -> Response {
-    // Bedrock never uses the gemini JSON-array framing, and a model-not-found 404 uses the canonical
-    // (non-gemini) message, so no api_version is threaded.
-    ingress_path_model(
-        app,
-        gov,
-        caller,
-        headers,
-        body,
-        model_id,
-        operation,
-        stream,
-        false,
-        PROTO_BEDROCK,
-        None,
-    )
-    .await
 }
 
 /// Minimal percent-decoding for a single path segment (no external dependency). Decodes `%XX`
@@ -1346,15 +944,21 @@ pub(crate) async fn named(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The dialect the `/v1/messages` convenience surface speaks, RESOLVED FROM THE REGISTRY (the
+    // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
+    // no dialect. `""` when no such dialect is registered (every LLM dialect deleted): the handler
+    // consult below then misses and the surface answers the generic no-handler 404, the honest
+    // deletion behaviour.
+    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
     // Deletion switch (chat is a standard operation): the named/adhoc conveniences are the
-    // anthropic-dialect chat surface, so they consult the anthropic chat OperationHandler exactly
-    // like the catch-all does. Absent handler → the standard no-handler 404 in the caller's dialect.
-    if crate::handlers::request_handler(PROTO_ANTHROPIC)
+    // Messages-dialect chat surface, so they consult its chat OperationHandler exactly like the
+    // catch-all does. Absent handler → the standard no-handler 404 in the caller's dialect.
+    if crate::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
         .is_none()
     {
         return crate::proxy::ingress_error(
-            PROTO_ANTHROPIC,
+            proto,
             StatusCode::NOT_FOUND,
             crate::proxy::KIND_NOT_FOUND,
             "This endpoint does not support that operation.",
@@ -1371,11 +975,11 @@ pub(crate) async fn named(
     // Governance guards (pool ACL / group limits); a rejection is wrapped in `finish_rejected`
     // inside `governance_guard` (this handler just returns that response). On admission the grant
     // reports whether the fee was CHARGED (refund gate) and holds the in-flight gauges.
-    let (admit, downgraded) =
-        match governance_guard(&app, &gov, PROTO_ANTHROPIC, &name, started, charged_at) {
-            Err(resp) => return *resp,
-            Ok(admitted) => admitted,
-        };
+    let (admit, downgraded) = match governance_guard(&app, &gov, proto, &name, started, charged_at)
+    {
+        Err(resp) => return *resp,
+        Ok(admitted) => admitted,
+    };
     let charged = admit.is_some();
     // A budget downgrade re-pooled the admission: dispatch where the charge landed.
     let name = downgraded.unwrap_or(name);
@@ -1394,21 +998,12 @@ pub(crate) async fn named(
             gov.key.as_ref(),
             &name,
             affinity_key,
-            PROTO_ANTHROPIC,
-            crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
+            proto,
+            crate::handlers::chat(proto, crate::transport::Transport::Http),
             usage_sink(&app, &gov, &name, charged_at, admit),
         )
         .await;
-        return finish_admitted(
-            &app,
-            &gov,
-            PROTO_ANTHROPIC,
-            &name,
-            started,
-            charged_at,
-            resp,
-            charged,
-        );
+        return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
     }
     if let Some(&i) = app.by_model.get(&name) {
         // Model-based routing: anthropic ingress, lane-default breaker OperationHandler (empty pool name → the
@@ -1426,21 +1021,12 @@ pub(crate) async fn named(
             gov.key.as_ref(),
             "",
             None,
-            PROTO_ANTHROPIC,
-            crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
+            proto,
+            crate::handlers::chat(proto, crate::transport::Transport::Http),
             usage_sink(&app, &gov, "", charged_at, admit),
         )
         .await;
-        return finish_admitted(
-            &app,
-            &gov,
-            PROTO_ANTHROPIC,
-            &name,
-            started,
-            charged_at,
-            resp,
-            charged,
-        );
+        return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
     }
 
     // Model/pool miss: wrap the 404 in `finish` so it is still counted in REQUESTS_TOTAL /
@@ -1452,12 +1038,12 @@ pub(crate) async fn named(
     finish_admitted(
         &app,
         &gov,
-        PROTO_ANTHROPIC,
+        proto,
         pool_label(&app, &name),
         started,
         charged_at,
         ingress_error(
-            PROTO_ANTHROPIC,
+            proto,
             StatusCode::NOT_FOUND,
             crate::proxy::KIND_NOT_FOUND,
             // Anthropic ingress: canonical (non-gemini) model-not-found copy.
@@ -1476,13 +1062,16 @@ pub(crate) async fn adhoc(
     axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
     body: Bytes,
 ) -> Response {
-    // Deletion switch — same consult as `named` (this is the other anthropic-dialect chat surface).
-    if crate::handlers::request_handler(PROTO_ANTHROPIC)
+    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
+    // `named`); `""` when no LLM dialect is registered.
+    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    // Deletion switch — same consult as `named` (this is the other Messages-dialect chat surface).
+    if crate::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
         .is_none()
     {
         return crate::proxy::ingress_error(
-            PROTO_ANTHROPIC,
+            proto,
             StatusCode::NOT_FOUND,
             crate::proxy::KIND_NOT_FOUND,
             "This endpoint does not support that operation.",
@@ -1500,7 +1089,7 @@ pub(crate) async fn adhoc(
     // configured pool, so pool-scoped buckets (and their downgrades) do not participate;
     // the effective pool is always the requested one.
     let (admit, _downgraded) =
-        match governance_guard(&app, &gov, PROTO_ANTHROPIC, &model, started, charged_at) {
+        match governance_guard(&app, &gov, proto, &model, started, charged_at) {
             Err(resp) => return *resp,
             Ok(admitted) => admitted,
         };
@@ -1523,20 +1112,13 @@ pub(crate) async fn adhoc(
                 gov.key.as_ref(),
                 "",
                 None,
-                PROTO_ANTHROPIC,
-                crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
+                proto,
+                crate::handlers::chat(proto, crate::transport::Transport::Http),
                 usage_sink(&app, &gov, "", charged_at, admit),
             )
             .await;
             finish_admitted(
-                &app,
-                &gov,
-                PROTO_ANTHROPIC,
-                &model,
-                started,
-                charged_at,
-                resp,
-                charged,
+                &app, &gov, proto, &model, started, charged_at, resp, charged,
             )
         }
         // Provider mismatch / model miss: wrap the 4xx in `finish` so the client error is counted
@@ -1556,12 +1138,12 @@ pub(crate) async fn adhoc(
             finish_admitted(
                 &app,
                 &gov,
-                PROTO_ANTHROPIC,
+                proto,
                 pool_label(&app, &model),
                 started,
                 charged_at,
                 ingress_error(
-                    PROTO_ANTHROPIC,
+                    proto,
                     StatusCode::BAD_REQUEST,
                     crate::proxy::KIND_INVALID_REQUEST,
                     // Anthropic ingress: canonical (non-gemini) model-not-found copy.
@@ -1575,12 +1157,12 @@ pub(crate) async fn adhoc(
         None => finish_admitted(
             &app,
             &gov,
-            PROTO_ANTHROPIC,
+            proto,
             pool_label(&app, &model),
             started,
             charged_at,
             ingress_error(
-                PROTO_ANTHROPIC,
+                proto,
                 StatusCode::NOT_FOUND,
                 crate::proxy::KIND_NOT_FOUND,
                 // Anthropic ingress: canonical (non-gemini) model-not-found copy.

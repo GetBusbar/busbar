@@ -30,7 +30,6 @@ use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
 use crate::plane::config::{AgentsSection, McpEndpointSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
-use crate::proto::PROTO_ANTHROPIC;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -1284,8 +1283,12 @@ pub struct ProviderCfg {
 }
 
 /// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
-/// and un-overridden deployments use this protocol for the dispatch registry lookup.
-const DEFAULT_PROTOCOL: &str = PROTO_ANTHROPIC;
+/// and un-overridden deployments use this protocol for the dispatch registry lookup. This is the
+/// FROZEN config-grammar default for an omitted `protocol:` — independent of which dialects are
+/// compiled in (a build with every LLM dialect deleted still parses providers.yaml against it), so it
+/// cannot be read off the (possibly-empty) protocol registry and is named as a frozen-wire literal.
+// plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar
+const DEFAULT_PROTOCOL: &str = "anthropic";
 
 fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
