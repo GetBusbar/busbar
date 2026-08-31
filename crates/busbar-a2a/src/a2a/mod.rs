@@ -75,6 +75,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         config_section: "agents",
         scope_kinds: &["agent"],
         subject_noun: "fronted agent",
+        admin_noun: "agent",
         audit_kind: "a2a_agent",
         wire_format_names: || {
             &[

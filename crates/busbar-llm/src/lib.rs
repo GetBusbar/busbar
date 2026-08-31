@@ -115,6 +115,9 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         config_section: "pools",
         scope_kinds: &["pool"],
         subject_noun: "pool",
+        // The LLM plane has no 1.5.3 named-definition-map section (`pools:` is not a
+        // `NamedMapSection`), so `singular` is never routed here; carried for completeness.
+        admin_noun: "pool",
         audit_kind: "pool",
         wire_format_names: busbar_core::proto::known_protocols,
         // THE RESIDUAL MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it

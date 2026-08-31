@@ -125,6 +125,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         config_section: "tools",
         scope_kinds: &["mcp_server", "mcp_tool"],
         subject_noun: "MCP server",
+        admin_noun: "mcp-server",
         audit_kind: "mcp_server",
         wire_format_names: || &[busbar_substrate::plane::WIRE_JSONRPC],
         // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in

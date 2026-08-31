@@ -193,6 +193,17 @@ pub struct PlaneDecl {
     /// `404`. Replaces `Plane::subject_noun`'s match.
     pub subject_noun: &'static str,
 
+    /// The SINGULAR ADMIN NOUN for one registration in this plane's 1.5.3 named-definition-map
+    /// section — the word the admin API stamps into an audit ACTION (`<admin_noun>.create`), an
+    /// audit RESOURCE (`<admin_noun>:<name>`) and a validation-error subject (`a <admin_noun>
+    /// definition must be an object`). Distinct from `subject_noun` (which is the `404` prose, e.g.
+    /// `"MCP server"`): this is the hyphenated audit/path spelling, e.g. `"mcp-server"`. Read by
+    /// `config::named_map::NamedMapSection::singular` for the plane sections, so core stamps a
+    /// registered plane's noun without a hard-coded `"mcp-server"` literal. A plane with no
+    /// named-definition-map section (the LLM `pools:` plane) never has `singular` called on it, but
+    /// still carries a sensible value.
+    pub admin_noun: &'static str,
+
     /// The audit RESOURCE KIND for a registration on this plane, and the prefix of every audit
     /// action word the plane's verbs record. Replaces `Plane::audit_kind`'s match.
     pub audit_kind: &'static str,

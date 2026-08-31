@@ -79,12 +79,22 @@ impl NamedMapSection {
     }
 
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).
+    ///
+    /// The two 1.5.3-native sections carry their noun as a literal; a PLANE section reads it from the
+    /// owning plane's [`PlaneDecl::admin_noun`](crate::plane::registry::PlaneDecl::admin_noun) via the
+    /// registry, so core stamps a registered plane's audit/error noun without a hard-coded plane
+    /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
+    /// a definition on an absent plane is refused before any noun is stamped — but it still answers
+    /// the section key rather than panicking.
     pub(crate) fn singular(self) -> &'static str {
         match self {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
-            NamedMapSection::Tools => "mcp-server",
-            NamedMapSection::Agents => "agent",
+            NamedMapSection::Tools | NamedMapSection::Agents => {
+                crate::plane::registry::plane_decl_for_config_section(self.key())
+                    .map(|d| d.admin_noun)
+                    .unwrap_or_else(|| self.key())
+            }
         }
     }
 
