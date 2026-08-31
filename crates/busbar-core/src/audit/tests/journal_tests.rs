@@ -207,6 +207,7 @@ fn records_survive_a_restart_and_the_chain_verifies() {
             scopes: 1,
             records: 2,
             empty_scopes: vec![],
+            unreadable: 0,
             chain_breaks: vec![],
         }
     );
@@ -430,6 +431,7 @@ fn neutral_records_survive_a_restart_and_the_chain_verifies() {
             scopes: 1,
             records: 2,
             empty_scopes: vec![],
+            unreadable: 0,
             chain_breaks: vec![],
         }
     );
@@ -446,6 +448,55 @@ fn neutral_records_survive_a_restart_and_the_chain_verifies() {
     );
     // Retention runs through the neutral kind (this MockStore keeps everything → 0 purged).
     assert_eq!(j2.compact_scoped(KIND_NEUTRAL, u64::MAX).unwrap(), 0);
+}
+
+/// A single UNDECODABLE record on the neutral restore path is COUNTED and SKIPPED, never allowed to
+/// `?`-abort the whole rehydrate. Two good records are persisted, then a garbage body the reframe
+/// callback cannot decode is appended; `restore_scoped` reframes per-record, so the two good records
+/// still restore, the bad one lands in `unreadable`, and the surviving chain still verifies (the bad
+/// body is appended last, so seq 1 -> 2 stays intact).
+#[test]
+fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
+    let store = Arc::new(MockStore::new());
+    let j1: Journal<NeutralRec> = Journal::new(1024);
+    j1.set_sink(store.clone());
+    write_neutral(&j1, "acme", b"|first");
+    write_neutral(&j1, "acme", b"|second");
+    drop(j1);
+
+    // Wedge in a body the reframe decode cannot parse, under the same scope.
+    store
+        .append_plane_record(&PlaneRecord {
+            kind: KIND_NEUTRAL.to_string(),
+            id: "acme".to_string(),
+            parent: Some("acme".to_string()),
+            seq: 3,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: b"{ not a neutral body".to_vec(),
+        })
+        .unwrap();
+
+    let j2: Journal<NeutralRec> = Journal::new(1024);
+    j2.set_sink(store.clone());
+    let restored = j2
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .expect("one undecodable record must not abort the whole rehydrate");
+    assert_eq!(
+        restored,
+        Restored {
+            scopes: 1,
+            records: 2,
+            empty_scopes: vec![],
+            unreadable: 1,
+            chain_breaks: vec![],
+        }
+    );
+    assert_eq!(
+        j2.next_seq("acme"),
+        3,
+        "the chain resumes from the last DECODABLE record"
+    );
 }
 
 /// Neutral write-ordering: a failed durable append does not burn a sequence on the neutral path

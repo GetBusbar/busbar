@@ -118,6 +118,17 @@ impl DurableCallStore {
         *body = call_record_to_journal_body(&row).expect("the tampered row re-encodes");
     }
 
+    /// Replace a PERSISTED row's body with bytes the reframe decode CANNOT parse — an undecodable
+    /// record (a store-format corruption / a body no released build wrote). Distinct from `tamper`,
+    /// which keeps the body decodable but staleness-breaks its digest.
+    fn poison_row(&self, principal: &str, seq: u64) {
+        let mut calls = self.calls.lock().unwrap();
+        let body = calls
+            .get_mut(&(principal.to_string(), seq))
+            .expect("poisoning a row the store actually holds");
+        *body = b"{ this is not a neutral journal body".to_vec();
+    }
+
     /// Remove a PERSISTED row — the splice-out tamper.
     fn drop_row(&self, principal: &str, seq: u64) {
         self.calls
@@ -503,6 +514,48 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
         .expect("verify reads")
         .expect("the chain spanning the restart verifies"),
         4
+    );
+}
+
+/// ONE UNDECODABLE RECORD MUST NOT DROP THE OTHERS. A store-format corruption on a single persisted
+/// body is COUNTED as `unreadable` and SKIPPED at boot — the other records for that principal are
+/// still restored, and the whole working set is not lost. Before the per-record tolerance fix a
+/// single decode `Err` `?`-aborted the entire rehydrate. The last record is poisoned so the survivors
+/// (seq 1, 2) still form an intact chain, isolating the tolerance from the chain-break axis.
+#[test]
+fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
+    let backing = Arc::new(DurableCallStore::new());
+    let store: Arc<dyn Store> = backing.clone();
+    let written = write_then_drop(&store);
+    assert_eq!(written.len(), 3, "three records were written");
+
+    // Corrupt the LAST persisted body so it will not decode on restore.
+    backing.poison_row(P, 3);
+
+    let log2 = CallTestHarness::over(store.clone());
+    let restored = log2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
+        .expect("a single undecodable record must NOT abort the whole rehydrate");
+
+    assert_eq!(restored.principals, 1, "the principal is still enumerated");
+    assert_eq!(restored.unreadable, 1, "the poisoned record is counted");
+    assert_eq!(
+        restored.records, 2,
+        "the two decodable records are still restored"
+    );
+    assert_eq!(restored.empty_chains, 0, "the store did return records");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the surviving records (seq 1,2) form an intact chain: {:?}",
+        restored.chain_breaks
+    );
+
+    // The chain RESUMES from the highest DECODABLE tail (seq 2), so the next write continues at 3 —
+    // the poisoned tail did not advance the position, and the working set was not lost.
+    assert_eq!(
+        log2.next_seq(P),
+        3,
+        "the chain resumes after the last decodable record"
     );
 }
 

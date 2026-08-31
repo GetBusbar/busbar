@@ -1061,4 +1061,83 @@ mod chain_golden {
         assert_eq!(out.active, 1, "the working task is resumed");
         assert_eq!(out.unreadable, 0);
     }
+
+    /// A store holding ONE undecodable task row (and one undecodable event on the good task) must not
+    /// lose the rest of the working set: the bad rows are COUNTED as `unreadable` and SKIPPED, the good
+    /// working task is still restored, and the surviving events still verify. Before the per-record
+    /// tolerance fix a single decode `Err` `?`-aborted the entire rehydrate.
+    struct PartlyUnreadableStore;
+    impl PlaneStore for PartlyUnreadableStore {
+        fn upsert_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_plane_record(&self, _k: &str, _i: &str) -> StoreResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn append_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_plane_records(&self, kind: &str, sel: &PlaneSelector) -> StoreResult<Vec<Vec<u8>>> {
+            Ok(match (kind, sel) {
+                (KIND_TASK, PlaneSelector::All) => {
+                    let good = TaskRow {
+                        task_id: "task-1".into(),
+                        context_id: "ctx-1".into(),
+                        principal: "vk_alice".into(),
+                        direction: "inbound".into(),
+                        state: "working".into(),
+                        agent_id: "planner".into(),
+                        artifact_cursor: 0,
+                        push_callback: String::new(),
+                        created_at: 1_700_000_000,
+                        updated_at: 1_700_000_060,
+                    };
+                    // A garbage body the row decoder cannot parse, then a good working task.
+                    vec![
+                        b"{not a task row".to_vec(),
+                        good.to_plane_record().unwrap().body,
+                    ]
+                }
+                // The good task's events, with an undecodable body wedged BETWEEN the two real ones;
+                // skipping it leaves A2A_1 -> A2A_2, which still verifies.
+                (KIND_TASK_EVENT, PlaneSelector::Parent(p)) if p == "task-1" => {
+                    vec![A2A_1.to_vec(), b"{not an event".to_vec(), A2A_2.to_vec()]
+                }
+                _ => Vec::new(),
+            })
+        }
+        fn list_plane_record_parents(&self, _k: &str) -> StoreResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn purge_plane_records_before(&self, _k: &str, _b: u64) -> StoreResult<u64> {
+            Ok(0)
+        }
+        fn delete_plane_record(&self, _k: &str, _i: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn one_undecodable_record_does_not_drop_the_others_on_restore() {
+        let reg = TaskRegistry::new();
+        let out = reg
+            .restore_from_store(&PartlyUnreadableStore, crate::a2a::task::readable_row)
+            .expect("a single undecodable record must not abort the whole rehydrate");
+        assert_eq!(
+            out.unreadable, 2,
+            "the undecodable task row AND the undecodable event are each counted"
+        );
+        assert_eq!(
+            out.active, 1,
+            "the GOOD working task is still restored despite the bad rows"
+        );
+        assert!(
+            out.chain_breaks.is_empty(),
+            "the surviving events still form an intact chain: {:?}",
+            out.chain_breaks
+        );
+    }
 }
