@@ -1035,7 +1035,7 @@ pub(crate) async fn create_key(
     // an explicit `[]` = NO pools; a list scopes it. NON-FATAL typo diagnostic on each named pool.
     let allowed_pools = req.allowed_pools;
     for pool in allowed_pools.iter().flatten() {
-        if !app.pools.contains_key(pool) {
+        if !app.engine_tables().pools().contains_key(pool) {
             diag_debug!(
                 CREATEKEY_UNKNOWN_POOL,
                 pool = %pool,

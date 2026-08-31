@@ -68,7 +68,7 @@ fn fallback_pools_authorized(
         if !visited.insert(current) {
             return None;
         }
-        let next = match app.on_exhausted_cfgs.get(current) {
+        let next = match app.engine_tables().on_exhausted_cfgs().get(current) {
             Some(crate::config::OnExhausted::FallbackPool(fallback)) => fallback.as_str(),
             // `Status503`, `LeastBad`, and `Queue` all stay within `current` (no new pool name is
             // introduced — queue waits on this pool's own members then falls through to 503), and an
@@ -132,7 +132,12 @@ const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
 /// The request header that pins a session to a lane for a pool. Defaults to `x-session-id`; a
 /// pool's `affinity` config (mode `session`) may name a different header (e.g. `x-user-id`).
 fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str {
-    match app.pool_runtime.get(pool).and_then(|r| r.affinity.as_ref()) {
+    match app
+        .engine_tables()
+        .pool_runtime()
+        .get(pool)
+        .and_then(|r| r.affinity.as_ref())
+    {
         // `mode` is `AffinityMode::Session` (the only variant); honour the configured header name.
         Some(a) => match a.mode {
             crate::config::AffinityMode::Session => {
@@ -213,8 +218,8 @@ fn admit_check(
                 // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
                 // one guard clause that IS distinguishable). Kept as an explicit bound rather than
                 // removed: it's the backstop if the duplicate-free invariant is ever loosened.
-                && visited.len() < app.pools.len()
-                && app.pools.contains_key(&to)
+                && visited.len() < app.engine_tables().pools().len()
+                && app.engine_tables().pools().contains_key(&to)
                 && pool_authorized(gov, &to, proto).is_none()
                 && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
             {
@@ -427,8 +432,8 @@ fn destination_guard(
     // single borrowed map probe otherwise.
     if gov.key.is_some()
         && app.cost.pricing_enabled()
-        && !app.pools.contains_key(pool)
-        && !app.by_model.contains_key(pool)
+        && !app.engine_tables().pools().contains_key(pool)
+        && !app.engine_tables().by_model().contains_key(pool)
         && app.cost.model_unpriced(pool)
     {
         tracing::info!(model = %pool, "governance: no configured rate for model; rejecting (rate_card is authoritative and complete)");
@@ -481,7 +486,9 @@ fn admission_door(
 /// string into the request-log webhook. The label space is now bounded BY CONSTRUCTION:
 /// |configured pools| + |configured by-model lanes| + 1.
 fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
-    if app.pools.contains_key(model) || app.by_model.contains_key(model) {
+    if app.engine_tables().pools().contains_key(model)
+        || app.engine_tables().by_model().contains_key(model)
+    {
         model
     } else {
         crate::proxy::POOL_LABEL_UNRESOLVED
@@ -1019,7 +1026,7 @@ pub(crate) async fn named(
     // A budget downgrade re-pooled the admission: dispatch where the charge landed.
     let name = downgraded.unwrap_or(name);
 
-    if let Some(cands) = app.pools.get(&name) {
+    if let Some(cands) = app.engine_tables().pools().get(&name) {
         let affinity_key = headers
             .get(affinity_header_for(&app, &name))
             .and_then(|v| v.to_str().ok());
@@ -1040,7 +1047,7 @@ pub(crate) async fn named(
         .await;
         return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
     }
-    if let Some(&i) = app.by_model.get(&name) {
+    if let Some(&i) = app.engine_tables().by_model().get(&name) {
         // Model-based routing: anthropic ingress, lane-default breaker OperationHandler (empty pool name → the
         // op_handler shared by all direct/ad-hoc routes, surfaced by /stats and /healthz), no affinity.
         let resp = crate::proxy::forward_with_pool_keyed(
@@ -1130,8 +1137,8 @@ pub(crate) async fn adhoc(
         };
     let charged = admit.is_some();
 
-    match app.by_model.get(&model) {
-        Some(&i) if app.lanes[i].provider == provider => {
+    match app.engine_tables().by_model().get(&model) {
+        Some(&i) if app.engine_tables().lanes()[i].provider == provider => {
             // Single lane with weight=1 (default for ad-hoc routing): anthropic ingress, lane-default
             // breaker OperationHandler (empty pool name), no affinity.
             let resp = crate::proxy::forward_with_pool_keyed(
@@ -1165,7 +1172,7 @@ pub(crate) async fn adhoc(
             tracing::info!(
                 model = %model,
                 requested_provider = %provider,
-                actual_provider = %app.lanes[i].provider,
+                actual_provider = %app.engine_tables().lanes()[i].provider,
                 "adhoc: model is on a different provider than the path requested"
             );
             // The model IS a configured by-model lane (bounded), but route the label through

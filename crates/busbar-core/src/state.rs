@@ -925,6 +925,18 @@ impl<'a> EngineTables<'a> {
     pub(crate) fn queued_depth(&self) -> &'a std::sync::Arc<QueuedDepth> {
         &self.app.queued_depth
     }
+
+    /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
+    pub(crate) fn on_exhausted_cfgs(
+        &self,
+    ) -> &'a std::collections::HashMap<String, crate::config::OnExhausted> {
+        &self.app.on_exhausted_cfgs
+    }
+
+    /// The health-probe schedule shared across snapshots of this lineage.
+    pub(crate) fn probe_schedule(&self) -> &'a std::sync::Arc<crate::health::ProbeSchedule> {
+        &self.app.probe_schedule
+    }
 }
 
 impl App {

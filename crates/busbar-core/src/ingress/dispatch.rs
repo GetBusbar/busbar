@@ -258,38 +258,39 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         let model = downgraded.as_deref().unwrap_or(req.destination);
 
         // STAGE 5 — candidate selection + THE ONE ENGINE.
-        let (cands, pool_name): (Vec<WeightedLane>, &str) = if let Some(c) = app.pools.get(model) {
-            (c.clone(), model)
-        } else if let Some(&i) = app.by_model.get(model) {
-            (
-                vec![WeightedLane {
-                    reasoning: None,
-                    idx: i,
-                    weight: 1,
-                    attempt_timeout_ms: None,
-                }],
-                "",
-            )
-        } else {
-            // The destination did not resolve — the dialect-shaped not-found, finished through the
-            // SAME stage-6 tail as a served request (so the pre-seam not-found accounting is exact).
-            let resp = ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::proxy::KIND_NOT_FOUND,
-                &not_found_message(model, gemini_api_version),
-            );
-            return finish_admitted(
-                app,
-                req.gov,
-                proto,
-                pool_label(app, model),
-                req.started,
-                req.charged_at,
-                resp,
-                charged,
-            );
-        };
+        let (cands, pool_name): (Vec<WeightedLane>, &str) =
+            if let Some(c) = app.engine_tables().pools().get(model) {
+                (c.clone(), model)
+            } else if let Some(&i) = app.engine_tables().by_model().get(model) {
+                (
+                    vec![WeightedLane {
+                        reasoning: None,
+                        idx: i,
+                        weight: 1,
+                        attempt_timeout_ms: None,
+                    }],
+                    "",
+                )
+            } else {
+                // The destination did not resolve — the dialect-shaped not-found, finished through the
+                // SAME stage-6 tail as a served request (so the pre-seam not-found accounting is exact).
+                let resp = ingress_error(
+                    proto,
+                    StatusCode::NOT_FOUND,
+                    crate::proxy::KIND_NOT_FOUND,
+                    &not_found_message(model, gemini_api_version),
+                );
+                return finish_admitted(
+                    app,
+                    req.gov,
+                    proto,
+                    pool_label(app, model),
+                    req.started,
+                    req.charged_at,
+                    resp,
+                    charged,
+                );
+            };
 
         // THE ONE ENGINE: every operation — chat included — forwards through the same failover/
         // breaker/policy pipeline. JSON bodies ride parsed (`Some(v)`, parsed once by the caller);

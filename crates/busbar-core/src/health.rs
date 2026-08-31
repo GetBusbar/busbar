@@ -122,10 +122,10 @@ impl ProbeSchedule {
 /// no swap site can forget to re-attach probing.
 pub fn spawn_probers(app: &Arc<App>) {
     use std::sync::atomic::Ordering;
-    let schedule = app.probe_schedule.clone();
+    let schedule = app.engine_tables().probe_schedule().clone();
     let my_gen = schedule.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    for i in 0..app.lanes.len() {
-        let Some(h) = app.lanes[i].health.clone() else {
+    for i in 0..app.engine_tables().lanes().len() {
+        let Some(h) = app.engine_tables().lanes()[i].health.clone() else {
             continue;
         };
         if h.mode == HealthMode::None {
@@ -143,7 +143,7 @@ pub fn spawn_probers(app: &Arc<App>) {
         );
         let mode = h.mode;
         let weak = Arc::downgrade(app);
-        let model = app.lanes[i].model.clone();
+        let model = app.engine_tables().lanes()[i].model.clone();
         // Inherit this lane's deadline, or schedule the first probe one interval out (the
         // deliberate "don't probe a cold upstream at startup" behaviour, now expressed as a
         // deadline instead of a discarded first tick).
@@ -244,7 +244,7 @@ pub fn spawn_probers(app: &Arc<App>) {
 ///     bench a working lane over a probe-construction issue, matching the organic "record nothing"
 ///     disposition for these classes.
 pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
-    let lane = &app.lanes[i];
+    let lane = &app.engine_tables().lanes()[i];
 
     // No key, no probe — we can't authenticate (e.g. a passthrough deployment with no static key),
     // and a guaranteed 401 would only thrash the breaker.
@@ -437,7 +437,8 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // organic forward path resolves (proxy engine `breaker_cfg`). This replaces the prior
             // one-size `BreakerCfg::default()` that ignored per-pool thresholds/cooldowns (#24/#25).
             let resolve_cfg = |pool: &str| -> BreakerCfg {
-                app.pool_runtime
+                app.engine_tables()
+                    .pool_runtime()
                     .get(pool)
                     .and_then(|r| r.breaker.clone())
                     .unwrap_or_default()

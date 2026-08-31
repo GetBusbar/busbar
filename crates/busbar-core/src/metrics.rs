@@ -1110,12 +1110,12 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
     // `cooldown_remaining_in(pool, …)`) stay per-iteration — only the lane-global snapshot is cached.
     let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
         std::collections::HashMap::new();
-    for (pool_name, weighted_lanes) in &app.pools {
+    for (pool_name, weighted_lanes) in app.engine_tables().pools() {
         // Render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
         // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
         // (see `walk.rs` `handle_queue` + `state::QueuedDepth`); a pool that never queues reads 0.
         metrics::gauge!(POOL_QUEUED, "pool" => pool_name.clone())
-            .set(app.queued_depth.depth(pool_name) as f64);
+            .set(app.engine_tables().queued_depth().depth(pool_name) as f64);
         for wl in weighted_lanes {
             let lane_idx = wl.idx;
             let snap = snap_cache
@@ -1135,7 +1135,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
             // The `lane` label is the lane's MODEL string (NOT a numeric index), matching the
             // counter sites in proxy engine so the gauge and counters can be PromQL-joined on `lane`.
             // It is bounded one-per-configured-lane (a startup constant), so cardinality stays safe.
-            let lane_label = app.lanes[lane_idx].model.clone();
+            let lane_label = app.engine_tables().lanes()[lane_idx].model.clone();
             metrics::gauge!(
                 LANE_STATE,
                 "pool" => pool_name.clone(),
@@ -1157,7 +1157,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
     // exposes NO lane gauges at all — a fresh boot rendered an empty /metrics (harness finding,
     // 2026-07-09). The breaker cell is the lane-default `""` cell, matching model-routed
     // fault attribution.
-    for (model, &lane_idx) in &app.by_model {
+    for (model, &lane_idx) in app.engine_tables().by_model() {
         // Reuse the lane-global snapshot cached in the pool loop above (or compute+cache on miss for a
         // pool-less lane) — same lane_idx, same fixed `now`.
         let snap = snap_cache
@@ -1174,13 +1174,19 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
         metrics::gauge!(
             LANE_STATE,
             "pool" => model.clone(),
-            "lane" => app.lanes[lane_idx].model.clone()
+            "lane" => app.engine_tables().lanes()[lane_idx].model.clone()
         )
         .set(state_val);
         // Direct-model lane: classify against the lane-default (`""`) cell, matching model-routed
         // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
         let avail = app.store.classify("", lane_idx, now);
-        emit_lane_gauges(model, &app.lanes[lane_idx].model.clone(), snap, &avail, now);
+        emit_lane_gauges(
+            model,
+            &app.engine_tables().lanes()[lane_idx].model.clone(),
+            snap,
+            &avail,
+            now,
+        );
     }
 }
 

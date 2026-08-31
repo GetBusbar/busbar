@@ -790,7 +790,7 @@ pub use busbar_substrate::telemetry::{outcome_of, upstream_attempt_on, upstream_
 pub(crate) fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
-        _ => upstream_attempt_on(pool_label, &app.lanes[lane_idx].model),
+        _ => upstream_attempt_on(pool_label, &app.engine_tables().lanes()[lane_idx].model),
     }
 }
 
@@ -805,7 +805,11 @@ pub(crate) fn upstream_failure(
     let di = DISPOSITIONS.iter().position(|d| *d == disposition);
     match (fam, di) {
         (Some(fam), Some(di)) if fam.failures[di].is_valid() => fam.failures[di].incr(),
-        _ => upstream_failure_on(pool_label, &app.lanes[lane_idx].model, disposition),
+        _ => upstream_failure_on(
+            pool_label,
+            &app.engine_tables().lanes()[lane_idx].model,
+            disposition,
+        ),
     }
 }
 
@@ -816,7 +820,7 @@ pub(crate) fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
         _ => metrics::counter!(
             crate::metrics::BREAKER_TRIPS_TOTAL,
             "pool" => pool_label.to_owned(),
-            "lane" => app.lanes[lane_idx].model.clone()
+            "lane" => app.engine_tables().lanes()[lane_idx].model.clone()
         )
         .increment(1),
     }
