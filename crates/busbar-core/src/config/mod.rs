@@ -401,7 +401,7 @@ pub struct RootCfg {
     /// type and nothing downstream re-parses the canonical URI or re-derives the mount path. The
     /// plane's own module downcasts its entry back to its concrete resource; read it via
     /// [`RootCfg::endpoint_resource`] keyed by the plane's config section — never a per-plane field.
-    pub(crate) endpoint_resources:
+    pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing

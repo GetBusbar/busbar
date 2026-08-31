@@ -162,12 +162,15 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     let mut cfg = cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
     ));
-    cfg.mcp = Some(std::sync::Arc::new(
-        busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::testkit::mcp_cfg_at(
-            "https://gw.example.com/mcp",
-        ))
-        .expect("valid mcp cfg"),
-    ) as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+    cfg.endpoint_resources.insert(
+        busbar_core::config::named_map::NamedMapSection::Tools.key(),
+        std::sync::Arc::new(
+            busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::testkit::mcp_cfg_at(
+                "https://gw.example.com/mcp",
+            ))
+            .expect("valid mcp cfg"),
+        ) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    );
     cfg.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
     cfg.public_url = Some("https://busbar.example".to_string());
     // `mcp:` refuses an open data-plane chain — close it with the test-only stand-in module.
@@ -233,7 +236,10 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let cfg = cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_ABSENT",
     ));
-    assert!(cfg.mcp.is_none(), "fixture control: not an mcp: deployment");
+    assert!(
+        cfg.endpoint_resources.is_empty(),
+        "fixture control: not an mcp: deployment"
+    );
     assert!(
         cfg.agent_defs.def_names().is_empty(),
         "fixture control: no agents: entries"
