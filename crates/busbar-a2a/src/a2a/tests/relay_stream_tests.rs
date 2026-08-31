@@ -434,8 +434,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
     // are no persisted events, which is the documented product contract rather than a defect.
     let events = h.gov.store().list_task_events(&first).unwrap_or_default();
     if !events.is_empty() {
-        crate::taskstore::verify_chain(&events)
-            .expect("the chain verifies across a resume");
+        crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
         assert!(
             events
                 .iter()

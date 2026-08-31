@@ -107,13 +107,13 @@ impl busbar_api::Store for EventLedger {
 
     fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
         if kind == KIND_TASK {
-            return Ok(self
+            return self
                 .tasks
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .get(id)
                 .map(|r| r.to_plane_record().map(|rec| rec.body))
-                .transpose()?);
+                .transpose();
         }
         Ok(None)
     }

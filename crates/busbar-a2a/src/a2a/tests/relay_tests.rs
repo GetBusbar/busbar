@@ -345,8 +345,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     if events.is_empty() {
         return;
     }
-    crate::taskstore::verify_chain(&events)
-        .expect("the per-task chain verifies");
+    crate::taskstore::verify_chain(&events).expect("the per-task chain verifies");
     assert!(
         events
             .iter()

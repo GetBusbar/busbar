@@ -16,8 +16,8 @@
 //! the negative one goes red.
 
 use crate::a2a::task::{Direction, Task, TaskState};
-use crate::{TaskEventRow, TaskRow};
 use crate::taskstore::{Denied, Rehydrated, TaskRegistry, TaskStoreTestExt, TaskTestHarness};
+use crate::{TaskEventRow, TaskRow};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

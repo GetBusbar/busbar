@@ -52,7 +52,11 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
         .expect("the row records");
     if state != TaskState::Submitted {
         TASKS
-            .transition(task_id, task_id, crate::a2a::task::plan_transition(state, now))
+            .transition(
+                task_id,
+                task_id,
+                crate::a2a::task::plan_transition(state, now),
+            )
             .expect("the transition is legal");
     }
 }

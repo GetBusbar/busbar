@@ -1292,10 +1292,9 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) — the plane owns its task store now, so this is a single `set_sink`.
-    crate::taskstore::TASKS
-        .set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
-            sink.clone(),
-        ));
+    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        sink.clone(),
+    ));
 
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
@@ -1377,10 +1376,9 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) — the plane owns its task store now, so this is a single `set_sink`.
-    crate::taskstore::TASKS
-        .set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
-            sink.clone(),
-        ));
+    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        sink.clone(),
+    ));
 
     // A backend that answers a transport-level failure to the hop busbar issues.
     let h = harness_on(

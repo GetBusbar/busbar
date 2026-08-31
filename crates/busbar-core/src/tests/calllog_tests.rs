@@ -112,7 +112,8 @@ impl DurableCallStore {
         let body = calls
             .get_mut(&(principal.to_string(), seq))
             .expect("tampering with a row the store actually holds");
-        let mut row = call_record_from_body(principal, body).expect("the row to tamper with decodes");
+        let mut row =
+            call_record_from_body(principal, body).expect("the row to tamper with decodes");
         edit(&mut row);
         *body = call_record_to_journal_body(&row).expect("the tampered row re-encodes");
     }
@@ -246,8 +247,7 @@ impl DurableCallStore {
         let mut calls = self.calls.lock().unwrap();
         match calls.get(&slot) {
             Some(existing_body) => {
-                let existing =
-                    call_record_from_body(&principal, existing_body)?;
+                let existing = call_record_from_body(&principal, existing_body)?;
                 if same_call_ignoring_request_id(&existing, &incoming) {
                     // The retry: the same call re-presented, so nothing is lost by succeeding.
                     Ok(())
