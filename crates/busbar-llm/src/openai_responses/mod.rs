@@ -610,6 +610,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             "max_output_tokens",
             "temperature",
             "top_p",
+            "top_logprobs",
             "stream",
             "tool_choice",
             "parallel_tool_calls",

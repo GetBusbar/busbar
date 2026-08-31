@@ -508,6 +508,14 @@ impl ProtocolWriter for ResponsesWriter {
             );
         }
 
+        // LOGPROBS ask: the Responses create API models a top-level `top_logprobs` integer (0–20),
+        // so a Responses→Responses request round-trips it and a cross-protocol source's logprobs ask
+        // reaches this surface. (There is no top-level `logprobs` boolean on `/v1/responses`; the
+        // enabling flag is implicit in `top_logprobs`, and response-side logprobs ride `include`.)
+        if let Some(top_logprobs) = req.top_logprobs {
+            out.insert("top_logprobs".to_string(), serde_json::json!(top_logprobs));
+        }
+
         // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
         // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
         // `ResponseCreateParamsBase`: only `temperature`/`top_p`/`top_logprobs`/`text` are present).

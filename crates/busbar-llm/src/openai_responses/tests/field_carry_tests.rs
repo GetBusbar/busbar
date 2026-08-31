@@ -984,3 +984,40 @@ fn responses_stream_reasoning_summary_delta_consumed_by_reader() {
         "reasoning_summary_text.delta must route to a ThinkingDelta: {events:?}"
     );
 }
+
+// Chat#3: a Responses request `top_logprobs` must SURVIVE — both a same-protocol round-trip and a
+// cross-protocol hop to the OpenAI Chat dialect (where it forces the enabling `logprobs` flag).
+// Pre-fix the reader hardcoded it `None` and it was absent from `responses_modeled_keys`, so it was
+// cleared at the seam with no drop-warn — total loss for a Responses caller who set it.
+#[test]
+fn top_logprobs_carries_responses_roundtrip_and_cross_to_openai() {
+    let body = serde_json::json!({"model": "x", "input": "hi", "top_logprobs": 5});
+
+    // (a) same-protocol Responses→Responses re-emits `top_logprobs` verbatim.
+    let rt = roundtrip_req(&body);
+    assert_eq!(
+        rt.get("top_logprobs"),
+        Some(&serde_json::json!(5)),
+        "top_logprobs must round-trip on the Responses surface: {rt}"
+    );
+
+    // (b) cross-protocol Responses→OpenAI-Chat: the ask reaches the OpenAI writer, which emits
+    //     `top_logprobs` AND forces `logprobs: true` (OpenAI requires the enabling flag).
+    let ir = read_req(&body);
+    assert_eq!(
+        ir.top_logprobs,
+        Some(5),
+        "IR must carry the top_logprobs ask"
+    );
+    let openai = crate::openai_chat::OpenAiWriter.write_request(&ir);
+    assert_eq!(
+        openai.get("top_logprobs"),
+        Some(&serde_json::json!(5)),
+        "top_logprobs must survive the cross-protocol hop to OpenAI Chat: {openai}"
+    );
+    assert_eq!(
+        openai.get("logprobs"),
+        Some(&serde_json::json!(true)),
+        "the OpenAI writer must force the enabling logprobs flag: {openai}"
+    );
+}

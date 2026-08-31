@@ -625,11 +625,24 @@ impl ProtocolReader for ResponsesReader {
         // who explicitly set it.
         let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
 
+        // The `/v1/responses` create API models a top-level `top_logprobs` integer (0–20), identically
+        // to Chat Completions. Previously hardcoded `None`, which was total ingress loss for a
+        // Responses caller who set it — and, because it was ALSO absent from `responses_modeled_keys`,
+        // it rode `extra` and was cleared at the cross-protocol seam WITHOUT a drop-warn (unlike the
+        // sibling top_k/stop drops). Promote it first-class so it carries to an OpenAI/Gemini backend
+        // (which force the enabling `logprobs` flag from it). The Responses surface requests logprobs
+        // via `top_logprobs` alone (there is no top-level `logprobs` boolean — response-side logprobs
+        // ride `include`), so `logprobs` stays `None` here; the presence of `top_logprobs` is the ask.
+        let top_logprobs = obj
+            .get("top_logprobs")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+
         Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
-            top_logprobs: None,
+            top_logprobs,
             user: None,
             parallel_tool_calls,
             system: system_blocks,
