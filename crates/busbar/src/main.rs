@@ -700,20 +700,9 @@ fn main() {
     busbar_substrate::egress::seam::install_hostless_egress(
         &busbar_core::egress::seam::CoreHostlessEgress,
     );
-    // The A2A task codec: the plane supplies the three A2A-domain fragments of the neutral TASKS
-    // engine's write/restore path (transition planning, the push-callback SSRF floor, row-readability)
-    // through `TaskCodec`, bound here so core's engine names no `crate::a2a` type. Installed BEFORE any
-    // boot hydrate drives the engine. `&A2aTaskCodec` is a ZST, so it promotes to `'static`. Gated to
-    // `plane-a2a`; a build without the A2A plane never drives the engine and installs nothing.
-    #[cfg(feature = "plane-a2a")]
-    busbar_substrate::plane_host::install_task_codec(&busbar_a2a::a2a::A2aTaskCodec);
-    // The task reader: the A2A plane reads a caller's rows off the core TASKS working set through
-    // `TaskReader` on the few paths where it holds no `EngineHost`, so it names no
-    // `busbar_core::plane::taskstore`. Backed by core's `CoreTaskReader` (straight to `TASKS.*`), bound
-    // here before any read drives it. `&CoreTaskReader` is a ZST, promoting to `'static`. Gated to
-    // `plane-a2a`.
-    #[cfg(feature = "plane-a2a")]
-    busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
+    // The A2A durable task set (`busbar_a2a::taskstore::TASKS`) now OWNS its whole write/restore path
+    // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
+    // binds no task codec or reader seam here — both were deleted with the relocation.
     // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
     // section fold (`busbar_core::plane::config::config_sections`, which reads the process plane
     // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI

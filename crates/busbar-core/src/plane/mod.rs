@@ -106,23 +106,10 @@ pub mod registry;
 pub(crate) mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod store;
-// `plane::taskstore` stores A2A task rows and depends on `crate::a2a::task`/`crate::a2a::pushnotify`
-// types; every caller lives in `crate::a2a`. It is therefore an A2A-plane helper that happens to sit
-// under `plane/`, and it is compiled out with the plane (`plane-a2a` off) alongside `src/a2a`.
-// Widened to `pub` under the test-support surface (like `store`) so the extracted A2A plane's own
-// test binary can name the durable task set it exercises (`TASKS`, `TaskRegistry`, the sink/host
-// test seams). Production keeps it `pub(crate)`.
-#[cfg(all(feature = "plane-a2a", not(any(test, feature = "test-support"))))]
-pub(crate) mod taskstore;
-#[cfg(all(feature = "plane-a2a", any(test, feature = "test-support")))]
-pub mod taskstore;
-/// PUBLIC re-export of the core-backed task reader so the composition root (`main`) can bind it to the
-/// neutral `busbar_substrate::plane_host::TaskReader` seam via `install_task_reader` — the one public
-/// symbol the binary names for this seam, mirroring `busbar_core::egress::seam::CoreHostlessEgress`.
-/// Gated with `taskstore` itself: `plane-a2a` off compiles out the durable task set, so there is no
-/// reader to bind (and `main` only binds it under the same feature).
-#[cfg(feature = "plane-a2a")]
-pub use taskstore::CoreTaskReader;
+// The A2A durable task set (`TASKS`/`TaskRegistry`) and its per-task provenance chain were RELOCATED
+// wholesale to `busbar-a2a` (`busbar_a2a::taskstore`) in the 1.7.0 plane extraction: a task is a
+// SINGLE-plane mechanism, so it lives on the plane that owns it, backed by the generic neutral
+// `PlaneRecord` store. Core names none of it.
 
 // THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
 // crate in Phase-B B0-b, so a plane crate can name them without reaching into core. They are the

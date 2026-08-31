@@ -64,8 +64,7 @@
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
 pub use busbar_substrate::plane::registry::{
-    BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl, RestoredSummary, RestoredTasks,
-    TaskChainBreak,
+    BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl, RestoredSummary,
 };
 
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
@@ -222,93 +221,11 @@ impl PlaneBootCtx for BootCtx {
         self.card_issuer.clone()
     }
 
-    /// REGISTER THE A2A PLANE'S DURABLE `task_event` STREAM with the host, in the hydrate phase — named
-    /// HERE, core side, so `crate::a2a::a2a_hydrate` registers the stream without naming
-    /// `crate::plane::taskstore` or an `App` field. A no-op unless the freshly-built app is present —
-    /// byte-identical to the old inline `crate::plane::taskstore::register_task_event_stream(app)`.
-    #[cfg(feature = "plane-a2a")]
-    fn register_task_event_stream(&self) {
-        if let Some(app) = self.app.as_ref() {
-            crate::plane::taskstore::register_task_event_stream(app);
-        }
-    }
-
-    /// The `plane-a2a`-OFF twin: the durable task set is compiled out with the A2A plane, and the A2A
-    /// hydrate hook that would call this does not exist, so this is an unreachable no-op that only keeps
-    /// the trait impl total across feature combos.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn register_task_event_stream(&self) {}
-
-    /// ATTACH THE A2A PLANE'S TASK-ROW UPSERT SINK to the plane-narrowed store, in the hydrate phase —
-    /// named HERE so `crate::a2a::a2a_hydrate` attaches it without naming `TASKS` or the store field. A
-    /// no-op unless a configured store is present — byte-identical to the old inline
-    /// `crate::plane::taskstore::TASKS.set_sink(plane_store.clone())`.
-    #[cfg(feature = "plane-a2a")]
-    fn attach_a2a_durable_sinks(&self) {
-        if let Some(store) = self.store.as_ref() {
-            crate::plane::taskstore::TASKS.set_sink(store.clone());
-        }
-    }
-
-    /// The `plane-a2a`-OFF twin — see [`Self::register_task_event_stream`]'s.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn attach_a2a_durable_sinks(&self) {}
-
-    /// REHYDRATE THE A2A PLANE'S IN-FLIGHT TASK WORKING SET from the plane-narrowed store, in the
-    /// hydrate phase — named HERE so `crate::a2a::a2a_hydrate` restores it without naming
-    /// `with_dispatch_scope`, `TASKS` or the core-live `Rehydrated`/`ChainBreak`. Opens a dispatch scope
-    /// internally (minted synchronously, never across an `.await`) and maps `Rehydrated` to the neutral
-    /// [`RestoredTasks`]: the three counts verbatim, `empty` the old `r == Rehydrated::default()` guard,
-    /// and each `ChainBreak` reduced to its `scope` (task id) and Display text — byte-identical to the
-    /// old inline restore and logging.
-    #[cfg(feature = "plane-a2a")]
-    fn restore_task_log(&self) -> Result<RestoredTasks, String> {
-        let app = self.app.as_ref().expect(
-            "restore_task_log runs in the HYDRATE phase, which supplies the freshly-built app",
-        );
-        let store = self.store.as_ref().expect(
-            "restore_task_log runs past the hydrate hook's store guard, so a store is present",
-        );
-        let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-            // The neutral engine rehydrate consults an A2A-codec predicate for whether each stored row
-            // is READABLE (a known state/direction token, a present identity); the terminal/active
-            // split is core's own neutral token check. The predicate is reached through the neutral
-            // `TaskCodec` seam the plane installed at boot, so this boot seam names no `crate::a2a`
-            // type — only `TaskRow`/`Rehydrated`. (Codec absent is only reachable in a mis-wired
-            // build; a row then counts readable, matching an empty-predicate restore.)
-            crate::plane::taskstore::TASKS.restore_from_store(host, store.as_ref(), |row| {
-                match busbar_substrate::plane_host::task_codec() {
-                    Some(codec) => codec.readable_row(row),
-                    None => Ok(()),
-                }
-            })
-        });
-        restored
-            .map(|r| RestoredTasks {
-                empty: r == crate::plane::taskstore::Rehydrated::default(),
-                active: r.active,
-                terminal: r.terminal,
-                unreadable: r.unreadable,
-                chain_breaks: r
-                    .chain_breaks
-                    .iter()
-                    .map(|b| TaskChainBreak {
-                        task_id: b.scope.clone(),
-                        detail: b.to_string(),
-                    })
-                    .collect(),
-            })
-            .map_err(|e| e.to_string())
-    }
-
-    /// The `plane-a2a`-OFF twin: the durable task set is compiled out, and the A2A hydrate hook that
-    /// would call this does not exist. Returns an all-default (empty) summary to keep the trait total.
-    #[cfg(not(feature = "plane-a2a"))]
-    fn restore_task_log(&self) -> Result<RestoredTasks, String> {
-        Ok(RestoredTasks {
-            empty: true,
-            ..RestoredTasks::default()
-        })
+    /// THE PLANE-NARROWED DURABLE STORE, or `None` under `store: memory` — the generic handle the A2A
+    /// plane drives its own task-set boot (sink attach + rehydrate) off, so no A2A boot logic lives in
+    /// this core seam. Just clones the phase-carried `Option<Arc<dyn PlaneStore>>`.
+    fn plane_store(&self) -> Option<std::sync::Arc<dyn busbar_substrate::plane::store::PlaneStore>> {
+        self.store.clone()
     }
 
     /// THE RECOVERY HATCH for an in-core plane twin (A2A). `BootCtx` is `'static` (its `app`/`handle`

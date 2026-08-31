@@ -33,6 +33,7 @@
 pub mod a2a;
 pub mod diagnostics;
 pub mod record;
+pub mod taskstore;
 
 /// THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
 /// extraction), re-exported at the crate root so `busbar_a2a::TaskRow` / `busbar_a2a::TaskEventRow`

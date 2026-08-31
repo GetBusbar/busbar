@@ -134,15 +134,6 @@ pub mod boot;
 /// SHAPE for core's one audit chain — named honestly at the crate root rather than under the
 /// neutral `plane::` namespace. See the module header.
 pub mod calllog;
-/// THE PER-TASK PROVENANCE RECORD — the A2A plane's contribution to core's one audit chain. A
-/// plane-specific RECORD SHAPE, named honestly at the crate root rather than under the neutral
-/// `plane::` namespace. See the module header.
-// Widened to `pub` ONLY under the test-support surface so the extracted A2A plane's own test binary
-// can name the provenance types its front-door tests assert against; production keeps it `pub(crate)`.
-#[cfg(not(any(test, feature = "test-support")))]
-pub(crate) mod provenance;
-#[cfg(any(test, feature = "test-support"))]
-pub mod provenance;
 pub use busbar_substrate::breaker;
 pub mod catalogue;
 pub mod config;
