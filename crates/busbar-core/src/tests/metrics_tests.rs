@@ -578,7 +578,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
         .build();
 
     // Hold a park guard, as a real queued request would for the duration of its wait.
-    let guard = app.queued_depth.park("q-live-pool");
+    let guard = app.engine_tables().queued_depth().park("q-live-pool");
     refresh_scrape_gauges(&app);
     let out = render();
     assert_eq!(

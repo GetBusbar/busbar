@@ -431,7 +431,10 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    pub(crate) lanes: Vec<Lane>,
+    /// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App`
+    /// fields, bundled here (R3/R4 sub-phase A). Read through [`App::engine_tables`]. `cost` stays
+    /// OUTSIDE it (neutral — MCP/A2A meter through it too).
+    pub(crate) llm_runtime: NativeRuntime,
     pub(crate) store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
@@ -475,23 +478,6 @@ pub struct App {
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     >,
-    /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
-    /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
-    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
-    pub(crate) by_model: HashMap<String, usize>,
-    /// Pool members, each carrying a lane index and its configured weight.
-    pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
-    /// The ALL-POOLS `upstream_credentials:` default — see [`App::upstream_creds`].
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
-    /// Does ANY pool set its own `upstream_credentials:` override? Resolved ONCE at config apply
-    /// (`false` for the overwhelmingly common config where no pool overrides — the all-pools default
-    /// governs everywhere). It exists so [`App::pool_upstream_creds`] can restore the pre-1.5.3
-    /// per-request `Copy` read: when this is `false`, the accessor returns `upstream_credentials`
-    /// directly and skips the `pool_runtime` String-keyed (SipHash) HashMap probe entirely. The
-    /// probe only ever runs when an override actually exists, so the fast path is provably behavior-
-    /// identical to the full lookup (no pool has a `Some(_)` to find).
-    pub(crate) any_pool_upstream_creds_override: bool,
-    pub client: UpstreamClients,
     /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
     /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
@@ -776,18 +762,6 @@ pub struct App {
     /// `0` = unlimited (default). Carried on the snapshot for the same reason as
     /// `max_keys_per_principal`.
     pub(crate) max_auto_provisioned_groups: usize,
-    /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
-    pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
-    /// Per-pool runtime config (failover/exclusions today; breaker/affinity as they're wired).
-    pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
-    /// Fallback pools mapping (pool name -> WeightedLane vec) for fallback mode.
-    pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
-    /// OnExhausted config per pool name.
-    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
-    /// Live per-pool `on_exhausted: queue` park depth — the source behind `busbar_pool_queued`.
-    /// Arc-shared across config swaps so an in-flight parked request and a scrape agree (see
-    /// [`QueuedDepth`]).
-    pub(crate) queued_depth: Arc<QueuedDepth>,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub governance: Option<std::sync::Arc<crate::governance::GovState>>,
     /// The SECRET RESOLVER seam: resolves a config [`crate::config::SecretRef`] to bytes via
@@ -866,85 +840,138 @@ pub struct App {
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
+/// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App` fields,
+/// now ONE bundle built once per config apply ([`crate::appbuild`]) and held on the snapshot as
+/// [`App::llm_runtime`]. Grouping them is R3/R4 sub-phase A's payoff: core carries no LLM-shaped FLAT
+/// state — one named bundle instead. `cost` deliberately stays OUTSIDE this (it is NEUTRAL — MCP/A2A
+/// meter through it too). An OWNED nested struct (not `Arc`), so [`App`]'s `Clone` deep-copies it
+/// exactly as it deep-copied the 12 fields — byte-identical clone/snapshot semantics. Sub-phase B
+/// relocates this type to `busbar-llm` and reaches it through the opaque `plane_slot` (a downcast the
+/// extracted plane does off the host seam); it stays a typed field HERE so the money-path read is a
+/// plain field access, never a per-read slot lookup. Neutral: names no dialect, adds no LLM type to
+/// core (the freeze witness stays 0).
+#[derive(Clone)]
+pub(crate) struct NativeRuntime {
+    pub(crate) lanes: Vec<Lane>,
+    pub(crate) by_model: HashMap<String, usize>,
+    pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
+    pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
+    pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
+    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
+    pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
+    pub(crate) queued_depth: Arc<QueuedDepth>,
+    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
+    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
+    pub(crate) any_pool_upstream_creds_override: bool,
+    pub(crate) client: UpstreamClients,
+}
+
+impl NativeRuntime {
+    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
+    /// Moved verbatim from `App::upstream_creds`.
+    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+        self.upstream_credentials
+    }
+
+    /// The upstream-credential mode in force for `pool` — the pool's own `upstream_credentials:` when
+    /// it sets one, else the all-pools default. SCALAR override. Moved verbatim from
+    /// `App::pool_upstream_creds` (same fast path, same SipHash-probe skip when no override exists).
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        if !self.any_pool_upstream_creds_override {
+            return self.upstream_credentials;
+        }
+        self.pool_runtime
+            .get(pool)
+            .and_then(|rt| rt.upstream_credentials)
+            .unwrap_or(self.upstream_credentials)
+    }
+}
+
 /// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface (R3/R4 sub-phase A, LOCKED §7
-/// "wire the seam in place"). Today it borrows the tables straight off [`App`]'s fields (a zero-cost
-/// newtype over `&App`), so every read through it is byte-identical to reading the field directly.
-/// It exists so the engine and the model-plane readers reach the pool/lane/failover tables through
-/// ONE named seam instead of a dozen `app.<field>` reachings — the seam whose SOURCE a later
-/// sub-phase flips from these `App` fields to the LLM plane's `plane_slot`, WITHOUT touching a single
-/// reader. Neutral: it names no dialect and adds no LLM type to core (the freeze witness stays 0).
+/// "wire the seam in place"). Borrows the tables off [`App::llm_runtime`] (a zero-cost newtype over
+/// `&App`), so every read through it is byte-identical to reading the bundle field directly. It
+/// exists so the engine and the model-plane readers reach the pool/lane/failover tables through ONE
+/// named seam — the seam whose SOURCE sub-phase B flips from `App::llm_runtime` to the LLM plane's
+/// `plane_slot`, WITHOUT touching a single reader.
 #[derive(Clone, Copy)]
 pub(crate) struct EngineTables<'a> {
-    app: &'a App,
+    rt: &'a NativeRuntime,
 }
 
 impl<'a> EngineTables<'a> {
     /// The pool table — each pool name to its weighted lane members.
     pub(crate) fn pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
-        &self.app.pools
+        &self.rt.pools
     }
 
     /// The direct-model index — a model name to its lane position.
     pub(crate) fn by_model(&self) -> &'a HashMap<String, usize> {
-        &self.app.by_model
+        &self.rt.by_model
     }
 
     /// The lane table — each resolved upstream (model, provider, dialect, credential, egress target).
     pub(crate) fn lanes(&self) -> &'a [Lane] {
-        &self.app.lanes
+        &self.rt.lanes
     }
 
     /// The global default failover config (the fallback for pools that set none), if configured.
     /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
     pub(crate) fn failover_cfg(&self) -> &'a Option<crate::config::FailoverCfg> {
-        &self.app.failover_cfg
+        &self.rt.failover_cfg
     }
 
     /// Per-pool runtime (resolved members / per-pool `upstream_credentials:` override state).
     pub(crate) fn pool_runtime(&self) -> &'a HashMap<String, PoolRuntime> {
-        &self.app.pool_runtime
+        &self.rt.pool_runtime
     }
 
     /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.app.upstream_creds()
+        self.rt.upstream_creds()
     }
 
     /// The upstream-credential mode for `pool` — its own `upstream_credentials:` override, else the
-    /// all-pools default (the scalar combine rule). Identical to [`App::pool_upstream_creds`].
+    /// all-pools default (the scalar combine rule).
     pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
-        self.app.pool_upstream_creds(pool)
+        self.rt.pool_upstream_creds(pool)
     }
 
     /// The fallback-pool routing table — a pool's `on_exhausted = fallback_pool:<name>` target set.
     pub(crate) fn fallback_pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
-        &self.app.fallback_pools
+        &self.rt.fallback_pools
     }
 
     /// The per-pool queue-depth gauge (the `on_exhausted = queue` waiter park counter).
     pub(crate) fn queued_depth(&self) -> &'a std::sync::Arc<QueuedDepth> {
-        &self.app.queued_depth
+        &self.rt.queued_depth
     }
 
     /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
     pub(crate) fn on_exhausted_cfgs(
         &self,
     ) -> &'a std::collections::HashMap<String, crate::config::OnExhausted> {
-        &self.app.on_exhausted_cfgs
+        &self.rt.on_exhausted_cfgs
     }
 
     /// The health-probe schedule shared across snapshots of this lineage.
     pub(crate) fn probe_schedule(&self) -> &'a std::sync::Arc<crate::health::ProbeSchedule> {
-        &self.app.probe_schedule
+        &self.rt.probe_schedule
+    }
+
+    /// The shared upstream HTTP client pool (the LLM egress transport).
+    pub(crate) fn client(&self) -> &'a UpstreamClients {
+        &self.rt.client
     }
 }
 
 impl App {
     /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam. A
-    /// zero-cost newtype over `&self` today; the seam a later sub-phase re-sources from the LLM
+    /// zero-cost newtype over `&self.llm_runtime`; the seam sub-phase B re-sources from the LLM
     /// plane's runtime slot.
     pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
-        EngineTables { app: self }
+        EngineTables {
+            rt: &self.llm_runtime,
+        }
     }
 }
 
@@ -958,25 +985,7 @@ impl App {
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.upstream_credentials
-    }
-
-    /// The UPSTREAM-credential mode in force for `pool`: the pool's own `upstream_credentials:` when
-    /// it sets one, else the all-pools default ([`App::upstream_creds`]). SCALAR override, never a
-    /// union — the pool's value REPLACES the inherited one. An empty/unknown pool name
-    /// (the direct-model and degraded ad-hoc routes) falls back to the default.
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
-        // Fast path (the norm): no pool overrides `upstream_credentials:`, so the all-pools default
-        // governs every pool — return it with a `Copy` read and skip the String-keyed `pool_runtime`
-        // SipHash probe. Behavior-identical: with no override present, the full lookup below could
-        // only ever fall through to `self.upstream_credentials` anyway.
-        if !self.any_pool_upstream_creds_override {
-            return self.upstream_credentials;
-        }
-        self.pool_runtime
-            .get(pool)
-            .and_then(|rt| rt.upstream_credentials)
-            .unwrap_or(self.upstream_credentials)
+        self.llm_runtime.upstream_creds()
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no

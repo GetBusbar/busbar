@@ -923,7 +923,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         std::time::Duration,
         std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
     )] = app
-        .pool_runtime
+        .engine_tables()
+        .pool_runtime()
         .get(pool_name)
         .map(|r| r.rewrite_hooks.as_slice())
         .unwrap_or(&[]);
@@ -1098,7 +1099,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
     // Failover config: prefer this pool's own settings, fall back to the global default.
     let pool_failover = app
-        .pool_runtime
+        .engine_tables()
+        .pool_runtime()
         .get(pool_name)
         .and_then(|r| r.failover.as_ref())
         .or(app.engine_tables().failover_cfg().as_ref());
@@ -1167,7 +1169,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // The restriction persists across failover (hops select from the shrunk `cands`). ZERO COST
     // when no gate is configured (both sources empty ⇒ the pass is skipped).
     let pool_gates: &[(u16, crate::hooks::ResolvedPolicy)] = app
-        .pool_runtime
+        .engine_tables()
+        .pool_runtime()
         .get(pool_name)
         .map(|r| r.gates.as_slice())
         .unwrap_or(&[]);
@@ -1370,7 +1373,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         Some(order)
     } else {
         match app
-            .pool_runtime
+            .engine_tables()
+            .pool_runtime()
             .get(pool_name)
             .and_then(|r| r.policy.as_ref())
         {
@@ -2124,7 +2128,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // request; the attempt cap, when smaller, still fires first inside). An expired budget
         // classifies as a transport timeout — exactly what reqwest's `is_timeout()` reported.
         let send_fut = async {
-            let send = app.client.get().request(hreq);
+            let send = app.engine_tables().client().get().request(hreq);
             match attempt_ms {
                 Some(ms) => {
                     let cap = attempt_cap(ms, request_ctx.remaining(attempt_wall));
@@ -3061,7 +3065,8 @@ pub(crate) fn resolve_breaker_cfg(
     pool_name: &str,
 ) -> std::sync::Arc<crate::store::BreakerCfg> {
     match app
-        .pool_runtime
+        .engine_tables()
+        .pool_runtime()
         .get(pool_name)
         .and_then(|r| r.breaker.as_ref())
     {

@@ -432,7 +432,8 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
         .build();
 
     spawn_probers(&app);
-    let first = app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed);
+    let first = app.engine_tables().probe_schedule().deadlines[0]
+        .load(std::sync::atomic::Ordering::Relaxed);
     assert_ne!(
         first,
         super::UNSCHEDULED,
@@ -446,7 +447,8 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
         std::thread::sleep(Duration::from_millis(6));
         spawn_probers(&app);
         assert_eq!(
-            app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed),
+            app.engine_tables().probe_schedule().deadlines[0]
+                .load(std::sync::atomic::Ordering::Relaxed),
             first,
             "a re-spawn must inherit the existing deadline, never restart the interval"
         );
@@ -455,7 +457,8 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
     // And every one of those generations is accounted for, so the stale ones exit rather than
     // probing alongside the live one.
     assert_eq!(
-        app.probe_schedule
+        app.engine_tables()
+            .probe_schedule()
             .generation
             .load(std::sync::atomic::Ordering::Relaxed),
         6,
@@ -486,7 +489,8 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         .build();
 
     spawn_probers(&app);
-    let far = app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed);
+    let far = app.engine_tables().probe_schedule().deadlines[0]
+        .load(std::sync::atomic::Ordering::Relaxed);
     assert!(
         far >= 3_600_000 && far != super::UNSCHEDULED,
         "first spawn schedules a ~3600s-out deadline, got {far}"
@@ -496,7 +500,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // and therefore `origin`, is SHARED, which is the precondition the numeric assertion below
     // depends on.
     let mut a2 = (*app).clone();
-    a2.lanes[0].health = Some(HealthCfg {
+    a2.llm_runtime.lanes[0].health = Some(HealthCfg {
         mode: HealthMode::Active,
         interval_secs: Some(10),
         timeout_secs: Some(5),
@@ -505,11 +509,14 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     spawn_probers(&app2);
 
     assert!(
-        app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed) <= 11_000,
+        app.engine_tables().probe_schedule().deadlines[0]
+            .load(std::sync::atomic::Ordering::Relaxed)
+            <= 11_000,
         "a shortened interval must clamp the inherited deadline"
     );
     assert_eq!(
-        app.probe_schedule
+        app.engine_tables()
+            .probe_schedule()
             .generation
             .load(std::sync::atomic::Ordering::Relaxed),
         2

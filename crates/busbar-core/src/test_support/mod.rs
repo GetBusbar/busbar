@@ -1483,8 +1483,37 @@ impl TestApp {
             .and_then(|decl| self.plane_defs_any.remove(decl.key))
             .unwrap_or_else(|| std::sync::Arc::new(())),
             tslots,
-            probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
-            lanes,
+            // THE LLM DATA-PLANE RUNTIME bundle (R3/R4 sub-phase A) — the same fields the fixture used
+            // to set flat on `App`, grouped. Field order is load-bearing: `probe_schedule` and
+            // `any_pool_upstream_creds_override` BORROW `lanes`/`self.pool_runtime` and so precede the
+            // moves of those values.
+            llm_runtime: crate::state::NativeRuntime {
+                probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
+                // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
+                // installs an override, so a test that sets one via `.pool_runtime(...)` still
+                // exercises the full lookup.
+                any_pool_upstream_creds_override: self
+                    .pool_runtime
+                    .values()
+                    .any(|rt| rt.upstream_credentials.is_some()),
+                lanes,
+                by_model,
+                pools: self.pools,
+                pool_runtime: self.pool_runtime,
+                fallback_pools: self.fallback_pools,
+                on_exhausted_cfgs: self.on_exhausted_cfgs,
+                failover_cfg: self.failover_cfg,
+                queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+                upstream_credentials: self.upstream_credentials,
+                client: crate::state::UpstreamClients::build(1, || {
+                    // The REAL owned egress client at default spec — tests drive the same hyper stack
+                    // production runs (the in-process MockServer is plain http, which the connector's
+                    // `https_or_http` posture serves).
+                    crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                        4, 300, false, false,
+                    ))
+                }),
+            },
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
@@ -1503,24 +1532,6 @@ impl TestApp {
                 }
                 m
             },
-            by_model,
-            pools: self.pools,
-            upstream_credentials: self.upstream_credentials,
-            // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
-            // installs an override, so a test that sets one via `.pool_runtime(...)` still exercises
-            // the full lookup.
-            any_pool_upstream_creds_override: self
-                .pool_runtime
-                .values()
-                .any(|rt| rt.upstream_credentials.is_some()),
-            client: crate::state::UpstreamClients::build(1, || {
-                // The REAL owned egress client at default spec — tests drive the same hyper stack
-                // production runs (the in-process MockServer is plain http, which the connector's
-                // `https_or_http` posture serves).
-                crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                    4, 300, false, false,
-                ))
-            }),
             client_settings: crate::state::UpstreamClientSettings::from_limits(
                 &crate::config::LimitsResolved::default(),
             ),
@@ -1597,11 +1608,6 @@ impl TestApp {
             config_version: 0,
             max_keys_per_principal: 0,
             max_auto_provisioned_groups: 0,
-            failover_cfg: self.failover_cfg,
-            pool_runtime: self.pool_runtime,
-            fallback_pools: self.fallback_pools,
-            on_exhausted_cfgs: self.on_exhausted_cfgs,
-            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
                 crate::config::secret::SecretResolver::builtins_only(),

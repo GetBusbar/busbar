@@ -836,7 +836,7 @@ pub fn build_app_from_config(
     let reuse_prior_client = prior.is_some_and(|p| p.client_settings == new_client_settings);
     let upstream_client = if let (true, Some(p)) = (reuse_prior_client, prior) {
         // REUSED across applies: the pooled connections + their kept-alive upstream sockets.
-        p.client.clone()
+        p.llm_runtime.client.clone()
     } else {
         // Opt-in HTTP/2 PRIOR-KNOWLEDGE for CLEARTEXT upstreams (no TLS/ALPN to negotiate over):
         // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE=1` makes the shared client assume h2 without ALPN. This
@@ -1312,13 +1312,14 @@ pub fn build_app_from_config(
     // set: there the zip would start accepting a shifted-index pairing.
     let probe_schedule = match prior {
         Some(p)
-            if p.lanes.len() == lanes.len()
-                && p.lanes
+            if p.llm_runtime.lanes.len() == lanes.len()
+                && p.llm_runtime
+                    .lanes
                     .iter()
                     .zip(lanes.iter())
                     .all(|(a, b)| a.model == b.model && a.provider == b.provider) =>
         {
-            p.probe_schedule.clone()
+            p.llm_runtime.probe_schedule.clone()
         }
         _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
     };
@@ -1492,9 +1493,6 @@ pub fn build_app_from_config(
     crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
 
     let app = App {
-        // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
-        upstream_credentials: cfg.upstream_credentials,
-        any_pool_upstream_creds_override,
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
@@ -1504,8 +1502,25 @@ pub fn build_app_from_config(
             &by_model,
             crate::plane::residual_key(),
         )),
-        probe_schedule,
-        lanes,
+        // THE LLM DATA-PLANE RUNTIME bundle (R3/R4 sub-phase A): the pool/lane/failover/egress tables
+        // that were 12 flat `App` fields, built here in ONE place. Placed AFTER `tslots` so the
+        // `AppSlots::build(&lanes, &pools, &by_model, …)` borrow above runs BEFORE these locals move
+        // in. `queued_depth` starts fresh per generation (an in-flight parked request and a scrape
+        // share the Arc); every other field is the same value that was assigned to the flat field.
+        llm_runtime: crate::state::NativeRuntime {
+            lanes,
+            by_model,
+            pools,
+            pool_runtime,
+            fallback_pools,
+            on_exhausted_cfgs,
+            failover_cfg,
+            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+            probe_schedule,
+            upstream_credentials: cfg.upstream_credentials,
+            any_pool_upstream_creds_override,
+            client: upstream_client.clone(),
+        },
         store,
         // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a
@@ -1572,9 +1587,6 @@ pub fn build_app_from_config(
             }
             m
         },
-        by_model,
-        pools,
-        client: upstream_client.clone(),
         client_settings: new_client_settings,
         auth: auth_mw.clone(),
         rewrite_hooks,
@@ -1724,11 +1736,6 @@ pub fn build_app_from_config(
         config_version: app_config_version,
         max_keys_per_principal: cfg.limits.max_keys_per_principal,
         max_auto_provisioned_groups: cfg.limits.max_auto_provisioned_groups,
-        failover_cfg,
-        pool_runtime,
-        fallback_pools,
-        on_exhausted_cfgs,
-        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
         governance,
         secret_resolver,
         cost,

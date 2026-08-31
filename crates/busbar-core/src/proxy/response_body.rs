@@ -684,8 +684,10 @@ where
                                 .as_ref()
                                 .map(crate::proxy::usage::tier_tokens)
                                 .unwrap_or_default();
-                            if let Some(lane) =
-                                this.app.as_ref().and_then(|a| a.lanes.get(this.lane_idx))
+                            if let Some(lane) = this
+                                .app
+                                .as_ref()
+                                .and_then(|a| a.engine_tables().lanes().get(this.lane_idx))
                             {
                                 crate::proxy::usage::ledger_and_meter(
                                     &sink,
@@ -754,7 +756,11 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             .map(crate::proxy::usage::tier_tokens)
             .unwrap_or_default();
         if !tier.is_zero() {
-            if let Some(lane) = self.app.as_ref().and_then(|a| a.lanes.get(self.lane_idx)) {
+            if let Some(lane) = self
+                .app
+                .as_ref()
+                .and_then(|a| a.engine_tables().lanes().get(self.lane_idx))
+            {
                 // Ledger + meter the partial through the one accrual seam (the tokens were
                 // really generated + delivered before the drop).
                 crate::proxy::usage::ledger_and_meter(&sink, lane, usage.as_ref(), &tier);

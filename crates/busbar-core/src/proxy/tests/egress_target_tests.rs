@@ -15,7 +15,7 @@ use crate::test_support::{LaneSpec, TestApp};
 /// For one built lane, prove every table entry equals the reference composition, and that the
 /// table covers chat for both stream intents (the hot path's keys).
 fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
-    let lane = &app.lanes[lane_idx];
+    let lane = &app.engine_tables().lanes()[lane_idx];
     let op = crate::handlers::chat(lane.protocol, crate::transport::Transport::Http);
     for wants_stream in [false, true] {
         let target = lane
@@ -78,7 +78,9 @@ fn egress_targets_honor_azure_path_override_with_query() {
         .build();
     assert_table_matches_reference(&app, 0);
     let op = crate::handlers::chat("openai", crate::transport::Transport::Http);
-    let t = app.lanes[0].egress_target(op.operation, false).unwrap();
+    let t = app.engine_tables().lanes()[0]
+        .egress_target(op.operation, false)
+        .unwrap();
     assert_eq!(
         t.url.as_str(),
         "http://127.0.0.1:1/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"
@@ -103,7 +105,9 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
         .build();
     assert_table_matches_reference(&app, 0);
     let op = crate::handlers::chat("bedrock", crate::transport::Transport::Http);
-    let t = app.lanes[0].egress_target(op.operation, false).unwrap();
+    let t = app.engine_tables().lanes()[0]
+        .egress_target(op.operation, false)
+        .unwrap();
     assert!(
         t.url.as_str().contains("%3A0"),
         "wire URL must carry the single-encoded modelId, got {}",

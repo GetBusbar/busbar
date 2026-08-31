@@ -6035,12 +6035,12 @@ fn test_lanespec_runtime_state_setters_land_in_built_app() {
         "a future cooldown_until must leave the lane in cooldown"
     );
     assert_eq!(
-        app.lanes[0].context_max,
+        app.engine_tables().lanes()[0].context_max,
         Some(8000),
         "context_max setter must propagate to the Lane view"
     );
     assert_eq!(
-        app.lanes[0].default_max_tokens,
+        app.engine_tables().lanes()[0].default_max_tokens,
         Some(1234),
         "default_max_tokens setter must propagate to the Lane view"
     );

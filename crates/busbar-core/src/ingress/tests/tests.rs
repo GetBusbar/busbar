@@ -36,24 +36,31 @@ fn minimal_app() -> Arc<App> {
             m
         },
         agent_defs: std::sync::Arc::new(busbar_a2a::a2a::config::AgentsCfg::default()),
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        any_pool_upstream_creds_override: false,
-        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(
             &[],
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             crate::plane::residual_key(),
         )),
-        lanes: vec![],
+        llm_runtime: crate::state::NativeRuntime {
+            lanes: vec![],
+            by_model: std::collections::HashMap::new(),
+            pools: std::collections::HashMap::new(),
+            pool_runtime: std::collections::HashMap::new(),
+            fallback_pools: std::collections::HashMap::new(),
+            on_exhausted_cfgs: std::collections::HashMap::new(),
+            failover_cfg: None,
+            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+            probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
+            upstream_credentials: crate::auth::UpstreamCreds::Own,
+            any_pool_upstream_creds_override: false,
+            client: crate::state::UpstreamClients::build(1, || {
+                crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                    4, 300, false, false,
+                ))
+            }),
+        },
         store: Arc::new(crate::store::HealthState::new(vec![])),
-        by_model: std::collections::HashMap::new(),
-        pools: std::collections::HashMap::new(),
-        client: crate::state::UpstreamClients::build(1, || {
-            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                4, 300, false, false,
-            ))
-        }),
         client_settings: crate::state::UpstreamClientSettings::from_limits(
             &crate::config::LimitsResolved::default(),
         ),
@@ -97,11 +104,6 @@ fn minimal_app() -> Arc<App> {
         config_version: 0,
         max_keys_per_principal: 0,
         max_auto_provisioned_groups: 0,
-        failover_cfg: None,
-        pool_runtime: std::collections::HashMap::new(),
-        fallback_pools: std::collections::HashMap::new(),
-        on_exhausted_cfgs: std::collections::HashMap::new(),
-        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
         governance: None,
         secret_resolver: std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
         cost: std::sync::Arc::new(crate::cost::CostModel::flat(1)),
@@ -179,7 +181,7 @@ fn test_affinity_header_honors_configured_name() {
     );
     // App is behind Arc; rebuild with the populated map.
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.pool_runtime = pr;
+    inner.llm_runtime.pool_runtime = pr;
     assert_eq!(affinity_header_for(&app, "tenant-pool"), "x-user-id");
     // A pool without an entry still falls back to the default.
     assert_eq!(affinity_header_for(&app, "other"), "x-session-id");
@@ -206,7 +208,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
         },
     );
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.pool_runtime = pr;
+    inner.llm_runtime.pool_runtime = pr;
     assert_eq!(affinity_header_for(&app, "p"), "x-session-id");
 }
 
@@ -2344,7 +2346,7 @@ fn test_pool_label_bounds_cardinality() {
     let mut app = minimal_app();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.pools.insert(
+        inner.llm_runtime.pools.insert(
             "mypool".to_string(),
             vec![WeightedLane {
                 reasoning: None,
@@ -2353,7 +2355,7 @@ fn test_pool_label_bounds_cardinality() {
                 attempt_timeout_ms: None,
             }],
         );
-        inner.by_model.insert("mymodel".to_string(), 0);
+        inner.llm_runtime.by_model.insert("mymodel".to_string(), 0);
     }
     // Configured pool name → verbatim.
     assert_eq!(pool_label(&app, "mypool"), "mypool");
@@ -6205,8 +6207,11 @@ fn governed_app_downgrade(
     inner.governance = Some(gov);
     inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
-    inner.pools.insert("frontier".to_string(), vec![]);
-    inner.pools.insert("value".to_string(), vec![]);
+    inner
+        .llm_runtime
+        .pools
+        .insert("frontier".to_string(), vec![]);
+    inner.llm_runtime.pools.insert("value".to_string(), vec![]);
     (app, key)
 }
 
@@ -6305,9 +6310,9 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     inner.governance = Some(gov);
     inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
-    inner.pools.insert("a".to_string(), vec![]);
-    inner.pools.insert("b".to_string(), vec![]);
-    inner.pools.insert("c".to_string(), vec![]);
+    inner.llm_runtime.pools.insert("a".to_string(), vec![]);
+    inner.llm_runtime.pools.insert("b".to_string(), vec![]);
+    inner.llm_runtime.pools.insert("c".to_string(), vec![]);
 
     let gov = crate::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),

@@ -350,7 +350,8 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // capped error-body read (`read_capped_error_body`), so a black-holed upstream can never hang
     // the prober past its configured `timeout_secs`.
     let deadline = tokio::time::Instant::now() + timeout;
-    let res = tokio::time::timeout_at(deadline, app.client.get().request(req)).await;
+    let res =
+        tokio::time::timeout_at(deadline, app.engine_tables().client().get().request(req)).await;
 
     // Classify the probe outcome through the organic disposition pipeline so auth/billing failures
     // reach HardDown instead of being mis-filed as transient cooldowns. Carry the server-requested

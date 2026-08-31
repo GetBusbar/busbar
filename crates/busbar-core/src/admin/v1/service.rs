@@ -607,7 +607,7 @@ pub(crate) fn build_with_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.pools.contains_key(p),
+        &|p| current.engine_tables().pools().contains_key(p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -690,7 +690,7 @@ pub(crate) fn build_without_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.pools.contains_key(p),
+        &|p| current.engine_tables().pools().contains_key(p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -986,7 +986,8 @@ impl AdminService {
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
         let mut pools: Vec<PoolDetailView> = self
             .app
-            .pools
+            .engine_tables()
+            .pools()
             .iter()
             .map(|(name, members)| self.pool_detail(name, members))
             .collect();
@@ -999,7 +1000,8 @@ impl AdminService {
     pub(crate) async fn list_models(&self) -> Result<Page<ModelView>, AdminError> {
         let mut models: Vec<ModelView> = self
             .app
-            .lanes
+            .engine_tables()
+            .lanes()
             .iter()
             .map(|l| ModelView {
                 model: l.model.clone(),

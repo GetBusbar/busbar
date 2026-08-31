@@ -24,13 +24,16 @@ fn no_override_fast_path_returns_all_pools_default() {
             .build();
 
         assert!(
-            !app.any_pool_upstream_creds_override,
+            !app.llm_runtime.any_pool_upstream_creds_override,
             "no pool overrides ⇒ fast path enabled"
         );
         // Known pool, unknown pool, and the empty (direct/ad-hoc) pool all resolve to the default.
-        assert_eq!(app.pool_upstream_creds("p"), default);
-        assert_eq!(app.pool_upstream_creds("does-not-exist"), default);
-        assert_eq!(app.pool_upstream_creds(""), default);
+        assert_eq!(app.engine_tables().pool_upstream_creds("p"), default);
+        assert_eq!(
+            app.engine_tables().pool_upstream_creds("does-not-exist"),
+            default
+        );
+        assert_eq!(app.engine_tables().pool_upstream_creds(""), default);
     }
 }
 
@@ -64,13 +67,22 @@ fn override_present_runs_full_lookup() {
         .build();
 
     assert!(
-        app.any_pool_upstream_creds_override,
+        app.llm_runtime.any_pool_upstream_creds_override,
         "a pool sets an override ⇒ full lookup enabled"
     );
     // The overriding pool gets its own value.
-    assert_eq!(app.pool_upstream_creds("pt"), UpstreamCreds::Passthrough);
+    assert_eq!(
+        app.engine_tables().pool_upstream_creds("pt"),
+        UpstreamCreds::Passthrough
+    );
     // A pool with no override inherits the all-pools default.
-    assert_eq!(app.pool_upstream_creds("base"), UpstreamCreds::Own);
+    assert_eq!(
+        app.engine_tables().pool_upstream_creds("base"),
+        UpstreamCreds::Own
+    );
     // An unknown pool name falls back to the default too.
-    assert_eq!(app.pool_upstream_creds("unknown"), UpstreamCreds::Own);
+    assert_eq!(
+        app.engine_tables().pool_upstream_creds("unknown"),
+        UpstreamCreds::Own
+    );
 }

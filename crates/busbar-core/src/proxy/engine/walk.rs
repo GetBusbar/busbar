@@ -104,7 +104,8 @@ pub(crate) async fn handle_exhaustion_for_pool(
 
     // Look up pool-specific on_exhausted config, default to Status503 for unknown pools.
     let mode = app
-        .on_exhausted_cfgs
+        .engine_tables()
+        .on_exhausted_cfgs()
         .get(pool_name)
         .cloned()
         .unwrap_or(OnExhausted::Status503);
@@ -659,7 +660,7 @@ pub(crate) async fn forward_once(
     // transport-timeout handling as the transport error below. The non-stream budget deadline wraps
     // BOTH send arms (the attempt cap, when smaller, still fires first inside).
     let send_fut = async {
-        let send = app.client.get().request(hreq);
+        let send = app.engine_tables().client().get().request(hreq);
         match app.engine_tables().lanes()[i].attempt_timeout_ms {
             Some(ms) => {
                 let cap = attempt_cap(ms, timeout_secs);
@@ -1118,7 +1119,8 @@ pub(crate) async fn handle_fallback_pool(
     // says nothing about it, and its own was never consulted, so a member the operator blocklisted
     // here could still be reached by spilling into this pool.
     let fallback_cands = match app
-        .pool_runtime
+        .engine_tables()
+        .pool_runtime()
         .get(pool_name)
         .and_then(|r| r.failover.as_ref())
         .or(app.engine_tables().failover_cfg().as_ref())
