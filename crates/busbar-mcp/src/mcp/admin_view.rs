@@ -142,7 +142,8 @@ pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, nam
 pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
     // Read this plane's own registry off the neutral slot seam (owned `Arc` clone, so the immutable
     // borrow ends before the `&mut` store), then resolve-and-store host-side through the neutral sink
-    // under the MCP gate key (`0`) — so this plane names neither `&mut App` nor the core container-gate
+    // under this plane's OWN registry key (`PLANE_DECL.key`) — so this plane names neither `&mut App`
+    // nor the core container-gate
     // resolver. Byte-identical to the old inline `next.mcp_server_gates = next.resolve_container_gates(...)`.
     let servers = std::sync::Arc::clone(&super::runtime_slots(next).servers);
     let containers: Vec<(&str, &[String])> = servers
@@ -150,7 +151,11 @@ pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::Conta
         .iter()
         .map(|(n, d)| (n.as_str(), d.hooks.as_slice()))
         .collect();
-    next.reresolve_container_gates(0, &containers, &servers.all_server_hooks);
+    next.reresolve_container_gates(
+        crate::PLANE_DECL.key,
+        &containers,
+        &servers.all_server_hooks,
+    );
 }
 
 // ── THE TRUST SURFACE: `connect`, `changes`, `health` ───────────────────────────────────────────

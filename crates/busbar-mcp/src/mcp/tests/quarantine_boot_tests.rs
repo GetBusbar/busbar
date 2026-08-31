@@ -83,10 +83,22 @@ fn boot(
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(sightings);
+    // Keep a second handle to the same durable store for the boot REPLAY below — `mcp_durable_store`
+    // consumes one for the core-owned write-through sinks (spent-ledger + demotion record).
+    let replay_store = store.clone();
     if let Some(store) = store {
         app = app.mcp_durable_store(store);
     }
-    app.build()
+    let app = app.build();
+    // MIRROR production's `mcp_hydrate` boot hook: right after the app is built (and its plane sinks
+    // attached), replay recorded demotions into the live sightings cache off the GENERIC plane store,
+    // BEFORE the first request. No-op when no durable store is configured.
+    if let Some(store) = replay_store {
+        let host = busbar_core::plane_host::engine_host(&app);
+        let plane_store = busbar_substrate::plane::store::PlaneStoreView::narrow(store);
+        crate::mcp::demotion::hydrate(&host, Some(&plane_store));
+    }
+    app
 }
 
 /// Bring a deployment up, let the FIRST call verify-on-call the approving observation, then pull the

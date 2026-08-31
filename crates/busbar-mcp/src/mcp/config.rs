@@ -1602,14 +1602,16 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // wording for the site. The rule that most needs to be identical on both planes is now one
     // function rather than two copies that agreed only because one was pasted from the other.
     //
-    // The cross-plane list comes off core's `plane_decls()` singleton, which only core inits (this
-    // very deserialize is a trigger of that init when the plane dual-compiles into core). Standalone
-    // (`not(feature = "test-support")`) has no such singleton and never drives config resolution anyway — the
-    // plane runs inside busbar-core — so the standalone arm falls back to this plane's own section,
-    // the only one a standalone build knows; it is unreachable in practice, and no cross-plane
-    // reference is possible when only one plane exists.
+    // The cross-plane list is read back through the NEUTRAL provider seam
+    // (`busbar_substrate::plane::config::plane_sections`), which the composition root (and, under
+    // `test-support`, the plane test-kit's `install_test_seams`) binds to core's registry-coupled
+    // `config_sections` fold — so this plane reads the whole section list without naming
+    // `busbar_core`. Standalone (`not(feature = "test-support")`) binds no provider and never drives
+    // config resolution anyway — the plane runs inside busbar-core — so the standalone arm falls back
+    // to this plane's own section, the only one a standalone build knows; it is unreachable in
+    // practice, and no cross-plane reference is possible when only one plane exists.
     #[cfg(feature = "test-support")]
-    let sections = busbar_core::plane::config::config_sections();
+    let sections = busbar_substrate::plane::config::plane_sections();
     #[cfg(not(feature = "test-support"))]
     let sections = vec![super::PLANE_DECL.config_section];
     for hook in &def.hooks {

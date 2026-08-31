@@ -207,13 +207,45 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// busbar-core as an optional dep). The default standalone build — where busbar-core is not a
 /// dependency at all — compiles it out entirely; production reaches the resource through the neutral
 /// `resource_of` twin below.
-#[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
+///
+/// It, and its `runtime` sibling, live in the [`test_app_reads`] module: both are TEST-SUPPORT reads
+/// off a concrete `&App` (production uses the neutral `resource_of` / `runtime_slots` twins), and the
+/// `&App` type is the plane's OWN test dependency, so the backwards `busbar_core::state::App` name
+/// stays inside a test-gated module and out of every shipped build.
+#[cfg(feature = "test-support")]
+pub use test_app_reads::resource;
+// `runtime` is read only by the plane's own tests, so a `test-support` lib build (which links none)
+// sees the re-export unused; the allowance keeps that build warning-clean, mirroring the read fns.
+#[cfg_attr(not(test), allow(unused_imports))]
+#[cfg(feature = "test-support")]
+pub(crate) use test_app_reads::runtime;
+
+/// TEST-SUPPORT typed reads off a concrete `&busbar_core::state::App` — the `&App`-typed twins of the
+/// neutral `resource_of` / `runtime_slots` seams, kept here for the plane's own test fixtures (and the
+/// dual-compile into core's test binary). Gated on `test-support` so `busbar_core` is nameable, and a
+/// module so the backwards name is confined to test scope.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
-        slot.downcast_ref::<McpResource>()
-            .expect("the mcp plane's dispatch slot is an McpResource")
-    })
+#[cfg(feature = "test-support")]
+mod test_app_reads {
+    use super::{McpResource, McpRuntime, PLANE_DECL};
+
+    /// See the module-level note: the `&App`-typed read of the config-conditional dispatch slot.
+    pub fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
+        app.plane_slot(PLANE_DECL.key).map(|slot| {
+            slot.downcast_ref::<McpResource>()
+                .expect("the mcp plane's dispatch slot is an McpResource")
+        })
+    }
+
+    /// See the module-level note: the `&App`-typed read of the always-present runtime slot.
+    pub fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
+        app.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+            PLANE_DECL.key,
+        ))
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+        .downcast_ref::<McpRuntime>()
+        .expect("the mcp runtime slot is an McpRuntime")
+    }
 }
 
 /// THE HOST-BASED TWIN of [`resource`] — the plane's dispatch object off the BOUND snapshot, read
@@ -233,7 +265,7 @@ pub(crate) fn resource_of(
 /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the objects the plane carries for one
 /// config generation, bundled into ONE mcp-owned struct so core's `App` names no `crate::mcp` type for
 /// any of them. It is carried in [`busbar_core::state::App::plane_slots`] behind `Arc<dyn Any>` under
-/// the always-present companion key [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`], and [`runtime`] downcasts
+/// the always-present companion key [`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key), and [`runtime`] downcasts
 /// it back HERE, inside the plane.
 ///
 /// It rides its OWN `plane_slots` key rather than the plane's decl key (`"mcp"`, where the server-side
@@ -301,32 +333,6 @@ impl McpRuntime {
     }
 }
 
-/// THE MCP PLANE'S RUNTIME for this generation, read through the TYPE-ERASED `plane_slots` seam
-/// ([`busbar_core::state::App::plane_slot`]) under the ALWAYS-PRESENT companion key
-/// [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`], and downcast back to [`McpRuntime`] HERE, inside the
-/// plane — so core outside this module reaches the runtime only as an opaque `Arc<dyn Any>` slot and
-/// names no `crate::mcp` runtime type. Unlike [`resource`] (whose `"mcp"` slot is config-conditional),
-/// this slot is present on EVERY generation the MCP plane is compiled into, so the lookup and the
-/// downcast both `.expect`: `appbuild` composes it through the plane's `build_runtime` seam and the
-/// slot is always an `McpRuntime`.
-// After H2 the admin read path reads through the neutral `runtime_slots(&dyn PlaneSlots)` twin, so
-// this `&App`-typed helper's remaining callers are the plane's own test fixtures (and, pending the
-// H3/H5 data-path repoint, will be gone from production entirely). It stays for those tests; the
-// allowance keeps a `--no-default-features` lib build (which links no tests) warning-clean.
-//
-// Named `busbar_core::state::App`, so — like `resource` above — it compiles ONLY where busbar-core is
-// in the closure: the dual-compile into core's own test binary and a standalone `test-support` build.
-// The default standalone build compiles it out; production reads the runtime through the neutral
-// `runtime_slots` twin.
-#[cfg(any(all(test, feature = "test-support"), feature = "test-support"))]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
-    app.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
-        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
-        .downcast_ref::<McpRuntime>()
-        .expect("the mcp runtime slot is an McpRuntime")
-}
-
 /// THE NEUTRAL-SLOT twin of [`runtime`] — the plane's runtime object read through the
 /// [`busbar_substrate::plane_host::PlaneSlots`] seam rather than off `&App`, so the core-owned
 /// `PlaneDecl` callbacks the MCP plane fills (`on_swap`, `registry_contains`, `retain_verify_gates`)
@@ -334,7 +340,9 @@ pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
 /// [`runtime`]; the slot key is the always-present runtime companion in the neutral substrate.
 pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> &McpRuntime {
     slots
-        .plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
+        .plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+            crate::PLANE_DECL.key,
+        ))
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
         .downcast_ref::<McpRuntime>()
         .expect("the mcp runtime slot is an McpRuntime")
@@ -343,17 +351,19 @@ pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots
 /// THE BOUND-SNAPSHOT host twin of [`runtime`] — the plane's runtime object off the snapshot the host
 /// was minted on, read through the neutral
 /// [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam under the always-present runtime slot
-/// [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`] and downcast HERE. Returns an OWNED
+/// [`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key) and downcast HERE. Returns an OWNED
 /// `Arc<McpRuntime>` so the caller binds it to a local and reaches its fields through the owned `Arc`
 /// (the borrow no longer comes from `&App`). Both the lookup and the downcast `.expect`: the slot is
 /// present on every generation the plane is compiled into and is always an `McpRuntime`.
 pub(crate) fn runtime_of(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
-    host.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
-        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
-        .downcast::<McpRuntime>()
-        .expect("the mcp runtime slot is an McpRuntime")
+    host.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+        crate::PLANE_DECL.key,
+    ))
+    .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+    .downcast::<McpRuntime>()
+    .expect("the mcp runtime slot is an McpRuntime")
 }
 
 /// THE LIVE-SNAPSHOT twin of [`runtime_of`] — the plane's runtime object off the CURRENT snapshot,
@@ -365,14 +375,16 @@ pub(crate) fn runtime_of(
 pub(crate) fn runtime_live(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
 ) -> std::sync::Arc<McpRuntime> {
-    host.plane_slot_live(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
-        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
-        .downcast::<McpRuntime>()
-        .expect("the mcp runtime slot is an McpRuntime")
+    host.plane_slot_live(busbar_substrate::plane_host::runtime_slot_key(
+        crate::PLANE_DECL.key,
+    ))
+    .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+    .downcast::<McpRuntime>()
+    .expect("the mcp runtime slot is an McpRuntime")
 }
 
 /// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `plane_slots` runtime slot
-/// ([`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`]) — the one entry point `appbuild` calls so the
+/// ([`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key)) — the one entry point `appbuild` calls so the
 /// composition of the `App` names no `crate::mcp` runtime type.
 /// `prior` is the prior generation's snapshot, read through the neutral
 /// [`busbar_substrate::plane_host::PlaneSlots`] seam (for the carry-over rules in
@@ -433,7 +445,7 @@ fn mcp_lower_endpoint(
 
 /// BUILD THE MCP RUNTIME from the type-erased `tool_defs` slot — the
 /// [`busbar_substrate::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
-/// runtime slot (`plane_slots[MCP_RUNTIME_SLOT]`) through the plane without naming
+/// runtime slot (the plane's `runtime_slot_key` bundle) through the plane without naming
 /// [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the plane) and delegates to
 /// [`build_runtime`].
 fn mcp_build_runtime(
@@ -576,7 +588,7 @@ pub(crate) fn mcp_hydrate(
     // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
     // hydration reads exactly the generation it is restoring into.
     let host = ctx.engine_host();
-    match crate::mcp::demotion::hydrate(&host) {
+    match crate::mcp::demotion::hydrate(&host, ctx.plane_store().as_ref()) {
         0 => {}
         n => busbar_substrate::diag_warn!(
             crate::diagnostics::MCP_DEMOTIONS_RESTORED,

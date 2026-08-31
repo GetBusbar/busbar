@@ -366,7 +366,7 @@ async fn a_reused_unsighted_snapshot_dispatches_on_the_configured_hash() {
             ),
         )
         .build();
-    crate::testkit::prefresh_mcp_sightings(&app);
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     let (status, body) = call(

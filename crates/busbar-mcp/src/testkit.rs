@@ -17,7 +17,6 @@
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
-use busbar_core::state::{App, MCP_RUNTIME_SLOT};
 use busbar_core::test_support::TestApp;
 use std::sync::Arc;
 
@@ -79,14 +78,15 @@ fn finalize(app: &mut TestApp) {
         app.mount_plane(
             crate::PLANE_DECL.key,
             &mount,
-            busbar_core::plane::WIRE_JSONRPC,
+            busbar_substrate::plane::WIRE_JSONRPC,
         );
         app.admit_plane(crate::PLANE_DECL.key, admission);
     }
 
     // THE ALWAYS-PRESENT per-generation runtime bundle, the same home production `appbuild` gives it
-    // under `MCP_RUNTIME_SLOT`. Built directly (not via `build_runtime`) so a fixture can still inject
-    // its own `sightings`; the other five objects match production's `McpRuntime::build`.
+    // under the neutral `runtime_slot_key(<mcp decl key>)` companion. Built directly (not via
+    // `build_runtime`) so a fixture can still inject its own `sightings`; the other five objects match
+    // production's `McpRuntime::build`.
     let runtime: Arc<dyn std::any::Any + Send + Sync> = Arc::new(McpRuntime {
         catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&scratch.tool_defs)),
         servers: Arc::new(scratch.tool_defs.clone()),
@@ -96,7 +96,10 @@ fn finalize(app: &mut TestApp) {
         sampling_spend: Default::default(),
         verify: Default::default(),
     });
-    app.install_plane_runtime(MCP_RUNTIME_SLOT, runtime);
+    app.install_plane_runtime(
+        busbar_substrate::plane_host::runtime_slot_key(crate::PLANE_DECL.key),
+        runtime,
+    );
 
     // THE PER-SERVER HOOK SPECS as neutral strings — core resolves the gates against its own
     // hook_registry/hook_env through `resolve_container_gates`, exactly as production does.
@@ -108,11 +111,12 @@ fn finalize(app: &mut TestApp) {
         .collect();
     app.set_mcp_container_hooks(containers, scratch.tool_defs.all_server_hooks.clone());
 
-    // MIRROR boot's durable-MCP-trust REPLAY: after the App exists and its plane sinks are attached,
-    // replay recorded demotions into the sightings cache. No-op when no durable store was attached.
-    app.on_built(Box::new(|app: &Arc<App>| {
-        crate::mcp::demotion::hydrate(&busbar_core::plane_host::engine_host(app));
-    }));
+    // The durable-MCP-trust boot REPLAY (recorded demotions → live sightings cache) is NOT wired here:
+    // it reads the generic plane store DIRECTLY and mints a host over the built app, both of which a
+    // fixture drives with the store handle it already holds. The one suite that needs it
+    // (`mcp::tests::quarantine_boot_tests`) calls `crate::mcp::demotion::hydrate` right after
+    // `.build()`, exactly as production's `mcp_hydrate` boot hook does — so the test-kit's finalizer
+    // names no boot-replay path and holds no store handle of its own.
 }
 
 /// The MCP plane's fixture builder methods, as an extension of the neutral `TestApp`. Every method
@@ -177,8 +181,9 @@ pub fn mcp_runtime_with_servers(tools: ToolsCfg) -> Arc<dyn std::any::Any + Send
 }
 
 /// The DEFAULT per-generation MCP runtime, type-erased — for busbar-core's ingress tests that
-/// hand-assemble an `App` and need to seat the always-present `MCP_RUNTIME_SLOT` object without naming
-/// `McpRuntime` (its fields are crate-private).
+/// hand-assemble an `App` and need to seat the always-present runtime-slot object (the neutral
+/// `runtime_slot_key(<mcp decl key>)` companion) without naming `McpRuntime` (its fields are
+/// crate-private).
 pub fn default_mcp_runtime() -> Arc<dyn std::any::Any + Send + Sync> {
     Arc::new(McpRuntime {
         catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
@@ -239,12 +244,14 @@ pub fn swap_test_http_server(url: &str) -> McpServerDefCfg {
 
 /// SEED every registered MCP server's verification clock as JUST CHECKED, WITHOUT a sighting, so
 /// verify-on-call reuses the snapshot rather than re-fetching on the next `tools/call`. Relocated here
-/// from busbar-core's `test_support` (it names `mcp::runtime`/`mcp::client` types).
-pub fn prefresh_mcp_sightings(app: &App) {
+/// from busbar-core's `test_support` (it names `mcp::runtime`/`mcp::client` types). Reads the runtime
+/// through the NEUTRAL `runtime_slots(&dyn PlaneSlots)` seam — `App` implements `PlaneSlots`, so a
+/// caller hands its `&App` straight in and this helper names no `busbar_core` type.
+pub fn prefresh_mcp_sightings(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
     use crate::mcp::client::catalogue::ServerCatalogue;
     use crate::mcp::client::identity::ServerId;
     let now = busbar_substrate::store::now_ms();
-    let servers: Vec<_> = crate::mcp::runtime(app)
+    let servers: Vec<_> = crate::mcp::runtime_slots(slots)
         .catalogue
         .servers()
         .filter_map(|e| {
@@ -253,7 +260,7 @@ pub fn prefresh_mcp_sightings(app: &App) {
                 .map(|sid| (sid, e.approval.clone()))
         })
         .collect();
-    crate::mcp::runtime(app).sightings.apply(|map| {
+    crate::mcp::runtime_slots(slots).sightings.apply(|map| {
         for (sid, approval) in servers {
             let entry = map
                 .entry(sid.as_str().to_string())

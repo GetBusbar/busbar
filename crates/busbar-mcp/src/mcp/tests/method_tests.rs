@@ -167,7 +167,7 @@ async fn call(
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
     // Assert the method surface, not verify-on-call: reuse the snapshot for reachable servers.
-    crate::testkit::prefresh_mcp_sightings(app);
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
     let handle = Arc::new(AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         host: busbar_core::plane_host::engine_host_from_handle(&handle),
@@ -718,7 +718,7 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
         .build();
     // This case is about the CAPABILITY gate, not verify-on-call: reuse the snapshot so the
     // capability refusal is what the caller meets, not a fail-closed verify refusal.
-    crate::testkit::prefresh_mcp_sightings(&app);
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_needs_sampling")]);
 
     // The caller declares NOTHING, which is exactly what the scenario does.

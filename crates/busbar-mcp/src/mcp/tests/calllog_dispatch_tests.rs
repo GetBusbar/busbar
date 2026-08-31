@@ -42,14 +42,61 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
+use crate::record::{McpCallRecord, KIND_CALL};
 use crate::testkit::TestAppMcpExt;
-use busbar_api::{McpCallRecord, Store};
+use busbar_api::{PlaneSelector, Store};
 use busbar_core::calllog::verify_call_rows;
-use busbar_core::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
-use busbar_core::plane::store::StoreNamedTestExt;
+use busbar_core::calllog::{
+    CallRecorded, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED,
+};
 use busbar_core::test_support::TestApp;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Read one principal's persisted `call` chain back through the GENERIC plane-record ABI (the typed
+/// `Store::list_mcp_calls` method was deleted in the record relocation) and decode each opaque neutral
+/// journal body into the plane's own [`McpCallRecord`], oldest-first — the plane owns its record's
+/// framing, so the decode lives on the plane.
+fn list_mcp_calls(store: &Arc<dyn Store>, principal: &str) -> Vec<McpCallRecord> {
+    store
+        .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))
+        .expect("list the call chain over the generic plane-record ABI")
+        .iter()
+        .map(|body| {
+            McpCallRecord::from_journal_body(principal, body).expect("a stored call body decodes")
+        })
+        .collect()
+}
+
+/// The principals with a persisted `call` chain — the boot rehydrate's enumeration, read through the
+/// generic parent-listing ABI (the typed `Store::list_mcp_call_principals` was deleted with the rest).
+fn list_mcp_call_principals(store: &Arc<dyn Store>) -> Vec<String> {
+    store
+        .list_plane_record_parents(KIND_CALL)
+        .expect("enumerate call-chain principals over the generic plane-record ABI")
+}
+
+/// Reframe the plane's typed records into the neutral [`CallRecorded`] rows [`verify_call_rows`]
+/// takes — the fields are identical, and the chain verifier is core's (it names no plane type).
+fn as_call_rows(records: &[McpCallRecord]) -> Vec<CallRecorded> {
+    records
+        .iter()
+        .map(|r| CallRecorded {
+            principal: r.principal.clone(),
+            seq: r.seq,
+            ts: r.ts,
+            server: r.server.clone(),
+            tool: r.tool.clone(),
+            outcome: r.outcome.clone(),
+            reason: r.reason.clone(),
+            tool_digest: r.tool_digest.clone(),
+            pin_generation: r.pin_generation,
+            request_id: r.request_id.clone(),
+            prev_hash: r.prev_hash.clone(),
+            hash: r.hash.clone(),
+        })
+        .collect()
+}
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -303,9 +350,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // THE RESTART. A fresh `dlopen` + `busbar_open` over the same on-disk ledger — the only way a
     // durability claim can be made honestly, because a write's `Ok(())` is worth nothing.
     let reopened = open_plugin(&cfg);
-    let records = reopened
-        .list_mcp_calls(principal)
-        .expect("list_mcp_calls over the ABI after the restart");
+    let records = list_mcp_calls(&reopened, principal);
 
     assert_eq!(
         records.len(),
@@ -325,7 +370,8 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
         OUTCOME_DISPATCHED,
         true,
     );
-    verify_call_rows(&records).expect("the persisted chain must verify against its own hashes");
+    verify_call_rows(&as_call_rows(&records))
+        .expect("the persisted chain must verify against its own hashes");
 
     // The BYTES the plugin actually kept, printed so a release report can quote evidence rather
     // than quote an assertion that passed.
@@ -337,10 +383,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
 
     // And the store enumerates the principal, which is what the boot rehydrate walks.
     assert!(
-        reopened
-            .list_mcp_call_principals()
-            .expect("list_mcp_call_principals over the ABI")
-            .contains(&principal.to_string()),
+        list_mcp_call_principals(&reopened).contains(&principal.to_string()),
         "a principal with rows must be enumerable, or `restore_from_store` finds nothing to restore"
     );
 }
@@ -387,9 +430,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     busbar_core::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
-    let records = reopened
-        .list_mcp_calls(principal)
-        .expect("list_mcp_calls over the ABI after the restart");
+    let records = list_mcp_calls(&reopened, principal);
     assert_eq!(
         records.len(),
         1,
@@ -401,7 +442,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
         "the refusal must carry a stable, greppable reason token: {:?}",
         records[0]
     );
-    verify_call_rows(&records).expect("the persisted chain must verify");
+    verify_call_rows(&as_call_rows(&records)).expect("the persisted chain must verify");
 }
 
 /// THE PERMANENT NEGATIVE. With NO sink attached — which is what `store: memory` is from the
@@ -442,10 +483,7 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
 
     let plugin = open_plugin(&cfg);
     assert!(
-        plugin
-            .list_mcp_calls(principal)
-            .expect("list_mcp_calls over the ABI")
-            .is_empty(),
+        list_mcp_calls(&plugin, principal).is_empty(),
         "nothing was configured to persist, so nothing may be found — a durability test that has \
          never seen a NON-durable store has proven nothing"
     );
@@ -541,9 +579,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
     busbar_core::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
-    let records = reopened
-        .list_mcp_calls(principal)
-        .expect("list_mcp_calls over the ABI after the restart");
+    let records = list_mcp_calls(&reopened, principal);
     assert_eq!(
         records.len(),
         2,
@@ -578,7 +614,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // ── AND IT IS A CHAIN, not a list. The two legs are linked, so neither row can be edited,
     // reordered or dropped without the verifier saying so.
-    verify_call_rows(&records)
+    verify_call_rows(&as_call_rows(&records))
         .expect("the persisted client-leg chain must verify against its own hashes");
     assert_eq!(records[0].seq, 1);
     assert_eq!(records[1].seq, 2);

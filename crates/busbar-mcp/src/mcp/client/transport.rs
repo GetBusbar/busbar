@@ -87,13 +87,11 @@ impl HttpTransport {
         // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
         // dual-compiles this plane has no composition root to install the hostless-egress driver (the
         // `busbar` binary's `main` does that), so a plane test would otherwise drive an uninstalled
-        // seam. Install the core-backed driver here, idempotently (`OnceLock`), reaching the core
-        // driver only under the `feature = "test-support"` dual-compile where `busbar_core` is nameable.
-        // Compiled out of EVERY non-test build — production installs it at boot.
+        // seam. The install reaches the core-backed driver, so it lives in a `#[cfg(test)]` module
+        // (below) that links busbar-core as the plane's own test dependency — production installs the
+        // driver at boot and compiles this out entirely.
         #[cfg(all(test, feature = "test-support"))]
-        busbar_substrate::egress::seam::install_hostless_egress(
-            &busbar_core::egress::seam::CoreHostlessEgress,
-        );
+        test_egress_boot::install();
         // THE PLANE POOL GUARD, PLANE-SIDE AND UNCHANGED: resolve-then-pin (the SSRF check + typed
         // `SsrfRefusal`) before any hop, so the destination cannot be one the check never saw. The
         // returned client is not used to run the hop any more — the hostless egress seam builds its
@@ -207,6 +205,21 @@ impl HttpTransport {
             raw
         };
         Ok(TransportResponse { status, body })
+    }
+}
+
+/// TEST-ONLY: install the core-backed hostless-egress driver the composition root installs at boot.
+/// The plane's own test binary (which dual-compiles into busbar-core, the one place `busbar_core` is
+/// nameable) has no `main` to do it, so `send` calls this once, idempotently (`OnceLock`). It reaches
+/// `busbar_core::egress::seam::CoreHostlessEgress` — the driver's only production implementation — as
+/// the plane's OWN test dependency, so it stays inside this `#[cfg(test)]` module and out of every
+/// shipped build.
+#[cfg(all(test, feature = "test-support"))]
+mod test_egress_boot {
+    pub(super) fn install() {
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &busbar_core::egress::seam::CoreHostlessEgress,
+        );
     }
 }
 

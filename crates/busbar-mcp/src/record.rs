@@ -74,6 +74,94 @@ impl McpCallRecord {
     pub fn from_body(body: &[u8]) -> StoreResult<Self> {
         decode(body)
     }
+
+    /// Reconstruct a record from the NEUTRAL durable-journal body the engine's call-log seam persists
+    /// — `{seq, prev_hash, hash, content}`, where `content` is the pre-framed LengthPrefixed field
+    /// SUFFIX the record's digest was sealed over. This is the shape core's store-backed call journal
+    /// writes (it carries no plane type), so a plane reading its own call chain back out of the store
+    /// owns the decode; the field framing is the plane's (it travels with the record). `principal` is
+    /// the chain SCOPE — the store parent — supplied by the caller and never carried in the body.
+    /// `request_id` is a join key: never in the digest, so never in the neutral content, and it comes
+    /// back EMPTY. The rebuilt fields feed the same digest byte stream the stored `hash` sealed, so a
+    /// chain read back through this verifies byte-identically.
+    pub fn from_journal_body(principal: &str, body: &[u8]) -> StoreResult<Self> {
+        // The neutral envelope, decoded structurally (matching field names) so this names no core type.
+        #[derive(serde::Deserialize)]
+        struct NeutralJournalBody {
+            seq: u64,
+            prev_hash: String,
+            hash: String,
+            content: Vec<u8>,
+        }
+        let nb: NeutralJournalBody = decode(body)?;
+        let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
+            parse_call_suffix(&nb.content)?;
+        Ok(McpCallRecord {
+            principal: principal.to_string(),
+            seq: nb.seq,
+            ts,
+            server,
+            tool,
+            outcome,
+            reason,
+            tool_digest,
+            pin_generation,
+            request_id: String::new(),
+            prev_hash: nb.prev_hash,
+            hash: nb.hash,
+        })
+    }
+}
+
+/// Parse the LengthPrefixed call SUFFIX (`ts, server, tool, outcome, reason, tool_digest,
+/// pin_generation`) the neutral journal body carries — the inverse of the seam's write framing. Every
+/// field is `len:u64-be ⧺ bytes`; a numeric field is its eight big-endian bytes carried as one such
+/// length-prefixed field. Fails closed on a truncated/oversized field rather than reading past the
+/// buffer.
+fn parse_call_suffix(
+    content: &[u8],
+) -> StoreResult<(u64, String, String, String, String, String, u64)> {
+    fn take<'a>(content: &'a [u8], off: &mut usize) -> StoreResult<&'a [u8]> {
+        if *off + 8 > content.len() {
+            return Err(StoreError(
+                "truncated call suffix length prefix".to_string(),
+            ));
+        }
+        let len = u64::from_be_bytes(content[*off..*off + 8].try_into().unwrap()) as usize;
+        *off += 8;
+        if *off + len > content.len() {
+            return Err(StoreError("truncated call suffix field".to_string()));
+        }
+        let s = &content[*off..*off + len];
+        *off += len;
+        Ok(s)
+    }
+    fn take_num(content: &[u8], off: &mut usize) -> StoreResult<u64> {
+        let arr: [u8; 8] = take(content, off)?
+            .try_into()
+            .map_err(|_| StoreError("call suffix num field is not 8 bytes".to_string()))?;
+        Ok(u64::from_be_bytes(arr))
+    }
+    fn take_text(content: &[u8], off: &mut usize) -> StoreResult<String> {
+        Ok(String::from_utf8_lossy(take(content, off)?).into_owned())
+    }
+    let mut off = 0usize;
+    let ts = take_num(content, &mut off)?;
+    let server = take_text(content, &mut off)?;
+    let tool = take_text(content, &mut off)?;
+    let outcome = take_text(content, &mut off)?;
+    let reason = take_text(content, &mut off)?;
+    let tool_digest = take_text(content, &mut off)?;
+    let pin_generation = take_num(content, &mut off)?;
+    Ok((
+        ts,
+        server,
+        tool,
+        outcome,
+        reason,
+        tool_digest,
+        pin_generation,
+    ))
 }
 
 /// ONE RECORDED DEMOTION of an upstream MCP server, as it crosses the store seam. Written when a

@@ -24,15 +24,39 @@
 /// Returns how many were replayed, for the boot line.
 pub(crate) fn hydrate(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    store: Option<&std::sync::Arc<dyn busbar_substrate::plane::store::PlaneStore>>,
 ) -> usize {
-    let rows = host.demotion_rows();
-    if rows.is_empty() {
+    // The durable demotion rows come off the GENERIC plane store directly (the neutral opaque
+    // `PlaneRecord` envelope, kind `demotion`), decoded HERE into the plane's own `McpDemotionRow` —
+    // the plane owns its row schema, and the store speaks only bytes. `None` under `store: memory`.
+    let Some(store) = store else {
+        return 0;
+    };
+    let bodies = match store.list_plane_records(
+        crate::record::KIND_DEMOTION,
+        &busbar_api::PlaneSelector::All,
+    ) {
+        Ok(bodies) => bodies,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "the durable MCP demotion records could NOT be read at boot; any upstream demoted \
+                 before the last restart is not replayed until it is next observed"
+            );
+            return 0;
+        }
+    };
+    if bodies.is_empty() {
         return 0;
     }
     // The bound-snapshot runtime — this replay seeds exactly the generation the host was minted over.
     let rt = super::runtime_of(host);
     let mut replayed = 0usize;
-    for row in rows {
+    for body in bodies {
+        let row = match crate::record::McpDemotionRow::from_body(&body) {
+            Ok(row) => row,
+            Err(_) => continue,
+        };
         let Some(entry) = rt.catalogue.server(&row.server) else {
             tracing::info!(
                 server = %row.server,

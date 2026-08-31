@@ -1457,7 +1457,10 @@ async fn tools_call(
     // decided by its grants and by nothing else; a hook decides what a caller may DO.
     //
     // ZERO COST when nothing is attached: one hash lookup that misses.
-    if ctx.host.gate_attached(0, &selected.server) {
+    if ctx
+        .host
+        .gate_attached(crate::PLANE_DECL.key, &selected.server)
+    {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`), so this plane body no
         // longer names the core hooks gate decision (`gate::decide`) or holds the resolved `ResolvedPolicy` set (the
         // Seam-B inversion) — the host re-selects the gate set by `(plane_key, container)` and runs the
@@ -1490,7 +1493,7 @@ async fn tools_call(
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
             host.gate_decide(
-                0,
+                crate::PLANE_DECL.key,
                 &server,
                 request_id,
                 &tool,
