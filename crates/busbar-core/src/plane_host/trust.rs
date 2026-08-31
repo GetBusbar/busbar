@@ -621,14 +621,26 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
         }
         // SAFETY: a non-null `counterparty` is a live, initialized `CounterpartyRef` for the call.
         let cp = unsafe { &*counterparty };
-        // The fact tail is authoritative only when the sender WROTE it (sized guard + flag bit 0);
-        // otherwise the legacy drift map is the faithful pre-enrichment disposition.
+        // FFI-F4: plane-asserted trust facts are NOT authoritative — a plane may only NARROW the
+        // host's own disposition, never assert `Allow` over it. The HOST verdict (its durable
+        // drift/quarantine map — `legacy_drift_verdict`) is the CEILING: if the host already refuses
+        // this counterparty (a durable demotion on record, or a null identity), that refusal STANDS
+        // regardless of what the plane's fact tail claims (so a quarantined counterparty cannot send
+        // `registration_state = APPROVED` facts to buy its way back — the confused-deputy). Only when
+        // the host would ALLOW does the plane's fact tail get to fold in, and it can only tighten that
+        // `Allow` into a specific refusal — never loosen a host refusal into `Allow`.
+        let host_verdict = legacy_drift_verdict(state, cp);
         let facts_written =
             read_sized_field!(cp, CounterpartyRef, fact_flags).is_some_and(|f| f & 0x01 != 0);
-        if facts_written {
+        if host_verdict != TrustVerdict::Allow {
+            // The host refuses; the plane cannot override it. (Also covers the null-identity `Denied`.)
+            host_verdict
+        } else if facts_written {
+            // Host allows → the plane's facts may NARROW to a specific refusal (or agree on `Allow`).
             fold_facts(cp)
         } else {
-            legacy_drift_verdict(state, cp)
+            // No fact tail: the host's own disposition (here, `Allow`) is the whole answer.
+            host_verdict
         }
     }))
     .unwrap_or(TrustVerdict::Denied) // caught panic → denied, never allowed.

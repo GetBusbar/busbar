@@ -590,6 +590,57 @@ fn trust_evaluate_falls_back_to_drift_map_without_facts() {
     });
 }
 
+/// FFI-F4 (trust_evaluate folds plane-asserted trust facts): the HOST verdict is the CEILING — a plane
+/// may only NARROW it, never assert `Allow` over a host refusal. Here the host has NO identity to
+/// stand behind the counterparty (null identity bytes), so its own disposition is `Denied`; the plane
+/// nonetheless sends a fully-PASSING fact tail (`identity_live = 1`, `registration_state = APPROVED`,
+/// everything green). The fold must still answer `Denied`. Without the fix the plane's facts alone
+/// folded to `Allow` — a plane asserting its own trust past a host that refuses (the confused deputy).
+///
+/// The same gate governs the durable-quarantine case (a demoted counterparty asserting APPROVED facts
+/// stays `Quarantined`): both funnel through `host_verdict != Allow ⇒ return host_verdict`, proven
+/// here without the durable-store plugin fixture the demotion battery uses.
+#[test]
+fn plane_facts_cannot_assert_allow_over_a_host_refusal() {
+    with_test_state(|host, vt, _scope| {
+        // Sanity: a PASSING fact tail for a NAMED (host-undemoted) subject folds to Allow — so the
+        // Denied below is the host refusal winning, not the facts themselves refusing.
+        let allowed = with_facts(b"named-counterparty", Facts::would_pass(), |cp| {
+            (vt.trust_evaluate.unwrap())(host, cp)
+        });
+        assert_eq!(
+            allowed,
+            TrustVerdict::Allow,
+            "a fully-passing fact tail allows a host-undemoted named subject"
+        );
+        // THE CONFUSED DEPUTY: an EMPTY (null) identity — the host has nothing to stand behind, so it
+        // refuses (`Denied`). The plane's identical passing tail must NOT override that host refusal.
+        let cp = CounterpartyRef {
+            size: core::mem::size_of::<CounterpartyRef>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            scope: 0,
+            _reserved2: 0,
+            ref_ptr: core::ptr::null(),
+            ref_len: 0, // NULL identity → the host has no subject to trust → Denied.
+            identity_live: 1,
+            grant_outcome: 0,
+            registration_state: reg_state::APPROVED,
+            artifact_outcome: 1,
+            fact_flags: 0x01, // the plane asserts an authoritative, fully-passing fact tail.
+            _reserved3: 0,
+            _reserved4: 0,
+            generation_admitted: 5,
+            generation_live: 5,
+        };
+        assert_eq!(
+            (vt.trust_evaluate.unwrap())(host, &cp as *const CounterpartyRef),
+            TrustVerdict::Denied,
+            "a plane cannot assert APPROVED facts past a host refusal (null identity)"
+        );
+    });
+}
+
 #[test]
 fn trust_evaluate_allows_unknown_and_denies_null() {
     with_test_state(|host, vt, _scope| {
