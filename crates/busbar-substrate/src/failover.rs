@@ -214,7 +214,7 @@ impl Refusal {
     /// The AUDIT WORD for this refusal, from [`crate::audit::vocab`]. Core decides; a plane renders.
     // MCP-only reader: the MCP dispatch path audits a failover refusal by this word; the A2A relay
     // renders its own, so with `plane-mcp` off (and A2A on) this has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn reason(&self) -> &'static str {
         match self {
             // An empty pool and an all-open pool are both "there is nowhere left to send this",
@@ -314,7 +314,7 @@ impl<'a, C: Candidate, T> Admitted<'a, C, T> {
     /// Its position in the pool. `0` is the primary; anything else means a reroute happened.
     // MCP-only reader: the MCP dispatch path reads back the chosen position; the A2A relay does not,
     // so with `plane-mcp` off (and A2A on) this has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn position(&self) -> usize {
         self.position
     }
@@ -390,10 +390,7 @@ pub trait Order {
 /// decision, they are a same-or-nothing choice.
 // The declaration-order walk is driven only by the MCP and A2A dispatch paths; with BOTH planes
 // compiled out nothing constructs or drives it, so it reads dead in that config alone.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub struct InOrder<'a> {
     tried: &'a [usize],
     cursor: usize,
@@ -401,10 +398,7 @@ pub struct InOrder<'a> {
 }
 
 impl<'a> InOrder<'a> {
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     pub fn new(tried: &'a [usize], len: usize) -> Self {
         Self {
             tried,

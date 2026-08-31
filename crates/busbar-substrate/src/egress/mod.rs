@@ -40,7 +40,7 @@ pub mod fixtures;
 /// Gated to `plane-a2a`: the A2A card-fetch/relay path is its consumer today. The MCP dispatch path
 /// keeps its own `TransportResponse` projection, and the plugin egress vtable projects onto the ABI
 /// PODs — so a no-plane build carries no unused return vocabulary.
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "relay")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Response {
     /// The HTTP status the peer answered with.
@@ -76,7 +76,7 @@ pub struct Response {
 /// The status is knowable before the first chunk because a caller that has already written bytes to
 /// its own consumer cannot then change its mind and answer an error — so the decision "is this a
 /// stream at all" is made on the head. Gated to `plane-a2a`, its consumer (see [`Response`]).
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "relay")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamHead {
     /// The HTTP status the peer answered with.
@@ -94,7 +94,7 @@ pub struct StreamHead {
 /// STOP rather than being written to forever: a caller that disconnected mid-stream must not leave
 /// busbar holding a thread against an upstream that is happy to keep talking. Gated to `plane-a2a`,
 /// its consumer (see [`Response`]).
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "relay")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChunkFlow {
     Continue,

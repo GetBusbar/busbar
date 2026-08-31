@@ -111,10 +111,7 @@
 // (receiving) planes and nothing else. With BOTH planes compiled out the reader has no caller, so
 // its items read dead — scoped to exactly that config so a real single-plane build still lints every
 // item its plane leaves unused (those carry their own per-plane attrs below).
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -127,7 +124,7 @@ use serde_json::Value;
 /// stay with the plane that defines them: they are not JSON-RPC's.
 // MCP-only: only the MCP server role emits a parse-error envelope; the A2A receiving role does not
 // reach for this code, so with `plane-mcp` off (and A2A on) it is unused.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 
@@ -156,7 +153,7 @@ pub struct Invalid {
     // MCP-only field: the MCP plane reads the numeric code back off an `Invalid`; the A2A plane
     // renders its refusal from the message alone, so with `plane-mcp` off (and A2A on) `code` is
     // written but never read.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub code: i64,
     pub message: &'static str,
     /// section 5: *"If there was an error in detecting the id in the Request object … it MUST be Null."*
@@ -450,7 +447,7 @@ pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> V
 /// succeeded.
 // MCP-only: the MCP server answers a malformed envelope with this `400`; the A2A receiving role
 // takes a different refusal path, so with `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn refused(invalid: &Invalid) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -499,7 +496,7 @@ pub fn transport_refusal(status: StatusCode, message: &str) -> Response {
 /// A body that is not JSON at all: `-32700`, `id` Null, per section 5's *"e.g. Parse error"*.
 // MCP-only: emitted only by the MCP server role (it reaches `PARSE_ERROR` above), so with
 // `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn parse_error() -> Response {
     refused(&Invalid {
         code: PARSE_ERROR,

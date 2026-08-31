@@ -80,10 +80,7 @@
 // vestigial, so its items read dead — scoped to exactly that config so `-D warnings` stays clean
 // there while a real single-plane build still lints every item its plane leaves unused (those carry
 // their own per-plane attrs below).
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
 use busbar_api::VirtualKey;
 
@@ -106,7 +103,7 @@ pub struct Caller<'a> {
     /// The registry generation this ask is being judged under.
     // A2A-only field: the A2A catalogue walk consults it, the MCP one does not, so with `plane-a2a`
     // off (and MCP on) it is read nowhere.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub generation: Generations,
 }
 
@@ -246,7 +243,7 @@ pub fn entitled<'i, I: CatalogueItem + 'i>(
 /// The entitled subset as ITEMS — the same walk, for a caller that has no use for the fitness value.
 // MCP-only helper: the MCP plane's catalogue calls this, the A2A plane renders differently, so with
 // `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn visible<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,

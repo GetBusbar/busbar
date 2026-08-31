@@ -19,10 +19,7 @@ use busbar_plugin::hot::{FaultClass, Signal, StatusClass};
 /// to exactly one [`FaultClass`], so a settle built here round-trips through the host `classify`.
 // Built only by the MCP and A2A plane settle paths (via `failure_signal`), so it reads dead when both
 // planes are compiled out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 fn fault_of(class: BreakerClass) -> FaultClass {
     match class {
         BreakerClass::RateLimit => FaultClass::RateLimit,
@@ -48,10 +45,7 @@ fn fault_of(class: BreakerClass) -> FaultClass {
 /// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
 // Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
 // out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[must_use]
 pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
     let (flags, secs) = match cs.retry_after {
@@ -83,10 +77,7 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
 /// `record_success`, closing the half-open probe exactly as the plane's own success record does.
 // Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
 // out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[must_use]
 pub fn success_signal() -> Signal {
     Signal {
@@ -112,7 +103,7 @@ pub fn success_signal() -> Signal {
 /// disposition: a busbar-side refusal / a not-transmitted leg).
 // Built only by the MCP plane leg (`mcp::tasks`/`mcp::reroute`) — the A2A relay never carries the
 // "record nothing" outcome — so it reads dead whenever the MCP plane is compiled out.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 #[must_use]
 pub fn refused_signal() -> Signal {
     Signal {

@@ -52,10 +52,7 @@
 // nothing else. With BOTH planes compiled out it has no mount, so its items read dead — scoped to
 // exactly that config so a real single-plane build still lints every item its plane leaves unused
 // (those carry their own per-plane attrs below).
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -117,7 +114,7 @@ pub enum CoreRefusal<'a> {
         // MCP-only field: the MCP shaper reads this machine-readable reason; the A2A shaper omits it
         // (A2A section 5.4 owns a fixed `reason` vocabulary busbar strings are not in), so with
         // `plane-mcp` off (and A2A on) it is constructed but never read.
-        #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+        #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
         reason: Option<&'a str>,
     },
 }
@@ -366,7 +363,7 @@ pub fn metadata(m: &Metadata<'_>) -> Response {
 /// of SENTENCES rather than a table of `into_response` chains.
 // MCP-only helper: only the MCP plane's `Words` impl renders a refusal as a bare JSON body here;
 // the A2A plane answers with an envelope, so with `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn json_refusal(status: StatusCode, body: Value) -> Response {
     (status, axum::Json(body)).into_response()
 }

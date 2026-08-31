@@ -395,7 +395,7 @@ pub enum GuardRefusal {
     /// More redirects than the policy permits.
     // A2A-only: only the A2A fetch path follows redirects and can overflow the hop limit; the MCP
     // guard callers do not construct this, so with `plane-a2a` off (and MCP on) it is never built.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     TooManyRedirects { limit: u8, at: String },
     /// The body exceeded [`GuardPolicy::max_body_bytes`].
     BodyTooLarge { url: String, bytes: usize },
@@ -483,7 +483,7 @@ impl PinnedTarget {
     /// a validated TLS connection into an unvalidated one, which trades one hole for a bigger one.
     // MCP-only: the MCP client reads the pinned host back to preserve SNI; the A2A fetch path does
     // not, so with `plane-mcp` off (and A2A on) it has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -504,7 +504,7 @@ impl PinnedTarget {
     /// THE ADDRESS TO CONNECT TO. Not re-resolved.
     // A2A-only: the A2A fetch path connects by pinned address; the MCP client keys on
     // `socket_addr()`, so with `plane-a2a` off (and MCP on) this has no caller.
-    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn addr(&self) -> IpAddr {
         self.addr
     }
@@ -526,7 +526,7 @@ impl PinnedTarget {
 /// the real resolver, so none of them would be tested.
 // A2A-only seam: the A2A fetch path resolves-and-pins through this trait; the MCP client's pin is
 // built elsewhere, so with `plane-a2a` off (and MCP on) the trait has no user.
-#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub trait Resolver {
     /// Every address this name currently answers with. `Err` is a resolution FAILURE, not an empty
     /// answer: the two are different facts.
@@ -723,7 +723,7 @@ pub fn pin_answer(
 /// more thing that could disagree with this check.
 // A2A-only: the resolve-then-pin entry point for the A2A fetch path; with `plane-a2a` off (and MCP
 // on) nothing calls it.
-#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn resolve_and_pin(
     host: &str,
     port: u16,
@@ -791,7 +791,7 @@ pub fn refuse_redirect(status: u16, location: Option<&str>) -> Result<(), GuardR
 /// process, so the chain is bounded as well as re-guarded.
 // A2A-only: only the A2A fetch path follows a redirect chain and bounds its hops; with `plane-a2a`
 // off (and MCP on) nothing calls it.
-#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn refuse_hop_overflow(hops: u32, at: &str, policy: GuardPolicy) -> Result<(), GuardRefusal> {
     if u32::from(policy.max_redirects) <= hops {
         return Err(GuardRefusal::TooManyRedirects {

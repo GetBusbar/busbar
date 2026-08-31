@@ -44,10 +44,7 @@ use busbar_plugin::hot::{AdmissionId, Signal, StatusClass};
 use std::sync::Arc;
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub enum GovAdmit {
     /// Admitted — the RAII grant is registered in the arena the caller passed.
     Admitted,
@@ -62,10 +59,7 @@ pub enum GovAdmit {
 }
 
 /// The verdict of a request-admission gate fired over the host `gate_decide` seam.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub enum GateOutcome {
     /// No gate objected (or none is attached) — the request proceeds.
     Proceed,
@@ -104,10 +98,7 @@ pub enum AudienceBinding {
 
 /// The raw wire outcome of a host-driven completion: the pipeline's HTTP status and body bytes,
 /// for the plane to shape into its protocol's own result. Neutral — no axum `Response`, no `App`.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub struct HostCompletion {
     /// The pipeline's HTTP status.
     pub status: u16,

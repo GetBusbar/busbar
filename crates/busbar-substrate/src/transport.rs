@@ -146,7 +146,7 @@ pub enum Transport {
 /// plane type while the wire TYPES stay in the plane that owns them.
 // Constructed and read only on the MCP client leg (`plane-mcp`); with that plane compiled out there
 // is no client wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
-#[cfg(feature = "plane-mcp")]
+#[cfg(feature = "dispatch")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamWireKind {
     /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
@@ -214,7 +214,7 @@ impl Transport {
     /// silent wrong channel.
     // Read only by the MCP client leg (`mcp/client/wire.rs`), which exists only when the MCP plane is
     // compiled in; with `plane-mcp` off it is dead, so it is gated exactly as its one caller is.
-    #[cfg(feature = "plane-mcp")]
+    #[cfg(feature = "dispatch")]
     pub fn upstream_wire(self) -> Option<UpstreamWireKind> {
         match self {
             Transport::Http => Some(UpstreamWireKind::StreamableHttp),

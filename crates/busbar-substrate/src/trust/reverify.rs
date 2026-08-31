@@ -112,7 +112,7 @@ impl Due {
     /// is the slot's GENERIC fail-closed due (null query / caught panic) — reconstructed as
     /// [`TtlExpired`](Due::TtlExpired), a due reason so `should_check()` holds; the slot never answers
     /// it for a real query, so the audit bytes never depend on this arm.
-    #[cfg(feature = "plane-a2a")]
+    #[cfg(feature = "relay")]
     pub fn from_verify_decision(decision: busbar_plugin::hot::VerifyDecision) -> Self {
         use busbar_plugin::hot::VerifyDecision as V;
         match decision {

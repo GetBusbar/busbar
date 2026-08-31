@@ -74,7 +74,7 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// the config deletion-gate leg to refuse a present section that names a compiled-out plane — so it
     /// is called ONLY in a build where at least one plane is off; with both planes compiled in every
     /// section names a plane this build serves and no leg reads it.
-    #[cfg_attr(all(feature = "plane-mcp", feature = "plane-a2a"), allow(dead_code))]
+    #[cfg_attr(all(feature = "dispatch", feature = "relay"), allow(dead_code))]
     fn is_present(&self) -> bool;
 
     /// This section as `&dyn Any`, so a plane's own module can downcast it back to its concrete

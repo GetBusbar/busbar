@@ -147,19 +147,25 @@ tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
 # an existing dependency, not a new one.
 tokio-rustls = { workspace = true }
 
-# The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
-# verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
-# must still be DECLARED or `unexpected_cfgs` fires under `-D warnings`. Empty, gate nothing, and are
-# never enabled: they exist only so the moved source stays byte-for-byte the code it was in core.
+# PLANE-PURITY: the neutral substrate names no concrete plane in its SOURCE. The relocated leaves
+# gate their plane-consumed items on two NEUTRAL capability features — `dispatch` (the server-side
+# request/dispatch seam, formerly `plane-mcp`) and `relay` (the outbound agent relay/signing seam,
+# formerly `plane-a2a`). The `plane-*` names below survive ONLY as composition-root FORWARDS so
+# core/bin can keep enabling substrate's seams by plane name (`busbar-substrate/plane-mcp` →
+# `dispatch`); which plane maps to which capability lives here at the boundary, not in the source.
+# `dispatch`/`relay` are empty (they gate `#[cfg]`/`#[cfg_attr(...allow(dead_code))]` sites only) and
+# must stay DECLARED or `unexpected_cfgs` fires under `-D warnings`.
 [features]
-# THE LLM PLANE MARKER. Mirrors `plane-mcp`/`plane-a2a`: an empty substrate marker core's `plane-llm`
-# forwards to, so any `#[cfg(feature = "plane-llm")]` site the LLM extraction leaves behind in the
-# relocated substrate families resolves in lock-step with core's feature. Empty today — the LLM plane
-# owns no substrate item yet — but declared so the forward exists and the deletion gate can turn LLM
-# off across every neutral crate with one switch, exactly as it does for MCP and A2A.
+dispatch = []
+relay = []
+# THE PLANE-NAME FORWARDS (composition-root vocabulary; not referenced in this crate's source). Each
+# forwards to its neutral capability so core's `busbar-core/plane-{mcp,a2a}` → `busbar-substrate/
+# plane-{mcp,a2a}` edge enables the same seams it always did, in lock-step. `plane-llm` owns no
+# substrate seam yet, so it forwards to nothing — declared so the deletion gate can switch LLM off
+# across every neutral crate with one flip, exactly as it does for the other two.
+plane-mcp = ["dispatch"]
+plane-a2a = ["relay"]
 plane-llm = []
-plane-mcp = []
-plane-a2a = []
 # The CI-only OpenAPI schema derive, mirroring core and the plane crates: `api::NamedDefView`'s
 # `schemars::JsonSchema` derive and `api::set_response_schema` are gated on it. Core's own
 # `openapi-schema` FORWARDS to this so the re-exported view carries its schema impl in lock-step.

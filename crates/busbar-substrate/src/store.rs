@@ -118,7 +118,7 @@ pub enum BreakerState {
 /// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
 /// so the MCP plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::tool_key`
 /// delegates to it so the ONE spelling of the prefix stays single-sourced.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
@@ -129,7 +129,7 @@ pub fn tool_key(server: &str) -> String {
 /// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
 /// so the A2A plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::agent_key`
 /// delegates to it so the ONE spelling of the prefix stays single-sourced.
-#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
@@ -147,10 +147,7 @@ pub fn now() -> u64 {
 
 /// The same wall clock in MILLISECONDS — for the two sub-second callers (an operator TTL and the
 /// A2A task poll). `u64`, matching [`now`]: a duration since the epoch, never negative.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
