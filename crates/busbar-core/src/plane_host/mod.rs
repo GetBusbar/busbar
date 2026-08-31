@@ -214,9 +214,10 @@ pub fn govern_admit_reason_over(
 /// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. The bridge
 /// is fail-closed: a join panic maps to [`IdentityRefusal::Denied`](crate::auth::IdentityRefusal),
 /// exactly as a chain that could not run denies.
-// Only the MCP stdio inbound path consumes this seam today; under a build without `plane-mcp` it has
-// no caller (the a2a HTTP door resolves identity on its own axum extractor path).
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+// Only the inbound stdio admission path consumes this seam today; a build whose planes resolve
+// identity on their own door leaves it with no caller, hence the unconditional dead-code allow (the
+// fn is always compiled — it backs the always-present `EngineHost::identity_admit` impl).
+#[allow(dead_code)]
 pub async fn identity_admit_over(
     app: Arc<App>,
     token: Option<String>,
@@ -324,10 +325,7 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
 /// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub async fn drive_openai_completion_over(
     app: Arc<App>,
     gov: &crate::governance::PlaneRequestCtx,
@@ -774,7 +772,10 @@ pub fn engine_host_factory() -> EngineHostFactory {
 /// [`HostState`], so no scope is minted); the value is identical to [`clock_now_secs_over`] and to
 /// reading `store::now` in place. A SAFE wrapper that keeps the raw fn-pointer read inside this
 /// audited module (busbar-core denies `unsafe` elsewhere).
-#[cfg(feature = "plane-a2a")]
+// Always compiled — the body drives only the neutral host vtable, so it needs no plane feature; a
+// build whose planes never hand a raw host to a hostless leg simply leaves it uncalled (dead-code
+// allowed).
+#[allow(dead_code)]
 #[must_use]
 pub fn clock_now_secs_via(host: HostCtx) -> u64 {
     let vtable = build_plane_host_vtable();
@@ -808,10 +809,7 @@ pub use busbar_substrate::plane_host::GateOutcome;
 /// back to the key to select the gate set and the `ingress_protocol` label — no hard-coded numbering,
 /// no plane token. `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session,
 /// `Some` only when non-empty.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn gate_decide_over(

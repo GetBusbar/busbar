@@ -84,10 +84,7 @@ impl PlaneJournalRecord {
     /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a
     /// stored body + its scope back into a chain record. `scope` is the store parent, never read from
     /// the body; `content` is the plane's opaque pre-framed suffix carried verbatim.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    #[allow(dead_code)]
     pub(crate) fn from_parts(
         scope: String,
         seq: u64,
@@ -272,10 +269,7 @@ fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
 /// so the unsafe buffer work stays in this audited host module and the plane files stay `deny(unsafe)`.
 /// The scope the host assembles the record with is its own (the store parent), so the native decode's
 /// scope argument is inert here; a placeholder is passed.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reframe_bridge(
     body_ptr: *const u8,
@@ -336,10 +330,7 @@ pub(crate) fn reframe_bridge(
 /// return the reported [`ChainBreakHdr`] by value, keeping the `MaybeUninit` read (the one unsafe step)
 /// inside this audited module so `plane::taskstore` stays `deny(unsafe)`. `Err(())` is a seam fault
 /// (an unregistered stream, an empty scope, or a reframe that could not decode a body).
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub(crate) fn seed_scoped_via_seam(
     host: HostCtx,
     kind_id: u32,
@@ -366,7 +357,7 @@ pub(crate) fn seed_scoped_via_seam(
 /// SAFE COMPACT WRAPPER for a within-core seam user: drive [`journal_compact`] over a registered
 /// stream and return the count of durable rows dropped. `Err(())` is a seam fault. No `unsafe` is
 /// needed: `removed` is an ordinary stack `u64` the host writes on the `Ok` path.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn compact_via_seam(host: HostCtx, kind_id: u32, before: u64) -> Result<u64, ()> {
     let mut removed: u64 = 0;
     let status = journal_compact(host, kind_id, before, &mut removed as *mut u64);
@@ -577,7 +568,7 @@ pub(crate) fn journal_append_scoped_full(
 /// reached at all on a stream with no eviction. `Err` carries the store's reason verbatim, as
 /// [`journal_append_scoped_full`] does. This is the hostless in-core emit path the durable cleave keeps
 /// for the deferred site, not a route any plane crosses the FFI border on.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn journal_append_scoped_full_hostless(
     kind_id: u32,
     scope: &str,

@@ -17,7 +17,9 @@ pub use busbar_substrate::egress::*;
 
 /// THE NEUTRAL FETCH ADAPTER: re-express a host-owned governed egress as the buffered / streamed
 /// return shapes the protocol planes already consume, so an extracted plane never holds a concrete
-/// `reqwest::Response`. Gated to `any(plane-mcp, plane-a2a)` — its only consumers are the plane
-/// transports (A2A card-fetch/relay, MCP dispatch).
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+/// `reqwest::Response`. Gated on the neutral `egress-seam` capability marker — enabled by whichever
+/// plane feature supplies its consumers (the plane transports: card-fetch/relay, dispatch), so the
+/// gate names a capability rather than a plane. Its truth value is that of the former
+/// `any(plane-mcp, plane-a2a)`.
+#[cfg(feature = "egress-seam")]
 pub mod seam;

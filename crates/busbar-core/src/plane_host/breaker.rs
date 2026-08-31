@@ -96,10 +96,7 @@ impl SettleAdmission for BreakerAdmission {
 // Driven by BOTH the MCP failover sync site (`mcp::reroute`) and the A2A failover sync sites
 // (`a2a::route::select_member`'s pooled walk and `a2a::relay::prepare`'s un-pooled admit), so it
 // reads dead only when BOTH planes are compiled out.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub fn breaker_admit_over(
     app: &crate::state::App,
     scope: &super::DispatchScope,
@@ -145,10 +142,7 @@ pub fn breaker_admit_over(
 /// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
 // Reached only through [`breaker_admit_over`], so it shares that fn's dual-plane liveness: dead only
 // when BOTH planes are compiled out.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 fn reconstruct_unavailable(
     reason: Unavailability,
     retry_after_secs: u64,

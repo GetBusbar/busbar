@@ -230,8 +230,9 @@ pub fn buffered(
 // and, on a live stream, `pump`, then returns the head — the same StreamHead the relay driver reads.
 
 /// The outcome of opening a stream relay hop: a non-stream reply buffered whole, or a live event-stream
-/// to [`pump`]. `feature = "plane-a2a"` — its only consumer is the A2A relay.
-#[cfg(feature = "plane-a2a")]
+/// to [`pump`]. Gated on the neutral `egress-stream` capability marker (enabled only by the plane whose
+/// relay is its one consumer); truth value of the former `plane-a2a` gate.
+#[cfg(feature = "egress-stream")]
 pub enum StreamOutcome {
     /// A non-2xx or non-event-stream reply, read whole to the cap. The [`StreamHead`](super::StreamHead)
     /// carries the body; there is nothing to pump.
@@ -248,7 +249,7 @@ pub enum StreamOutcome {
 /// to `cap` (a [`StreamOutcome::Buffered`]); a real event-stream returns [`StreamOutcome::Streaming`]
 /// with the egress left open for [`pump`]. `content_type` is lower-cased into the head exactly as the
 /// A2A relay does. On an open refusal/fault, `Err` carries the neutral fault.
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "egress-stream")]
 pub fn stream_head(
     scope: &DispatchScope,
     spec: &HopSpec<'_>,
@@ -295,7 +296,7 @@ pub fn stream_head(
 }
 
 /// The outcome of pumping a live stream to a sink.
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "egress-stream")]
 pub enum PumpEnd {
     /// The stream ended cleanly (EOF) or the sink asked to stop.
     Done,
@@ -313,7 +314,7 @@ pub enum PumpEnd {
 /// is byte-identical to the upstream body; the individual boundaries may differ. SSE is boundary-free
 /// at the byte level (the relay re-parses frames), so this is faithful — the pump offers a large buffer
 /// so a whole upstream chunk usually arrives at once.
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "egress-stream")]
 pub fn pump(
     scope: &DispatchScope,
     id: busbar_plugin::hot::EgressId,
@@ -350,7 +351,7 @@ impl HostlessEgress for CoreHostlessEgress {
         with_hostless(|scope| buffered(scope, spec, cap))
     }
 
-    #[cfg(feature = "plane-a2a")]
+    #[cfg(feature = "egress-stream")]
     fn stream(
         &self,
         spec: &HopSpec<'_>,

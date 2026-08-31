@@ -1247,7 +1247,7 @@ pub(crate) fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
 
 /// Open a governed HTTP egress over a caller-supplied dispatch `scope` (no `HostCtx`). The in-core twin
 /// of [`egress_open`]'s HTTP arm.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn egress_open_scoped(
     scope: &DispatchScope,
@@ -1270,7 +1270,7 @@ pub(crate) fn egress_open_scoped(
 }
 
 /// Read the last stashed fault off `scope` (no `HostCtx`). The in-core twin of [`egress_fault`].
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn egress_fault_scoped(
     scope: &DispatchScope,
@@ -1288,7 +1288,7 @@ pub(crate) fn egress_fault_scoped(
 }
 
 /// Poll the next body chunk over `scope` (no `HostCtx`). The in-core twin of [`egress_poll`].
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn egress_poll_scoped(
     scope: &DispatchScope,
@@ -1306,7 +1306,7 @@ pub(crate) fn egress_poll_scoped(
 
 /// Close and reclaim a governed egress (no `HostCtx`). The in-core twin of [`egress_close`]; teardown
 /// needs no scope (the registry is process-wide), so it just closes.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
@@ -1333,7 +1333,7 @@ pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
 
 /// Map two host allowlist-scope bools onto the [`EgressDesc::allowlist_scope`] bit convention this
 /// module reads. Exposed so the seam builds a desc without duplicating the bit values.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scope_bits(allow_private: bool, allow_plaintext: bool) -> u32 {
     let mut scope = 0u32;
@@ -1349,7 +1349,7 @@ pub(crate) fn scope_bits(allow_private: bool, allow_plaintext: bool) -> u32 {
 /// The fully-decoded connect head of a governed egress the seam adopts — every field OWNED, no
 /// borrowed host pointer. The `peer_spki` / `location` / `content_type` strings are decoded HERE from
 /// the borrowed head bytes; the plane composes its own return types over them.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct OpenedHead {
     /// The opaque egress handle the seam polls the body off and closes.
@@ -1374,11 +1374,11 @@ pub(crate) struct OpenedHead {
 // status, and the flattened CAUSE and TARGET-url kept SEPARATE), so a plane crate reads it without
 // naming core. Re-exported here so every in-core construction/return below — `drive_open`,
 // `drive_fault`, `OpenOutcome::Fault` — is unchanged, and so is `busbar_core::egress::seam`'s use.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 pub use busbar_substrate::egress::seam::EgressFaultInfo;
 
 /// The outcome of driving [`egress_open`] over a host: the adopted head, or the neutral fault detail.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum OpenOutcome {
     Opened(OpenedHead),
@@ -1388,7 +1388,7 @@ pub(crate) enum OpenOutcome {
 /// Decode the host's packed response-header records (`u32 name_len | name | u32 val_len | val`, LE)
 /// and pull out `content-type` and `location` (the two the host surfaces). The names are packed
 /// lower-case by the host; matched case-insensitively for robustness.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 fn decode_head_headers(bytes: &[u8]) -> (Option<String>, Option<String>) {
     let mut content_type = None;
     let mut location = None;
@@ -1413,7 +1413,7 @@ fn decode_head_headers(bytes: &[u8]) -> (Option<String>, Option<String>) {
 
 /// Drive [`egress_open`] over `host` for `desc`, returning a fully-decoded [`OpenOutcome`]. All raw
 /// out-param reads and borrowed-head-byte decodes happen here; the caller receives only owned values.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn drive_open(scope: &DispatchScope, desc: &EgressDesc) -> OpenOutcome {
     let mut out = MaybeUninit::<EgressOpen>::uninit();
@@ -1456,7 +1456,7 @@ pub(crate) fn drive_open(scope: &DispatchScope, desc: &EgressDesc) -> OpenOutcom
 /// Read the neutral fault detail of the last failed [`egress_open`] in this dispatch scope through
 /// [`egress_fault`], with generous buffers. Returns a host-fault fallback when none is pending (which
 /// should not happen after a non-`Ok` open, but keeps the seam total).
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn drive_fault(scope: &DispatchScope) -> EgressFaultInfo {
     // A first read with fixed buffers; if the header reports a longer cause/url, re-read once with
@@ -1524,7 +1524,7 @@ pub(crate) fn drive_fault(scope: &DispatchScope) -> EgressFaultInfo {
 /// Poll up to `buf.len()` readable bytes off a governed egress into `buf`. Returns the status class
 /// and the count written. A safe wrapper around [`egress_poll`]: the raw buffer pointer read stays
 /// HERE. `Ok`+`0` is EOF; `Fault` is a mid-body transport failure; `Gone` is a reclaimed id.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn drive_poll(
     scope: &DispatchScope,
@@ -1537,7 +1537,7 @@ pub(crate) fn drive_poll(
 }
 
 /// Close and reclaim a governed egress — the seam's teardown once the body is read or the stream ends.
-#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn drive_close(id: EgressId) -> StatusClass {
     egress_close_scoped(id)

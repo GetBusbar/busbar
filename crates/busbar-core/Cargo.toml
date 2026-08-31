@@ -147,7 +147,7 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # do. Default-on. The binary's `proto-llm` (which also carries the `dep:busbar-llm` edge) forwards to
 # this via `busbar-core/plane-llm`.
 plane-llm = ["busbar-substrate/plane-llm"]
-plane-mcp = ["busbar-substrate/plane-mcp"]
+plane-mcp = ["egress-seam", "busbar-substrate/plane-mcp"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -159,7 +159,27 @@ plane-mcp = ["busbar-substrate/plane-mcp"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["busbar-substrate/plane-a2a"]
+plane-a2a = ["egress-seam", "egress-stream", "card-signing", "busbar-substrate/plane-a2a"]
+# ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
+# The neutral crates must name NO plane token in source (plane-extraction §2.1 / the plane-purity
+# lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
+# guarded a CAPABILITY rather than a plane's mere presence, so the gated source names a capability, not
+# a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
+# truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
+# replaced:
+#   egress-seam   — the host-mediated governed-egress fetch adapter (`egress::seam` + the `plane_host::
+#                   egress` scoped/driver twins). Enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), matching the substrate egress-seam types those gates
+#                   name, which core's plane forwards compile in lock-step.
+#   egress-stream — the streaming relay leg of that adapter (`stream_head`/`pump`/`HostlessEgress::
+#                   stream`). Enabled by `plane-a2a` only (was `plane-a2a`), matching the substrate
+#                   `HostlessEgress::stream` sub-gate.
+#   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
+#                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
+#                   matching `governance::GovState::card_sign`.
+egress-seam = []
+egress-stream = []
+card-signing = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.

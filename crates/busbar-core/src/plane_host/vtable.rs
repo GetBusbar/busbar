@@ -91,10 +91,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         journal_verify_scoped: Some(super::journal::journal_verify_scoped),
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
-        //    Wired only when a plane declares a card-signing domain (`plane-a2a`); absent otherwise. ──
-        #[cfg(feature = "plane-a2a")]
+        //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
+        //    capability marker, enabled by that plane); absent otherwise. ──
+        #[cfg(feature = "card-signing")]
         card_sign: Some(card_sign),
-        #[cfg(not(feature = "plane-a2a"))]
+        #[cfg(not(feature = "card-signing"))]
         card_sign: None,
         // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
         //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
@@ -143,7 +144,7 @@ extern "C-unwind" fn guard_url(
 /// on the `Ok` path. The subkey secret is derived and used entirely host-side; only the signature
 /// bytes cross back. `Refused` on a null in/out pointer or a deployment with no card-signing key;
 /// `Fault` on any panic (`out` untouched).
-#[cfg(feature = "plane-a2a")]
+#[cfg(feature = "card-signing")]
 extern "C-unwind" fn card_sign(
     host: HostCtx,
     input_ptr: *const u8,
