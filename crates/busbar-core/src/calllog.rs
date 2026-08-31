@@ -399,6 +399,7 @@ pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult
 /// `principal` are NOT in the body — the join key is never in the digest, and the scope is the store
 /// parent — so they do not round-trip through it.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)] // used by the calllog durability/tamper battery; unused in a bare test-support build
 pub(crate) fn call_record_to_journal_body(rec: &CallRecorded) -> StoreResult<Vec<u8>> {
     let content = call_suffix(
         rec.ts,
