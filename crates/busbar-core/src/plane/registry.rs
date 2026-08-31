@@ -341,7 +341,16 @@ impl BootCtx {
 ///
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
-    &crate::proto::PLANE_DECL,
+    // THE LLM PLANE ROW, now on the SAME terms as the MCP/A2A rows below: it exists ONLY in this
+    // crate's own test binary (`#[cfg(test)]`), naming the plane crate's PUBLIC `PLANE_DECL` across
+    // the honest crate boundary — NOT the former unconditional `&crate::proto::PLANE_DECL` builtin.
+    // The LLM plane's declaration relocated to `busbar-llm` with the rest of its vocabulary; the
+    // shipped binary registers it through the composition root (`register_planes`, behind `proto-llm`),
+    // and this test row gives core's registry/plane tests the same `[llm, mcp, a2a]` process list the
+    // binary boots with. Production core carries the plane crate nowhere in its closure, so this row
+    // compiles out and core "serves the LLM plane" only when the composition root installs it.
+    #[cfg(test)]
+    &busbar_llm::PLANE_DECL,
     // The MCP and A2A plane rows, present in THIS crate's own test binary (`#[cfg(test)]`), where the
     // two plane crates are dev-dependencies and core can name their PUBLIC `PLANE_DECL` across the
     // HONEST crate boundary — NOT the old `#[path]` dual-compile of their source. This gives the test

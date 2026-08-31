@@ -526,17 +526,22 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
 /// fixed because `None`/`false` are the right answers for a plane with no dialect.
 #[test]
 fn the_llm_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
-    // BY IDENTITY, not by contents, and the difference is the whole assertion. This test was
-    // watched against a mutation that replaced the registry read with a literal spelling today's
-    // six dialects: an `assert_eq!` on CONTENTS passed it — the vacuous shape, in the test written
-    // to catch the vacuous shape. `ptr::eq` does not: a restated list is a different slice however
-    // it is spelled, so the only way to satisfy this is to actually read the registry.
-    assert!(
-        std::ptr::eq(wire_format_names("llm"), crate::proto::known_protocols()),
-        "the LLM plane must READ the registry, not restate it: a second literal is how the plane \
-         keeps claiming dialects a build no longer compiles in (got {:?} vs {:?})",
+    // THE READS-NOT-RESTATES IDENTITY MOVED WITH THE DECL. The LLM `PLANE_DECL` now lives in the
+    // `busbar-llm` plugin (`busbar_llm::PLANE_DECL`), and its `wire_format_names` field is
+    // `busbar_core::proto::known_protocols` — the registry read, not a restated literal. That strict
+    // BY-POINTER identity is pinned where the decl lives, in
+    // `busbar_llm`'s `the_llm_plane_reads_the_registry_it_does_not_restate_it`, because it can only be
+    // checked there: this core TEST binary links TWO instances of `busbar-core` (the `cfg(test)` crate
+    // under test, and the plain lib the `busbar-llm` dev-dep was built against), so the plugin decl's
+    // `wire_format_names` fn resolves to the OTHER instance's `known_protocols` and `ptr::eq` on the
+    // returned slice compares two distinct leaks of the same list — an artifact of the test link, not
+    // a restated literal. In the shipped binary there is one core instance and the identity holds. So
+    // here we assert the CONTENTS track the registry (the observable half), and lean on the plugin
+    // test for the pointer identity.
+    assert_eq!(
         wire_format_names("llm"),
-        crate::proto::known_protocols()
+        crate::proto::known_protocols(),
+        "the LLM plane's wire formats must track the registry (identity pinned in busbar_llm)"
     );
 
     // The registry's own empty state (its boot path, nothing installed and nothing built in — see

@@ -634,6 +634,14 @@ fn register_protocols() {
 fn register_planes() {
     #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
+    // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
+    // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
+    // installed set to canonical layering order, so this lands in the `llm` slot regardless of push
+    // order. A build with `proto-llm` off drops the crate edge and this line together, and core serves
+    // no LLM plane (the plane-split deletion test).
+    #[cfg(feature = "proto-llm")]
+    installed.push(&busbar_llm::PLANE_DECL);
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PLANE_DECL);
     // The A2A plane, now its own crate (`busbar-a2a`, PLANE-ONLY — no PROTO_DECL). Same slot and

@@ -125,7 +125,7 @@ rustls-pki-types = { workspace = true }
 # `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
 # dependency edge owned by the composition root. Moving that registration to the binary is the
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
-default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
+default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
 hooks-ranking = ["dep:busbar-hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
@@ -139,6 +139,14 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # plane-gated dead-code allowances, so enabling `plane-mcp` here must enable substrate's matching
 # marker (was an empty marker; now a forward) to keep the moved `#[cfg(feature = "plane-mcp")]` sites
 # correct.
+# THE LLM PLANE, now extracted to the `busbar-llm` crate on the SAME terms as MCP/A2A: this is the
+# marker the deletion gate flips to compile the LLM plane out of the neutral crates. LLM owns no
+# residual core code today (the codec/dialects/PLANE_DECL/arrivals all live in `busbar-llm`), so this
+# gates nothing in core directly — it FORWARDS to substrate's matching marker so any relocated
+# substrate item the LLM plane later claims resolves in lock-step, exactly as `plane-mcp`/`plane-a2a`
+# do. Default-on. The binary's `proto-llm` (which also carries the `dep:busbar-llm` edge) forwards to
+# this via `busbar-core/plane-llm`.
+plane-llm = ["busbar-substrate/plane-llm"]
 plane-mcp = ["busbar-substrate/plane-mcp"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
@@ -181,6 +189,13 @@ timing = ["busbar-timing/timing"]
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+# THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
+# names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
+# the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped
+# binary boots with — the plane's PUBLIC decl across the honest crate boundary, not the former
+# `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
+# other way is not a build cycle (lib built first, then dev-deps, then the test binary).
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
 # name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
 # the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).

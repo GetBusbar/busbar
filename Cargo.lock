@@ -442,6 +442,7 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-hooks-ranking",
+ "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",

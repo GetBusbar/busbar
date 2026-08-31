@@ -73,7 +73,7 @@ default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plan
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-proto-llm = ["dep:busbar-llm"]
+proto-llm = ["dep:busbar-llm", "busbar-core/plane-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
@@ -88,7 +88,7 @@ plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp"]
 plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
-openapi-schema = ["busbar-core/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema"]
+openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
 txn-fence-red = ["busbar-core/txn-fence-red"]
 

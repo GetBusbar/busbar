@@ -97,6 +97,56 @@ pub mod proto_stream;
 /// order reproduces, exactly, the operator-visible list from before the dialects were plugins:
 /// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
+/// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
+/// `busbar_core::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
+/// `busbar-a2a` own theirs. The composition root installs it through
+/// `busbar_core::plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
+/// `proto-llm`); core's own test binary names it through the `#[cfg(test)]` row in
+/// `plane::registry::BUILTIN_PLANE_DECLS`, so both shapes boot the same `[llm, mcp, a2a]` plane list.
+///
+/// `wire_format_names` is [`busbar_core::proto::known_protocols`] itself — the model plane's dialects
+/// ARE the registered protocols, so a seventh dialect moves that list with nothing edited here. Every
+/// other field is `None`/trivial: the LLM plane's runtime state is the many `App` fields the data plane
+/// reads directly (lanes, pools, cost, …), not one object this seam can erase — see the original field
+/// docs in git history for the per-field rationale, unchanged by the relocation.
+pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
+    busbar_core::plane::registry::PlaneDecl {
+        key: "llm",
+        config_section: "pools",
+        scope_kinds: &["pool"],
+        subject_noun: "pool",
+        audit_kind: "pool",
+        wire_format_names: busbar_core::proto::known_protocols,
+        // THE RESIDUAL MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
+        // claims no path and binds no audience.
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        // NO SLOT / NO SURFACE / NO DURABLE STATE — the LLM plane rides the `App` fields the data plane
+        // reads directly; there is no single object this seam builds, restores or reconciles.
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
+    };
+
 pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
     &anthropic::DECL,
     &gemini::DECL,
@@ -128,6 +178,27 @@ pub static PATH_INGRESS: &[(&str, busbar_core::ingress::PathIngress)] = &[
         busbar_core::ingress::bedrock_arrival,
     ),
 ];
+
+/// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_DECL`, pinned HERE because this is the crate
+/// that owns the declaration — and the only place its `wire_format_names` field and
+/// `busbar_core::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
+/// identity is meaningful (core's own test binary links two core instances and cannot check it — see
+/// `busbar_core`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
+/// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses
+/// to keep claiming dialects a build no longer compiles in — is a DIFFERENT fn pointer and fails here.
+#[cfg(test)]
+mod plane_decl_identity_tests {
+    #[test]
+    fn the_llm_plane_reads_the_registry_it_does_not_restate_it() {
+        let field: fn() -> &'static [&'static str] = super::PLANE_DECL.wire_format_names;
+        let reader: fn() -> &'static [&'static str] = busbar_core::proto::known_protocols;
+        assert_eq!(
+            field as usize, reader as usize,
+            "PLANE_DECL.wire_format_names must BE busbar_core::proto::known_protocols (the registry \
+             read), not a restated dialect list"
+        );
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]

@@ -152,6 +152,12 @@ tokio-rustls = { workspace = true }
 # must still be DECLARED or `unexpected_cfgs` fires under `-D warnings`. Empty, gate nothing, and are
 # never enabled: they exist only so the moved source stays byte-for-byte the code it was in core.
 [features]
+# THE LLM PLANE MARKER. Mirrors `plane-mcp`/`plane-a2a`: an empty substrate marker core's `plane-llm`
+# forwards to, so any `#[cfg(feature = "plane-llm")]` site the LLM extraction leaves behind in the
+# relocated substrate families resolves in lock-step with core's feature. Empty today — the LLM plane
+# owns no substrate item yet — but declared so the forward exists and the deletion gate can turn LLM
+# off across every neutral crate with one switch, exactly as it does for MCP and A2A.
+plane-llm = []
 plane-mcp = []
 plane-a2a = []
 # The CI-only OpenAPI schema derive, mirroring core and the plane crates: `api::NamedDefView`'s

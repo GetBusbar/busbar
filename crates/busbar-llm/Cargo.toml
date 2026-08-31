@@ -35,6 +35,13 @@ path = "src/lib.rs"
 # test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
 # The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-core/test-support"]
+# The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
+# field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
+# this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through
+# `busbar-core/openapi-schema` (which forwards to substrate) — the plugin carries no `schemars` derive
+# of its own (the LLM plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]`
+# to agree with substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
+openapi-schema = ["busbar-core/openapi-schema"]
 
 [dependencies]
 # The engine's public surface — the ONLY busbar crate this plugin may name. `default-features =

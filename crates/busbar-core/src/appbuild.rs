@@ -588,9 +588,16 @@ pub fn build_app_from_config(
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
         let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
+            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
+            // hand-maintained literal that names the six LLM dialects core no longer owns: the codec
+            // protocols are whatever the linked plane crates registered, so a build with the LLM plane
+            // compiled out names only what it actually serves (and a build with a seventh dialect names
+            // it) — the deletion-test property at the vocabulary level. Empty roster is a real answer.
             return Err(format!(
-                "provider '{}' uses unknown protocol '{}' (supported: anthropic, openai, gemini, bedrock, responses, cohere)",
-                ld.provider, provider_cfg.protocol
+                "provider '{}' uses unknown protocol '{}' (supported: {})",
+                ld.provider,
+                provider_cfg.protocol,
+                crate::proto::known_protocols().join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as

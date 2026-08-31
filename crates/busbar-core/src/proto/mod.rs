@@ -854,70 +854,23 @@ pub const LLM_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "syste
 /// operator config on it names that cause once rather than refusing every provider with an empty
 /// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
 /// half.
-pub(crate) fn known_protocols() -> &'static [&'static str] {
+// `pub` (not `pub(crate)`): the LLM `PLANE_DECL` — which relocated to the `busbar-llm` plugin with
+// the rest of the plane's vocabulary — declares `wire_format_names: busbar_core::proto::known_protocols`
+// (the model plane's wire formats ARE the registered codec protocols). The plane crate names this fn
+// cross-crate to point the field at it, so it must be reachable outside core. Still a pure read of the
+// registry aggregate; no protocol vocabulary crosses here, only the neutral derived list.
+pub fn known_protocols() -> &'static [&'static str] {
     registry::registry().codec_protocols()
 }
 
-/// THE LLM PLANE'S VOCABULARY DECLARATION, beside the protocol registry it reads. Folded into
-/// `plane::registry::BUILTIN_PLANE_DECLS`; every arm replaces one arm of a `Plane::Llm` `match`.
-///
-/// `wire_format_names` is [`known_protocols`] itself — the model plane's dialects are the registered
-/// protocols, so a seventh dialect moves that list with nothing edited here. It is the one field
-/// that is a function rather than a slice, and it is the reason the field is a function at all.
-pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
-    crate::plane::registry::PlaneDecl {
-        key: "llm",
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "pool",
-        audit_kind: "pool",
-        wire_format_names: known_protocols,
-        // THE RESIDUAL MOUNTS NOTHING. It is the catch-all every unclaimed path falls through to, so
-        // it claims no path and binds no audience: a plain data-plane busbar key carries none, and an
-        // audience on the residual would make every unclaimed path an OAuth resource server.
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        // NO SLOT. The LLM plane's runtime state is the many other `App` fields the data plane
-        // already reads directly (lanes, pools, cost, …), not one object this seam can erase —
-        // see `PlaneDecl::build`'s doc for why that is the right answer here rather than a gap.
-        build: |_| None,
-        // NO SURFACE CONTRIBUTION. The LLM plane's data routes ARE the protocol catch-all (mounted
-        // in `base_data_router` directly, not through this seam), it adds no admin trust verb on top
-        // of the generic `pools` CRUD, and it documents no admin path of its own.
-        routes: None,
-        admin_routes: None,
-        openapi: None,
-        // NO DURABLE STATE, NO BACKGROUND WORK. The LLM plane's state is the many `App` fields the
-        // data plane reads directly (lanes, pools, cost, …), restored by nothing here; its reliability
-        // state is RAM-only and re-learned from live traffic. So it hydrates nothing and starts no job.
-        hydrate: None,
-        start: None,
-        // NO NAMED-DEFINITION WRITE GRAMMAR. `pools:` predates the 1.5.3 generic named-map path and
-        // keeps its own richer validation elsewhere, so there is no per-entry document for the admin
-        // write path to validate through this seam.
-        config_validate: None,
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        #[cfg(feature = "openapi-schema")]
-        openapi_schemas: None,
-        // NOTHING TO CARRY ACROSS A SWAP. The LLM plane holds no engine-owned object that outlives an
-        // apply through this seam — its reliability/breaker state rides the `App` fields the data
-        // plane reads directly, not reconciled here.
-        on_swap: None,
-        // NO CONFIG SECTION TO PARSE OR LOWER, NO RUNTIME TO BUILD, NO VERIFY GATE TO PRUNE. `pools:`
-        // predates the neutral section seam and is read by `config::resolve` directly; the LLM plane
-        // has no endpoint block, no single runtime object, and no verify-on-call coalescing state.
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        retain_verify_gates: None,
-        default_section: None,
-    };
+// THE LLM PLANE'S VOCABULARY DECLARATION RELOCATED to the `busbar-llm` plugin (`busbar_llm::PLANE_DECL`)
+// — it is the LLM plane's statement about ITSELF, so it leaves core with the plane exactly as the MCP
+// and A2A `PLANE_DECL`s live in their own crates. The composition root installs it via
+// `register_planes` (`crates/busbar/src/main.rs`, behind `proto-llm`); core's own test binary names it
+// through the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS` (the honest crate boundary,
+// the plane's PUBLIC decl), so both shapes boot the same `[llm, mcp, a2a]` plane list. Its
+// `wire_format_names` field still points at [`known_protocols`] here (now `pub`) — the model plane's
+// wire formats ARE the registered codec protocols, wherever the declaration itself lives.
 
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
 /// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
