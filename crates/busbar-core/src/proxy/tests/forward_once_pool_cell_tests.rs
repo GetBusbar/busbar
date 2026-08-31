@@ -167,26 +167,26 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     );
 }
 
-/// A fallback-pool member that returns a NON-2xx
-/// must leave its POOL cell USABLE, not wedged HalfOpen. `forward_once`'s same-protocol non-2xx
-/// branch relays the error verbatim and records NO breaker outcome, so the single-flight
-/// HalfOpen probe the fallback dispatch CAS-won on the pool cell is still in flight at the early
-/// return. Without an explicit `release_probe_in` the cell stays HalfOpen + `probe_in_flight`
-/// forever — every later request finds the probe "taken" and the lane is benched until the slow
-/// out-of-band prober rescues it. The fix releases the probe (HalfOpen→Open, flag cleared,
-/// expired cooldown intact) so the cell is immediately probe-eligible again.
+/// A fallback-pool member that returns a genuine upstream-fault NON-2xx (5xx)
+/// must leave its POOL cell USABLE, not wedged HalfOpen, AND must penalize the breaker. On the
+/// degraded (`forward_once`) same-protocol non-2xx branch a 5xx classifies (PX1) as
+/// `Disposition::TransientUpstream`, so it records a transient failure BEFORE releasing the
+/// single-flight HalfOpen probe the fallback dispatch CAS-won on the pool cell — bumping the
+/// cooldown via exponential backoff, exactly like the MAIN forward path's non-2xx branch. The
+/// probe is still released (HalfOpen→Open, flag cleared) so the cell is not wedged, but its
+/// cooldown is now in the FUTURE (backoff), so an immediate re-probe is refused.
 ///
-/// Discriminator: after the non-2xx, the pool cell must be back to `Open` (NOT `HalfOpen`) AND
-/// a fresh dispatch acquisition must be able to re-win the probe. Against the old code the cell
-/// is wedged `HalfOpen` and the re-acquire returns false.
+/// Discriminator: after the 5xx, the pool cell must be back to `Open` (NOT wedged `HalfOpen`) AND
+/// its cooldown must be extended by backoff (no immediate re-probe), yet re-acquirable once the
+/// backoff elapses. This is the "a 503 MUST trip the breaker" half of the PX1 pair.
 #[tokio::test]
-async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
-    // The fallback member's upstream serves a 4xx (a non-2xx the degraded path relays verbatim,
-    // recording no breaker outcome — the path that leaked the probe).
+async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
+    // The fallback member's upstream serves a 503 (a genuine upstream fault the degraded path
+    // classifies as TransientUpstream → records a breaker penalty, then relays verbatim).
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::ServerError {
-            status: StatusCode::BAD_REQUEST,
-            body: json!({ "type": "error", "error": { "type": KIND_INVALID_REQUEST, "message": "bad" } }),
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: json!({ "type": "error", "error": { "type": "overloaded_error", "message": "upstream overloaded" } }),
         });
     let server = MockServer::new(state.clone()).await;
     let t0 = store_now();
@@ -233,8 +233,8 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
     // The verbatim non-2xx is relayed to the client (the status is not the point — the cell is).
     assert_eq!(
         response.status().as_u16(),
-        400,
-        "FallbackPool must relay the upstream non-2xx verbatim"
+        503,
+        "FallbackPool must relay the upstream 5xx verbatim"
     );
     let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
 
@@ -260,6 +260,104 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
         app.store
             .acquire_for_dispatch_in("fb", 1, store_now().saturating_add(86_400)),
         "fb POOL cell must be re-acquirable once the backoff cooldown elapses"
+    );
+    // The default "" cell is never touched by the degraded path's recordings.
+    assert!(
+        matches!(app.store.breaker_state_in("", 1), BreakerState::Closed),
+        "default cell must remain Closed (degraded path targets the pool cell only)"
+    );
+    server.shutdown().await;
+}
+
+/// PX1 (availability): a fallback-pool member that returns a deterministic CLIENT-error 4xx
+/// (400/404/422 — the caller's own bad input, NOT an upstream fault) must NOT penalize the
+/// breaker. The degraded (`forward_once`) same-protocol non-2xx branch previously called
+/// `record_transient_in` UNCONDITIONALLY on any non-2xx, so a healthy upstream answering a 400
+/// counted as a transient upstream FAILURE: it bumped the pool cell's cooldown (exponential
+/// backoff) and, at threshold, tripped the circuit breaker against a HEALTHY upstream — a
+/// self-inflicted availability outage. The fix classifies the disposition first (mirroring the
+/// main forward path: `breaker::classify` over the normalized signal) and only feeds a genuine
+/// `TransientUpstream` fault to the breaker; a `ClientFault` 4xx is relayed verbatim with NO
+/// breaker penalty, the still-armed probe_guard alone releasing the won HalfOpen probe.
+///
+/// Discriminator: after the 400, the pool cell must be `Open` with its ORIGINAL (expired) cooldown
+/// intact, so an IMMEDIATE re-acquire succeeds — proving no transient/backoff was recorded. Against
+/// the old unconditional-`record_transient_in` code the 400 bumped the cooldown into the future and
+/// this immediate re-acquire returned false (the regression signature).
+#[tokio::test]
+async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
+    // The fallback member's upstream serves a 400 (Anthropic invalid_request_error) — a client
+    // fault the breaker model treats as a healthy, deterministic response, NOT an upstream fault.
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::ServerError {
+        status: StatusCode::BAD_REQUEST,
+        body: json!({ "type": "error", "error": { "type": KIND_INVALID_REQUEST, "message": "bad" } }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let t0 = store_now();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                .dead("administratively down for test"),
+        )
+        .lane(LaneSpec::new(
+            "fbmember",
+            crate::proto::PROTO_ANTHROPIC,
+            &server.base_url(),
+        ))
+        .pool("primary", &[(0, 1)])
+        .fallback_pool("fb", &[(1, 1)])
+        .on_exhausted(
+            "primary",
+            crate::config::OnExhausted::FallbackPool("fb".into()),
+        )
+        .build();
+
+    // Drive the "fb" pool cell into expired-Open so the FallbackPool dispatch CAS-wins the
+    // single-flight HalfOpen recovery probe — the precise state where an errant transient penalty
+    // (backoff) would be observable as a refused immediate re-acquire.
+    app.store.force_open_in("fb", 1, t0.saturating_sub(10));
+
+    let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
+    let response = forward_with_pool(
+        &app,
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        req_body.into(),
+        None,
+        "primary",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        400,
+        "FallbackPool must relay the upstream client-error 4xx verbatim"
+    );
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+
+    // The probe must have been RELEASED (not wedged HalfOpen) — same probe-leak invariant as the
+    // fault path, here carried solely by the armed probe_guard since NOTHING recorded an outcome.
+    assert!(
+        !matches!(app.store.breaker_state_in("fb", 1), BreakerState::HalfOpen),
+        "fb POOL cell must NOT be wedged HalfOpen after a client-error 4xx; got {:?}",
+        app.store.breaker_state_in("fb", 1)
+    );
+    // THE PX1 DISCRIMINATOR: no transient was recorded, so the cooldown is NOT bumped by backoff —
+    // the cell is immediately re-acquirable. Against the old unconditional `record_transient_in`
+    // this returned false (the 400 bumped the cooldown into the future — a healthy upstream's 400
+    // penalizing the breaker).
+    assert!(
+        app.store.acquire_for_dispatch_in("fb", 1, store_now()),
+        "a client-error 4xx must NOT penalize the breaker: the fb POOL cell must remain \
+         immediately re-acquirable (no transient/backoff recorded)"
     );
     // The default "" cell is never touched by the degraded path's recordings.
     assert!(

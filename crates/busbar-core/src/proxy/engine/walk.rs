@@ -735,6 +735,36 @@ pub(crate) async fn forward_once(
 
             if !status.is_success() {
                 let bytes = read_capped_body(r, read_deadline).await;
+                // PX1 (availability): classify the upstream disposition BEFORE penalizing the
+                // breaker. Both degraded relay branches below previously recorded a transient
+                // failure (`record_transient_in`) on ANY non-2xx — counting deterministic
+                // client-error 4xx (400/401/403/404/422) and deliberate 429 rate-limits as
+                // transient upstream FAULTS, tripping the breaker against a HEALTHY upstream (a
+                // self-inflicted outage). Reuse the SAME two-stage classifier the main
+                // `forward_with_pool` path uses (op cell `extract_error` → `normalize_raw_error`
+                // over the lane's `error_map` → `breaker::classify`), so ONLY a genuine upstream
+                // fault (5xx / overload / timeout / network → `TransientUpstream`) feeds the
+                // breaker. Every other disposition — client fault (4xx), auth/billing HardDown,
+                // ContextLength — relays verbatim with NO transient penalty; the still-armed
+                // `probe_guard` releases any won HalfOpen probe on drop (mirrors the main path's
+                // ClientFault/ContextLength arms). Body-only classification here (no headers);
+                // `retry_after` only floors the cooldown, not the disposition, so it is omitted.
+                let penalize_breaker = {
+                    let raw = crate::handlers::op_for(
+                        egress_name,
+                        op.operation,
+                        crate::transport::Transport::Http,
+                    )
+                    .map(|cell| cell.extract_error(status.as_u16(), &bytes))
+                    .unwrap_or_else(|| {
+                        crate::breaker::RawUpstreamError::from_status(status.as_u16())
+                    });
+                    let sig = crate::breaker::normalize_raw_error(&raw, &app.lanes[i].error_map);
+                    matches!(
+                        crate::breaker::classify(&sig),
+                        crate::breaker::Disposition::TransientUpstream
+                    )
+                };
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
                 // different-protocol client is a foreign-format leak. Reshape to the ingress
                 // protocol's native error envelope, lifting the upstream's human message where
@@ -746,30 +776,35 @@ pub(crate) async fn forward_once(
                     // this degraded route can no longer drift (the bug it fixes: a 401/403 on the
                     // degraded path was labeled `invalid_request_error`, the wrong typed-exception
                     // discriminant for an Anthropic SDK and a proxy tell).
-                    // Probe-leak guard: a non-2xx response carries no breaker recording
-                    // on this degraded relay path (it relays verbatim, no disposition), so the
-                    // single-flight HalfOpen probe this fallback attempt CAS-won on the POOL cell
-                    // is still in flight. Release it before returning or the cell stays HalfOpen +
-                    // `probe_in_flight` forever. Idempotent; no-op off a HalfOpen / default cell.
+                    // Probe-leak guard: a non-fault non-2xx (client 4xx / auth / context-length)
+                    // records no breaker outcome on this degraded relay path (it relays verbatim),
+                    // so the single-flight HalfOpen probe this fallback attempt CAS-won on the POOL
+                    // cell is still in flight. Release it before returning or the cell stays HalfOpen
+                    // + `probe_in_flight` forever. Idempotent; no-op off a HalfOpen / default cell.
                     //
-                    // Cooldown-backoff fix: record a transient failure BEFORE releasing the probe, so
-                    // a non-2xx on a HalfOpen probe bumps the cooldown (exponential backoff) exactly
-                    // like the MAIN forward path's non-2xx branch. Releasing alone left the cooldown
-                    // at its original expiry, so the lane re-probed at the base interval with no
-                    // backoff. No `record_transient_in` exists on this branch today, so this does not
-                    // double-record. A threshold re-trip here is a breaker trip too (#29).
-                    let tripped = app.store.record_transient_in(
-                        pool,
-                        i,
-                        ERR_DEGRADED_NON2XX,
-                        forward_once_cfg.as_ref(),
-                        None,
-                    );
+                    // Cooldown-backoff fix: on a genuine upstream FAULT (`penalize_breaker`, see the
+                    // PX1 classification above), record a transient failure BEFORE releasing the
+                    // probe, so a non-2xx on a HalfOpen probe bumps the cooldown (exponential
+                    // backoff) exactly like the MAIN forward path's non-2xx branch. Releasing alone
+                    // left the cooldown at its original expiry, so the lane re-probed at the base
+                    // interval with no backoff. A threshold re-trip here is a breaker trip too (#29).
+                    // On a NON-fault (client 4xx, auth/billing, context-length) `penalize_breaker`
+                    // is false: the `&&` short-circuits so `record_transient_in` is NEVER called, and
+                    // the still-armed `probe_guard` releases the probe on drop — no breaker penalty.
+                    let tripped = penalize_breaker
+                        && app.store.record_transient_in(
+                            pool,
+                            i,
+                            ERR_DEGRADED_NON2XX,
+                            forward_once_cfg.as_ref(),
+                            None,
+                        );
                     if tripped {
                         emit_breaker_trip(app, pool, i);
                     }
-                    // `record_transient_in` above transitioned the cell (cooldown-backoff preserved);
-                    // the armed `probe_guard` releases the probe on drop (owner-checked no-op after).
+                    // On a fault, `record_transient_in` above transitioned the cell (cooldown-backoff
+                    // preserved); the armed `probe_guard` releases the probe on drop (owner-checked
+                    // no-op after). On a non-fault, the guard is the SOLE releaser.
                     return Ok(shape_cross_protocol_error(ingress_protocol, status, &bytes));
                 }
                 // Same-protocol degraded path: relay the upstream error verbatim (no classification).
@@ -800,29 +835,34 @@ pub(crate) async fn forward_once(
                     );
                 }
                 // Probe-leak guard: same as the cross-protocol non-2xx branch above —
-                // a verbatim same-protocol error relay records no breaker outcome, so release the
-                // POOL-cell single-flight probe this fallback attempt CAS-won before returning, or
-                // the cell stays HalfOpen + `probe_in_flight` forever. Idempotent; no-op off a
-                // HalfOpen / default cell.
+                // a non-fault verbatim same-protocol error relay records no breaker outcome, so
+                // release the POOL-cell single-flight probe this fallback attempt CAS-won before
+                // returning, or the cell stays HalfOpen + `probe_in_flight` forever. Idempotent;
+                // no-op off a HalfOpen / default cell.
                 //
-                // Cooldown-backoff fix: record a transient failure BEFORE releasing the probe, so a
+                // Cooldown-backoff fix: on a genuine upstream FAULT (`penalize_breaker`, see the PX1
+                // classification above), record a transient failure BEFORE releasing the probe, so a
                 // non-2xx on a HalfOpen probe bumps the cooldown (exponential backoff) like the MAIN
                 // forward path's non-2xx branch. Without it the cooldown stayed at its original expiry
-                // and the lane re-probed at the base interval with no backoff. No `record_transient_in`
-                // exists on this branch today, so this does not double-record. A threshold re-trip
-                // here is a breaker trip too (#29).
-                let tripped = app.store.record_transient_in(
-                    pool,
-                    i,
-                    ERR_DEGRADED_NON2XX,
-                    forward_once_cfg.as_ref(),
-                    None,
-                );
+                // and the lane re-probed at the base interval with no backoff. A threshold re-trip
+                // here is a breaker trip too (#29). On a NON-fault (client 4xx, auth/billing,
+                // context-length) `penalize_breaker` is false: the `&&` short-circuits so
+                // `record_transient_in` is NEVER called and the armed `probe_guard` alone releases the
+                // probe — a healthy upstream's deterministic 4xx no longer trips the breaker.
+                let tripped = penalize_breaker
+                    && app.store.record_transient_in(
+                        pool,
+                        i,
+                        ERR_DEGRADED_NON2XX,
+                        forward_once_cfg.as_ref(),
+                        None,
+                    );
                 if tripped {
                     emit_breaker_trip(app, pool, i);
                 }
-                // `record_transient_in` above transitioned the cell (cooldown-backoff preserved); the
-                // armed `probe_guard` releases the probe on drop (owner-checked no-op after).
+                // On a fault, `record_transient_in` above transitioned the cell (cooldown-backoff
+                // preserved); the armed `probe_guard` releases the probe on drop (owner-checked no-op
+                // after). On a non-fault, the guard is the SOLE releaser.
                 return Ok(rb
                     .body(Body::from(bytes))
                     .unwrap_or_else(|_| status.into_response()));
