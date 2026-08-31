@@ -546,8 +546,21 @@ pub(crate) fn mcp_hydrate(
             tracing::info!(
                 principals = r.principals,
                 records = r.records,
+                unreadable = r.unreadable,
                 "MCP per-call log restored from the durable governance store"
             );
+            // An UNDECODABLE row is an evidence record this build could not read back — counted and
+            // SKIPPED per-record (each already logged LOUDLY at its skip site in core). Repeated here
+            // at the boot summary and at WARN, and fired whenever `unreadable > 0` even if `records`
+            // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
+            if r.unreadable > 0 {
+                busbar_substrate::diag_warn!(
+                    busbar_substrate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                    rows = r.unreadable,
+                    "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
+                     they were most likely written by a different engine version or the store is corrupt"
+                );
+            }
             // An ENUMERATED-BUT-EMPTY chain is the one shape the verifier cannot judge alone, and it
             // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
             // rather than summed into `principals`.

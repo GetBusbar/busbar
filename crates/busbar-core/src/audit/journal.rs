@@ -505,8 +505,11 @@ impl<R: NeutralRecord> Journal<R> {
 
     /// BOOT REHYDRATE on the neutral path (the [`Journal::restore_from_store`] analogue): enumerate the
     /// scopes the store holds `kind` records for, reframe each scope's bodies, resume its chain from the
-    /// persisted tail, and REPORT what was found (empty scopes + chain breaks) without logging. A broken
-    /// chain is reported and STILL resumed from its tail, never re-based onto a fresh chain.
+    /// persisted tail, and REPORT what was found (empty scopes + chain breaks) back on [`Restored`]. A
+    /// broken chain is reported and STILL resumed from its tail, never re-based onto a fresh chain. The
+    /// ONE thing this method logs directly is an UNDECODABLE row, at the skip site with a coded
+    /// diagnostic: a silently lost evidence row must never be invisible, so it is surfaced loudly here
+    /// rather than left to ride only on the `unreadable` aggregate a wrapper might not log.
     pub(crate) fn restore_scoped(
         &self,
         kind: &str,
@@ -519,17 +522,39 @@ impl<R: NeutralRecord> Journal<R> {
         for scope in &scopes {
             // Reframe per-record: an undecodable body is SKIPPED and counted, never `?`-aborted —
             // aborting here would drop every scope after this one, the all-or-nothing failure a
-            // chain break is already spared from. `unreadable` carries the skipped count; the wrapper
-            // reports it.
+            // chain break is already spared from. The skip is reported LOUDLY at the site with a
+            // coded diagnostic (the peer of the chain-break report below), so a silently lost
+            // evidence row is never invisible; `unreadable` still carries the count back for the
+            // wrapper's aggregate. This is the one place this "reports, does not judge" journal
+            // speaks in a coded word — mirroring the a2a task store's per-row skip report.
+            let raw = store.list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))?;
+            // Whether the store literally returned NOTHING for this scope, decided BEFORE decoding:
+            // an enumerated-but-empty scope (a wholesale deletion of one scope's evidence) is a
+            // different condition from a scope whose rows were all UNREADABLE, which is already
+            // counted-and-reported into `unreadable`. Only the former is an `empty_scope`.
+            let store_returned_nothing = raw.is_empty();
             let mut records: Vec<R> = Vec::new();
-            for body in store.list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))? {
+            for body in raw {
                 match reframe(scope, &body) {
                     Ok(r) => records.push(r),
-                    Err(_) => out.unreadable += 1,
+                    Err(e) => {
+                        out.unreadable += 1;
+                        crate::diagnostics::diag_error!(
+                            crate::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
+                            scope = %scope,
+                            error = %e,
+                            "a persisted journal record could NOT be reframed on restore; it is being \
+                             SKIPPED and counted rather than aborting the whole rehydrate (which would \
+                             drop every other scope's working set). The evidence in this one row is \
+                             lost — reported here, never skipped silently."
+                        );
+                    }
                 }
             }
             if records.is_empty() {
-                out.empty_scopes.push(scope.clone());
+                if store_returned_nothing {
+                    out.empty_scopes.push(scope.clone());
+                }
                 Self::commit_position(
                     &mut positions,
                     &self.overflowed,

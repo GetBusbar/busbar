@@ -697,7 +697,7 @@ pub struct App {
     pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
     // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
     // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
-    // flat `App` field: it lives in `plane_slots` under [`MCP_RUNTIME_SLOT`], reached by the plane
+    // flat `App` field: it lives in `plane_slots` under `runtime_slot_key(<mcp decl key>)`, reached by the plane
     // through `crate::mcp::runtime` (which downcasts the slot inside the plane), so this `App` names no
     // `crate::mcp` runtime type and holds no plane-specific runtime field for it.
     /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation

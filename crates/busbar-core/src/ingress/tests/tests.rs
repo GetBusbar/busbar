@@ -23,7 +23,7 @@ fn minimal_app() -> Arc<App> {
         // No `mcp:`/`agents:` configured — no dispatch slot for either (`busbar_mcp::mcp::resource` /
         // `busbar_a2a::a2a::runtime` read their absence straight off this map). The MCP plane's
         // always-present runtime bundle still rides here under its companion key
-        // (`crate::state::MCP_RUNTIME_SLOT`), which `busbar_mcp::mcp::runtime` reads on the `finish` path.
+        // (`runtime_slot_key(<mcp decl key>)`), which `busbar_mcp::mcp::runtime` reads on the `finish` path.
         plane_slots: {
             let mut m: std::collections::BTreeMap<
                 &'static str,

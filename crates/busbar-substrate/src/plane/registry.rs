@@ -86,6 +86,10 @@ pub struct RestoredSummary {
     pub records: usize,
     /// Principals the store enumerated but returned no records for.
     pub empty_chains: usize,
+    /// Records the store held but this build could NOT decode — counted and SKIPPED per-record on
+    /// restore (each also reported LOUDLY at its skip site). Surfaced here as belt-and-suspenders so
+    /// the boot summary logs it even when every row of a scope was undecodable (`records == 0`).
+    pub unreadable: usize,
     /// Chains that FAILED to verify, each rendered as the exact break-detail text the hook logs.
     pub chain_breaks: Vec<String>,
 }
@@ -468,7 +472,7 @@ pub struct PlaneDecl {
     >,
 
     /// BUILD THIS PLANE'S PER-GENERATION RUNTIME OBJECT from its type-erased registry section — the
-    /// seam `appbuild` composes the MCP runtime slot (`plane_slots[MCP_RUNTIME_SLOT]`) through,
+    /// seam `appbuild` composes the MCP runtime slot (`plane_slots[runtime_slot_key(<mcp decl key>)]`) through,
     /// so core names no plane runtime type. The first argument is the plane's own section, erased as
     /// `&dyn Any` (its `PlaneCfg::as_any`); `prior` is the previous generation's snapshot for
     /// carry-over, read through the neutral [`crate::plane_host::PlaneSlots`] seam (NOT `&App`).

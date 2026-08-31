@@ -477,11 +477,19 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
         })
         .unwrap();
 
+    use tracing_subscriber::layer::SubscriberExt as _;
     let j2: Journal<NeutralRec> = Journal::new(1024);
     j2.set_sink(store.clone());
-    let restored = j2
-        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
-        .expect("one undecodable record must not abort the whole rehydrate");
+    // The skip must be LOUD, not merely counted: capture the ERROR diagnostics and assert the coded
+    // site diagnostic (`PLANE_JOURNAL_ROW_UNREADABLE`, BUSBAR-2046) actually FIRES on the bad row.
+    // A count with no guaranteed log sink is exactly the regression this pins.
+    let cap = DiagCapture::default();
+    let restored = {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        j2.restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+            .expect("one undecodable record must not abort the whole rehydrate")
+    };
     assert_eq!(
         restored,
         Restored {
@@ -496,6 +504,88 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
         j2.next_seq("acme"),
         3,
         "the chain resumes from the last DECODABLE record"
+    );
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2046")),
+        "the undecodable row must emit PLANE_JOURNAL_ROW_UNREADABLE (BUSBAR-2046) at ERROR at its \
+         skip site — a silent count is the regression being fixed; captured: {diags:?}"
+    );
+}
+
+/// A tracing layer that records the `diag = \"BUSBAR-NNNN\"` field of every ERROR event, so a test
+/// can assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose.
+#[derive(Clone, Default)]
+struct DiagCapture(Arc<Mutex<Vec<String>>>);
+
+impl<S> tracing_subscriber::Layer<S> for DiagCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct V<'a>(&'a mut Option<String>);
+        impl tracing::field::Visit for V<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    *self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut diag = None;
+        event.record(&mut V(&mut diag));
+        if let Some(d) = diag {
+            self.0.lock().unwrap().push(d);
+        }
+    }
+}
+
+/// A scope whose rows are ALL undecodable is NOT an `empty_scope`. RF3: an enumerated-but-empty
+/// scope (a wholesale deletion of one scope's evidence — the store returned nothing) is a DIFFERENT
+/// condition from a scope the store returned rows for that this build simply cannot decode. The
+/// former is an `empty_scope`; the latter is `unreadable` and must not be mislabelled as empty, so
+/// the two counts stay independent and an operator is not told "no evidence here" when the truth is
+/// "evidence present but unreadable".
+#[test]
+fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
+    let store = Arc::new(MockStore::new());
+    // The store RETURNED rows for "acme" — two of them — but neither decodes.
+    for seq in 1..=2 {
+        store
+            .append_plane_record(&PlaneRecord {
+                kind: KIND_NEUTRAL.to_string(),
+                id: "acme".to_string(),
+                parent: Some("acme".to_string()),
+                seq,
+                ts: 0,
+                disposition: busbar_api::PlaneDisposition::Active,
+                body: b"{ not a neutral body".to_vec(),
+            })
+            .unwrap();
+    }
+
+    let j: Journal<NeutralRec> = Journal::new(1024);
+    j.set_sink(store.clone());
+    let restored = j
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .expect("an all-undecodable scope must not abort the whole rehydrate");
+    assert_eq!(
+        restored,
+        Restored {
+            scopes: 1,
+            records: 0,
+            // NOT `vec!["acme"]`: the store returned rows, they were just unreadable.
+            empty_scopes: vec![],
+            unreadable: 2,
+            chain_breaks: vec![],
+        },
+        "a store that returned rows that were all unreadable is NOT an empty scope"
     );
 }
 

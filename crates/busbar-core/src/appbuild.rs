@@ -1393,7 +1393,7 @@ pub fn build_app_from_config(
     };
 
     // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT
-    // companion key (`crate::state::MCP_RUNTIME_SLOT`), distinct from the plane's decl key,
+    // companion key (`runtime_slot_key(<mcp decl key>)`), distinct from the plane's decl key,
     // whose slot is config-conditional and drives the dispatch door. Built ONCE through the plane's
     // own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
     // `PlaneCfg::as_any`) so this composition names no `crate::mcp` runtime type. It bundles the
@@ -1518,7 +1518,7 @@ pub fn build_app_from_config(
         // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
         // including one that removes the last plane section); an inert prior is upgraded HERE — at
         // apply, boot-only work — the first time plane content appears, losing nothing (an inert
-        // handle never recorded anything). Note `MCP_RUNTIME_SLOT` is a companion slot inserted on
+        // handle never recorded anything). Note the `runtime_slot_key(<mcp decl key>)` companion slot is inserted on
         // every MCP-compiled build, so the gate reads the DECL keys (config-conditional), never it.
         plane_breakers: {
             let planes_configured = crate::plane::registry::plane_decls()
@@ -1685,7 +1685,7 @@ pub fn build_app_from_config(
         // could disagree with what is stored here.
         // THE MCP PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it) is
         // no longer a flat `App` field: it was inserted into `plane_slots` above under
-        // `crate::state::MCP_RUNTIME_SLOT`, through the plane's own `build_runtime` seam. `plane_slots`
+        // `runtime_slot_key(<mcp decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
         // is moved into `App` on the line just above; the MCP plane reads its runtime back through
         // `crate::mcp::runtime`, which downcasts that slot inside the plane.
         plane_slots,

@@ -559,6 +559,74 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
     );
 }
 
+/// THE SKIP MUST BE LOUD, not merely counted. The regression this pins: the per-record tolerance
+/// fix converted a hard `?`-abort (which emitted a loud boot error) into a silent skip whose only
+/// trace was a count that no production log sink was guaranteed to surface. So this asserts the
+/// CODED SITE DIAGNOSTIC (`PLANE_CALLLOG_ROW_UNREADABLE`, BUSBAR-2045) actually FIRES on the
+/// undecodable row — the count alone is not evidence that an operator would ever see the loss.
+#[test]
+fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let backing = Arc::new(DurableCallStore::new());
+    let store: Arc<dyn Store> = backing.clone();
+    write_then_drop(&store);
+    backing.poison_row(P, 3);
+
+    let cap = DiagCapture::default();
+    let restored = {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        let log2 = CallTestHarness::over(store.clone());
+        log2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
+            .expect("a single undecodable record must NOT abort the whole rehydrate")
+    };
+
+    assert_eq!(
+        restored.unreadable, 1,
+        "the poisoned record is still counted"
+    );
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2045")),
+        "the undecodable row must emit PLANE_CALLLOG_ROW_UNREADABLE (BUSBAR-2045) at ERROR at its \
+         skip site — a silent count is exactly the regression being fixed; captured: {diags:?}"
+    );
+}
+
+/// A tracing layer that records the `diag = \"BUSBAR-NNNN\"` field of every ERROR event, so a test
+/// can assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose.
+#[derive(Clone, Default)]
+struct DiagCapture(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S> tracing_subscriber::Layer<S> for DiagCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct V<'a>(&'a mut Option<String>);
+        impl tracing::field::Visit for V<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    *self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut diag = None;
+        event.record(&mut V(&mut diag));
+        if let Some(d) = diag {
+            self.0.lock().unwrap().push(d);
+        }
+    }
+}
+
 /// THE PERMANENT PAIRED NEGATIVE. The same sequence against a store that overrides NONE of the
 /// call-log methods: every write is ACCEPTED, and nothing is kept. Without this, every assertion
 /// above would pass identically on a store that persisted nothing, because the engine would be

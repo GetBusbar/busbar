@@ -582,16 +582,28 @@ impl PlaneCallLog {
             // tolerated per-principal below; an unreadable record is the same class of defensive
             // robustness. The GOOD-record path is unchanged: with every body decodable, `bodies` is
             // `raw` in order, and the seed is byte-identical.
-            // Counted, not logged from here: this file is a coded-diagnostics-only module (a bare
-            // `tracing::error!` is rejected by the migrated-files lint), and the boot RestoredSummary
-            // logger is registry-owned. The count rides back on `Restored.unreadable` — the same
-            // count-here/report-at-the-wrapper split `audit::journal::restore_scoped` uses — so the
-            // skip is surfaced, never truly silent.
+            // The skip is reported LOUDLY at the site with a coded diagnostic — not merely counted
+            // — so a silently lost evidence row can never be invisible in prod. The count STILL
+            // rides back on `Restored.unreadable` (belt-and-suspenders for the boot RestoredSummary
+            // logger), but the site diagnostic is the primary surface: it is the peer of
+            // `PLANE_CALLLOG_EMPTY_CHAIN`/`PLANE_CALLLOG_CHAIN_VERIFY_FAILED` this restore already
+            // emits at ERROR, and it fires per skipped row regardless of the wrapper's aggregate.
             let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(raw.len());
             for body in raw {
                 match reframe_call(principal, &body) {
                     Ok(_) => bodies.push(body),
-                    Err(_) => out.unreadable += 1,
+                    Err(e) => {
+                        out.unreadable += 1;
+                        crate::diagnostics::diag_error!(
+                            crate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                            principal = %principal,
+                            error = %e,
+                            "a persisted per-call record could NOT be decoded on restore; it is being \
+                             SKIPPED and counted rather than aborting the whole rehydrate (which would \
+                             drop every other principal's working set). The evidence in this one row \
+                             is lost — reported here, never skipped silently."
+                        );
+                    }
                 }
             }
             out.records += bodies.len();

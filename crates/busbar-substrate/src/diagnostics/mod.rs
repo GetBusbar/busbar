@@ -2318,6 +2318,43 @@ pub const PLANE_AUDITLOG_WRITE_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+pub const PLANE_CALLLOG_ROW_UNREADABLE: Diagnostic = Diagnostic {
+    code: 2045,
+    class: Class::Audit,
+    slug: "plane-calllog-row-unreadable",
+    title: "Persisted plane per-call record could not be decoded on restore (skipped, not dropped)",
+    severity: Severity::Actionable,
+    summary: "A principal's persisted plane per-call record could not be decoded at boot — a body \
+              from a store format no released build wrote, or a corrupt row. It is COUNTED and \
+              SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop \
+              every OTHER principal's working set), but the skip is reported here so a silently \
+              lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt \
+              store.",
+    action: "Note the principal. If many rows are unreadable, suspect a store format mismatch after \
+             an upgrade or downgrade; capture the durable governance store for review.",
+    since: "1.6.0",
+    retired: false,
+};
+
+pub const PLANE_JOURNAL_ROW_UNREADABLE: Diagnostic = Diagnostic {
+    code: 2046,
+    class: Class::Audit,
+    slug: "plane-journal-row-unreadable",
+    title: "Persisted journal record could not be reframed on restore (skipped, not dropped)",
+    severity: Severity::Actionable,
+    summary:
+        "A scoped journal record could not be reframed at boot — a body from a store format no \
+              released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather \
+              than allowed to abort the whole rehydrate (which would drop every OTHER scope's \
+              working set), but the skip is reported here so a silently lost evidence row is never \
+              invisible. Usually an engine-version mismatch or a corrupt store.",
+    action:
+        "Note the scope. If many rows are unreadable, suspect a store format mismatch after an \
+             upgrade or downgrade; capture the durable governance store for review.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const WEBHOOK_EXPORTER_DISABLED: Diagnostic = Diagnostic {
     code: 7070,
     class: Class::Plane,
@@ -3543,6 +3580,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
     &PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
     &PLANE_AUDITLOG_WRITE_FAILED,
+    &PLANE_CALLLOG_ROW_UNREADABLE,
+    &PLANE_JOURNAL_ROW_UNREADABLE,
     &WEBHOOK_EXPORTER_DISABLED,
     &WEBHOOK_DELIVERY_NON_2XX,
     &WEBHOOK_DELIVERY_TRANSPORT_ERROR,

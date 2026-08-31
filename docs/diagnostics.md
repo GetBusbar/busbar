@@ -162,6 +162,28 @@ The admin audit record could NOT be written through the durable journal seam, so
 
 **What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
 
+<a id="plane-calllog-row-unreadable"></a>
+### BUSBAR-2045 — Persisted plane per-call record could not be decoded on restore (skipped, not dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-calllog-row-unreadable`
+
+A principal's persisted plane per-call record could not be decoded at boot — a body from a store format no released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop every OTHER principal's working set), but the skip is reported here so a silently lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt store.
+
+**What to do:** Note the principal. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the durable governance store for review.
+
+<a id="plane-journal-row-unreadable"></a>
+### BUSBAR-2046 — Persisted journal record could not be reframed on restore (skipped, not dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-journal-row-unreadable`
+
+A scoped journal record could not be reframed at boot — a body from a store format no released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop every OTHER scope's working set), but the skip is reported here so a silently lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt store.
+
+**What to do:** Note the scope. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the durable governance store for review.
+
 ## 3xxx — Config
 
 <a id="config-overlay-not-writable"></a>

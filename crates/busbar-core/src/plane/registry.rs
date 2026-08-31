@@ -190,6 +190,7 @@ impl PlaneBootCtx for BootCtx {
                 principals: r.principals,
                 records: r.records,
                 empty_chains: r.empty_chains,
+                unreadable: r.unreadable,
                 chain_breaks: r.chain_breaks.iter().map(|b| b.to_string()).collect(),
             })
             .map_err(|e| e.to_string())

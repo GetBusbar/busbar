@@ -1373,14 +1373,14 @@ impl TestApp {
         }
         // THE PLANE SLOTS, filled from OUTSIDE core: each plane's test-kit already built its runtime
         // objects (the `"mcp"`/`"a2a"` dispatch resources AND the MCP per-generation runtime under
-        // `MCP_RUNTIME_SLOT`) and installed them through [`TestApp::install_plane_runtime`], so
+        // `runtime_slot_key(<mcp decl key>)`) and installed them through [`TestApp::install_plane_runtime`], so
         // `build()` MOVES the accumulated type-erased map into the App slot without naming a plane
         // runtime type or a slot key of its own.
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
         // THE MCP PLANE'S ALWAYS-PRESENT per-generation runtime slot. In THIS crate's own test binary
         // (`#[cfg(test)]`) the MCP plane is a built-in of the process list (see `registry`), so — like
-        // production `appbuild` — every generation must carry its runtime under `MCP_RUNTIME_SLOT`, or
+        // production `appbuild` — every generation must carry its runtime under `runtime_slot_key(<mcp decl key>)`, or
         // the plane's `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture
         // that opted the plane in through its test-kit already installed one; this fills the DEFAULT for
         // every other `TestApp`, sourced from the plane's own test-kit so `build()` names no MCP type.
