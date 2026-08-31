@@ -4,7 +4,7 @@
 //! The EXPORT seam of the kind-neutral loader: [`DynExport`], a telemetry sink backed by a
 //! dynamically-loaded plugin whose kind was bound to `export` at load. It queries the plugin's
 //! declared streams ONCE at load (retaining them alongside the handle) and translates each delivery
-//! into a `busbar_call` with the matching op envelope ([`busbar_plugin_abi::export`]).
+//! into a `busbar_call` with the matching op envelope ([`busbar_plugin::cold::export`]).
 //!
 //! Mirrors the store/secret load seams: same trust/staging/wire-up pipeline, only the KIND (and the
 //! consuming engine seam) differs. The ACTUAL wiring of a delivery to the engine's
@@ -12,7 +12,7 @@
 //! reports the streams it carries.
 
 use crate::{stage, wire_up_raw, RawPlugin};
-use busbar_plugin_abi::{
+use busbar_plugin::cold::{
     export::{ExportRequest, ExportResponse, ExportStream},
     http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route},
     kind as abi_kind,
