@@ -1,4 +1,14 @@
-use crate::proto::Protocol;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! CROSS-PROTOCOL extra-key round-trip tests, RELOCATED here from `busbar-core`'s `proxy/tests/`
+//! (plane-extraction §5 Phase 1.5). They drive the witnessed codec directly (`Protocol::{openai,
+//! anthropic,gemini}().reader()/.writer()` over a concrete `IrRequest`), which a neutral crate's
+//! tests must not name — so they live beside the codecs they exercise. Every assertion is
+//! BYTE-IDENTICAL to the pre-relocation suite; they mirror the `forward_with_pool` reader→clear→
+//! writer sequence on a value.
+
+use super::*;
 
 /// Structural class fix: on a CROSS-protocol request hop the source-protocol-only passthrough
 /// keys swept into `IrRequest.extra` (e.g. OpenAI `logit_bias`) must NOT reach the foreign

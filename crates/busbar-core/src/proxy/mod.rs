@@ -178,9 +178,9 @@ mod hook_non_chat_projection_tests;
 // metadata/exception), and the billing-parity tests below cover all four
 // {stream,non-stream}×{same,cross} combos end to end.
 
-#[cfg(test)]
-#[path = "tests/cross_protocol_extra_tests.rs"]
-mod cross_protocol_extra_tests;
+// `cross_protocol_extra_tests` RELOCATED to `busbar-llm` (`src/tests/proto/`, plane-extraction §5
+// Phase 1.5): it drove the witnessed codec (`Protocol::{openai,anthropic,gemini}().reader()/.writer()`
+// over a concrete `IrRequest`), so it now lives beside the codecs it exercises.
 
 #[cfg(test)]
 #[path = "tests/response_model_fill_tests.rs"]

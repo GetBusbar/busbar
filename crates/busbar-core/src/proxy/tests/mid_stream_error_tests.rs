@@ -357,7 +357,10 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     let ingress = "gemini";
     let egress = "openai";
     strip_router_shim_keys(&mut v, egress);
-    crate::proto::Protocol::openai()
+    // Neutral seam: resolve the egress writer by NAME from the installed registry (as production
+    // does), so this core strip/rewrite-ordering test names no dialect codec constructor.
+    crate::proto::protocol_for(crate::proto::PROTO_OPENAI)
+        .expect("openai codec registered")
         .writer()
         .rewrite_model_if_needed(&mut v, "gpt-4o");
     if ingress == egress {
@@ -383,7 +386,8 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     let ingress = "gemini";
     let egress = "gemini";
     strip_router_shim_keys(&mut v, egress);
-    crate::proto::Protocol::gemini()
+    crate::proto::protocol_for(crate::proto::PROTO_GEMINI)
+        .expect("gemini codec registered")
         .writer()
         .rewrite_model_if_needed(&mut v, "gemini-1.5-pro");
     if ingress == egress {
