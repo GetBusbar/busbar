@@ -30,13 +30,13 @@ const MIGRATED_FILES: &[&str] = &[
     "src/egress_auth/bearer_token.rs",
     "src/trust/verify.rs",
     "src/oauth_as/plane.rs",
-    "src/sigv4.rs",
+    // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
+    // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
     "src/governance/mod.rs",
     "src/governance/revocation.rs",
     "src/governance/state.rs",
     "src/appbuild.rs",
     "src/boot.rs",
-    "src/eventstream.rs",
     "src/preflight.rs",
     "src/telemetry.rs",
     "src/tls.rs",
