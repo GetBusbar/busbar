@@ -424,9 +424,19 @@ pub(crate) fn write_image_response(r: &crate::ir::image::ImageResp) -> WireBody 
             p
         })
         .collect();
-    WireBody::json(Bytes::from(
-        serde_json::to_vec(&json!({ "predictions": predictions })).unwrap_or_default(),
-    ))
+    let mut body = json!({ "predictions": predictions });
+    // Re-emit the token usage the response reader parses (`read_image_response` captures
+    // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
+    // token-metered gemini->gemini image response lost its usage in the client-facing body —
+    // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
+    if let Some(u) = &r.usage {
+        body["usageMetadata"] = json!({
+            "promptTokenCount": u.input,
+            "candidatesTokenCount": u.output,
+            "totalTokenCount": u.input.saturating_add(u.output),
+        });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Gemini embeddings (`models/{id}:embedContent`). Single content in, `embedding.values` out.
@@ -544,6 +554,7 @@ pub(crate) fn read_transcription_request(
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let mut audio = None;
     let mut prompt = None;
+    let mut target_language = None;
     if let Some(parts) = wire.pointer("/contents/0/parts").and_then(Value::as_array) {
         for p in parts {
             let inline = p.get("inline_data").or_else(|| p.get("inlineData"));
@@ -574,7 +585,14 @@ pub(crate) fn read_transcription_request(
             } else if let Some(t) = p.get("text").and_then(Value::as_str) {
                 // Skip the writer's synthetic directive texts; only a caller-supplied prompt part is
                 // the real `prompt`. The last such text wins (a request carries at most one).
-                if t != TRANSCRIBE_INSTRUCTION && t != TRANSLATE_INSTRUCTION {
+                if t == TRANSLATE_INSTRUCTION {
+                    // The writer emits TRANSLATE_INSTRUCTION iff `target_language` was set (translate
+                    // mode); recognizing it reconstructs that mode so a gemini-ingress TRANSLATE
+                    // request reads back AS translate instead of silently downgrading to transcribe
+                    // on re-emit. The writer only checks `target_language.is_some()`; OpenAI
+                    // `/audio/translations` targets English, so "en" is the faithful reconstruction.
+                    target_language = Some("en".to_string());
+                } else if t != TRANSCRIBE_INSTRUCTION {
                     prompt = Some(t.to_string());
                 }
             }
@@ -592,6 +610,7 @@ pub(crate) fn read_transcription_request(
     Ok(crate::ir::audio::TranscriptionReq {
         audio: Some(audio),
         prompt,
+        target_language,
         temperature,
         ..Default::default()
     })
@@ -617,17 +636,26 @@ pub(crate) fn read_transcription_response(
         })
         .unwrap_or_default();
     let usage = v.get("usageMetadata").map(|u| {
-        busbar_substrate::billing::Billing::Tokens(busbar_substrate::billing::TokenUsage {
-            input: u
-                .get("promptTokenCount")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            output: u
-                .get("candidatesTokenCount")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            ..Default::default()
-        })
+        // The transcription writer emits `audioDurationSeconds` (not a token count) when the source
+        // billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it back as
+        // Duration preserves the billable seconds; forcing Tokens{0,0} — as the old reader did —
+        // silently discarded the duration. Real Gemini upstreams emit only the token fields, which
+        // take the Tokens branch as before.
+        if let Some(seconds) = u.get("audioDurationSeconds").and_then(Value::as_f64) {
+            busbar_substrate::billing::Billing::Duration { seconds }
+        } else {
+            busbar_substrate::billing::Billing::Tokens(busbar_substrate::billing::TokenUsage {
+                input: u
+                    .get("promptTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                output: u
+                    .get("candidatesTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                ..Default::default()
+            })
+        }
     });
     Ok(TranscriptionResp {
         text,

@@ -696,3 +696,157 @@ fn gemini_imagen_image_carries_negative_prompt_seed_guidance_and_size_tier() {
     assert_eq!(back.guidance_scale, Some(7.5));
     assert_eq!(back.image_size_tier.as_deref(), Some("2K"));
 }
+
+// M3: a gemini-ingress TRANSLATE transcription must read back AS translate (target_language set), so
+// re-emitting the request keeps TRANSLATE_INSTRUCTION instead of silently downgrading to transcribe.
+// Fails pre-fix: the reader skipped both instruction literals and left target_language None.
+#[test]
+fn transcription_translate_round_trips_as_translate() {
+    let req = crate::ir::audio::TranscriptionReq {
+        audio: Some(MediaBlob {
+            payload: MediaPayload::B64(base64_encode(b"audio-bytes")),
+            mime_type: "audio/mp3".into(),
+            pcm: None,
+        }),
+        target_language: Some("en".into()),
+        ..Default::default()
+    };
+    // Writer selects TRANSLATE_INSTRUCTION when target_language is set.
+    let wire = write_transcription_request(&req);
+    let v: Value = serde_json::from_slice(&wire).unwrap();
+    let first_text = v.pointer("/contents/0/parts/0/text").and_then(Value::as_str);
+    assert_eq!(
+        first_text,
+        Some(TRANSLATE_INSTRUCTION),
+        "translate request must emit the translate directive: {v}"
+    );
+    // Reader reconstructs translate mode.
+    let back = read_transcription_request(&wire, "application/json").expect("re-read");
+    assert!(
+        back.target_language.is_some(),
+        "TRANSLATE_INSTRUCTION must reconstruct target_language (translate mode), got None"
+    );
+    // And a second egress re-emits the translate directive, not the transcribe one.
+    let wire2 = write_transcription_request(&back);
+    let v2: Value = serde_json::from_slice(&wire2).unwrap();
+    assert_eq!(
+        v2.pointer("/contents/0/parts/0/text").and_then(Value::as_str),
+        Some(TRANSLATE_INSTRUCTION),
+        "re-emit must stay translate, not downgrade to transcribe: {v2}"
+    );
+}
+
+// A plain transcribe request (no target_language) still reads back as transcribe.
+#[test]
+fn transcription_transcribe_round_trips_as_transcribe() {
+    let req = crate::ir::audio::TranscriptionReq {
+        audio: Some(MediaBlob {
+            payload: MediaPayload::B64(base64_encode(b"audio-bytes")),
+            mime_type: "audio/mp3".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let wire = write_transcription_request(&req);
+    let back = read_transcription_request(&wire, "application/json").expect("re-read");
+    assert!(
+        back.target_language.is_none(),
+        "a transcribe request must not gain a target_language"
+    );
+}
+
+// L3: whisper Duration billing (an openai->gemini hop emits `audioDurationSeconds`) must read back
+// as Duration, not be flattened to Tokens{0,0}. Fails pre-fix: the reader forced Tokens.
+#[test]
+fn transcription_response_round_trips_audio_duration() {
+    let resp = crate::ir::audio::TranscriptionResp {
+        text: "hello".into(),
+        usage: Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
+        ..Default::default()
+    };
+    let wb = write_transcription_response(&resp);
+    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
+    assert_eq!(
+        v.pointer("/usageMetadata/audioDurationSeconds"),
+        Some(&json!(12.5)),
+        "duration must be emitted under audioDurationSeconds: {v}"
+    );
+    let back = read_transcription_response(&wb.bytes).expect("re-read");
+    assert_eq!(
+        back.usage,
+        Some(busbar_substrate::billing::Billing::Duration { seconds: 12.5 }),
+        "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
+    );
+}
+
+// A real Gemini token usageMetadata still reads back as Tokens.
+#[test]
+fn transcription_response_reads_token_usage() {
+    let wire = json!({
+        "candidates": [{"content": {"parts": [{"text": "hi"}], "role": "model"}}],
+        "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3},
+    });
+    let back = read_transcription_response(&serde_json::to_vec(&wire).unwrap()).expect("read");
+    assert_eq!(
+        back.usage,
+        Some(busbar_substrate::billing::Billing::Tokens(
+            busbar_substrate::billing::TokenUsage { input: 7, output: 3, ..Default::default() }
+        )),
+        "token usageMetadata must read back as Tokens"
+    );
+}
+
+// L1: a token-metered gemini image response must re-emit `usageMetadata` in the client-facing body
+// (asymmetric with the OpenAI image writer before). Fails pre-fix: the writer dropped usage.
+#[test]
+fn image_response_writer_round_trips_usage() {
+    let resp = crate::ir::image::ImageResp {
+        images: vec![busbar_substrate::media::ImageOutput {
+            b64: Some("aGVsbG8=".into()),
+            ..Default::default()
+        }],
+        usage: Some(busbar_substrate::billing::TokenUsage {
+            input: 10,
+            output: 5,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let wb = write_image_response(&resp);
+    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
+    assert_eq!(
+        v.pointer("/usageMetadata/promptTokenCount"),
+        Some(&json!(10)),
+        "image usage must be emitted: {v}"
+    );
+    assert_eq!(v.pointer("/usageMetadata/candidatesTokenCount"), Some(&json!(5)));
+    // And it round-trips back through the response reader instead of being dropped.
+    let back = read_image_response(&wb.bytes).expect("re-read");
+    assert_eq!(
+        back.usage,
+        Some(busbar_substrate::billing::TokenUsage {
+            input: 10,
+            output: 5,
+            ..Default::default()
+        }),
+        "image usage must round-trip through write->read"
+    );
+}
+
+// An image response with no usage (per-image Imagen) emits no usageMetadata.
+#[test]
+fn image_response_writer_omits_usage_when_absent() {
+    let resp = crate::ir::image::ImageResp {
+        images: vec![busbar_substrate::media::ImageOutput {
+            b64: Some("aGVsbG8=".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let wb = write_image_response(&resp);
+    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
+    assert!(
+        v.get("usageMetadata").is_none(),
+        "a usage-less image response must not fabricate usageMetadata: {v}"
+    );
+}
