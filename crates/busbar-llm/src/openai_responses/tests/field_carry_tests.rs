@@ -1042,8 +1042,10 @@ fn responses_drops_penalties_seed_n_observably() {
             cap.messages()
         );
     }
-    // …and each is reported to the cross-protocol seam for audit.
-    let dropped = ResponsesWriter.dropped_egress_controls(&ir);
+    // …and each is reported to the cross-protocol seam for audit. Bind the interior-mutable const to a
+    // local before borrowing (clippy::borrow_interior_mutable_const), matching `write_req`.
+    let w = ResponsesWriter;
+    let dropped = w.dropped_egress_controls(&ir);
     for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
         assert!(
             dropped.contains(&field),
