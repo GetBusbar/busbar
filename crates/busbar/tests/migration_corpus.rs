@@ -156,6 +156,138 @@ fn providers_for(corpus_file: &Path) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../providers.yaml")
 }
 
+/// The byte offset at which a YAML line-comment begins, or `line.len()` if there is none.
+///
+/// A `#` only opens a comment when it is at line start or preceded by whitespace — a `#` embedded
+/// in a token (`/etc/a#b`) is not a comment. Keeping this precise is what lets the repointer leave
+/// `file:` occurrences INSIDE a comment (the `THIS file:` prose, the commented TLS examples) alone.
+fn yaml_comment_start(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            return i;
+        }
+    }
+    line.len()
+}
+
+/// Repoint every GENUINE `{ file: <path> }` built-in secret reference at `stand_in`, and NOTHING
+/// else.
+///
+/// The corpus names PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI, so a
+/// real `file:` secret has to be redirected at a temp file for `--validate` to resolve it. The
+/// earlier implementation matched a BARE `file:` substring, which also rewrote `providers_file:` /
+/// `cert_file:` / `key_file:` / `client_ca_file:` KEYS and `file:` inside comment prose — benign
+/// only by luck of today's corpus (every such hit was a comment or a repeat), and a latent trap the
+/// day the migrator emits an uncommented `providers_file:` line. Anchor to the secret-ref shape
+/// instead: a `file:` is a value to repoint ONLY when it is the KEY of a `file` mapping — the
+/// built-in `file` secret module — AND it sits in the CODE part of the line, before any comment.
+/// The `file` key appears in two shapes and BOTH occur in the corpus once a config is round-tripped
+/// through the deferred-decision serializer:
+///   * flow sugar `{ file: /path }` (as the raw corpus writes it), and
+///   * block form `\n  file: /path` (as `serde_yaml` re-emits the same `SecretRef`).
+///
+/// In both, everything before `file:` on the line is whitespace only — either the leading
+/// indentation (block) or `{ ` (flow). So the anchor is: the head, trimmed, is empty OR ends with
+/// `{`. `providers_file:` / `cert_file:` / `key_file:` / `client_ca_file:` all FAIL it (the char
+/// before `file:` is `_`, part of the key name); a commented `{ file: … }` fails it too (it is past
+/// the comment marker, so never in the CODE part scanned here).
+fn rewrite_file_secret_paths(yaml: &str, stand_in: &str) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        let code_end = yaml_comment_start(line);
+        let (code, comment) = line.split_at(code_end);
+        let mut rest = code;
+        loop {
+            let Some(rel) = rest.find("file:") else {
+                out.push_str(rest);
+                break;
+            };
+            let (head, tail) = rest.split_at(rel);
+            let after_key = &tail["file:".len()..];
+            let before = head.trim_end();
+            if before.is_empty() || before.ends_with('{') {
+                // A genuine `file:` secret key (block `  file: /p` or flow `{ file: /p }`): keep the
+                // head (indentation or `{ `), drop the old path up to `}` (flow) or end-of-code
+                // (block), and splice in the stand-in.
+                let close = after_key.find('}').unwrap_or(after_key.len());
+                out.push_str(head);
+                out.push_str("file: ");
+                out.push_str(stand_in);
+                out.push(' ');
+                out.push_str(&after_key[close..]);
+                break;
+            }
+            // A `*_file:` key or other bare `file:` — emit verbatim and keep scanning the tail.
+            out.push_str(head);
+            out.push_str("file:");
+            rest = after_key;
+        }
+        out.push_str(comment);
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn rewrite_file_secret_paths_only_touches_genuine_secret_refs() {
+    let yaml = "\
+# THIS file: your deployment, references providers by name
+#   cert:      { file: /etc/busbar/admin-cert.pem }
+providers_file: /etc/busbar/providers.yaml
+  signing_key: { file: /var/lib/busbar/signing.key }        # REQUIRED with keys above
+  admin_ca:
+    file: /var/lib/busbar/admin-ca.pem
+  cert_file: /etc/busbar/cert.pem
+";
+    let out = rewrite_file_secret_paths(yaml, "/tmp/stand-in");
+
+    // The genuine active FLOW-sugar secret ref IS repointed...
+    assert!(
+        out.contains("signing_key: { file: /tmp/stand-in }"),
+        "the genuine `{{ file: … }}` secret must be repointed at the stand-in; got:\n{out}"
+    );
+    assert!(
+        !out.contains("/var/lib/busbar/signing.key"),
+        "the production signing.key path must be gone; got:\n{out}"
+    );
+    // ...and so is the BLOCK-form `file:` key that `serde_yaml` re-emits after a round-trip (the
+    // shape the real corpus validation actually feeds this function).
+    assert!(
+        out.contains("    file: /tmp/stand-in"),
+        "a block-form `file:` secret key must be repointed; got:\n{out}"
+    );
+    assert!(
+        !out.contains("/var/lib/busbar/admin-ca.pem"),
+        "the production admin-ca path must be gone; got:\n{out}"
+    );
+    // ...its trailing comment survives unharmed.
+    assert!(
+        out.contains("# REQUIRED with keys above"),
+        "the trailing comment must survive; got:\n{out}"
+    );
+
+    // A `providers_file:` KEY is NOT a secret ref and must be left byte-for-byte.
+    assert!(
+        out.contains("providers_file: /etc/busbar/providers.yaml"),
+        "`providers_file:` must NOT be rewritten; got:\n{out}"
+    );
+    // Nor a `cert_file:` key.
+    assert!(
+        out.contains("cert_file: /etc/busbar/cert.pem"),
+        "`cert_file:` must NOT be rewritten; got:\n{out}"
+    );
+    // A `file:` inside a comment — prose or a commented `{ file: … }` example — is untouched.
+    assert!(
+        out.contains("# THIS file: your deployment"),
+        "a `file:` in comment prose must NOT be rewritten; got:\n{out}"
+    );
+    assert!(
+        out.contains("#   cert:      { file: /etc/busbar/admin-cert.pem }"),
+        "a commented `{{ file: … }}` example must NOT be rewritten; got:\n{out}"
+    );
+}
+
 fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
     std::fs::write(tmp, yaml).map_err(|e| format!("write temp config: {e}"))?;
     // `--validate` RESOLVES built-in secret references, so every env var a corpus config names must
@@ -163,9 +295,12 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
     // corpus spans every shipped release, so enumerating the names here would rot; extract them
     // from the config under test instead.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    // 1.6.0: the shared root catalog is not next to the temp config, so point busbar at it with the
+    // `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
     cmd.arg("--validate")
+        .arg("--providers")
+        .arg(providers)
         .env("BUSBAR_CONFIG", tmp)
-        .env("BUSBAR_PROVIDERS", providers)
         .env("BUSBAR_TEST_SIGNING_KEY", "a".repeat(64))
         .env("BUSBAR_TEST_ADMIN_TOKEN", "corpus-admin-token");
     // `file:` refs name PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI.
@@ -175,24 +310,7 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
         let dir = tmp.parent().unwrap_or(Path::new("."));
         let stand_in = dir.join("corpus-secret");
         std::fs::write(&stand_in, "a".repeat(64)).map_err(|e| format!("write stand-in: {e}"))?;
-        let mut out = String::with_capacity(yaml.len());
-        for line in yaml.lines() {
-            match line.find("file:") {
-                Some(i) => {
-                    let (head, tail) = line.split_at(i);
-                    let close = tail.find('}').map(|j| &tail[j..]).unwrap_or("");
-                    out.push_str(head);
-                    out.push_str("file: ");
-                    out.push_str(&stand_in.display().to_string());
-                    out.push_str(close);
-                    out.push('\n');
-                }
-                None => {
-                    out.push_str(line);
-                    out.push('\n');
-                }
-            }
-        }
+        let out = rewrite_file_secret_paths(yaml, &stand_in.display().to_string());
         std::fs::write(tmp, &out).map_err(|e| format!("rewrite temp config: {e}"))?;
         std::borrow::Cow::Owned(out)
     } else {
@@ -285,7 +403,7 @@ fn every_shipped_config_migrates_to_a_valid_current_config() {
         "{} of {} shipped configs do not migrate to a valid current config.\n\n{}\n\nEach block \
          above names the corpus file, what the validator said, and the command to reproduce it. A \
          failure here means an operator upgrading from that release cannot migrate mechanically \
-         — fix the migrator (crates/busbar/src/config/migrate.rs), not the corpus.",
+         — fix the migrator (crates/busbar-core/src/config/migrate.rs), not the corpus.",
         failures.len(),
         files.len(),
         failures.join("\n\n========================================\n\n")
