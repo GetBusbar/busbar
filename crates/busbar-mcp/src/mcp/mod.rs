@@ -538,7 +538,7 @@ pub(crate) fn mcp_hydrate(
             // rather than summed into `principals`.
             if r.empty_chains > 0 {
                 busbar_substrate::diag_warn!(
-                    busbar_substrate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
+                    crate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
                     principals = r.empty_chains,
                     "the durable MCP call log enumerates these principals but holds NO records \
                      for them; their chains reopen at seq 1"
@@ -546,14 +546,14 @@ pub(crate) fn mcp_hydrate(
             }
             for brk in &r.chain_breaks {
                 busbar_substrate::diag_error!(
-                    busbar_substrate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
+                    crate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
                 );
             }
         }
         Err(e) => busbar_substrate::diag_warn!(
-            busbar_substrate::diagnostics::MCP_CALLLOG_UNREAD,
+            crate::diagnostics::MCP_CALLLOG_UNREAD,
             error = %e,
             "could not read the durable MCP per-call log; chains start at their persisted \
              tail being unknown, which means a principal with rows in the store may reopen at \
@@ -578,7 +578,7 @@ pub(crate) fn mcp_hydrate(
     match crate::mcp::demotion::hydrate(&host) {
         0 => {}
         n => busbar_substrate::diag_warn!(
-            busbar_substrate::diagnostics::MCP_DEMOTIONS_RESTORED,
+            crate::diagnostics::MCP_DEMOTIONS_RESTORED,
             servers = n,
             "MCP upstream demotions restored from the durable governance store: these servers \
              were quarantined before the last restart and are refused until an operator works \

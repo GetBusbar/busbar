@@ -40,8 +40,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
 use super::registry::AgentRegistration;
+use crate::diagnostics::A2A_REVERIFY_CADENCE_UNPARSED;
 use busbar_substrate::diag_warn;
-use busbar_substrate::diagnostics::A2A_REVERIFY_CADENCE_UNPARSED;
 
 /// THE PLANE. Built once per config generation; `None` when this deployment fronts no agents.
 pub struct A2aPlane {

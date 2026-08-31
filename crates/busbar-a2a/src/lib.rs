@@ -31,6 +31,7 @@
 #![cfg_attr(all(test, not(feature = "test-support")), allow(dead_code))]
 
 pub mod a2a;
+pub mod diagnostics;
 
 /// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
@@ -41,3 +42,8 @@ pub mod testkit;
 /// A2A'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_a2a::PLANE_DECL`). See [`a2a`] for the declaration.
 pub use a2a::PLANE_DECL;
+
+/// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
+/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// root so the `busbar` binary names one stable path (`busbar_a2a::DIAGNOSTICS`). See [`diagnostics`].
+pub use diagnostics::DIAGNOSTICS;

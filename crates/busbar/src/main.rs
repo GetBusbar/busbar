@@ -644,6 +644,27 @@ fn register_planes() {
     busbar_core::plane::registry::install_planes(installed.leak());
 }
 
+/// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
+/// axis (`busbar_substrate::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
+/// the diagnostics axis. Each extracted plane crate OWNS its `Diagnostic` consts and exposes them as
+/// `DIAGNOSTICS`; core carries no plane-specific diagnostic (the neutral catalog is the plane-agnostic
+/// half). The neutral `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land
+/// in a rendered catalog. Installed BEFORE any reader; a build with a plane compiled out contributes
+/// nothing, so its diagnostics never join the catalog. Leaked so the installed set is `'static`.
+// `Vec::new()` then a FEATURE-GATED `extend` per plane (not `vec![]`): each plane's rows are present
+// only under its feature, and with every plane compiled out (`--no-default-features`) nothing is
+// installed — the same shape `register_planes` has.
+#[allow(clippy::vec_init_then_push)]
+fn register_diagnostics() {
+    #[allow(unused_mut)]
+    let mut installed: Vec<&'static busbar_substrate::diagnostics::Diagnostic> = Vec::new();
+    #[cfg(feature = "plane-mcp")]
+    installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
+    #[cfg(feature = "plane-a2a")]
+    installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
+    busbar_substrate::diagnostics::install_diagnostics(installed.leak());
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -655,6 +676,11 @@ fn main() {
     // list through `plane::config::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
+    // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
+    // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build
+    // installs nothing and the catalog is the neutral built-ins alone.
+    register_diagnostics();
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An

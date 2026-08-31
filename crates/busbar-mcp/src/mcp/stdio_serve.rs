@@ -293,7 +293,7 @@ where
             Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
-                busbar_substrate::diag_debug!(busbar_substrate::diagnostics::MCP_STDIO_READ_ERROR, error = %e, "mcp stdio serve: read error on stdin; shutting down");
+                busbar_substrate::diag_debug!(crate::diagnostics::MCP_STDIO_READ_ERROR, error = %e, "mcp stdio serve: read error on stdin; shutting down");
                 break;
             }
         }

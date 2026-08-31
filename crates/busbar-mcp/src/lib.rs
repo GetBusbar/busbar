@@ -25,6 +25,7 @@
 //! `busbar_core::proto::registry::install_protocols` at boot.
 
 pub mod codec;
+pub mod diagnostics;
 pub mod mcp;
 
 /// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
@@ -36,6 +37,11 @@ pub mod testkit;
 /// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`). See [`mcp`] for the declaration.
 pub use mcp::PLANE_DECL;
+
+/// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
+/// hands to `busbar_substrate::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// root so the `busbar` binary names one stable path (`busbar_mcp::DIAGNOSTICS`). See [`diagnostics`].
+pub use diagnostics::DIAGNOSTICS;
 
 /// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does

@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
-use busbar_substrate::diagnostics::{
+use crate::diagnostics::{
     A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_DISPATCH_UNRECORDED,
     A2A_FAILURE_UNRECORDED, A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED,
     A2A_INTERRUPTED_TASK_UNRESUMED, A2A_OUTBOUND_CRED_UNLEASED, A2A_OWN_CARD_BUILD_FAILED,

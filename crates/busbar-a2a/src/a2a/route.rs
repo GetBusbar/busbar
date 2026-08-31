@@ -20,10 +20,10 @@
 //!   behaviour.
 
 use super::relay::RelayBreaker;
-use axum::response::{IntoResponse as _, Response};
-use busbar_substrate::diagnostics::{
+use crate::diagnostics::{
     A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
 };
+use axum::response::{IntoResponse as _, Response};
 use busbar_substrate::{diag_debug, diag_error, diag_warn};
 use std::sync::Arc;
 

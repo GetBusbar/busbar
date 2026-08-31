@@ -67,12 +67,12 @@ use super::pin::CardPin;
 use super::plane::A2aPlane;
 use super::registry::AgentRegistration;
 use super::reverify::{self, Due, Ledger, Policy};
+use crate::diagnostics::A2A_CARD_FETCH_PANICKED;
 use busbar_substrate::admin_verbs::{
     plane_admin_envelope, registered, AdminReply, AdminReqCtx, PlaneAdminCond, PlaneTrust,
     PlaneVerbError,
 };
 use busbar_substrate::diag_error;
-use busbar_substrate::diagnostics::A2A_CARD_FETCH_PANICKED;
 use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
 /// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
