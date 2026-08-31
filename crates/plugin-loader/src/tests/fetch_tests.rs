@@ -103,6 +103,66 @@ fn boot_miss_fatal_reload_miss_warns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Plugin#2 regression: a `filename` that is not a single path component (a `../../` traversal or an
+/// absolute path) is REFUSED before any `dir.join`, so it can never escape `plugins.dir` at either
+/// the cache-probe or the durable-write join. At boot it is fatal; the downloader is never touched
+/// and nothing is written anywhere.
+#[test]
+fn traversal_filename_is_refused_at_both_sites() {
+    let dir = tmpdir();
+    let body = b"payload";
+    let pin = sha256_hex(body);
+    // A downloader that WOULD succeed — so if the guard were absent, the escaping path would be
+    // written. It must never be called, and nothing must land.
+    let dl = |_: &str| Ok(body.to_vec());
+
+    for evil in [
+        "../../evil",
+        "../evil.tar.gz",
+        "sub/evil.tar.gz",
+        "/etc/evil",
+        ".",
+        "",
+    ] {
+        // Pinned: exercises the cache-probe join AND the verify-then-write join.
+        let err = fetch_plugins(
+            &dir,
+            &[spec("https://x/p.tar.gz", Some(&pin), evil)],
+            true,
+            &dl,
+        )
+        .unwrap_err();
+        assert!(
+            err[0].contains("unsafe target filename"),
+            "filename {evil:?} must be refused as unsafe, got {err:?}"
+        );
+    }
+
+    // The escaping targets a `../` guard would have created must not exist, and `dir` stays empty.
+    assert!(!dir.parent().unwrap().join("evil").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(leftovers.is_empty(), "dir must be untouched: {leftovers:?}");
+
+    // A plain single-component filename still works (the guard is not over-broad).
+    let out = fetch_plugins(
+        &dir,
+        &[spec("https://x/p.tar.gz", Some(&pin), "good.tar.gz")],
+        true,
+        &dl,
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        vec![FetchOutcome::Fetched {
+            filename: "good.tar.gz".into()
+        }]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A verified download is written atomically and readable back byte-for-byte.
 #[test]
 fn verified_download_is_written() {

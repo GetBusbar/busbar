@@ -24,7 +24,18 @@
 //! enforcement in the one crate that has the denylist.
 
 use busbar_plugin_sign::sha256_hex;
-use std::path::Path;
+use std::path::{Component, Path};
+
+/// Reject any `filename` that is not EXACTLY ONE normal path component before it is joined onto
+/// `plugins.dir`. A config-driven `filename` of `../../evil` (or an absolute `/etc/evil`, or a nested
+/// `a/b`) would otherwise ESCAPE `dir` at the `dir.join(&spec.filename)` sites — a config-driven
+/// arbitrary write. This is the SAME single-`Normal`-component guard [`crate::tarball::unpack`]
+/// applies to archive entries, lifted to the fetch path so both boundaries refuse traversal the same
+/// way. A single ordinary filename (`evil.tar.gz`) is the only shape accepted.
+fn filename_is_single_component(filename: &str) -> bool {
+    let mut comps = Path::new(filename).components();
+    matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+}
 
 /// A fully-resolved fetch: the URL to GET, an optional lowercase-hex sha256 pin (cache key +
 /// verify-before-write gate), and the target filename inside `plugins.dir`. Produced by the engine's
@@ -84,6 +95,21 @@ pub fn fetch_plugins(
                 });
             }
         };
+
+        // Refuse a filename that is not a single normal component BEFORE any join — otherwise a
+        // `../../evil` or absolute `filename` escapes `dir` at the probe/write sites below.
+        if !filename_is_single_component(&spec.filename) {
+            record_problem(
+                &mut errors,
+                &mut outcomes,
+                format!(
+                    "refusing unsafe target filename {:?}: it must be a single path component, not a \
+                     path (absolute or parent reference)",
+                    spec.filename
+                ),
+            );
+            continue;
+        }
 
         let target = dir.join(&spec.filename);
 
