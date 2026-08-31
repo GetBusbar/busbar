@@ -1355,18 +1355,72 @@ fn load_and_exercise_export_example_plugin() {
 /// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
 /// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
 /// end: a green run that proved nothing about durability.
-use busbar_api::{McpCallRecord, PlaneDisposition, TaskEventRow, TaskRow};
+use busbar_api::PlaneDisposition;
 
-// ── the loader test speaks TYPED rows; the ABI speaks NEUTRAL kind-tagged plane records ──────────
+// ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
 //
 // The fourteen protocol-named `Store` methods were deleted in the 1.6.0 14→8 collapse, so this suite
 // exercises the ONLY durable-plane surface there is: the eight neutral verbs. These free helpers
-// build the kind-tagged `PlaneRecord` envelope for a typed row and decode a body back, so the test
-// bodies stay readable while every call still crosses the real plugin ABI as a neutral verb — the
-// exact surface a deployment takes. The `kind` strings match the reference `impl Store` in
+// build the kind-tagged `PlaneRecord` envelope for a row and decode a body back, so the test bodies
+// stay readable while every call still crosses the real plugin ABI as a neutral verb — the exact
+// surface a deployment takes. The `kind` strings match the reference `impl Store` in
 // `store-example-plugin` verbatim.
+//
+// This suite is DELIBERATELY OPAQUE over the relocated plane row types (`TaskRow`/`TaskEventRow`/
+// `McpCallRecord`, moved out of `busbar-api`): it names none of them, and instead carries the body as
+// throwaway serde structs whose field NAMES are the ones the reference store decodes a `task` body by
+// (and reads `ts` off a `call` body by). A backend that stores the body verbatim and one that
+// decodes/re-encodes it through typed columns both round-trip these unchanged.
 
-fn task_record(t: &TaskRow) -> PlaneRecord {
+/// A stand-in for the `task`-kind body — the exact field names the reference store decodes by.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+struct SampleTask {
+    task_id: String,
+    context_id: String,
+    principal: String,
+    direction: String,
+    state: String,
+    agent_id: String,
+    artifact_cursor: u64,
+    push_callback: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
+/// A stand-in for the `task_event`-kind body (carried verbatim by the store).
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+struct SampleEvent {
+    task_id: String,
+    seq: u64,
+    ts: u64,
+    kind: String,
+    context_id: String,
+    principal: String,
+    agent_id: String,
+    state: String,
+    request_id: String,
+    prev_hash: String,
+    hash: String,
+}
+
+/// A stand-in for the `call`-kind body — `ts` is the field the reference store's retention reads.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+struct SampleCall {
+    principal: String,
+    seq: u64,
+    ts: u64,
+    server: String,
+    tool: String,
+    outcome: String,
+    reason: String,
+    tool_digest: String,
+    pin_generation: u64,
+    request_id: String,
+    prev_hash: String,
+    hash: String,
+}
+
+fn task_record(t: &SampleTask) -> PlaneRecord {
     PlaneRecord {
         kind: "task".into(),
         id: t.task_id.clone(),
@@ -1385,7 +1439,7 @@ fn task_record(t: &TaskRow) -> PlaneRecord {
     }
 }
 
-fn event_record(e: &TaskEventRow) -> PlaneRecord {
+fn event_record(e: &SampleEvent) -> PlaneRecord {
     PlaneRecord {
         kind: "task_event".into(),
         id: e.task_id.clone(),
@@ -1397,7 +1451,7 @@ fn event_record(e: &TaskEventRow) -> PlaneRecord {
     }
 }
 
-fn call_record(c: &McpCallRecord) -> PlaneRecord {
+fn call_record(c: &SampleCall) -> PlaneRecord {
     PlaneRecord {
         kind: "call".into(),
         id: c.principal.clone(),
@@ -1409,17 +1463,17 @@ fn call_record(c: &McpCallRecord) -> PlaneRecord {
     }
 }
 
-fn n_get_task(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Option<TaskRow>> {
+fn n_get_task(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Option<SampleTask>> {
     Ok(s.get_plane_record("task", id)?
         .map(|b| serde_json::from_slice(&b).unwrap()))
 }
-fn n_list_tasks(s: &dyn busbar_api::Store) -> StoreResult<Vec<TaskRow>> {
+fn n_list_tasks(s: &dyn busbar_api::Store) -> StoreResult<Vec<SampleTask>> {
     Ok(s.list_plane_records("task", &PlaneSelector::All)?
         .iter()
         .map(|b| serde_json::from_slice(b).unwrap())
         .collect())
 }
-fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<TaskEventRow>> {
+fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<SampleEvent>> {
     Ok(
         s.list_plane_records("task_event", &PlaneSelector::Parent(id.into()))?
             .iter()
@@ -1427,7 +1481,7 @@ fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<Ta
             .collect(),
     )
 }
-fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<McpCallRecord>> {
+fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCall>> {
     Ok(
         s.list_plane_records("call", &PlaneSelector::Parent(p.into()))?
             .iter()
@@ -1468,10 +1522,10 @@ fn store_example_plugin_path() -> Option<std::path::PathBuf> {
     candidate
 }
 
-/// A `TaskRow` with every field set to something distinguishable, so a round trip that drops or
+/// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
 /// transposes a field fails rather than passing on a mostly-empty row.
-fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> TaskRow {
-    TaskRow {
+fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
+    SampleTask {
         task_id: task_id.to_string(),
         context_id: "ctx-42".into(),
         principal: "vk_owner".into(),
@@ -1510,7 +1564,7 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     let cfg = serde_json::json!({ "durable_path": state_file.to_string_lossy() }).to_string();
 
     let task = sample_task_row("task-abc", "input-required", 2_000);
-    let event = TaskEventRow {
+    let event = SampleEvent {
         task_id: "task-abc".into(),
         seq: 1,
         ts: 1_500,
@@ -1523,7 +1577,7 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         prev_hash: String::new(),
         hash: "deadbeef".into(),
     };
-    let call = McpCallRecord {
+    let call = SampleCall {
         principal: "vk_owner".into(),
         seq: 1,
         ts: 1_600,
@@ -1854,7 +1908,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
         return;
     };
     let task = sample_task_row("task-old", "working", 1);
-    let event = TaskEventRow {
+    let event = SampleEvent {
         task_id: "task-old".into(),
         seq: 1,
         ts: 1,
@@ -1867,7 +1921,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
         prev_hash: String::new(),
         hash: "h".into(),
     };
-    let call = McpCallRecord {
+    let call = SampleCall {
         principal: "vk".into(),
         seq: 1,
         ts: 1,
@@ -1990,9 +2044,9 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
     }
 }
 
-/// A throwaway `TaskEventRow` for the failure-shape sweep, where the contents are irrelevant.
-fn event_free_probe() -> TaskEventRow {
-    TaskEventRow {
+/// A throwaway `SampleEvent` for the failure-shape sweep, where the contents are irrelevant.
+fn event_free_probe() -> SampleEvent {
+    SampleEvent {
         task_id: "task-err".into(),
         seq: 1,
         ts: 1,

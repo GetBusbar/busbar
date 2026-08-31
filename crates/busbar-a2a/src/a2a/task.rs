@@ -303,8 +303,8 @@ impl Task {
     }
 
     /// Project onto the store seam.
-    pub(crate) fn to_row(&self) -> busbar_api::TaskRow {
-        busbar_api::TaskRow {
+    pub(crate) fn to_row(&self) -> crate::TaskRow {
+        crate::TaskRow {
             task_id: self.task_id.clone(),
             context_id: self.context_id.clone(),
             principal: self.principal.clone(),
@@ -322,7 +322,7 @@ impl Task {
     /// does not parse is REFUSED and reported; the rehydrate path counts refusals rather than
     /// dropping them, because a silently skipped row is an in-flight task that quietly ceased to
     /// exist across a deploy — the exact failure the durable store was built to prevent.
-    pub(crate) fn from_row(row: &busbar_api::TaskRow) -> Result<Self, TaskError> {
+    pub(crate) fn from_row(row: &crate::TaskRow) -> Result<Self, TaskError> {
         let task = Task {
             task_id: row.task_id.clone(),
             context_id: row.context_id.clone(),
@@ -376,7 +376,7 @@ pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'sta
 pub(crate) fn plan_transition(
     to: TaskState,
     now: u64,
-) -> impl FnOnce(&busbar_api::TaskRow) -> Result<(busbar_api::TaskRow, &'static str), String> {
+) -> impl FnOnce(&crate::TaskRow) -> Result<(crate::TaskRow, &'static str), String> {
     move |row| {
         let mut task = Task::from_row(row).map_err(|e| e.to_string())?;
         // Kind is chosen off the FROM-state (before the move), exactly as the pre-cleave engine did.
@@ -392,7 +392,7 @@ pub(crate) fn plan_transition(
 /// `restore_from_store` made inline with `Task::from_row`, moved to the a2a side so core names no
 /// codec. The terminal/active split is core's ([`busbar_core::plane::taskstore`]'s neutral token check),
 /// applied only after this predicate confirms the token is one this binary knows.
-pub fn readable_row(row: &busbar_api::TaskRow) -> Result<(), String> {
+pub fn readable_row(row: &crate::TaskRow) -> Result<(), String> {
     Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -409,9 +409,7 @@ impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
         to_state: &str,
         now: u64,
     ) -> Result<
-        Box<
-            dyn FnOnce(&busbar_api::TaskRow) -> Result<(busbar_api::TaskRow, &'static str), String>,
-        >,
+        Box<dyn FnOnce(&crate::TaskRow) -> Result<(crate::TaskRow, &'static str), String>>,
         String,
     > {
         let to = TaskState::parse(to_state).map_err(|e| e.to_string())?;
@@ -422,7 +420,7 @@ impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
         super::pushnotify::floor_callback(task_id, callback)
     }
 
-    fn readable_row(&self, row: &busbar_api::TaskRow) -> Result<(), String> {
+    fn readable_row(&self, row: &crate::TaskRow) -> Result<(), String> {
         readable_row(row)
     }
 }

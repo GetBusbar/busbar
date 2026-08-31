@@ -219,12 +219,14 @@ fn request_response_json_roundtrip() {
 }
 
 #[test]
-fn abi_version_is_three() {
-    // Bumped 1 -> 2 for the credentials generalization, then 2 -> 3 for the Store genericization
-    // (the 14 protocol-named Store verbs collapsed to 8 neutral kind-tagged verbs — a real breaking
-    // wire change; see ABI_VERSION's doc). A mismatched plugin is refused at the handshake, and the
-    // loader's supported-ABI floor is [3,3], so a v2 store artifact is refused at load.
-    assert_eq!(ABI_VERSION, 3);
+fn abi_version_is_four() {
+    // Bumped 1 -> 2 for the credentials generalization, 2 -> 3 for the Store genericization (the 14
+    // protocol-named Store verbs collapsed to 8 neutral kind-tagged verbs), then 3 -> 4 for the
+    // plane record-type relocation (the four durable record structs moved out of `busbar-api` into
+    // the plane crates, so a 1.6-built plugin can no longer link against 1.7 — see ABI_VERSION's
+    // doc). A mismatched plugin is refused at the handshake, and the loader's supported-ABI floor is
+    // [4,4], so a stale 1.6 store artifact is refused at load.
+    assert_eq!(ABI_VERSION, 4);
 }
 
 /// The auth payload schema is at v2 (1.5.2 login primitives). Pinned so the SDK/loader floor and

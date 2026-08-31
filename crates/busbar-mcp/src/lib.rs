@@ -27,6 +27,12 @@
 pub mod codec;
 pub mod diagnostics;
 pub mod mcp;
+pub mod record;
+
+/// THE MCP PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
+/// extraction), re-exported at the crate root so `busbar_mcp::McpCallRecord` /
+/// `busbar_mcp::McpDemotionRow` resolve. The neutral crates name neither.
+pub use record::{McpCallRecord, McpDemotionRow};
 
 /// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This

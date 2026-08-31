@@ -32,6 +32,12 @@
 
 pub mod a2a;
 pub mod diagnostics;
+pub mod record;
+
+/// THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
+/// extraction), re-exported at the crate root so `busbar_a2a::TaskRow` / `busbar_a2a::TaskEventRow`
+/// resolve. The neutral crates name neither.
+pub use record::{TaskEventRow, TaskRow};
 
 /// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This

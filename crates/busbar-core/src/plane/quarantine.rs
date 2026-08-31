@@ -48,9 +48,39 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use crate::plane::store::{decode, demotion_record, PlaneStore, KIND_DEMOTION};
-use busbar_api::{McpDemotionRow, PlaneSelector};
+use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION};
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
 use std::sync::{Arc, Mutex};
+
+/// The CORE-NEUTRAL demotion row — the pure durable fact the quarantine mechanism keeps. It names no
+/// plane type (the plane owns the protocol-named twin, which lives plane-side); its
+/// serde shape is the on-disk `demotion` body, so a body written here reads back through the plane's
+/// own typed view field-for-field. Keyed by `server`, upserted, never purged by age.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DemotionRow {
+    /// The registered upstream's local id — the row's primary key.
+    pub server: String,
+    /// The operator-facing word for why it was demoted. Never free-form caller text.
+    pub reason: String,
+    /// Unix seconds the demotion was recorded.
+    pub recorded_at: u64,
+}
+
+impl DemotionRow {
+    /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope, keyed by its server.
+    /// Demotions are never purged by age, so the disposition is immaterial and left `Active`.
+    fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+        Ok(PlaneRecord {
+            kind: KIND_DEMOTION.to_string(),
+            id: self.server.clone(),
+            parent: None,
+            seq: 0,
+            ts: self.recorded_at,
+            disposition: PlaneDisposition::Active,
+            body: encode(self)?,
+        })
+    }
+}
 
 /// The durable demotion record's write side. No `Debug`: `dyn Store` is not `Debug`, deliberately —
 /// a backend must not be obliged to render itself, and one that did would be a place a credential
@@ -94,12 +124,15 @@ impl DemotionRecord {
         let Some(store) = self.sink() else {
             return;
         };
-        let row = McpDemotionRow {
+        let row = DemotionRow {
             server: server.to_string(),
             reason: reason.to_string(),
             recorded_at: now,
         };
-        if let Err(e) = demotion_record(&row).and_then(|rec| store.upsert_plane_record(&rec)) {
+        if let Err(e) = row
+            .to_plane_record()
+            .and_then(|rec| store.upsert_plane_record(&rec))
+        {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
                 server = %server,
@@ -133,7 +166,7 @@ impl DemotionRecord {
     /// EVERY recorded demotion. Empty when no store is attached, when the backend keeps none, and
     /// when there genuinely are none — three situations that are indistinguishable from here and
     /// have the same correct outcome, which is that nothing is replayed.
-    pub fn list(&self) -> Vec<McpDemotionRow> {
+    pub fn list(&self) -> Vec<DemotionRow> {
         let Some(store) = self.sink() else {
             return Vec::new();
         };

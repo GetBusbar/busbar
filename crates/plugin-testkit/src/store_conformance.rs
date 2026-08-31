@@ -39,9 +39,10 @@
 //! ```
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, PlaneDisposition,
-    PlaneRecord, PlaneSelector, SecretForm, Store, TaskEventRow, TaskRow, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord, PlaneSelector,
+    SecretForm, Store, VirtualKey,
 };
+use serde::{Deserialize, Serialize};
 
 /// Every `VirtualKey` id the suite writes under `ns`. A shared-database backend must delete these
 /// (and their credential rows) before calling, and should clean them up afterwards.
@@ -264,18 +265,82 @@ pub fn assert_append_audit_duplicate_seq(store: &dyn Store, seq: u64) {
 // the `list_task_events`-orders-by-seq / `list_mcp_call_principals`-enumerates / single-use-ask
 // rulings that used to live only in each backend's own suite (and, before them, drifted).
 //
-// The opaque `body` is a serialized TYPED row exactly as core sends it (`serde_json`, the same the
+// The opaque `body` is a serialized row exactly as core sends it (`serde_json`, the same the
 // backends decode with), and the `kind` strings match the reference `impl Store` verbatim. Read-back
 // is compared as the DECODED row, so a backend that stores typed columns and re-encodes conforms
 // without matching byte-for-byte on an incidental field order.
+//
+// This module is DELIBERATELY OPAQUE over the plane row types: it names none of the protocol row
+// structs (`TaskRow`/`TaskEventRow`/`McpCallRecord`/`McpDemotionRow`, relocated out of `busbar-api`
+// into the plane crates). The `body` is just serialized JSON with the field NAMES a backend that
+// projects a kind into typed columns decodes by — so these throwaway stand-in structs carry exactly
+// those fields, and a backend that stores the body verbatim and one that decodes/re-encodes it both
+// conform.
 //
 // SKIP on a backend that provides no durable plane state (the defaulted keep-nothing — e.g. the RAM
 // default). Namespacing follows the module doc: derive fixtures from `ns` and reset the plane tables
 // for that `ns` before calling on a shared-database backend.
 
-/// A minimal active (non-terminal) task row for `ns`.
-pub fn plane_task(ns: &str, state: &str) -> TaskRow {
-    TaskRow {
+/// A stand-in for the `task`-kind body: the field NAMES a backend decodes by, nothing more. Local to
+/// the suite so the conformance checks name no relocated plane row type.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+struct SampleTask {
+    task_id: String,
+    context_id: String,
+    principal: String,
+    direction: String,
+    state: String,
+    agent_id: String,
+    artifact_cursor: u64,
+    push_callback: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
+/// A stand-in for the `task_event`-kind body.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+struct SampleEvent {
+    task_id: String,
+    seq: u64,
+    ts: u64,
+    kind: String,
+    context_id: String,
+    principal: String,
+    agent_id: String,
+    state: String,
+    request_id: String,
+    prev_hash: String,
+    hash: String,
+}
+
+/// A stand-in for the `call`-kind body.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+struct SampleCall {
+    principal: String,
+    seq: u64,
+    ts: u64,
+    server: String,
+    tool: String,
+    outcome: String,
+    reason: String,
+    tool_digest: String,
+    pin_generation: u64,
+    request_id: String,
+    prev_hash: String,
+    hash: String,
+}
+
+/// A stand-in for the `demotion`-kind body.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+struct SampleDemotion {
+    server: String,
+    reason: String,
+    recorded_at: u64,
+}
+
+/// A minimal active (non-terminal) task plane record for `ns`, built from a throwaway body.
+pub fn plane_task(ns: &str, state: &str) -> PlaneRecord {
+    let task = SampleTask {
         task_id: format!("{ns}_ptask_{state}"),
         context_id: format!("{ns}_ctx"),
         principal: format!("{ns}_vk"),
@@ -286,12 +351,21 @@ pub fn plane_task(ns: &str, state: &str) -> TaskRow {
         push_callback: String::new(),
         created_at: 1_700_000_000,
         updated_at: 1_700_000_100,
+    };
+    PlaneRecord {
+        kind: "task".into(),
+        id: task.task_id.clone(),
+        parent: None,
+        seq: 0,
+        ts: task.updated_at,
+        disposition: PlaneDisposition::Active,
+        body: body(&task),
     }
 }
 
-/// A minimal per-task provenance event.
-pub fn plane_event(task_id: &str, seq: u64) -> TaskEventRow {
-    TaskEventRow {
+/// A minimal per-task provenance-event plane record.
+pub fn plane_event(task_id: &str, seq: u64) -> PlaneRecord {
+    let event = SampleEvent {
         task_id: task_id.to_string(),
         seq,
         ts: 1_700_000_000 + seq,
@@ -303,12 +377,21 @@ pub fn plane_event(task_id: &str, seq: u64) -> TaskEventRow {
         request_id: format!("req-{seq}"),
         prev_hash: String::new(),
         hash: format!("h{seq}"),
+    };
+    PlaneRecord {
+        kind: "task_event".into(),
+        id: event.task_id.clone(),
+        parent: Some(event.task_id.clone()),
+        seq: event.seq,
+        ts: event.ts,
+        disposition: PlaneDisposition::Active,
+        body: body(&event),
     }
 }
 
-/// A minimal MCP per-call record.
-pub fn plane_call(principal: &str, seq: u64, ts: u64) -> McpCallRecord {
-    McpCallRecord {
+/// A minimal MCP per-call plane record.
+pub fn plane_call(principal: &str, seq: u64, ts: u64) -> PlaneRecord {
+    let call = SampleCall {
         principal: principal.to_string(),
         seq,
         ts,
@@ -321,15 +404,33 @@ pub fn plane_call(principal: &str, seq: u64, ts: u64) -> McpCallRecord {
         request_id: format!("req-{seq}"),
         prev_hash: String::new(),
         hash: format!("h{seq}"),
+    };
+    PlaneRecord {
+        kind: "call".into(),
+        id: call.principal.clone(),
+        parent: Some(call.principal.clone()),
+        seq: call.seq,
+        ts: call.ts,
+        disposition: PlaneDisposition::Active,
+        body: body(&call),
     }
 }
 
-/// A minimal MCP demotion record for `server`.
-pub fn plane_demotion(server: &str) -> McpDemotionRow {
-    McpDemotionRow {
+/// A minimal MCP demotion plane record for `server`.
+pub fn plane_demotion(server: &str) -> PlaneRecord {
+    let demotion = SampleDemotion {
         server: server.to_string(),
         reason: "drift".into(),
         recorded_at: 1_700_000_000,
+    };
+    PlaneRecord {
+        kind: "demotion".into(),
+        id: demotion.server.clone(),
+        parent: None,
+        seq: 0,
+        ts: demotion.recorded_at,
+        disposition: PlaneDisposition::Active,
+        body: body(&demotion),
     }
 }
 
@@ -341,26 +442,21 @@ fn body<T: serde::Serialize>(row: &T) -> Vec<u8> {
 /// neutral upsert reads back through the neutral point-read as the same row; an unknown id is `None`,
 /// not an error; and the row appears in the kind's unfiltered listing.
 pub fn assert_plane_task_upsert_get_list(store: &dyn Store, ns: &str) {
-    let task = plane_task(ns, "working");
+    let record = plane_task(ns, "working");
+    let task_id = record.id.clone();
+    let expected: SampleTask =
+        serde_json::from_slice(&record.body).expect("decode the expected task body");
     store
-        .upsert_plane_record(&PlaneRecord {
-            kind: "task".into(),
-            id: task.task_id.clone(),
-            parent: None,
-            seq: 0,
-            ts: task.updated_at,
-            disposition: PlaneDisposition::Active,
-            body: body(&task),
-        })
+        .upsert_plane_record(&record)
         .expect("upsert the task plane record");
 
     let got = store
-        .get_plane_record("task", &task.task_id)
+        .get_plane_record("task", &task_id)
         .expect("get the task plane record")
         .expect("the task must be present after an upsert that reported success");
-    let decoded: TaskRow = serde_json::from_slice(&got).expect("decode the task body");
+    let decoded: SampleTask = serde_json::from_slice(&got).expect("decode the task body");
     assert_eq!(
-        decoded, task,
+        decoded, expected,
         "the round-tripped task row must be identical"
     );
 
@@ -378,8 +474,8 @@ pub fn assert_plane_task_upsert_get_list(store: &dyn Store, ns: &str) {
     assert!(
         listed
             .iter()
-            .filter_map(|b| serde_json::from_slice::<TaskRow>(b).ok())
-            .any(|t| t.task_id == task.task_id),
+            .filter_map(|b| serde_json::from_slice::<SampleTask>(b).ok())
+            .any(|t| t.task_id == task_id),
         "the upserted task must appear in the kind's unfiltered listing"
     );
 }
@@ -391,17 +487,8 @@ pub fn assert_plane_event_chain_is_ordered_by_seq(store: &dyn Store, ns: &str) {
     let parent = format!("{ns}_pchain");
     // Append seq 2 BEFORE seq 1: a backend that returns insertion order rather than `seq` order fails.
     for seq in [2u64, 1u64] {
-        let e = plane_event(&parent, seq);
         store
-            .append_plane_record(&PlaneRecord {
-                kind: "task_event".into(),
-                id: e.task_id.clone(),
-                parent: Some(e.task_id.clone()),
-                seq: e.seq,
-                ts: e.ts,
-                disposition: PlaneDisposition::Active,
-                body: body(&e),
-            })
+            .append_plane_record(&plane_event(&parent, seq))
             .expect("append a task-event plane record");
     }
     let seqs: Vec<u64> = store
@@ -409,7 +496,7 @@ pub fn assert_plane_event_chain_is_ordered_by_seq(store: &dyn Store, ns: &str) {
         .expect("list the task events for the parent")
         .iter()
         .map(|b| {
-            serde_json::from_slice::<TaskEventRow>(b)
+            serde_json::from_slice::<SampleEvent>(b)
                 .expect("decode event")
                 .seq
         })
@@ -424,17 +511,8 @@ pub fn assert_plane_call_parents_enumerated(store: &dyn Store, ns: &str) {
     let p1 = format!("{ns}_prinA");
     let p2 = format!("{ns}_prinB");
     for principal in [&p1, &p2] {
-        let c = plane_call(principal, 1, 10);
         store
-            .append_plane_record(&PlaneRecord {
-                kind: "call".into(),
-                id: c.principal.clone(),
-                parent: Some(c.principal.clone()),
-                seq: c.seq,
-                ts: c.ts,
-                disposition: PlaneDisposition::Active,
-                body: body(&c),
-            })
+            .append_plane_record(&plane_call(principal, 1, 10))
             .expect("append a call plane record");
     }
     let parents = store
@@ -456,17 +534,8 @@ pub fn assert_plane_demotion_upsert_list_delete(store: &dyn Store, ns: &str) {
     let s1 = format!("{ns}_srvA");
     let s2 = format!("{ns}_srvB");
     for server in [&s1, &s2] {
-        let d = plane_demotion(server);
         store
-            .upsert_plane_record(&PlaneRecord {
-                kind: "demotion".into(),
-                id: d.server.clone(),
-                parent: None,
-                seq: 0,
-                ts: d.recorded_at,
-                disposition: PlaneDisposition::Active,
-                body: body(&d),
-            })
+            .upsert_plane_record(&plane_demotion(server))
             .expect("upsert a demotion plane record");
     }
     let servers = |store: &dyn Store| -> Vec<String> {
@@ -474,7 +543,7 @@ pub fn assert_plane_demotion_upsert_list_delete(store: &dyn Store, ns: &str) {
             .list_plane_records("demotion", &PlaneSelector::All)
             .expect("list demotions")
             .iter()
-            .filter_map(|b| serde_json::from_slice::<McpDemotionRow>(b).ok())
+            .filter_map(|b| serde_json::from_slice::<SampleDemotion>(b).ok())
             .map(|d| d.server)
             .collect()
     };

@@ -6,8 +6,17 @@
 //! forwards to the real backend.
 
 use super::super::store::{PlaneStore, PlaneStoreView};
-use busbar_api::{McpDemotionRow, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
 use std::sync::Arc;
+
+/// A throwaway opaque body for the `demotion` kind — this seam names no plane record type, so the
+/// forwarding test stands one up locally to prove the wrapper carries an opaque body through.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct DemoRow {
+    server: String,
+    reason: String,
+    recorded_at: u64,
+}
 
 // ── THE POSITIVE HALF: every plane method is present, at its `Store`-mirrored signature ──────────
 //
@@ -94,7 +103,7 @@ fn compile_time_seam_proof_is_referenced() {
 /// defaults), so it cannot witness forwarding; this can.
 #[derive(Default)]
 struct RecordingStore {
-    demotions: std::sync::Mutex<Vec<McpDemotionRow>>,
+    demotions: std::sync::Mutex<Vec<DemoRow>>,
     redemptions: std::sync::atomic::AtomicUsize,
 }
 
@@ -175,7 +184,7 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // what one plane method persists another reads back. If `PlaneStoreView` did not forward, the
     // demotion would not survive the call and the redemption ledger would not advance.
     let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
-    let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<McpDemotionRow> {
+    let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
         s.list_plane_records(crate::plane::store::KIND_DEMOTION, &PlaneSelector::All)
             .unwrap()
             .iter()
@@ -187,14 +196,20 @@ fn plane_store_view_forwards_to_the_real_backend() {
         "a fresh backend holds no demotions"
     );
     store
-        .upsert_plane_record(
-            &crate::plane::store::demotion_record(&McpDemotionRow {
+        .upsert_plane_record(&PlaneRecord {
+            kind: crate::plane::store::KIND_DEMOTION.to_string(),
+            id: "srv-1".to_string(),
+            parent: None,
+            seq: 0,
+            ts: 100,
+            disposition: PlaneDisposition::Active,
+            body: crate::plane::store::encode(&DemoRow {
                 server: "srv-1".to_string(),
                 reason: "drift".to_string(),
                 recorded_at: 100,
             })
             .unwrap(),
-        )
+        })
         .unwrap();
     let rows = list_demotions(&store);
     assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");

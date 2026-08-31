@@ -766,53 +766,34 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
     }
 
     let s = PreTaskBackend;
-    let task = TaskRow {
-        task_id: "t-1".to_string(),
-        context_id: "ctx-1".to_string(),
-        principal: "key-1".to_string(),
-        direction: "inbound".to_string(),
-        state: "working".to_string(),
-        agent_id: "planner".to_string(),
-        artifact_cursor: 3,
-        push_callback: String::new(),
-        created_at: 10,
-        updated_at: 11,
-    };
-    let event = TaskEventRow {
-        task_id: "t-1".to_string(),
-        seq: 1,
-        ts: 10,
-        kind: "task.submitted".to_string(),
-        context_id: "ctx-1".to_string(),
-        principal: "key-1".to_string(),
-        agent_id: String::new(),
-        state: "submitted".to_string(),
-        request_id: "req-1".to_string(),
-        prev_hash: String::new(),
-        hash: "deadbeef".to_string(),
-    };
+    // OPAQUE bodies: this crate names no plane row type — the record structs live in their plane
+    // crates now. The body is arbitrary bytes the store keeps verbatim; the sidecar columns are what
+    // the defaulted verbs would key on. This test asserts the DEFAULT behaviour (accept, keep
+    // nothing), which is body-agnostic.
+    let task_body = br#"{"task_id":"t-1","state":"working"}"#.to_vec();
+    let event_body = br#"{"task_id":"t-1","seq":1}"#.to_vec();
 
-    // The writes are ACCEPTED — a legacy backend must not fail a task submission.
+    // The writes are ACCEPTED — a legacy backend must not fail a plane-record submission.
     assert!(s
         .upsert_plane_record(&PlaneRecord {
             kind: "task".into(),
-            id: task.task_id.clone(),
+            id: "t-1".into(),
             parent: None,
             seq: 0,
-            ts: task.updated_at,
+            ts: 11,
             disposition: PlaneDisposition::Active,
-            body: serde_json::to_vec(&task).unwrap(),
+            body: task_body,
         })
         .is_ok());
     assert!(s
         .append_plane_record(&PlaneRecord {
             kind: "task_event".into(),
-            id: event.task_id.clone(),
-            parent: Some(event.task_id.clone()),
-            seq: event.seq,
-            ts: event.ts,
+            id: "t-1".into(),
+            parent: Some("t-1".into()),
+            seq: 1,
+            ts: 10,
             disposition: PlaneDisposition::Active,
-            body: serde_json::to_vec(&event).unwrap(),
+            body: event_body,
         })
         .is_ok());
     // And nothing is kept. This is the assertion the durability layer is built on: the only honest
@@ -829,38 +810,28 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
     assert_eq!(s.purge_plane_records_before("task", u64::MAX).unwrap(), 0);
 }
 
-/// The task rows round-trip through serde unchanged. They cross a plugin ABI, so a field whose
-/// serialized name drifts is a field a backend silently stops persisting.
+/// The neutral `PlaneRecord` ENVELOPE round-trips through serde unchanged — the one contract this
+/// crate still owns for durable records now that the concrete plane row structs
+/// live in their plane crates. The plane-specific body is OPAQUE bytes;
+/// what must not drift are the typed sidecar columns (`kind`/`id`/`parent`/`seq`/`ts`/`disposition`)
+/// and the body carried verbatim. The plane crates own the round-trip test for their own row schema.
 #[test]
-fn task_rows_round_trip_through_the_store_seam_encoding() {
-    let task = TaskRow {
-        task_id: "t-1".to_string(),
-        context_id: "ctx-1".to_string(),
-        principal: "key-1".to_string(),
-        direction: "outbound".to_string(),
-        state: "auth-required".to_string(),
-        agent_id: "planner".to_string(),
-        artifact_cursor: 7,
-        push_callback: "https://caller.example/cb".to_string(),
-        created_at: 10,
-        updated_at: 20,
+fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
+    let record = PlaneRecord {
+        kind: "task".into(),
+        id: "t-1".into(),
+        parent: Some("t-1".into()),
+        seq: 7,
+        ts: 20,
+        disposition: PlaneDisposition::Terminal,
+        // An arbitrary opaque plane body — this crate does not interpret it.
+        body: br#"{"anything":"the plane put here","seq":7}"#.to_vec(),
     };
-    let json = serde_json::to_string(&task).unwrap();
-    assert_eq!(serde_json::from_str::<TaskRow>(&json).unwrap(), task);
-    // The wire names are the field names, spelled out here so a rename is a visible diff rather
+    let json = serde_json::to_string(&record).unwrap();
+    assert_eq!(serde_json::from_str::<PlaneRecord>(&json).unwrap(), record);
+    // The wire names are the ENVELOPE field names, spelled out so a rename is a visible diff rather
     // than a silent data loss on the next deploy of an older backend.
-    for field in [
-        "task_id",
-        "context_id",
-        "principal",
-        "direction",
-        "state",
-        "agent_id",
-        "artifact_cursor",
-        "push_callback",
-        "created_at",
-        "updated_at",
-    ] {
+    for field in ["kind", "id", "parent", "seq", "ts", "disposition", "body"] {
         assert!(
             json.contains(field),
             "`{field}` must be on the wire: {json}"

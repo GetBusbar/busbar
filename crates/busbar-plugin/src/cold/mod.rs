@@ -135,7 +135,16 @@ pub mod kind {
 /// that speaks only the named variants can no longer be called, so the engine's `supported_abi`
 /// FLOOR is raised to 3 and an old named-only artifact is REFUSED at load (fail-closed) rather than
 /// answered from a default — a stale plugin fails loud, it never silently drops a durable write.
-pub const ABI_VERSION: u32 = 3;
+///
+/// v3 -> v4 (1.7.0, plane record-type relocation): the four protocol-named durable record structs
+/// (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`) are REMOVED from `busbar-api` and
+/// relocated into their owning plane crates (busbar-mcp / busbar-a2a). The WIRE is unchanged — still
+/// the eight kind-tagged neutral `PlaneRecord` variants carrying opaque bodies — but a plugin built
+/// against the 1.6 typed `busbar-api` contract can no longer be built against 1.7, since the record
+/// types it linked against no longer live in `busbar-api`. That is a real breaking bump on the
+/// source contract, so the engine's `supported_abi` FLOOR is raised to 4 and a stale 1.6 artifact is
+/// REFUSED at load (fail-closed) rather than mis-linking against types that have moved.
+pub const ABI_VERSION: u32 = 4;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -356,8 +365,10 @@ pub enum StoreRequest {
     //
     // Eight KIND-TAGGED variants that SUBSUME the fourteen protocol-named durable ops
     // (put_task/…/redeem_ask_state) the wire once carried — the wire half of the 14→8 collapse in
-    // the 1.6.0 design, now the ONLY durable-plane surface (the named variants are deleted and
-    // `ABI_VERSION` bumped to 3, so an old named-only artifact is refused at load, never mis-called).
+    // the 1.6.0 design, now the ONLY durable-plane surface (the named variants are deleted and the
+    // `ABI_VERSION` floor raised — to 3 in 1.6.0, then to 4 in 1.7.0 when the record types relocated
+    // out of `busbar-api`; see the v3->v4 note — so an old artifact is refused at load, never
+    // mis-called).
     // Every one maps to a DEFAULTED accept-and-keep-nothing trait method, so a backend that keeps no
     // durable rows behaves exactly as the shipped RAM default does.
     //
@@ -448,7 +459,8 @@ pub enum StoreResponse {
     //
     // Four response variants for the eight kind-tagged requests, now the ONLY durable-plane
     // responses (the named `Task`/`Tasks`/`TaskEvents`/`McpCalls`/`McpCallPrincipals`/`McpDemotions`
-    // variants are deleted and `ABI_VERSION` bumped to 3). `GetPlaneRecord`/`ListPlaneRecords`/
+    // variants are deleted and the `ABI_VERSION` floor raised — to 3 in 1.6.0, then to 4 in 1.7.0
+    // for the record-type relocation; see the v3->v4 note). `GetPlaneRecord`/`ListPlaneRecords`/
     // `ListPlaneRecordParents` carry OPAQUE bodies (the store never decodes the protocol row); the
     // write/purge verbs reuse `Unit`/`Purged`, and `RedeemPlaneToken` returns `Redeemed`. Each is its
     // OWN variant rather than folded into a same-shaped sibling (e.g. `PlaneRecordParents` and

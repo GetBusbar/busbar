@@ -16,7 +16,7 @@
 //! the negative one goes red.
 
 use crate::a2a::task::{Direction, Task, TaskState};
-use busbar_api::{TaskEventRow, TaskRow};
+use crate::{TaskEventRow, TaskRow};
 use busbar_core::plane::store::StoreNamedTestExt;
 use busbar_core::plane::taskstore::{Denied, Rehydrated, TaskRegistry, TaskTestHarness};
 use std::collections::BTreeMap;

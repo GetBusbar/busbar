@@ -1254,10 +1254,7 @@ impl busbar_api::Store for ChainSink {
 }
 
 impl ChainSink {
-    fn list_task_events(
-        &self,
-        task_id: &str,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::TaskEventRow>> {
+    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<crate::TaskEventRow>> {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())

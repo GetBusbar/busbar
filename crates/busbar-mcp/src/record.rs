@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE MCP PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
+//! extraction). The neutral `busbar_api::Store` contract speaks ONLY the opaque
+//! `busbar_api::PlaneRecord` envelope; a plane owns its concrete row schema and serializes it into
+//! (and back out of) that envelope's opaque `body` with `serde_json` — byte-for-byte the same the
+//! store plugins persist it with. The neutral crates name none of these types.
+
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+
+/// The `call` kind — the MCP per-call log record's neutral `PlaneRecord.kind` tag.
+pub const KIND_CALL: &str = "call";
+/// The `demotion` kind — the MCP upstream-demotion record's neutral `PlaneRecord.kind` tag.
+pub const KIND_DEMOTION: &str = "demotion";
+
+/// One MCP TOOL-CALL record, as it crosses the store seam for DURABLE persistence — the per-call
+/// evidence the audit claim rests on. The chain is scoped to the PRINCIPAL. A store persists these
+/// verbatim and returns them verbatim: the digest is computed and verified engine-side, and a backend
+/// never interprets or recomputes it. Plain data, never a credential — arguments and results are
+/// deliberately ABSENT.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpCallRecord {
+    /// The authenticated caller this chain belongs to. THE CHAIN SCOPE.
+    pub principal: String,
+    /// Monotonic sequence number, 1-based WITHIN `principal`.
+    pub seq: u64,
+    /// Unix seconds the call was attempted.
+    pub ts: u64,
+    /// The registered MCP server id the call resolved to, or empty when it resolved to none.
+    pub server: String,
+    /// `{server}_{tool}` — the namespaced routing key exactly as the call named it.
+    pub tool: String,
+    /// Stable outcome token: `dispatched` (the call went out) | `refused` (it did not).
+    pub outcome: String,
+    /// The reason token for this outcome, or empty. Never free text.
+    pub reason: String,
+    /// The tool digest the call was admitted against, or empty on a refusal that never reached one.
+    pub tool_digest: String,
+    /// The catalogue pin generation the call was resolved under.
+    pub pin_generation: u64,
+    /// The request-spine join key. EXCLUDED from the digest.
+    pub request_id: String,
+    /// The preceding record's `hash` for this principal (empty for the first of a chain).
+    pub prev_hash: String,
+    /// The tamper-evidence digest over this record's chained fields (computed + verified engine-side).
+    pub hash: String,
+}
+
+impl McpCallRecord {
+    /// Serialize this record into the opaque `call` [`PlaneRecord`] envelope. `serde_json`, matching
+    /// the store plugins' decode, so the bytes round-trip identically across the plugin ABI. The
+    /// `call` kind hangs off its principal via `parent` and is ordered by the record's own `seq`.
+    pub fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+        Ok(PlaneRecord {
+            kind: KIND_CALL.to_string(),
+            id: self.principal.clone(),
+            parent: Some(self.principal.clone()),
+            seq: self.seq,
+            ts: self.ts,
+            // The `call` kind's retention drops ALL rows older than a cutoff, so disposition is
+            // immaterial to the purge and is left `Active`.
+            disposition: PlaneDisposition::Active,
+            body: encode(self)?,
+        })
+    }
+
+    /// The list selector that reads one principal's `call` chain back, oldest-first.
+    pub fn parent_selector(principal: &str) -> PlaneSelector {
+        PlaneSelector::Parent(principal.to_string())
+    }
+
+    /// Reconstruct a record from an opaque `call` body — the inverse of [`Self::to_plane_record`].
+    pub fn from_body(body: &[u8]) -> StoreResult<Self> {
+        decode(body)
+    }
+}
+
+/// ONE RECORDED DEMOTION of an upstream MCP server, as it crosses the store seam. Written when a
+/// server is demoted, cleared when a later observation agrees with the approval again, and read back
+/// at boot so the demotion is in force before the first request is served. Keyed by `server`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpDemotionRow {
+    /// The registered upstream's local id — the row's primary key.
+    pub server: String,
+    /// The operator-facing word for why it was demoted. Never free-form caller text.
+    pub reason: String,
+    /// Unix seconds the demotion was recorded.
+    pub recorded_at: u64,
+}
+
+impl McpDemotionRow {
+    /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope (kind `demotion`),
+    /// keyed by its server. Demotions are never purged by age, so the disposition is left `Active`.
+    pub fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+        Ok(PlaneRecord {
+            kind: KIND_DEMOTION.to_string(),
+            id: self.server.clone(),
+            parent: None,
+            seq: 0,
+            ts: self.recorded_at,
+            disposition: PlaneDisposition::Active,
+            body: encode(self)?,
+        })
+    }
+
+    /// Reconstruct a row from an opaque `demotion` body — the inverse of [`Self::to_plane_record`].
+    pub fn from_body(body: &[u8]) -> StoreResult<Self> {
+        decode(body)
+    }
+}
+
+/// Serialize a typed plane row into an opaque `PlaneRecord::body`. `serde_json`.
+fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+    serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
+}
+
+/// Decode an opaque `PlaneRecord::body` back into its typed plane row — the inverse of [`encode`].
+fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
+    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_call_record_round_trips_through_the_plane_record_envelope() {
+        let rec = McpCallRecord {
+            principal: "key-1".into(),
+            seq: 3,
+            ts: 1000,
+            server: "fs".into(),
+            tool: "fs_read".into(),
+            outcome: "dispatched".into(),
+            reason: String::new(),
+            tool_digest: "sha256:aaa".into(),
+            pin_generation: 7,
+            request_id: "req-1".into(),
+            prev_hash: "prev".into(),
+            hash: "deadbeef".into(),
+        };
+        let env = rec.to_plane_record().unwrap();
+        assert_eq!(env.kind, KIND_CALL);
+        assert_eq!(env.id, "key-1");
+        assert_eq!(env.parent.as_deref(), Some("key-1"));
+        assert_eq!(env.seq, 3);
+        assert_eq!(McpCallRecord::from_body(&env.body).unwrap(), rec);
+        // Every field is on the wire, so a rename is a visible diff rather than a silent data loss.
+        let json = String::from_utf8(env.body).unwrap();
+        for field in [
+            "principal",
+            "seq",
+            "ts",
+            "server",
+            "tool",
+            "outcome",
+            "reason",
+            "tool_digest",
+            "pin_generation",
+            "request_id",
+            "prev_hash",
+            "hash",
+        ] {
+            assert!(
+                json.contains(field),
+                "`{field}` must be on the wire: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_demotion_row_round_trips_through_the_plane_record_envelope() {
+        let row = McpDemotionRow {
+            server: "fs".into(),
+            reason: "drift".into(),
+            recorded_at: 42,
+        };
+        let env = row.to_plane_record().unwrap();
+        assert_eq!(env.kind, KIND_DEMOTION);
+        assert_eq!(env.id, "fs");
+        assert_eq!(env.parent, None);
+        assert_eq!(env.ts, 42);
+        assert_eq!(McpDemotionRow::from_body(&env.body).unwrap(), row);
+    }
+}

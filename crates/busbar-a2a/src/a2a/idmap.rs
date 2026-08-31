@@ -28,7 +28,7 @@
 //! ## WHAT IS NOT BUILT, and it is a real limitation
 //!
 //! **This mapping is PROCESS-LOCAL and does not survive a restart.** The durable place for it is a
-//! column on the task row, and adding one is a change to `busbar_api::TaskRow` and therefore to the
+//! column on the task row, and adding one is a change to `crate::TaskRow` and therefore to the
 //! store plugin ABI every backing store implements — which is not a change to make as a side effect
 //! of a conformance fix. So a `GetTask` for a task whose relay happened in a previous process
 //! forwards the busbar id unchanged and the backend answers `TaskNotFound`, exactly as it does today

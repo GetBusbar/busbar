@@ -194,7 +194,7 @@ fn pins() -> &'static Mutex<HashMap<String, PinnedCallback>> {
 /// the durable task row — would write a caller's plaintext secret into whichever store an operator
 /// configured, where it would be readable by everything with database access, replicated to every
 /// standby and captured by every backup, for a value whose only use is one outbound header. The
-/// store seam (`busbar_api::TaskRow`) has no notion of a secret and no encryption, so there is no
+/// store seam (`crate::TaskRow`) has no notion of a secret and no encryption, so there is no
 /// spelling of "persist it" that is not "persist it in the clear".
 ///
 /// The consequence is stated rather than discovered: **a credential does not survive a restart.**
