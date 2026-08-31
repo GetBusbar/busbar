@@ -313,14 +313,7 @@ impl ProtocolReader for OpenAiReader {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
-                                    let arguments = func
-                                        .get("arguments")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("{}");
-                                    let input = busbar_substrate::json::parse_str(arguments)
-                                        .unwrap_or(serde_json::Value::String(
-                                            arguments.to_string(),
-                                        ));
+                                    let input = tool_input_from_arguments(func.get("arguments"));
 
                                     msg_content.push(crate::ir::IrBlock::ToolUse {
                                         id,
@@ -902,6 +895,27 @@ impl ProtocolReader for OpenAiReader {
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
                         .and_then(|v| v.as_u64()),
+                    // Align the streaming usage sub-buckets with the buffered path: the trailing
+                    // `include_usage` chunk carries the identical `usage` object, so the audio /
+                    // predicted-outputs attribution slices are present on the stream too. Reading only
+                    // `reasoning_tokens` here made the same request report these buckets at
+                    // `stream:false` and absent at `stream:true` — the streaming twin of the gap.
+                    input_audio_tokens: u
+                        .get("prompt_tokens_details")
+                        .and_then(|d| d.get("audio_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    output_audio_tokens: u
+                        .get("completion_tokens_details")
+                        .and_then(|d| d.get("audio_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    accepted_prediction_tokens: u
+                        .get("completion_tokens_details")
+                        .and_then(|d| d.get("accepted_prediction_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    rejected_prediction_tokens: u
+                        .get("completion_tokens_details")
+                        .and_then(|d| d.get("rejected_prediction_tokens"))
+                        .and_then(|v| v.as_u64()),
                     ..Default::default()
                 },
             }
@@ -1083,8 +1097,17 @@ impl ProtocolReader for OpenAiReader {
             } else if let Some(arr) = content_val.as_array() {
                 for block_val in arr {
                     let block = read_openai_block(block_val)?;
-                    // Only include text blocks from array content (OpenAI image_url not supported in response)
-                    if !matches!(block, crate::ir::IrBlock::Image { .. }) {
+                    // An image part in a RESPONSE message array has no Chat Completions response
+                    // representation (the completion `message.content` carries no image output), so it
+                    // is dropped — but OBSERVABLY: `warn!` instead of the prior silent skip, so a
+                    // dropped image part in a model's array-content response is visible in logs.
+                    if matches!(block, crate::ir::IrBlock::Image { .. }) {
+                        tracing::warn!(
+                            "dropping an image content part from an OpenAI Chat response message: the \
+                             completion response shape carries no image output; the block is NOT \
+                             emitted"
+                        );
+                    } else {
                         content.push(block);
                     }
                 }
@@ -1136,12 +1159,7 @@ impl ProtocolReader for OpenAiReader {
                     } else {
                         raw_id.to_string()
                     };
-                    let arguments = func
-                        .get("arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("{}");
-                    let input = busbar_substrate::json::parse_str(arguments)
-                        .unwrap_or(serde_json::Value::String(arguments.to_string()));
+                    let input = tool_input_from_arguments(func.get("arguments"));
 
                     content.push(crate::ir::IrBlock::ToolUse {
                         id,
@@ -1277,4 +1295,19 @@ fn synth_response_tool_call_id(ordinal: usize, name: &str) -> String {
     ordinal.hash(&mut hasher);
     name.hash(&mut hasher);
     format!("call_{:016x}", hasher.finish())
+}
+
+/// Decode a tool-call `arguments` field into the IR tool-input `Value`. OpenAI's native shape is a
+/// JSON STRING (parsed to a value; a malformed string is preserved verbatim as a `String` rather than
+/// dropped, so no arguments are lost). But some OpenAI-compatible backends emit `arguments` as an
+/// already-parsed JSON OBJECT (or other non-string value); the prior `as_str().unwrap_or("{}")`
+/// COLLAPSED that to an empty object, silently discarding the caller's tool arguments. Use a non-string
+/// value directly instead. Absent `arguments` yields `{}` (a no-arg call).
+fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value {
+    match v {
+        Some(serde_json::Value::String(s)) => busbar_substrate::json::parse_str(s)
+            .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
+        Some(other) => other.clone(),
+        None => serde_json::json!({}),
+    }
 }

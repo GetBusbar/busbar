@@ -5271,3 +5271,106 @@ fn openai_write_drops_thinking_observably() {
         cap.messages()
     );
 }
+
+// Chat#8(a): a response tool_call whose `arguments` is an already-parsed OBJECT (some
+// OpenAI-compatible backends do this) must be carried verbatim, NOT collapsed to `{}`.
+#[test]
+fn response_object_tool_arguments_preserved() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-x", "object": OBJ_COMPLETION, "created": 1u64, "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "get_weather", "arguments": {"city": "SF", "unit": "c"}}}
+            ]},
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let input = ir
+        .content
+        .iter()
+        .find_map(|b| match b {
+            IrBlock::ToolUse { input, .. } => Some(input.clone()),
+            _ => None,
+        })
+        .expect("a ToolUse block");
+    assert_eq!(input.get("city").and_then(|v| v.as_str()), Some("SF"));
+    assert_eq!(input.get("unit").and_then(|v| v.as_str()), Some("c"));
+}
+
+// Chat#8(c): an image content part in a RESPONSE message array has no completion-response shape and is
+// dropped — but OBSERVABLY (a `warn!`), not silently.
+#[test]
+fn response_array_content_image_drop_warns() {
+    use busbar_core::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "id": "chatcmpl-x", "object": OBJ_COMPLETION, "created": 1u64, "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "here you go"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+            ]},
+            "finish_reason": FINISH_STOP
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+    });
+    let cap = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(cap.clone());
+    let ir = tracing::subscriber::with_default(sub, || {
+        OpenAiReader.read_response(&body).expect("read_response")
+    });
+    // The text survives; the image did not, and the drop warned.
+    assert!(ir.content.iter().any(|b| matches!(b, IrBlock::Text { .. })));
+    assert!(!ir
+        .content
+        .iter()
+        .any(|b| matches!(b, IrBlock::Image { .. })));
+    assert!(
+        cap.contains("image"),
+        "dropping an image response part must warn: {:?}",
+        cap.messages()
+    );
+}
+
+// Chat#8(b): the streaming usage sub-buckets must match the buffered path — a trailing include_usage
+// chunk carries the audio / predicted-outputs attribution slices, not just reasoning_tokens.
+#[test]
+fn stream_usage_subbuckets_match_buffered() {
+    let reader = OpenAiReader;
+    let mut st = crate::ir::StreamDecodeState::default();
+    // A trailing usage-only chunk (empty choices) carrying the full details.
+    let events = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100, "completion_tokens": 50,
+                "prompt_tokens_details": {"audio_tokens": 7},
+                "completion_tokens_details": {
+                    "reasoning_tokens": 11, "audio_tokens": 3,
+                    "accepted_prediction_tokens": 5, "rejected_prediction_tokens": 2
+                }
+            }
+        }),
+        &mut st,
+    );
+    let detail = events
+        .iter()
+        .find_map(|e| match e {
+            IrStreamEvent::MessageDelta { usage, .. } => Some(usage.detail.clone()),
+            _ => None,
+        })
+        .expect("a trailing MessageDelta carrying usage");
+    assert_eq!(detail.reasoning_tokens, Some(11));
+    assert_eq!(detail.input_audio_tokens, Some(7));
+    assert_eq!(detail.output_audio_tokens, Some(3));
+    assert_eq!(detail.accepted_prediction_tokens, Some(5));
+    assert_eq!(detail.rejected_prediction_tokens, Some(2));
+}

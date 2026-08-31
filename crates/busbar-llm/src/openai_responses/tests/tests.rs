@@ -7132,3 +7132,30 @@ fn response_blank_call_id_is_synthesized() {
     }
     assert_ne!(ids[0], ids[1], "distinct tool calls must get distinct ids");
 }
+
+// Chat#8(a): a Responses function_call whose `arguments` is an already-parsed OBJECT must be carried
+// verbatim, NOT collapsed to `{}`.
+#[test]
+fn response_object_function_arguments_preserved() {
+    let json = serde_json::json!({
+        "id": "resp_x",
+        "object": OBJ_RESPONSE,
+        "status": STATUS_COMPLETED,
+        "output": [
+            {"type": ITEM_TYPE_FUNCTION_CALL, "call_id": "fc_1", "name": "get_weather",
+             "arguments": {"city": "SF", "unit": "c"}}
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    });
+    let resp = ResponsesReader.read_response(&json).expect("read_response");
+    let input = resp
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { input, .. } => Some(input.clone()),
+            _ => None,
+        })
+        .expect("a ToolUse block");
+    assert_eq!(input.get("city").and_then(|v| v.as_str()), Some("SF"));
+    assert_eq!(input.get("unit").and_then(|v| v.as_str()), Some("c"));
+}

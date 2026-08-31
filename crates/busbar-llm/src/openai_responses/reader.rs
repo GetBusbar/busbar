@@ -225,17 +225,11 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let arguments = item
-                                .get("arguments")
-                                .and_then(|a| a.as_str())
-                                .unwrap_or("{}");
-                            // On malformed argument JSON, preserve the raw string rather than
-                            // discarding the caller's tool arguments to Null (mirrors the OpenAI
-                            // reader). Losing arguments entirely is a lossy cross-protocol bug.
-                            let input = busbar_substrate::json::parse_str(arguments)
-                                .unwrap_or_else(|_| {
-                                    serde_json::Value::String(arguments.to_string())
-                                });
+                            // `arguments` is natively a JSON string (parsed to a value; a malformed
+                            // string is preserved verbatim rather than dropped). A non-string
+                            // (already-parsed object) is used directly instead of being collapsed to
+                            // `{}` — losing the caller's tool arguments is a lossy cross-protocol bug.
+                            let input = tool_input_from_arguments(item.get("arguments"));
 
                             messages.push(crate::ir::IrMessage {
                                 role: crate::ir::IrRole::Assistant,
@@ -1401,14 +1395,10 @@ impl ProtocolReader for ResponsesReader {
                         } else {
                             raw_call_id.to_string()
                         };
-                        let arguments = item
-                            .get("arguments")
-                            .and_then(|a| a.as_str())
-                            .unwrap_or("{}");
-                        // Preserve the raw string on malformed JSON rather than dropping the tool
-                        // arguments to Null (mirrors the OpenAI reader; avoids lossy translation).
-                        let input = busbar_substrate::json::parse_str(arguments)
-                            .unwrap_or_else(|_| serde_json::Value::String(arguments.to_string()));
+                        // Native `arguments` is a JSON string (malformed strings preserved verbatim);
+                        // a non-string (already-parsed object) is used directly rather than collapsed
+                        // to `{}`, avoiding a lossy drop of the caller's tool arguments.
+                        let input = tool_input_from_arguments(item.get("arguments"));
 
                         content.push(crate::ir::IrBlock::ToolUse {
                             id: call_id,
@@ -1618,4 +1608,17 @@ fn synth_response_tool_call_id(ordinal: usize, name: &str) -> String {
     ordinal.hash(&mut hasher);
     name.hash(&mut hasher);
     format!("call_{:016x}", hasher.finish())
+}
+
+/// Decode a Responses function-call `arguments` field into the IR tool-input `Value`. Native shape is
+/// a JSON STRING (parsed; a malformed string preserved verbatim rather than dropped). A non-string
+/// (already-parsed object) is used directly instead of being collapsed to an empty object, so a
+/// backend that emits object-form arguments does not silently lose them. Absent yields `{}`.
+fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value {
+    match v {
+        Some(serde_json::Value::String(s)) => busbar_substrate::json::parse_str(s)
+            .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
+        Some(other) => other.clone(),
+        None => serde_json::json!({}),
+    }
 }
