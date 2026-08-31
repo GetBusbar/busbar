@@ -397,19 +397,22 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
 note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
 # ── mcp-c: THE MCP PLANE'S CONFIG SURFACE LEFT WITH IT ──────────────────────────────────────────
-# `plane-mcp` off compiles `busbar-mcp/src/mcp` out, so `tools:`/`mcp:` name a plane this
-# build does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
-# analogue of the protocol registry refusing a deleted dialect. This is the leg that went RED before
-# D3: the plane was an unconditional core built-in, so a `tools:` config validated clean with
-# `plane-mcp` off.
+# `plane-mcp` off compiles `busbar-mcp/src/mcp` out, so a `tools:` section names a plane this
+# build does not carry. `resolve` REFUSES such a config, naming the SECTION and pointing at the
+# compiled-out plane's feature (rebuild with it, or remove the block) — the config analogue of the
+# protocol registry refusing a deleted dialect. The neutral core cannot name the plane itself: a
+# plane token in a neutral crate is exactly what the plane-purity gate forbids, so the refusal is
+# actionable by section, not by plane name. This is the leg that went RED before D3: the plane was an
+# unconditional core built-in, so a `tools:` config validated clean with `plane-mcp` off.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\ntools:\n  s:\n    url: "https://example.com/mcp"\n' > "$FIX/config.yaml"
 mk_no_providers
 if run_busbar "$MCP_DELETED_BIN" --validate >"$FIX/tools-validate.out" 2>&1; then
   cat "$FIX/tools-validate.out"; die "the mcp-deleted binary ACCEPTED a tools: config — the MCP plane's config surface did not leave with it"
 fi
-grep -qiE "without the MCP plane|plane-mcp" "$FIX/tools-validate.out" \
-  || { cat "$FIX/tools-validate.out"; die "the tools: refusal must NAME the compiled-out MCP plane"; }
-note "mcp-c config: a tools: section is REFUSED, naming the compiled-out MCP plane"
+grep -qiE "tools:" "$FIX/tools-validate.out" \
+  && grep -qiE "compiled without the plane that owns it|rebuild with that plane.s feature" "$FIX/tools-validate.out" \
+  || { cat "$FIX/tools-validate.out"; die "the tools: refusal must name the section AND point at the compiled-out plane's feature (neutral core cannot name the plane — plane-purity)"; }
+note "mcp-c config: a tools: section is REFUSED, naming the section and the compiled-out plane's feature"
 
 # and it BOOTS and SERVES (R-D: fewer protocols is a valid busbar).
 PORT=$(free_port) || die "could not find a free port pair for the mcp-deleted boot"
@@ -522,17 +525,21 @@ run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/a2a-tools-validate.out" 2>&1 \
 note "a2a-b MCP-survives: a tools: config validates clean with plane-a2a off"
 
 # ── a2a-c: THE A2A PLANE'S CONFIG SURFACE LEFT WITH IT ───────────────────────────────────────────
-# `plane-a2a` off compiles `busbar-a2a/src/a2a` out, so `agents:` names a plane this build
-# does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
-# analogue of the protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c.
+# `plane-a2a` off compiles `busbar-a2a/src/a2a` out, so an `agents:` section names a plane this
+# build does not carry. `resolve` REFUSES such a config, naming the SECTION and pointing at the
+# compiled-out plane's feature (rebuild with it, or remove the block) — the config analogue of the
+# protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c. The neutral core
+# cannot name the plane itself: a plane token in a neutral crate is what the plane-purity gate
+# forbids, so the refusal is actionable by section, not by plane name.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\nagents:\n  a:\n    url: "https://example.com/a2a"\n' > "$FIX/config.yaml"
 mk_no_providers
 if run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/agents-validate.out" 2>&1; then
   cat "$FIX/agents-validate.out"; die "the a2a-deleted binary ACCEPTED an agents: config — the A2A plane's config surface did not leave with it"
 fi
-grep -qiE "without the A2A plane|plane-a2a" "$FIX/agents-validate.out" \
-  || { cat "$FIX/agents-validate.out"; die "the agents: refusal must NAME the compiled-out A2A plane"; }
-note "a2a-c config: an agents: section is REFUSED, naming the compiled-out A2A plane"
+grep -qiE "agents:" "$FIX/agents-validate.out" \
+  && grep -qiE "compiled without the plane that owns it|rebuild with that plane.s feature" "$FIX/agents-validate.out" \
+  || { cat "$FIX/agents-validate.out"; die "the agents: refusal must name the section AND point at the compiled-out plane's feature (neutral core cannot name the plane — plane-purity)"; }
+note "a2a-c config: an agents: section is REFUSED, naming the section and the compiled-out plane's feature"
 
 # and it BOOTS and SERVES (R-D: fewer planes is a valid busbar).
 PORT=$(free_port) || die "could not find a free port pair for the a2a-deleted boot"
@@ -615,16 +622,17 @@ MCP_A2AON_BIN="$MCP_A2AON_TARGET/debug/busbar"
 note "mcp-d build: ok, clean under -D warnings ($MCP_A2AON_BIN)"
 
 # MCP's config surface left with the plane: a `tools:` section names a plane this build does not
-# carry, so `resolve` REFUSES it, naming the compiled-out MCP plane (the mcp-c refusal, on the leg
-# where A2A is the survivor rather than the casualty).
+# carry, so `resolve` REFUSES it, naming the section and pointing at the compiled-out plane's feature
+# (the mcp-c refusal, on the leg where A2A is the survivor rather than the casualty).
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\ntools:\n  s:\n    url: "https://example.com/mcp"\n    pin:\n      mechanism: unpinned\n' > "$FIX/config.yaml"
 mk_no_providers
 if run_busbar "$MCP_A2AON_BIN" --validate >"$FIX/mcp-d-tools.out" 2>&1; then
   cat "$FIX/mcp-d-tools.out"; die "the mcp-d binary ACCEPTED a tools: config — the MCP plane's config surface did not leave with it"
 fi
-grep -qiE "without the MCP plane|plane-mcp" "$FIX/mcp-d-tools.out" \
-  || { cat "$FIX/mcp-d-tools.out"; die "the mcp-d tools: refusal must NAME the compiled-out MCP plane"; }
-note "mcp-d config: a tools: section is REFUSED, naming the compiled-out MCP plane (A2A survives)"
+grep -qiE "tools:" "$FIX/mcp-d-tools.out" \
+  && grep -qiE "compiled without the plane that owns it|rebuild with that plane.s feature" "$FIX/mcp-d-tools.out" \
+  || { cat "$FIX/mcp-d-tools.out"; die "the mcp-d tools: refusal must name the section AND point at the compiled-out plane's feature (neutral core cannot name the plane — plane-purity)"; }
+note "mcp-d config: a tools: section is REFUSED, naming the section and the compiled-out plane's feature (A2A survives)"
 
 # A2A's config surface SURVIVES: an `agents:` section validates clean, because plane-a2a is ON.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' > "$FIX/config.yaml"
