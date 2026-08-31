@@ -423,15 +423,29 @@ fn read_str(bytes: &[u8], i: &mut usize, n: usize) -> Option<String> {
     Some(String::from_utf8_lossy(slice).into_owned())
 }
 
-/// INJECT the resolved credential into `spec.headers`, host-side. The plane named the credential by an
-/// opaque `credential_ref` and its PLACEMENT (header name + auth-scheme prefix) as neutral data; the
-/// host resolves the ref to the plaintext it OWNS (see [`super::creds`]) and appends
-/// `{header_name}: {scheme}{secret}`. Nothing happens when the plane named no credential, no header,
-/// or the ref is unknown/expired (fail-closed — a stale ref injects nothing rather than a wrong token).
+/// The outcome of [`inject_credential`]: the credential was placed, there was nothing to inject, or the
+/// hop must be REFUSED because a named credential could not be resolved for THIS destination.
+enum CredInjection {
+    /// The resolved credential was appended to `spec.headers` (or the plane named none / no placement).
+    Done,
+    /// A `credential_ref` was named with a placement header, but the host could not resolve it for this
+    /// destination — unknown, expired, or BOUND TO A DIFFERENT DESTINATION (FFI-F5). The caller REFUSES
+    /// the hop rather than send it unauthenticated (or, worse, to a host the credential was not for).
+    Refused,
+}
+
+/// INJECT the resolved credential into `spec.headers`, host-side, for a hop to `destination`. The plane
+/// named the credential by an opaque `credential_ref` and its PLACEMENT (header name + auth-scheme
+/// prefix) as neutral data; the host resolves the ref to the plaintext it OWNS (see [`super::creds`])
+/// — ONLY when the ref is bound to `destination` (FFI-F5) — and appends `{header_name}: {scheme}{secret}`.
 /// The plaintext is read HERE and never crosses back to the plane.
-fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
+///
+/// Returns [`CredInjection::Refused`] when a `credential_ref` + placement header were named but the ref
+/// does not resolve for `destination` (unknown / expired / destination-mismatch): a named-but-unresolved
+/// credential fails the hop CLOSED rather than leaking or silently downgrading to unauthenticated.
+fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> CredInjection {
     if d.credential_ref == 0 {
-        return;
+        return CredInjection::Done; // the plane named no credential — nothing to inject.
     }
     let header_name = match (
         read_sized_field!(d, EgressDesc, cred_header_ptr),
@@ -441,7 +455,7 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
         (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe {
             borrowed_string(ptr, len)
         },
-        _ => return, // no placement header → nothing to inject the credential into.
+        _ => return CredInjection::Done, // no placement header → nothing to inject the credential into.
     };
     let scheme = match (
         read_sized_field!(d, EgressDesc, cred_scheme_ptr),
@@ -454,11 +468,13 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
         _ => String::new(),
     };
     let now = crate::store::now_ms() / 1_000;
-    let Some(secret) = super::creds::resolve(d.credential_ref, now) else {
-        return; // unknown / expired ref → inject nothing (fail-closed).
+    let Some(secret) = super::creds::resolve(d.credential_ref, now, destination) else {
+        // unknown / expired / DESTINATION-MISMATCH ref → refuse the hop (fail-closed by denial).
+        return CredInjection::Refused;
     };
     let value = format!("{scheme}{}", String::from_utf8_lossy(&secret));
     spec.headers.push((header_name, value));
+    CredInjection::Done
 }
 
 /// Read a borrowed `(ptr, len)` byte range into an owned lossy-UTF-8 `String`.
@@ -493,15 +509,22 @@ pub(crate) fn egress_open(
         let d = unsafe { &*desc };
 
         match d.kind {
-            EgressKind::Http => open_http(state.scope, d, out),
+            // FFI-F2: the plane's POD `allowlist_scope` carries NO authority over this untrusted seam —
+            // a plugin plane may not self-grant private/plaintext egress. The host authors that
+            // decision, and no operator config wires a per-plane egress scope over the FFI seam today,
+            // so the effective scope is `0` (default-deny): a plane asking for a private/loopback or
+            // plaintext hop is REFUSED by the guard. Public HTTPS (which needs no privilege) still opens.
+            EgressKind::Http => open_http(state.scope, d, 0, out),
             // Phase 2: a governed RAW duplex byte channel. It SHARES the subprocess pipe shape
             // (`pipe_read`/`pipe_write` keyed by a `PipeId`); only the channel differs — a pinned
             // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
             // SPKI, mTLS, breaker, meter); joining it is append-only (no ABI change). Refused honestly.
             EgressKind::RawConn => StatusClass::Unsupported,
-            // A governed child process, its stdin/stdout the duplex `PipeId` — spawned under the HOST
-            // command allowlist. See [`super::pipe`]; the plane frames on top of the raw byte channel.
-            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, out),
+            // A governed child process, its stdin/stdout the duplex `PipeId` — spawned ONLY under the
+            // HOST program allowlist. FFI-F3: no operator config wires a subprocess program allowlist
+            // over the FFI seam today, so the host authorizes NO program (`&[]`) and every plane-driven
+            // subprocess open is REFUSED at the allowlist. See [`super::pipe`].
+            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, &[], out),
         }
     }))
     .unwrap_or(StatusClass::Fault)
@@ -515,6 +538,7 @@ pub(crate) fn egress_open(
 fn open_http(
     scope: &DispatchScope,
     d: &EgressDesc,
+    allow_scope: u32,
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
     // The borrowed target URL bytes.
@@ -531,7 +555,11 @@ fn open_http(
     // surfaced (separately from the cause) if the hop fails.
     let fault_url = url.clone();
 
-    let policy = guard_policy(d.allowlist_scope);
+    // The privilege scope this hop is JUDGED against is HOST authority (`allow_scope`), NOT the plane's
+    // POD word: the FFI vtable entry passes `0` (a plane may not self-grant private/plaintext — FFI-F2),
+    // while the hostless in-core entry passes the CORE-authored `d.allowlist_scope`. `guard_policy`
+    // relaxes only the private/plaintext arms; cloud-metadata stays refused whatever the scope.
+    let policy = guard_policy(allow_scope);
 
     // The per-hop deadline the plane named (`0` ⇒ the host's default ceiling). Applied to BOTH the
     // request and the connect-head wait below, so a plane's own card/relay/stream/operator ceiling is
@@ -558,19 +586,33 @@ fn open_http(
         }
     };
 
-    // DESIGN A: the plane's ALREADY-JUDGED pinned address. When present, the host connects to THIS
-    // address and does its OWN resolution NOWHERE — reproducing a plane that resolves-then-pins
-    // plane-side and hands the survivor to `transport.get(url, addr)` byte-for-byte (the a2a card-fetch/
-    // relay posture): zero host lookups, so a plane's "no second lookup" guarantee holds, and the
-    // scheme/host judgement stays the plane's (it already ran) rather than being re-applied here. When
-    // absent (`kind == 0`), the host resolves-then-pins and judges the scheme itself, exactly as before.
+    // THE SCHEME JUDGEMENT runs UNCONDITIONALLY — a plane-supplied pinned address does NOT let a hop
+    // skip it (FFI-F1). A `http://` downgrade is refused unless the HOST scope admits plaintext.
+    if let Err(refusal) = crate::net_guard::judge_scheme(&url, https, policy) {
+        stash_fault(
+            scope,
+            EgressFailClass::Refused,
+            0,
+            refusal.to_string(),
+            &fault_url,
+        );
+        return StatusClass::Refused;
+    }
+
+    // DESIGN A: the plane may hand a PINNED address so the host does its OWN resolution NOWHERE
+    // (reproducing a plane that resolves-then-pins plane-side — the a2a card-fetch/relay posture, zero
+    // host lookups, so the "no second lookup" DNS-rebind guarantee holds). But the pin gets NO TRUST:
+    // FFI-F1 runs the SAME host-side address judgement (`judge_address` — cloud-metadata refused
+    // unconditionally, private/internal refused unless the HOST scope admits it) against the
+    // plane-supplied address BEFORE connecting, exactly as the resolve-then-pin path judges every
+    // resolved address. A plane can no longer pin 169.254.169.254 (or a 10.x internal) past the guard.
     let pinned: Option<std::net::SocketAddr> = {
         let kind = read_sized_field!(d, EgressDesc, resolved_addr_kind).unwrap_or(0);
         let bytes = read_sized_field!(d, EgressDesc, resolved_addr).unwrap_or([0u8; 16]);
         ip_from_resolved(kind, bytes).map(|ip| std::net::SocketAddr::new(ip, port))
     };
-    if pinned.is_none() {
-        if let Err(refusal) = crate::net_guard::judge_scheme(&url, https, policy) {
+    if let Some(addr) = pinned {
+        if let Err(refusal) = crate::net_guard::judge_address(&host_name, addr.ip(), policy) {
             stash_fault(
                 scope,
                 EgressFailClass::Refused,
@@ -607,7 +649,19 @@ fn open_http(
     // is read HERE, never off a plane POD. The sized-struct guard means a sender that predates the
     // tail leaves these null → a bodyless GET with no injected credential (the pre-enrichment shape).
     let mut spec = build_req_spec(d);
-    inject_credential(d, &mut spec);
+    // FFI-F5: the credential is injected ONLY when its mint is bound to THIS hop's destination host.
+    // A named-but-unbound (or unknown/expired) credential ref refuses the hop rather than leak a
+    // provider secret to a plane-chosen host or silently send it unauthenticated.
+    if let CredInjection::Refused = inject_credential(d, &mut spec, &host_name) {
+        stash_fault(
+            scope,
+            EgressFailClass::Refused,
+            0,
+            "the named credential is not resolvable for this destination".to_string(),
+            &fault_url,
+        );
+        return StatusClass::Refused;
+    }
 
     // The two OPAQUE refs travel beside their resolutions: they are the identity/anchor halves of
     // the host client-pool key (two registrations with different identities against one address
@@ -1261,7 +1315,10 @@ pub(crate) fn egress_open_scoped(
         // SAFETY: a non-null `desc` is a live, initialized `EgressDesc` for the call (ABI).
         let d = unsafe { &*desc };
         match d.kind {
-            EgressKind::Http => open_http(scope, d, out),
+            // The hostless entry's `EgressDesc` is CORE-AUTHORED (built by `crate::egress::seam` from a
+            // host-side `HopSpec`), so its `allowlist_scope` IS host authority — passed through as the
+            // judged scope. This is the trusted twin of the FFI slot's `0` (see `egress_open`).
+            EgressKind::Http => open_http(scope, d, d.allowlist_scope, out),
             // The hostless in-core egress entry serves HTTP; raw/subprocess remain a HostCtx-slot path.
             EgressKind::RawConn | EgressKind::Subprocess => StatusClass::Unsupported,
         }

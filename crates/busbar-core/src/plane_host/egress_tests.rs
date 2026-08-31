@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
-use busbar_plugin::hot::host::PlaneHostVtable;
+use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{
     AuthQuery, AuthResolved, EgressDesc, EgressKind, EgressOpen, StatusClass,
@@ -115,6 +115,24 @@ fn http_desc(url: &[u8]) -> EgressDesc {
     }
 }
 
+/// Open a governed HTTP egress over the HOST-AUTHORED path — the shared [`open_http`] body the hostless
+/// in-core entry (`egress_open_scoped`) funnels through, where the desc's `allowlist_scope` IS host
+/// authority. This is how a FIRST-PARTY plane drives the seam, so loopback/plaintext MECHANICS are
+/// exercised as production drives them.
+///
+/// The FFI vtable `egress_open` slot, by contrast, grants the plane NO privilege (FFI-F2) and refuses
+/// plane-driven subprocess (FFI-F3) — proven by the hostile-input tests below. Mechanics that need
+/// loopback/plaintext therefore run through this host-authored entry, never the untrusted FFI slot.
+fn host_authored_open(
+    host: HostCtx,
+    desc: &EgressDesc,
+    out: *mut std::mem::MaybeUninit<EgressOpen>,
+) -> StatusClass {
+    // SAFETY: `host` is the live HostState minted by `with_dispatch_scope`.
+    let scope = unsafe { recover(host) }.scope;
+    open_http(scope, desc, desc.allowlist_scope, out)
+}
+
 /// Drive `egress_poll` to EOF, returning everything the stream delivered.
 fn drain(vt: &PlaneHostVtable, host: HostCtx, id: EgressId) -> Vec<u8> {
     let mut out = Vec::new();
@@ -146,7 +164,7 @@ fn http_egress_opens_streams_and_close_reclaims() {
 
         // ── OPEN ──────────────────────────────────────────────────────────────────────────────
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_authored_open(host, &desc, &mut out);
         assert_eq!(class, StatusClass::Ok, "loopback open must succeed");
         // SAFETY: Ok ⇒ the out-param is initialized.
         let open = unsafe { out.assume_init() };
@@ -213,9 +231,9 @@ fn arena_drop_reclaims_an_unclosed_egress() {
     let desc = http_desc(url.as_bytes());
 
     let app = crate::test_support::TestApp::new().build();
-    let leaked_id = with_dispatch_scope(&app, |host, vt| {
+    let leaked_id = with_dispatch_scope(&app, |host, _vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_authored_open(host, &desc, &mut out);
         assert_eq!(class, StatusClass::Ok);
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
@@ -315,7 +333,7 @@ fn http_egress_sends_verb_headers_and_body() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_authored_open(host, &desc, &mut out);
         assert_eq!(class, StatusClass::Ok, "the POST opens");
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
@@ -355,7 +373,9 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         // STEP 1: the plane resolves a credential ref → an OPAQUE host-side ref (no plaintext returned).
-        let audience = b"aud:upstream";
+        // FFI-F5: the audience is the DESTINATION the credential is minted for; it MUST match the host
+        // the egress later opens to (here the loopback mock's host), or injection is refused.
+        let audience = b"127.0.0.1";
         let query = AuthQuery {
             size: std::mem::size_of::<AuthQuery>() as u32,
             version: POD_VERSION,
@@ -387,10 +407,7 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
         desc.cred_scheme_len = cred_scheme.len();
 
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        assert_eq!(
-            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
-            StatusClass::Ok
-        );
+        assert_eq!(host_authored_open(host, &desc, &mut out), StatusClass::Ok);
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
         let echoed = String::from_utf8_lossy(&drain(vt, host, open.id)).into_owned();
@@ -485,10 +502,7 @@ fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        assert_eq!(
-            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
-            StatusClass::Ok
-        );
+        assert_eq!(host_authored_open(host, &desc, &mut out), StatusClass::Ok);
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
         assert_eq!(
@@ -566,7 +580,7 @@ fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_authored_open(host, &desc, &mut out);
         assert_eq!(
             class,
             StatusClass::Fault,
@@ -607,7 +621,7 @@ fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_authored_open(host, &desc, &mut out);
         assert_eq!(class, StatusClass::Refused, "the guard refuses the hop");
         let (fault, cause, _url) = read_fault(vt, host).expect("a refusal fault was stashed");
         assert_eq!(
@@ -639,7 +653,7 @@ fn a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing() {
         for round in 1..=2 {
             let started = std::time::Instant::now();
             let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-            let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+            let class = host_authored_open(host, &desc, &mut out);
             assert_eq!(class, StatusClass::Ok, "open {round} must succeed");
             // SAFETY: Ok ⇒ the out-param is initialized.
             let open = unsafe { out.assume_init() };
@@ -662,6 +676,117 @@ fn a_repeat_hop_reuses_the_pooled_connection_instead_of_redialing() {
         assert_eq!(
             records[0].requests, 2,
             "the one connection must have served both requests"
+        );
+    });
+}
+
+/// FFI-F1 (SSRF pin bypass): a plane-supplied PINNED address gets NO trust — it is judged by the SAME
+/// host-side address rule as a resolved one BEFORE connecting. A pinned cloud-metadata address is
+/// refused EVEN under a fully permissive host scope (metadata is the guard, not a policy a scope can
+/// speak for), and a pinned internal address is refused unless the scope admits private addressing. So
+/// a plane can no longer pin `169.254.169.254` (or a `10.x`) past the SSRF chokepoint.
+#[test]
+fn a_plane_pinned_address_is_judged_and_cannot_bypass_the_ssrf_guard() {
+    /// Build an HTTP desc to a benign URL host but with a PLANE-PINNED v4 address + host scope.
+    fn pinned_desc(url: &[u8], addr: [u8; 4], scope: u32) -> EgressDesc {
+        let mut d = http_desc(url);
+        d.allowlist_scope = scope;
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&addr);
+        d.resolved_addr = bytes;
+        d.resolved_addr_kind = 4;
+        d
+    }
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, _vt| {
+        // A pinned cloud-metadata address, even under the MOST permissive host scope, is refused.
+        let url = b"https://safe.example/".to_vec();
+        let meta = pinned_desc(
+            &url,
+            [169, 254, 169, 254],
+            SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
+        );
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            host_authored_open(host, &meta, &mut out),
+            StatusClass::Refused,
+            "a plane-pinned metadata address is judged and refused even under a permissive scope"
+        );
+        // A pinned INTERNAL address is refused when the scope does not admit private addressing.
+        let internal = pinned_desc(&url, [10, 0, 0, 1], 0);
+        assert_eq!(
+            host_authored_open(host, &internal, &mut out),
+            StatusClass::Refused,
+            "a plane-pinned internal address is judged and refused without an allow-private scope"
+        );
+    });
+}
+
+/// FFI-F2 (plane self-grants privilege): the FFI vtable `egress_open` slot does NOT honor the plane's
+/// POD `allowlist_scope`. A hostile plane asserting ALLOW_PRIVATE + ALLOW_PLAINTEXT to reach a
+/// loopback/plaintext endpoint is REFUSED — the host grants no such privilege over the untrusted seam,
+/// so the guard refuses the elevated hop that the plane tried to authorize for itself.
+#[test]
+fn the_ffi_slot_refuses_a_plane_that_self_grants_private_and_plaintext() {
+    // A loopback plaintext target with the plane asserting BOTH privilege bits in its POD.
+    let url = b"http://127.0.0.1:9/".to_vec();
+    let mut desc = http_desc(&url); // http_desc already sets ALLOW_PRIVATE | ALLOW_PLAINTEXT.
+    desc.allowlist_scope = SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT;
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            StatusClass::Refused,
+            "the FFI seam ignores plane-asserted privilege bits — the elevated hop is refused"
+        );
+    });
+}
+
+/// FFI-F5 (credential confused deputy) at the egress seam: a plane resolves a credential for one
+/// destination (audience) and then opens an egress to a DIFFERENT host carrying that ref. The host
+/// refuses the hop rather than inject provider-A's secret into attacker-host-B.
+#[test]
+fn egress_refuses_a_credential_bound_to_a_different_destination() {
+    let port = spawn_echo_mock();
+    let url = format!("http://127.0.0.1:{port}/rpc"); // the hop's real destination host is 127.0.0.1
+    let cred_header = b"authorization";
+    let cred_scheme = b"Bearer ";
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        // Mint a credential bound to a DIFFERENT destination than the egress will open to.
+        let audience = b"provider-a.example";
+        let query = AuthQuery {
+            size: std::mem::size_of::<AuthQuery>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            credential_ref: 0x9999,
+            audience_ptr: audience.as_ptr(),
+            audience_len: audience.len(),
+        };
+        let mut resolved = std::mem::MaybeUninit::<AuthResolved>::uninit();
+        assert_eq!(
+            (vt.auth_resolve.unwrap())(host, &query as *const AuthQuery, &mut resolved),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok ⇒ initialized.
+        let resolved = unsafe { resolved.assume_init() };
+
+        // Now pair that provider-A ref with a hop to 127.0.0.1 — the confused-deputy attempt.
+        let mut desc = http_desc(url.as_bytes());
+        desc.credential_ref = resolved.resolved_ref;
+        desc.cred_header_ptr = cred_header.as_ptr();
+        desc.cred_header_len = cred_header.len();
+        desc.cred_scheme_ptr = cred_scheme.as_ptr();
+        desc.cred_scheme_len = cred_scheme.len();
+
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            host_authored_open(host, &desc, &mut out),
+            StatusClass::Refused,
+            "a credential minted for provider-A must not be injected into a different host"
         );
     });
 }

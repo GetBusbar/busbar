@@ -208,9 +208,14 @@ fn wired_auth_resolve_writes_pod_only_on_ok() {
             "the mint is a NEW ref, not the input echoed"
         );
         assert!(resolved.expires_unix > 0, "a bounded expiry is stamped");
-        // The PLAINTEXT lives host-side behind the ref; the plane received only the opaque ref.
-        let secret = super::creds::resolve(resolved.resolved_ref, resolved.expires_unix - 1)
-            .expect("the minted ref resolves host-side");
+        // The PLAINTEXT lives host-side behind the ref; the plane received only the opaque ref. The
+        // mint is bound to the query's audience (FFI-F5), so it resolves for THAT destination.
+        let secret = super::creds::resolve(
+            resolved.resolved_ref,
+            resolved.expires_unix - 1,
+            "aud:example",
+        )
+        .expect("the minted ref resolves host-side for its bound destination");
         assert!(
             secret.starts_with(b"hostcred:"),
             "the host owns the resolved credential; it never crossed to the plane"

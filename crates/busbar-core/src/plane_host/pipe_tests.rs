@@ -5,12 +5,19 @@
 //! stdin/stdout driven with `pipe_write`/`pipe_read`, its lifecycle reclaimed by the dispatch arena.
 //! `/bin/cat` is the echo-duplex: what the plane writes to stdin comes back on stdout, byte for byte,
 //! proving the host moves RAW BYTES (the plane frames on top).
+//!
+//! FFI-F3: the FFI vtable `egress_open` slot grants NO subprocess capability (it passes an EMPTY host
+//! program allowlist, so every plane-driven spawn is refused). The subprocess MECHANICS below are
+//! therefore driven through `open_subprocess` with a HOST-AUTHORED program allowlist — the in-core
+//! posture a first-party host holds — while `the_ffi_slot_refuses_a_plane_driven_subprocess` proves the
+//! untrusted seam refuses the spawn outright.
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{EgressDesc, EgressKind, EgressOpen, PipeId, StatusClass};
+use std::mem::MaybeUninit;
 
 /// Pack a `program + argv` command into the length-prefixed wire form (`u32 len | bytes`, LE) that
 /// [`EgressDesc::target`] carries for a subprocess open. The first token is the program.
@@ -23,14 +30,15 @@ fn pack_command(tokens: &[&str]) -> Vec<u8> {
     out
 }
 
-/// A subprocess `EgressDesc` borrowing the packed `command` blob, on `scope`.
-fn subprocess_desc(command: &[u8], scope: u32) -> EgressDesc {
+/// A subprocess `EgressDesc` borrowing the packed `command` blob. `allowlist_scope` is DATA the host
+/// ignores for admission (FFI-F2/F3): the program allowlist, not a plane-asserted scope bit, decides.
+fn subprocess_desc(command: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
         kind: EgressKind::Subprocess,
         _reserved: 0,
-        allowlist_scope: scope,
+        allowlist_scope: 0,
         _reserved2: 0,
         target_ptr: command.as_ptr(),
         target_len: command.len(),
@@ -58,6 +66,19 @@ fn subprocess_desc(command: &[u8], scope: u32) -> EgressDesc {
         resolved_addr_kind: 0,
         _reserved4: [0; 7],
     }
+}
+
+/// Open a governed subprocess over the HOST-AUTHORED program allowlist — the in-core posture a
+/// first-party host holds (the FFI vtable slot, by contrast, passes an EMPTY allowlist and refuses).
+fn host_open_subprocess(
+    host: HostCtx,
+    desc: &EgressDesc,
+    program_allowlist: &[String],
+    out: *mut MaybeUninit<EgressOpen>,
+) -> StatusClass {
+    // SAFETY: live HostState minted by with_dispatch_scope.
+    let state: &HostState = unsafe { recover(host) };
+    open_subprocess(state, desc, program_allowlist, out)
 }
 
 /// A packed child-environment record: `u32 name_len | name | u8 kind | u32 value_len | value`.
@@ -114,7 +135,8 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
         return;
     }
     let command = pack_command(&["/bin/cat"]);
-    let desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    let desc = subprocess_desc(&command);
+    let allowlist = vec!["/bin/cat".to_string()];
 
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
@@ -123,7 +145,7 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
         let scope = state.scope;
 
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        let class = host_open_subprocess(host, &desc, &allowlist, &mut out);
         assert_eq!(class, StatusClass::Ok, "the allowlisted subprocess opens");
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
@@ -170,15 +192,16 @@ fn subprocess_env_is_cleared_and_selective_never_leaking_the_hosts() {
     }
     let command = pack_command(&["/usr/bin/env"]);
     let env = env_record("BUSBAR_ENV_MARKER", 0, b"present");
-    let mut desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    let mut desc = subprocess_desc(&command);
     desc.env_ptr = env.as_ptr();
     desc.env_len = env.len();
+    let allowlist = vec!["/usr/bin/env".to_string()];
 
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &desc, &allowlist, &mut out),
             StatusClass::Ok
         );
         // SAFETY: Ok ⇒ initialized.
@@ -215,15 +238,16 @@ fn subprocess_env_resolves_a_secret_reference_host_side() {
     // The sugar form the config layer accepts: `{ env: HOME }` ⇒ the `env` secret module, key `HOME`.
     let secret_json = br#"{"env":"HOME"}"#;
     let env = env_record("BUSBAR_INJECTED", 1, secret_json);
-    let mut desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    let mut desc = subprocess_desc(&command);
     desc.env_ptr = env.as_ptr();
     desc.env_len = env.len();
+    let allowlist = vec!["/usr/bin/env".to_string()];
 
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &desc, &allowlist, &mut out),
             StatusClass::Ok
         );
         // SAFETY: Ok ⇒ initialized.
@@ -238,34 +262,56 @@ fn subprocess_env_resolves_a_secret_reference_host_side() {
 }
 
 #[test]
-fn open_refuses_a_relative_or_scopeless_command() {
+fn open_refuses_a_relative_or_unlisted_command() {
     let app = crate::test_support::TestApp::new().build();
-    with_dispatch_scope(&app, |host, vt| {
+    with_dispatch_scope(&app, |host, _vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        let allowlist = vec!["/bin/cat".to_string()];
 
-        // Absolute path but the scope forbids the subprocess tier → Refused.
-        let cmd = pack_command(&["/bin/cat"]);
-        let no_scope = subprocess_desc(&cmd, 0);
+        // Absolute path but NOT on the host program allowlist → Refused (the allowlist gates the tier).
+        let cmd = pack_command(&["/bin/ls"]);
+        let unlisted = subprocess_desc(&cmd);
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &no_scope as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &unlisted, &allowlist, &mut out),
             StatusClass::Refused,
-            "a scope without the subprocess bit refuses the spawn"
+            "a program the host did not allowlist is refused"
         );
 
-        // Scope permits, but a RELATIVE program name is refused (the host allowlist demands absolute).
+        // On the allowlist, but a RELATIVE program name is refused (the host allowlist demands absolute).
         let relative = pack_command(&["cat"]);
-        let rel = subprocess_desc(&relative, SCOPE_ALLOW_SUBPROCESS);
+        let rel = subprocess_desc(&relative);
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &rel as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &rel, &["cat".to_string()], &mut out),
             StatusClass::Refused,
             "a relative program name is never admissible"
         );
 
         // An empty/undecodable command blob is refused, not spawned.
-        let empty = subprocess_desc(&[], SCOPE_ALLOW_SUBPROCESS);
+        let empty = subprocess_desc(&[]);
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &empty as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &empty, &allowlist, &mut out),
             StatusClass::Refused
+        );
+    });
+}
+
+/// FFI-F3 (subprocess egress no allowlist): the FFI vtable `egress_open` slot passes an EMPTY host
+/// program allowlist, so a plane-driven subprocess spawn is REFUSED outright — even an absolute,
+/// otherwise-runnable program. The capability is disabled at the untrusted seam, not merely narrowed.
+#[test]
+fn the_ffi_slot_refuses_a_plane_driven_subprocess() {
+    let command = pack_command(&["/bin/cat"]);
+    // The plane even asserts a (meaningless) privilege bit — it carries no authority over the seam.
+    let mut desc = subprocess_desc(&command);
+    desc.allowlist_scope = u32::MAX;
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            StatusClass::Refused,
+            "the FFI seam admits no plane-driven subprocess — no host program allowlist grants it"
         );
     });
 }
@@ -276,13 +322,14 @@ fn arena_drop_reclaims_and_kills_an_unclosed_subprocess() {
         return;
     }
     let command = pack_command(&["/bin/cat"]);
-    let desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    let desc = subprocess_desc(&command);
+    let allowlist = vec!["/bin/cat".to_string()];
 
     let app = crate::test_support::TestApp::new().build();
-    let leaked = with_dispatch_scope(&app, |host, vt| {
+    let leaked = with_dispatch_scope(&app, |host, _vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
         assert_eq!(
-            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            host_open_subprocess(host, &desc, &allowlist, &mut out),
             StatusClass::Ok
         );
         // SAFETY: Ok ⇒ initialized. Deliberately do NOT close — the dispatch ends with it open.

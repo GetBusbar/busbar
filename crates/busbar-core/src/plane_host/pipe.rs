@@ -36,11 +36,6 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, LazyLock, Mutex};
 
-/// This egress scope permits the governed SUBPROCESS tier. The host, not the plane, decides whether a
-/// scope may spawn a child; a scope without this bit refuses every subprocess open. (The private /
-/// plaintext bits live in [`super::egress`]; this one is the pipe tier's.)
-const SCOPE_ALLOW_SUBPROCESS: u32 = 1 << 2;
-
 /// One open governed subprocess pipe the host owns end to end. The plane holds only its [`PipeId`] and
 /// moves bytes through [`pipe_read`]/[`pipe_write`]; the host owns the child's lifecycle.
 struct PipeBackend {
@@ -268,12 +263,18 @@ fn read_child_cwd(d: &EgressDesc) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND the egress
-/// scope permits the subprocess tier. This is policy the HOST owns — the plane's [`EgressDesc`] carried
-/// only data. Resolving the scope id against operator config and adding a per-program allowlist is not
-/// yet wired; the current guard enforces the two invariants the stdio transport already relies on.
-fn command_admissible(program: &str, scope: u32) -> bool {
-    scope & SCOPE_ALLOW_SUBPROCESS != 0 && std::path::Path::new(program).is_absolute()
+/// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND it is
+/// explicitly named on the HOST-supplied program allowlist. This is policy the HOST owns end to end —
+/// the plane's [`EgressDesc`] carries only DATA (never a capability), so the plane's `allowlist_scope`
+/// bit is IGNORED here (FFI-F2/F3): a plane cannot self-grant the subprocess tier.
+///
+/// The FFI vtable slot passes an EMPTY allowlist (`&[]`) because no operator config wires a subprocess
+/// program allowlist over the FFI seam today — so every plane-driven subprocess open is REFUSED
+/// (fail-closed by denial; the capability is disabled at the seam, not merely narrowed). A caller that
+/// legitimately owns a host-authored allowlist (the in-core stdio-transport posture, exercised in
+/// tests) passes it explicitly and only its named absolute programs are admissible.
+fn command_admissible(program: &str, program_allowlist: &[String]) -> bool {
+    std::path::Path::new(program).is_absolute() && program_allowlist.iter().any(|p| p == program)
 }
 
 /// Open a governed SUBPROCESS pipe. Decodes + allowlist-checks the command, spawns the child with piped
@@ -283,14 +284,17 @@ fn command_admissible(program: &str, scope: u32) -> bool {
 pub(super) fn open_subprocess(
     state: &HostState,
     d: &EgressDesc,
+    program_allowlist: &[String],
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
     // SAFETY: `(target_ptr, target_len)` is a live borrowed range for the call (ABI discipline).
     let Some((program, argv)) = (unsafe { decode_command(d.target_ptr, d.target_len) }) else {
         return StatusClass::Refused;
     };
-    if !command_admissible(&program, d.allowlist_scope) {
-        return StatusClass::Refused; // not absolute / scope forbids the subprocess tier.
+    if !command_admissible(&program, program_allowlist) {
+        // Not absolute, or not on the HOST program allowlist. The FFI seam passes an empty allowlist,
+        // so this REFUSES every plane-driven subprocess spawn (FFI-F3).
+        return StatusClass::Refused;
     }
     // THE CHILD'S ENVIRONMENT, resolved host-side and applied under `env_clear()` so the child gets
     // ONLY these variables — NEVER the host's own environment, which holds provider API keys, store

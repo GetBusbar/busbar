@@ -503,6 +503,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]

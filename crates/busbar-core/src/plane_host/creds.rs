@@ -33,12 +33,22 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
+use zeroize::Zeroizing;
 
-/// One minted credential: the plaintext the host injects, and the host-owned expiry past which it is
-/// refused. The plaintext lives ONLY here (host-side); it is never written into a plane-facing POD.
+/// One minted credential: the plaintext the host injects, the DESTINATION it is bound to, and the
+/// host-owned expiry past which it is refused. The plaintext lives ONLY here (host-side); it is never
+/// written into a plane-facing POD.
 struct Mint {
     /// The resolved credential plaintext the host injects at egress. NEVER crosses the seam.
-    secret: Vec<u8>,
+    ///
+    /// FFI-F6: wrapped in [`Zeroizing`] so the plaintext is wiped from memory when the `Mint` drops
+    /// (on expiry-sweep, on `remove`, or at process teardown) rather than lingering in freed heap.
+    secret: Zeroizing<Vec<u8>>,
+    /// FFI-F5: the DESTINATION this credential is bound to (the audience the `auth_resolve` caller
+    /// named). [`resolve`] injects the secret ONLY when the egress destination matches this binding,
+    /// so a plane cannot pair a provider-A credential ref with an attacker-controlled host-B (the
+    /// confused-deputy). Empty binds to no destination and therefore matches nothing.
+    audience: String,
     /// Unix-seconds expiry the host stamped; [`resolve`] refuses (and drops) a mint past it.
     expires_unix: u64,
 }
@@ -81,7 +91,7 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 /// also the sweep trigger that purges entries already expired at `now_unix`, so a ref that is minted
 /// and never resolved cannot accumulate (see the module doc's bound).
 #[must_use]
-pub(crate) fn mint(secret: Vec<u8>, expires_unix: u64, now_unix: u64) -> u64 {
+pub(crate) fn mint(secret: Vec<u8>, audience: String, expires_unix: u64, now_unix: u64) -> u64 {
     let resolved_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
     let mut reg = registry();
     // THE SWEEP: purge everything already expired at the caller's clock, amortized behind the
@@ -95,7 +105,8 @@ pub(crate) fn mint(secret: Vec<u8>, expires_unix: u64, now_unix: u64) -> u64 {
     reg.map.insert(
         resolved_ref,
         Mint {
-            secret,
+            secret: Zeroizing::new(secret),
+            audience,
             expires_unix,
         },
     );
@@ -123,12 +134,15 @@ pub(crate) fn contains_for_test(resolved_ref: u64) -> bool {
     registry().map.contains_key(&resolved_ref)
 }
 
-/// Resolve `resolved_ref` to its plaintext, or `None` when the ref is unknown or has expired at
-/// `now_unix` (an expired ref is DROPPED, so it fails closed and cannot be replayed). The returned
-/// bytes are host-owned; the caller injects them into the outbound request and never hands them back
-/// across the seam.
+/// Resolve `resolved_ref` to its plaintext for delivery to `destination`, or `None` when the ref is
+/// unknown, has expired at `now_unix`, or is BOUND TO A DIFFERENT DESTINATION than `destination`
+/// (FFI-F5: a credential minted for provider-A's host must never be injected into an attacker's
+/// host-B). An expired ref is DROPPED (fails closed, cannot be replayed); a DESTINATION MISMATCH is
+/// refused WITHOUT dropping — the same ref legitimately resolves for its bound destination on a later
+/// failover open. The returned bytes are host-owned; the caller injects them into the outbound request
+/// and never hands them back across the seam.
 #[must_use]
-pub(crate) fn resolve(resolved_ref: u64, now_unix: u64) -> Option<Vec<u8>> {
+pub(crate) fn resolve(resolved_ref: u64, now_unix: u64, destination: &str) -> Option<Vec<u8>> {
     if resolved_ref == 0 {
         return None;
     }
@@ -141,7 +155,16 @@ pub(crate) fn resolve(resolved_ref: u64, now_unix: u64) -> Option<Vec<u8>> {
         reg.map.remove(&resolved_ref);
         return None;
     }
-    reg.map.get(&resolved_ref).map(|m| m.secret.clone())
+    reg.map.get(&resolved_ref).and_then(|m| {
+        // THE DESTINATION BINDING CHECK: the mint carries the audience/host the credential was
+        // resolved FOR; inject only when the egress destination matches it. A mismatch refuses (the
+        // confused-deputy fix) — the secret never travels to a host it was not minted for.
+        if m.audience == destination {
+            Some(m.secret.to_vec())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]

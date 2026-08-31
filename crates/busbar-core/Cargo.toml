@@ -74,6 +74,8 @@ sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+# The plane-host credential mint (`plane_host::creds`) zeroizes resolved plaintext on drop (FFI-F6).
+zeroize = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
