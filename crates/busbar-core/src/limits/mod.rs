@@ -125,16 +125,24 @@ fn get() -> Option<LimitsResolved> {
     INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Mirror the upstream-error-body cap into the neutral `busbar_substrate::proxy` process global, so a
-/// plane crate (busbar-mcp) reads the SAME value core's `upstream_error_body_max_bytes()` returns
-/// without reaching into `busbar-core`. Called after EVERY mutation of `INSTALLED` (install, reload,
-/// and the `InstallGuard` rollback) with that same slot's value, resolving the `None`/uninstalled
-/// case to the historical default exactly as the accessor does — the two can never diverge.
+/// Mirror the upstream-error-body cap AND the egress translate-body cap into the neutral
+/// `busbar_substrate::proxy` process globals, so a plane crate (busbar-mcp reads the former,
+/// busbar-llm the latter) sees the SAME value core's `upstream_error_body_max_bytes()` /
+/// `translate_body_max_bytes()` return without reaching into `busbar-core`. Called after EVERY mutation
+/// of `INSTALLED` (install, reload, and the `InstallGuard` rollback) with that same slot's value,
+/// resolving the `None`/uninstalled case to the historical default exactly as each accessor does — the
+/// mirrors can never diverge from core's own reads.
 fn mirror_upstream_error_cap(slot: Option<&LimitsResolved>) {
     let cap = slot
         .map(|l| l.upstream_error_body_max_bytes)
         .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
     busbar_substrate::proxy::set_max_upstream_buffered_bytes(cap);
+    // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
+    // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
+    let translate_cap = slot
+        .map(|l| l.request_body_max_bytes)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
+    busbar_substrate::proxy::set_max_translate_body_bytes(translate_cap);
 }
 
 /// The egress translate-body cap (bytes). COUPLED to ingress `request_body_max_bytes`: one knob

@@ -47,6 +47,36 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
     UPSTREAM_ERROR_BODY_MAX_BYTES.store(bytes, Ordering::Relaxed);
 }
 
+/// Historical default egress translate-body cap (bytes) — 32 MiB, the value read before any operator
+/// config is installed (unit tests, pre-boot). MUST equal core's `config::DEFAULT_REQUEST_BODY_MAX_BYTES`
+/// (the one knob that drives both the inbound `DefaultBodyLimit` and this egress translate cap); the two
+/// are pinned equal by construction and by core's `limits` tests. Owned HERE, in the neutral substrate,
+/// so a plane crate reads the cap without reaching into `busbar-core`.
+pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
+
+/// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
+/// UNINSTALLED read (unit tests, pre-boot) is byte-identical to core's
+/// `limits::translate_body_max_bytes()` fallback; core's `limits::install`/`InstallGuard` overwrite it
+/// with the operator-resolved `LimitsResolved::request_body_max_bytes` on every apply and restore it on
+/// a rejected apply, so the value here always tracks core's installed knob. Read PER translated body
+/// (not per byte), so a `Relaxed` atomic is ample.
+static TRANSLATE_BODY_MAX_BYTES: AtomicUsize = AtomicUsize::new(TRANSLATE_BODY_MAX_BYTES_DEFAULT);
+
+/// Read the installed egress translate-body cap (bytes). The neutral twin of core's
+/// `limits::translate_body_max_bytes()`: same process-global value, named from a plane crate without
+/// reaching into `busbar-core`. Falls back to [`TRANSLATE_BODY_MAX_BYTES_DEFAULT`] until core installs
+/// the resolved limits.
+pub fn max_translate_body_bytes() -> usize {
+    TRANSLATE_BODY_MAX_BYTES.load(Ordering::Relaxed)
+}
+
+/// Install the resolved egress translate-body cap process-wide. Called ONLY by core's `limits`
+/// install/reload/rollback path with the value it also installs into its own `LimitsResolved` slot,
+/// so the two never diverge; there is no other writer.
+pub fn set_max_translate_body_bytes(bytes: usize) {
+    TRANSLATE_BODY_MAX_BYTES.store(bytes, Ordering::Relaxed);
+}
+
 /// Why a [`read_capped`] read stopped — distinguishes a body that arrived in full from one that
 /// was cut short, so the buffered cross-protocol translate path can avoid mis-accounting a
 /// half-received completion as a clean success (recording breaker success + charging tokens on a

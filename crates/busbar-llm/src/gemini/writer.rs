@@ -882,15 +882,17 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `busbar_core::limits::translate_body_max_bytes()` — the SAME operator-tunable,
+                // The cap is `busbar_substrate::proxy::max_translate_body_bytes()` — the neutral twin of
+                // core's `limits::translate_body_max_bytes()`, the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
                 // (`proxy::wire::max_translated_body_bytes`), whose own doc comment names "big tool-call
                 // arguments" as exactly why that cap must be generous. Reusing it here — rather than a
                 // new hardcoded constant — means an operator who raises the one knob to admit larger
                 // tool payloads gets that same headroom on this streaming path too, instead of the two
-                // paths silently diverging. A read per fragment is cheap (an uncontended `RwLock` read),
-                // matching every other `busbar_core::limits` call site's per-use-site read.
+                // paths silently diverging. Read from the neutral substrate global (core's `limits`
+                // install/reload mirrors the resolved value into it) so this plugin never reaches back
+                // into `busbar-core`. A read per fragment is cheap (an uncontended `Relaxed` atomic load).
                 //
                 // Once appending a fragment would cross the cap, that fragment (and every subsequent one
                 // for this block) is dropped whole rather than sliced at the boundary: the buffer is
@@ -905,7 +907,7 @@ impl ProtocolWriter for GeminiWriter {
                         if let Some((_, _, args)) =
                             guard.iter_mut().find(|(idx, _, _)| idx == index)
                         {
-                            let cap = busbar_core::limits::translate_body_max_bytes();
+                            let cap = busbar_substrate::proxy::max_translate_body_bytes();
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
