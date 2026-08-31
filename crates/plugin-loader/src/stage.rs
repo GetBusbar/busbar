@@ -326,7 +326,16 @@ pub fn sweep_dead_staging() -> usize {
         if pid == std::process::id() || pid_alive(pid) {
             continue;
         }
-        if entry.path().is_dir() && std::fs::remove_dir_all(entry.path()).is_ok() {
+        // NO-FOLLOW: `is_dir()` follows symlinks, so a symlink named `busbar-plugins-<dead-pid>-*`
+        // planted in the world-writable temp base could aim `remove_dir_all` at an ATTACKER-CHOSEN
+        // directory outside staging. `symlink_metadata` inspects the entry ITSELF; a symlink is not a
+        // directory here, so it is skipped, never traversed. Only a real directory is swept.
+        let is_real_dir = entry
+            .path()
+            .symlink_metadata()
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+        if is_real_dir && std::fs::remove_dir_all(entry.path()).is_ok() {
             removed += 1;
         }
     }
