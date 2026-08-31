@@ -1,0 +1,149 @@
+# busbar-mcp — THE MCP (Model Context Protocol) PLUGIN CRATE.
+#
+# Step 3.A.1 of the plane split folded the MCP protocol codec in here: the `codec` module
+# (`src/codec/`) is the `ProtocolDecl`, the JSON-RPC dialect and the `tools/call` + subscription
+# operation cells — everything the former `busbar-proto-mcp` crate carried. The MCP PLANE (today's
+# former `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
+# transports, the config sections, boot hydration, the router mount and the admin API) folded in
+# BESIDE the codec in a later plane-split step — ONE PLUGIN PER PROTOCOL, and MCP the protocol and
+# MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
+#
+# `busbar-core = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
+# the composition root, not to a plugin. `busbar-api` is named ahead of the code that needs it, per
+# 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the way
+# `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
+[package]
+name = "busbar-mcp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The Model Context Protocol for busbar: the MCP codec and the MCP plane, as one removable plugin. Shell only — code has not moved here yet."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. The default
+# build compiles with NO busbar-core in its closure — every former `busbar_core::` reach is served by
+# the neutral substrate (the approvals seal, the config split, the hostless-egress seam) or gated to
+# the dual-compile/test-support surface. busbar-core stays an OPTIONAL dep, pulled ONLY by the
+# `test-support` feature, because the plane's `&App`-typed test helpers (`mcp::resource`/`runtime`)
+# name `busbar_core::state::App`: that surface compiles only where busbar-core is in the closure — the
+# dual-compile into core's own test binary, or a `test-support` build. (Optional rather than a
+# dev-dependency because a feature cannot reference a dev-dep-only crate.)
+busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-mcp"], optional = true }
+# The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
+# diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
+# `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
+# in this crate's own default build.
+busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
+# The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
+busbar-api = { path = "../api" }
+# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
+# codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
+# else, so a name the SDK retires stops compiling here instead of being served.
+rmcp = { workspace = true }
+# The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
+# here whole: the client pool and transports (tokio, reqwest, futures), the config codecs (serde,
+# serde_yaml, indexmap), the seal/digest crypto (sha2, hex, base64) and the plugin ABI (busbar-plugin,
+# async-trait) the plane's host calls reach.
+busbar-plugin = { path = "../busbar-plugin" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+# The engine-built token exchange (`upstream::exchange`): request assembly is `http` parts, the
+# body read rides `http-body-util`, and the form encodes through `serde_urlencoded` — the crate
+# reqwest's `.form()` was, so the wire bytes are unchanged.
+http = { workspace = true }
+http-body-util = { workspace = true }
+serde_urlencoded = { workspace = true }
+# TEST MACHINERY ONLY: the plane's test batteries compile into the LIBRARY under `test-support`
+# (the dependent-test-binary pattern), and they drive reqwest as a client against the fixtures —
+# so the edge is optional on that feature and absent from every shipped build; plain
+# `cargo test -p` reaches it via [dev-dependencies].
+reqwest = { workspace = true, features = ["http2", "json"], optional = true }
+indexmap = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+getrandom = { workspace = true }
+# THE OPENAPI SCHEMA DERIVE, optional and mirroring busbar-core exactly. The plane's admin-view types
+# (`src/mcp/admin_view.rs`) derive `schemars::JsonSchema` under `openapi-schema`; when these sources
+# dual-compile into busbar-core they take core's `schemars`, and when they compile HERE — which they
+# now do once the binary forwards `openapi-schema` down to this crate — they need their own. Same
+# optional dep, same feature edge, so the derive resolves whichever crate is compiling.
+schemars = { workspace = true, optional = true }
+
+[features]
+# THE PLANE TESTS SKIP IN THIS CRATE'S OWN BINARY and run only when `busbar-core` dual-compiles
+# `src/mcp` back into ITS test binary. They build a `TestApp` and read the plane's runtime back out by
+# DOWNCAST; that runtime's type is `<compiling-crate>::mcp::McpRuntime`, so the fixtures (which live in
+# `busbar-core`, `pub(crate)`) only ever produce a value the tests can reach and downcast when BOTH are
+# the same crate — i.e. inside busbar-core's binary, exactly as the extracted LLM dialects' tests run
+# in core's. This crate's own `cargo test` still builds and runs the CODEC tests (the protocol half,
+# which needs no app), just not the plane half.
+#
+# The App-needing plane tests are gated `#[cfg(all(test, feature = "test-support"))]`: `test-support`
+# is exactly the feature that pulls busbar-core into the closure (the `&App` fixtures name it), so the
+# gate is TRUE precisely when the tests can compile. `cargo test -p busbar-mcp --features test-support`
+# runs the full plane suite in THIS crate's own binary; a bare `cargo test -p busbar-mcp` runs only the
+# codec/App-free tests. (This replaced the former `busbar_mcp_native` build-script cfg + `#[path]`
+# dual-compile into busbar-core; both are gone.)
+#
+# The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
+# admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether
+# these sources compile in this crate or dual-compile into busbar-core. Since THE SEAL made busbar-core
+# an optional dep, the openapi-schema forward now points at SUBSTRATE (where `PlaneDecl` lives) rather
+# than busbar-core, and the admin-tokens forward is weak; off by default, exactly as in core.
+# The `openapi_schemas` field of `PlaneDecl` (now `busbar_substrate::plane::registry::PlaneDecl`) is
+# gated on substrate's `openapi-schema`, and `admin_view`'s `schemars::JsonSchema` derives need the
+# derive crate — so this forwards to SUBSTRATE (not busbar-core, which is no longer a prod dep) to keep
+# the `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step, plus its
+# own `schemars`. The dual-compile into busbar-core resolves the same `#[cfg]` against CORE's feature.
+openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
+# The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
+# force-pulls the optional busbar-core into a non-test-support build; it only cascades where
+# busbar-core is already in the closure (the test-support / dual-compile surface that test needs).
+auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
+# Pulls busbar-core (the optional dep) and its test fixtures: the plane's `&App`-typed test helpers and
+# the dual-compile plane tests name `busbar_core::…`, so this feature is the one edge that puts
+# busbar-core in the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
+# planes' config types unconditionally (`crate::a2a::config::AgentsCfg`, the `tools:` types), so this
+# forwards `plane-mcp`/`plane-a2a` too — the same both-planes shape core's own dual-compile test binary
+# builds with — or the fixture's `crate::a2a` references are configured out and cannot resolve.
+test-support = [
+    "dep:busbar-core",
+    "busbar-core/test-support",
+    "busbar-core/plane-mcp",
+    "busbar-core/plane-a2a",
+    "dep:reqwest",
+]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
+# THE LLM PROTOCOL crate, dev-only: the MCP sampling suite drives a REAL upstream chat completion on
+# the operator's model (`protocol: openai`), so it must register the LLM dialect declarations the way
+# the composition root does — the codec the deleted `#[path]` witness used to net into core's test
+# binary. A dev-dep back-edge, not linked into any shipped target.
+busbar-llm = { path = "../busbar-llm" }
+# Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
+# dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
+reqwest = { workspace = true, features = ["json"] }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+busbar-store-memory = { path = "../store-memory" }
+busbar-secret-ref = { path = "../secret-ref" }
+busbar-plugin-sign = { path = "../plugin-sign" }

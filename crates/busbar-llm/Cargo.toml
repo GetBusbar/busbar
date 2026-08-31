@@ -1,0 +1,85 @@
+# busbar-llm — THE LLM PROTOCOL, as ONE plugin crate.
+#
+# ONE PLUGIN PER PROTOCOL, not one per dialect. "LLM" is the protocol; anthropic, openai chat,
+# gemini, bedrock, openai responses and cohere are six DIALECTS of it, and an operator chooses LLM
+# coverage or no LLM coverage — never "anthropic but not gemini". A seventh dialect is a module
+# added here, not a new crate and not a new feature flag. This crate replaces the four per-dialect
+# crates (`busbar-proto-anthropic`, `-openai-chat`, `-gemini`, and the bedrock/cohere/responses
+# extractions that were in flight) that got the granularity wrong.
+#
+# MCP is DELIBERATELY NOT FOLDED IN HERE: MCP is a different protocol, so it is a different plugin
+# (`busbar-mcp`), which carries the MCP codec today and folds in the MCP plane in a later step.
+#
+# The contract each dialect module keeps (unchanged from the per-crate shape): five files —
+# declaration, reader, writer, handler, tests — with everything consumed through busbar-core's
+# public surface, and registration performed by the `busbar` binary (the composition root) and by
+# nothing else. Deleting this crate's dependency edge is a build the deletion gate makes on purpose
+# (scripts/proto-deletion-gate.sh): with it gone, busbar speaks NO LLM dialect and refuses every one
+# of the six at boot.
+[package]
+name = "busbar-llm"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The LLM protocol for busbar: the anthropic, openai-chat, gemini, bedrock, openai-responses and cohere dialects — wire codecs, request handlers and protocol declarations — linked and registered as one plugin by the busbar binary."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_llm"
+path = "src/lib.rs"
+
+[features]
+# Pass-through so a dependent (and this crate's own gated round-trip codec helpers) can ask for the
+# test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
+# The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
+test-support = ["busbar-core/test-support"]
+# The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
+# field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
+# this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through
+# `busbar-core/openapi-schema` (which forwards to substrate) — the plugin carries no `schemars` derive
+# of its own (the LLM plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]`
+# to agree with substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
+openapi-schema = ["busbar-core/openapi-schema"]
+
+[dependencies]
+# The engine's public surface. `default-features = false` for the same reason the binary does it: the
+# feature decisions are the composition root's. Historically this was "the ONLY busbar crate this
+# plugin may name", but the plane-extraction (docs/design/plane-extraction-design.md §2.1/§6.2) makes
+# the NEUTRAL ABI — busbar-substrate / busbar-api — the surface a plane names; a plane MUST NOT reach
+# back into `busbar_core::` implementation. So the neutral utilities this plugin consumes (breaker
+# signals, the IR facts/handle types, the codec-cell matrix, wire body types, the billing usage type,
+# the operation enum, …) are now named at their canonical `busbar_substrate::` / `busbar_api::` home,
+# and `busbar-core` remains only for the residual engine items not yet relocated to the ABI.
+busbar-core = { path = "../busbar-core", default-features = false }
+# The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY and names them
+# instead of reaching through `busbar_core::` (the reverse-edge rule). `busbar-
+# core` re-exports these same items, so a repoint from `busbar_core::X` to `busbar_substrate::X` /
+# `busbar_api::X` is by-identity (the very same type/const), i.e. byte-identical behaviour.
+busbar-substrate = { path = "../busbar-substrate", default-features = false }
+busbar-api = { path = "../api" }
+# Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
+# reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
+# `--features busbar-timing/timing`.
+busbar-timing = { path = "../busbar-timing" }
+axum = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+# Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
+# bytes, hex-encoded.
+getrandom = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# The dialects' own tests drive the codecs through core vocabulary (breaker signals, IR types) and
+# core's test_support (warn-capture), which core exposes to dependents behind this feature only.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# THE MCP PROTOCOL crate, dev-only: ONE relocated registry test asserts core's handling of a
+# codec-LESS registered protocol using the real MCP declaration (`busbar_mcp::PROTO_DECL`), which the
+# deleted `#[path]` witness used to net in. A dev-dep back-edge (busbar-mcp normal-depends on
+# busbar-core; this dev-dep the other way is not a build cycle). Not linked into any shipped target.
+busbar-mcp = { path = "../busbar-mcp" }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

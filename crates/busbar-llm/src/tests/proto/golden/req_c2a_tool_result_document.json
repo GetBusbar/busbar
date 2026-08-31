@@ -1,0 +1,1 @@
+{"max_tokens":4096,"messages":[{"content":[{"text":"q","type":"text"}],"role":"user"},{"content":[{"id":"t1","input":{},"name":"s","type":"tool_use"}],"role":"assistant"},{"content":[{"content":[{"source":{"data":{"t":"x"},"id":"d1"},"title":"d1","type":"document"}],"tool_use_id":"t1","type":"tool_result"}],"role":"user"}],"model":"gpt-4o-mini","stream":false}

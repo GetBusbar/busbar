@@ -1,0 +1,1 @@
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"hi","role":"assistant"}}],"created":1752000000,"id":"chatcmpl-NORMALIZED","model":"gpt-4o","object":"chat.completion","usage":{"completion_tokens":0,"prompt_tokens":0,"total_tokens":0}}

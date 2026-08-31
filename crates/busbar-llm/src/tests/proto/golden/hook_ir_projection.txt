@@ -1,0 +1,27 @@
+anthropic_plain :: system=Some("SYSTEM") turns=[("user", "hello")] text_chars=11 max_tokens=Some(64) end_user=Some("bob")
+anthropic_redacted_thinking :: system=None turns=[("assistant", "[busbar:redacted_reasoning]")] text_chars=27 max_tokens=Some(64) end_user=None
+anthropic_system_block_array :: system=Some("one\ntwo") turns=[("user", "hello")] text_chars=11 max_tokens=Some(64) end_user=None
+anthropic_thinking_block :: system=None turns=[("assistant", "CHAIN OF THOUGHT\nthe answer")] text_chars=26 max_tokens=Some(64) end_user=None
+bedrock_inference_config_max_tokens :: system=None turns=[("user", "hello")] text_chars=5 max_tokens=Some(128) end_user=None
+bedrock_plain :: system=Some("sys") turns=[("user", "hello\nagain")] text_chars=13 max_tokens=None end_user=None
+bedrock_reasoning_content :: system=None turns=[("assistant", "BEDROCK COT\nthe answer")] text_chars=21 max_tokens=None end_user=None
+bedrock_redacted_content :: system=None turns=[("assistant", "[busbar:redacted_reasoning]")] text_chars=27 max_tokens=None end_user=None
+cohere_in_band_system_turn :: system=Some("OPERATOR SYSTEM PROMPT") turns=[("user", "hi")] text_chars=24 max_tokens=None end_user=None
+cohere_plain :: system=None turns=[("user", "hello"), ("assistant", "hi there")] text_chars=13 max_tokens=Some(32) end_user=None
+cohere_top_level_system_key :: system=None turns=[("user", "hi")] text_chars=2 max_tokens=None end_user=None
+gemini_plain :: system=Some("SYSTEM") turns=[("user", "hello"), ("assistant", "hi there")] text_chars=19 max_tokens=None end_user=None
+gemini_roleless_turn :: system=None turns=[("user", "hello")] text_chars=5 max_tokens=None end_user=None
+gemini_thought_part :: system=None turns=[("assistant", "GEMINI COT\nthe answer")] text_chars=20 max_tokens=None end_user=None
+openai_block_array_content :: system=None turns=[("user", "first\nsecond")] text_chars=11 max_tokens=None end_user=None
+openai_in_band_system_turn :: system=Some("OPERATOR SYSTEM PROMPT") turns=[("user", "hi")] text_chars=24 max_tokens=None end_user=None
+openai_media_only_turn :: system=None turns=[("user", "")] text_chars=0 max_tokens=None end_user=None
+openai_plain :: system=None turns=[("user", "hello"), ("assistant", "hi there")] text_chars=13 max_tokens=Some(256) end_user=Some("alice")
+openai_refusal_part :: system=None turns=[("assistant", "I cannot help with that")] text_chars=23 max_tokens=None end_user=None
+openai_tool_call_and_result :: system=None turns=[("assistant", "{\"q\":\"ARGUMENT PAYLOAD\"}"), ("tool", "TOOL RESULT PAYLOAD")] text_chars=43 max_tokens=None end_user=None
+openai_tool_role_bare_string_only :: system=None turns=[("user", "run the tool"), ("tool", "TOOL RESULT PAYLOAD")] text_chars=31 max_tokens=None end_user=None
+openai_top_level_system_key :: system=None turns=[("user", "hi")] text_chars=2 max_tokens=None end_user=None
+openai_unknown_role :: REJECTED
+responses_bare_string_input :: system=Some("INSTRUCTIONS") turns=[("user", "hello")] text_chars=17 max_tokens=Some(512) end_user=None
+responses_encrypted_content_only :: system=None turns=[("assistant", "[busbar:redacted_reasoning]")] text_chars=27 max_tokens=None end_user=None
+responses_input_items :: system=None turns=[("user", "hello"), ("assistant", "hi there")] text_chars=13 max_tokens=None end_user=None
+responses_reasoning_summary_only :: system=None turns=[("assistant", "SUMMARY COT")] text_chars=11 max_tokens=None end_user=None

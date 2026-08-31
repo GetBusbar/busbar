@@ -1,0 +1,1 @@
+{"finish_reason":"COMPLETE","id":"00000000-0000-4000-8000-000000000000","message":{"content":[{"text":"42","type":"text"}],"role":"assistant","tool_plan":"Let me think about this"},"model":"claude-sonnet-4","usage":{"tokens":{"input_tokens":9,"output_tokens":33}}}
