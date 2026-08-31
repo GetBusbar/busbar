@@ -76,5 +76,10 @@ hex = { workspace = true }
 # The dialects' own tests drive the codecs through core vocabulary (breaker signals, IR types) and
 # core's test_support (warn-capture), which core exposes to dependents behind this feature only.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# THE MCP PROTOCOL crate, dev-only: ONE relocated registry test asserts core's handling of a
+# codec-LESS registered protocol using the real MCP declaration (`busbar_mcp::PROTO_DECL`), which the
+# deleted `#[path]` witness used to net in. A dev-dep back-edge (busbar-mcp normal-depends on
+# busbar-core; this dev-dep the other way is not a build cycle). Not linked into any shipped target.
+busbar-mcp = { path = "../busbar-mcp" }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -133,6 +133,11 @@ test-support = [
 [dev-dependencies]
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# THE LLM PROTOCOL crate, dev-only: the MCP sampling suite drives a REAL upstream chat completion on
+# the operator's model (`protocol: openai`), so it must register the LLM dialect declarations the way
+# the composition root does — the codec the deleted `#[path]` witness used to net into core's test
+# binary. A dev-dep back-edge, not linked into any shipped target.
+busbar-llm = { path = "../busbar-llm" }
 # Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
 # dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
 reqwest = { workspace = true, features = ["json"] }

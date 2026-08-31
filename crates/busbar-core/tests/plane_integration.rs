@@ -25,6 +25,7 @@ use busbar_mcp::testkit::TestAppMcpExt as _;
 #[test]
 fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let cfg_with_agents = || {
@@ -84,6 +85,7 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
 #[tokio::test]
 async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dialect() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let app = busbar_core::test_support::TestApp::new()
@@ -116,6 +118,7 @@ async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dial
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let app = busbar_core::test_support::TestApp::new()
@@ -157,6 +160,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 #[test]
 fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let mut cfg = cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
@@ -231,6 +235,7 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     busbar_mcp::testkit::install_test_seams();
     busbar_a2a::testkit::install_test_seams();
     let cfg = cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
@@ -279,6 +284,7 @@ const POOL: &str = "observe-residual-exactness-pool";
 #[tokio::test]
 async fn a_model_plane_request_is_counted_exactly_once() {
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
     // Register the residual LLM plane (as the composition root does in production and the MCP/A2A
     // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
     // residual — otherwise the model-plane boundary would not know this request rides the residual and
@@ -417,6 +423,7 @@ mod metrics_scrape {
     #[tokio::test]
     async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
         busbar_core::metrics::init();
+        busbar_llm::testkit::install_test_seams();
         // Register the residual LLM plane (as the composition root does in production and the MCP/A2A
         // testkits do for their planes), so the neutral residual-key derivation recognises `llm` as the
         // residual and the model-plane traffic below stays on the v1.5.4 model family (no `plane`
@@ -585,6 +592,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     use std::sync::Arc;
 
     busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
 
     /// The MCP ingress paths, the ONLY places an audience-bound token may be admitted. The app
     /// below MOUNTS the plane, so this list is exercised in both directions: an audience-bound

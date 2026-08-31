@@ -260,6 +260,10 @@ fn every_plane_key_answers_from_its_declaration() {
 /// superset-IR rule a RULE: a seventh dialect moves this list with nothing edited on the plane axis.
 #[test]
 fn the_llm_decl_reads_the_protocol_registry() {
+    // Publish the extracted-dialect built-ins into the SHARED substrate test registry the OTHER core
+    // instance (the plugin dev-dep's) reads, before the LLM `PLANE_DECL`'s `wire_format_names` fn
+    // pointer reaches it (see the two-instance note below and `proto::registry::registry`).
+    let _ = crate::proto::known_protocols();
     assert_eq!(
         crate::plane::wire_format_names(crate::plane::residual_key()),
         crate::proto::known_protocols(),

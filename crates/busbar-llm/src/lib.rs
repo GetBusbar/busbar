@@ -87,6 +87,32 @@ pub mod proto_codec;
 /// and reaches it in production via the installed factory.
 pub mod proto_stream;
 
+/// THE LLM PLUGIN'S TEST-KIT — the composition-root-shaped install seams a test uses to bring the LLM
+/// protocol (and plane) into the process registries WITHOUT the deleted `#[path]` witness re-includes.
+/// Named beside the plane crates' testkits (`busbar_mcp::testkit`, `busbar_a2a::testkit`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;
+
+/// PUBLISH THIS PLUGIN'S DIALECT DECLARATIONS into the SHARED substrate test registry, ONCE — the
+/// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
+/// surface where no `main` runs a composition root.
+///
+/// It exists because the deleted `#[path]` witness re-includes used to make `busbar-core`'s
+/// `test`/`test-support` builds carry these dialects as built-ins AUTOMATICALLY. With the witnesses
+/// gone, `busbar-core`'s built-in table is empty and the process registry is populated only by
+/// registration — so a codec that resolves a protocol fact through `busbar_core::proto::decl_for`
+/// (the `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
+/// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling this
+/// at those few entry points makes every codec-exercising test in THIS crate's binary
+/// order-independent without a per-test install. `Once`-guarded, so it is a single atomic load after
+/// the first call — off any allocation-gated path. In a build with a real composition root (or
+/// `busbar-core`'s own `cfg(test)` publish) the set is already present and the fold dedupes by name.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn ensure_test_protocols_registered() {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| busbar_substrate::proto::register_test_protocols(DECLS));
+}
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to

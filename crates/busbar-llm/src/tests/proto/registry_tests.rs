@@ -17,13 +17,13 @@ use busbar_core::proto::registry::{IngressAuth, ProtocolDecl, Registry};
 use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use bytes::Bytes;
 
-/// The registry as PRODUCTION builds it — the built-in declarations and nothing else.
+/// The registry as PRODUCTION builds it, for THIS plugin's dialects — `busbar_llm::DECLS`, the slice
+/// the composition root installs. `busbar-core`'s own `builtin_decls()` is now empty under
+/// `test-support` (the `#[path]` witness rows that used to net these dialects into core are deleted),
+/// so this crate's registry tests build a `Registry` from the plugin's OWN declarations — which is
+/// exactly the set a shipped binary registers through `install_protocols`.
 fn builtins() -> Registry {
-    Registry::new(
-        busbar_core::proto::registry::builtin_decls()
-            .iter()
-            .copied(),
-    )
+    Registry::new(crate::DECLS.iter().copied())
 }
 
 // ══ THE SURFACE THAT MUST NOT MOVE ═══════════════════════════════════════════════════════════════
@@ -189,6 +189,10 @@ fn every_declared_verb_has_a_serving_handler() {
 /// provider out of the config-validated set without anything comparing the name "mcp".
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
+    // Register the REAL MCP protocol declaration the way the composition root does — MCP is an
+    // extracted crate (`busbar-mcp`), and the deleted `#[path]` witness used to net its codec into
+    // core's test binary. `busbar-llm` dev-depends on `busbar-mcp` solely for this assertion.
+    busbar_substrate::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
     let d = busbar_core::proto::decl_for("mcp").expect("mcp declares itself");
     assert!(d.codec.is_none());
     assert!(d.handler.is_some(), "mcp serves operations");
@@ -207,8 +211,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
 #[test]
 #[should_panic(expected = "two protocol declarations claim the same name")]
 fn two_declarations_of_one_name_are_refused() {
-    let mut decls: Vec<&'static ProtocolDecl> =
-        busbar_core::proto::registry::builtin_decls().to_vec();
+    let mut decls: Vec<&'static ProtocolDecl> = crate::DECLS.to_vec();
     decls.push(decls[0]);
     let _ = Registry::new(decls);
 }
@@ -514,7 +517,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
 #[test]
 fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead() {
     static CODEC_LESS: ProtocolDecl = named_decl("codec-less");
-    let with_codecs: Vec<&'static ProtocolDecl> = busbar_core::proto::registry::builtin_decls()
+    let with_codecs: Vec<&'static ProtocolDecl> = crate::DECLS
         .iter()
         .copied()
         .filter(|d| d.codec.is_some())

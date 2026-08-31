@@ -708,6 +708,11 @@ impl Protocol {
         R: ProtocolReader + 'static,
         W: ProtocolWriter + 'static,
     {
+        // Every `Protocol::<dialect>()` fixture constructor funnels through here; ensure this plugin's
+        // declarations are in the shared test registry before its reader/writer resolve any fact
+        // through `decl_for` (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
+        #[cfg(any(test, feature = "test-support"))]
+        crate::ensure_test_protocols_registered();
         Self {
             name,
             reader: Box::new(reader),
@@ -823,6 +828,11 @@ impl Protocol {
 ///
 /// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP).
 pub fn protocol_for(name: &str) -> Option<Protocol> {
+    // The codec-resolution entry both the fixture suites and `StreamTranslate::new` reach first;
+    // ensure this plugin's declarations are in the shared test registry so the resolved reader/writer
+    // find their protocol facts (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
+    #[cfg(any(test, feature = "test-support"))]
+    crate::ensure_test_protocols_registered();
     // Post-A4b the `ProtocolDecl.codec` field is the NEUTRAL `DialectCodec` factory (core names no
     // `Protocol`), so the name→codec map lives here in the plugin that owns the six dialects. A fresh
     // instance per resolution, exactly as the registry field doc required (the writers carry per-stream
@@ -985,6 +995,11 @@ impl DialectCodec for DialectRef {
 /// correct no-op. DECLARED by each protocol; this was the last `match` on a protocol name left in
 /// `proto/mod.rs` after `protocol_for` became a lookup.
 pub(crate) fn native_tool_id_prefix(protocol_name: &str) -> Option<&'static str> {
+    // The tool-id remap reads this straight off the registry; ensure this plugin's declarations are
+    // registered so a test that drives a remap without first constructing a `Protocol` still resolves
+    // the prefix (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
+    #[cfg(any(test, feature = "test-support"))]
+    crate::ensure_test_protocols_registered();
     registry::decl_for(protocol_name).and_then(|d| d.native_tool_id_prefix)
 }
 

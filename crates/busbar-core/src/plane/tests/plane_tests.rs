@@ -5,6 +5,20 @@
 
 use super::*;
 
+/// WARM THE SHARED PROTOCOL REGISTRY across BOTH `busbar-core` instances this test binary links.
+///
+/// A handful of plane tests read the LLM plane's wire formats through `busbar_llm::PLANE_DECL`'s
+/// `wire_format_names` fn pointer, which resolves to the OTHER core instance's `known_protocols`
+/// (the plain `test-support` lib the `busbar-llm` dev-dep was built against — see the two-instance
+/// note in `the_llm_planes_dialects_are_the_registrys…`). That instance's built-in table is empty;
+/// it is populated by the SHARED substrate test registry, which the `cfg(test)` instance publishes
+/// into the first time ITS registry is read (see `proto::registry::registry`). Reading this instance's
+/// `known_protocols()` once, up front, guarantees that publication has happened before the plane
+/// helpers reach the second instance — order-independently, whatever order the harness runs tests in.
+fn warm_shared_protocol_registry() {
+    let _ = crate::proto::known_protocols();
+}
+
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
 /// validator and the candidate projection all iterate this, so a plane missing from it is a plane
 /// that silently does not exist.
@@ -101,6 +115,7 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 /// the A2A decl's `&[WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC]` wire-format list means.
 #[test]
 fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
+    warm_shared_protocol_registry();
     assert!(has_superset_ir("llm"));
     assert!(!has_superset_ir("mcp"));
     assert!(
@@ -115,6 +130,7 @@ fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
 /// A seventh dialect must not require anyone to remember to bump a number here.
 #[test]
 fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
+    warm_shared_protocol_registry();
     assert_eq!(wire_formats("llm"), crate::proto::known_protocols().len());
     assert!(
         wire_formats("llm") >= 2,
@@ -248,6 +264,7 @@ fn a_mount_is_readable_back() {
 /// label asserting which dialect spoke on evidence nobody had.
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
+    warm_shared_protocol_registry();
     for p in plane_keys() {
         assert_eq!(
             sole_wire_format(p).is_some(),
@@ -526,6 +543,7 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
 /// fixed because `None`/`false` are the right answers for a plane with no dialect.
 #[test]
 fn the_llm_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+    warm_shared_protocol_registry();
     // THE READS-NOT-RESTATES IDENTITY MOVED WITH THE DECL. The LLM `PLANE_DECL` now lives in the
     // `busbar-llm` plugin (`busbar_llm::PLANE_DECL`), and its `wire_format_names` field is
     // `busbar_core::proto::known_protocols` — the registry read, not a restated literal. That strict

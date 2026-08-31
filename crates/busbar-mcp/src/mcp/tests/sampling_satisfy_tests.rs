@@ -88,6 +88,9 @@ async fn app_with_provider(
         });
     }
     let provider = MockServer::new(state.clone()).await;
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
+    // dialect declarations must be registered the way the composition root registers them.
+    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
@@ -282,6 +285,9 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     let provider = MockServer::new(state.clone()).await;
     // The stock registration: all grants false, nothing declared — but the pool EXISTS, so a
     // breach would have somewhere to land.
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
+    // dialect declarations must be registered the way the composition root registers them.
+    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
@@ -338,6 +344,9 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     cfg.grants.sampling = true;
     // NO `sampling:` — the grant admits the ask and there is nothing the operator said to answer
     // with.
+    // The sampling completion runs a REAL upstream chat on the operator's `openai` lane, so the LLM
+    // dialect declarations must be registered the way the composition root registers them.
+    busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     let app = TestApp::new()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", cfg)
