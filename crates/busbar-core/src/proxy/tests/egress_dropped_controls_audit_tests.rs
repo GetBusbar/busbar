@@ -9,7 +9,6 @@
 //! rather than only a `tracing::warn!` invisible to the audit trail.
 
 use super::translate_request_cross_protocol;
-use crate::proto::Protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
@@ -25,7 +24,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -75,7 +74,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "anthropic.claude-3-5-sonnet",
-            Protocol::bedrock(),
+            crate::proto::PROTO_BEDROCK,
             "http://unused.local",
         ))
         .build();

@@ -103,7 +103,7 @@ fn alloc_gate_translate_write_stable() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1", // never dialed — this path does no I/O
         ))
         .pool("", &[(0, 1)])
@@ -185,7 +185,7 @@ async fn alloc_gate_openai_passthrough_forward() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])

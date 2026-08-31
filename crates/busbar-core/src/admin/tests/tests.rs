@@ -119,7 +119,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .lane(
             LaneSpec::new(
                 "model-a",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("prov-x"),
@@ -127,7 +127,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .lane(
             LaneSpec::new(
                 "model-b",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("prov-y"),
@@ -308,7 +308,7 @@ async fn test_admin_v1_pool_detail_live_status() {
         .lane(
             LaneSpec::new(
                 "m1",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("p"),
@@ -420,7 +420,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         .lane(
             LaneSpec::new(
                 "m1",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("p"),
@@ -935,7 +935,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let mut app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1068,7 +1068,7 @@ pools:
     let mut app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1760,7 +1760,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -4127,7 +4127,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         .lane(
             LaneSpec::new(
                 "m",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1/",
             )
             .provider("prov"),
@@ -5152,7 +5152,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:0",
         ))
         .pool("smart", &[(0, 1)])

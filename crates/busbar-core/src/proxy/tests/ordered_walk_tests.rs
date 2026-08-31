@@ -10,17 +10,17 @@ fn three_lane_app() -> std::sync::Arc<crate::state::App> {
     TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m1",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m2",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1), (1, 1), (2, 1)])
@@ -332,7 +332,7 @@ async fn excluded_reasons_records_at_capacity() {
         .lane(
             LaneSpec::new(
                 "m0",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://localhost",
             )
             .max(1),
@@ -369,7 +369,7 @@ async fn sticky_fall_through_records_reason() {
         .lane(
             LaneSpec::new(
                 "m0",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://localhost",
             )
             .max(1),

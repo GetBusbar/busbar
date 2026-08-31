@@ -282,7 +282,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "observe-residual-model",
-            busbar_core::proto::Protocol::openai(),
+            busbar_core::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool(POOL, &[(0, 1)])
@@ -636,7 +636,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                busbar_core::proto::Protocol::anthropic(),
+                busbar_core::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),

@@ -82,38 +82,37 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
 /// it always was (exercised here to show the decline is safe, not wrong).
 #[test]
 fn head_pristine_matches_translate_output() {
-    use crate::proto::Protocol;
-    let cases: &[(Protocol, &'static str, &'static str, Value)] = &[
+    let cases: &[(&'static str, &'static str, &'static str, Value)] = &[
         // (proto, name, lane_model, body) — pristine expected
         (
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "openai",
             "gpt-4o",
             json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}),
         ),
         (
-            Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "anthropic",
             "claude-3",
             json!({"model":"claude-3","max_tokens":7,"messages":[]}),
         ),
         // model differs → not head-pristine (translate rewrites)
         (
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "openai",
             "gpt-4o-real",
             json!({"model":"alias","messages":[]}),
         ),
         // shim key present → not head-pristine
         (
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "openai",
             "gpt-4o",
             json!({"model":"gpt-4o","__busbar_gemini_json_array":true}),
         ),
         // gemini: no body model → not head-pristine (conservative), translate still byte-identical
         (
-            Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             "gemini",
             "url-model-x",
             json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}]}),
@@ -121,11 +120,7 @@ fn head_pristine_matches_translate_output() {
     ];
     for (proto, name, lane_model, body) in cases {
         let app = TestApp::new()
-            .lane(LaneSpec::new(
-                lane_model,
-                proto.clone(),
-                "http://unused.local",
-            ))
+            .lane(LaneSpec::new(lane_model, *proto, "http://unused.local"))
             .build();
         let hop_bytes = Bytes::from(crate::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
@@ -160,7 +155,7 @@ fn non_object_body_is_head_pristine() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();

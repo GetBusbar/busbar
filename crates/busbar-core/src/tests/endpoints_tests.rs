@@ -33,17 +33,17 @@ fn topology_app() -> Arc<App> {
     TestApp::new()
         .lane(LaneSpec::new(
             "model-a0",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://a0",
         ))
         .lane(LaneSpec::new(
             "model-a1",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://a1",
         ))
         .lane(LaneSpec::new(
             "model-b",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://b",
         ))
         .pool("pool-a", &[(0, 1), (1, 1)])
@@ -129,12 +129,12 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("bounded", crate::proto::Protocol::openai(), "http://b")
+            LaneSpec::new("bounded", crate::proto::PROTO_OPENAI, "http://b")
                 .max(1)
                 .sem(sem.clone()),
         )
         .lane(
-            LaneSpec::new("unbounded", crate::proto::Protocol::openai(), "http://u")
+            LaneSpec::new("unbounded", crate::proto::PROTO_OPENAI, "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("p", &[(0, 1), (1, 1)])
@@ -210,7 +210,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("wedged", crate::proto::Protocol::openai(), "http://w")
+            LaneSpec::new("wedged", crate::proto::PROTO_OPENAI, "http://w")
                 .max(1)
                 .sem(sem.clone()),
         )

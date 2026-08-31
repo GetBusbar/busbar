@@ -10,7 +10,6 @@
 //! native 400.
 
 use super::translate_request_cross_protocol;
-use crate::proto::Protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
@@ -27,7 +26,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            Protocol::cohere(),
+            crate::proto::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();
@@ -64,7 +63,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            Protocol::cohere(),
+            crate::proto::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();
@@ -101,7 +100,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gemini-1.5-pro",
-            Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();
@@ -138,7 +137,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -179,7 +178,7 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            Protocol::cohere(),
+            crate::proto::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();

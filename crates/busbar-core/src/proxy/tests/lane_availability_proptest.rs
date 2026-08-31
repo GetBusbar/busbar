@@ -281,7 +281,7 @@ async fn run_world(world: World) -> Disposition {
     for (i, m) in all.iter().enumerate() {
         let model = format!("m{i}");
         let mut spec =
-            LaneSpec::new(&model, crate::proto::Protocol::anthropic(), &url).provider("p");
+            LaneSpec::new(&model, crate::proto::PROTO_ANTHROPIC, &url).provider("p");
         match m.cap {
             Cap::Unbounded => spec = spec.max(tokio::sync::Semaphore::MAX_PERMITS),
             Cap::BoundedFree(c) => spec = spec.max(c),
@@ -604,7 +604,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("p")
@@ -614,7 +614,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
         .lane(
             LaneSpec::new(
                 "spare",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("p"),
@@ -676,7 +676,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
             .lane(
                 LaneSpec::new(
                     "busy",
-                    crate::proto::Protocol::anthropic(),
+                    crate::proto::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("p")
@@ -686,7 +686,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
             .lane(
                 LaneSpec::new(
                     "overflow",
-                    crate::proto::Protocol::anthropic(),
+                    crate::proto::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("p")

@@ -44,7 +44,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("pa", &[(0, 1)])
@@ -157,7 +157,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("pa", &[(0, 1)])

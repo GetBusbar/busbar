@@ -1,11 +1,10 @@
 use super::translate_request_cross_protocol;
-use crate::proto::Protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
 // Build a single-lane App whose one lane speaks `proto` with the given `lane_model`. The lane
 // base_url is unused (the short-circuit never dispatches). `i == 0` is the lane index.
-fn app_with_lane(proto: Protocol, lane_model: &str) -> std::sync::Arc<crate::state::App> {
+fn app_with_lane(proto: &'static str, lane_model: &str) -> std::sync::Arc<crate::state::App> {
     TestApp::new()
         .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
         .build()
@@ -13,7 +12,7 @@ fn app_with_lane(proto: Protocol, lane_model: &str) -> std::sync::Arc<crate::sta
 
 // Drive the request seam for a SAME-protocol hop (ingress == egress) and return the egress bytes.
 fn shape_same_proto(
-    proto: Protocol,
+    proto: &'static str,
     proto_name: &'static str,
     lane_model: &str,
     body: serde_json::Value,
@@ -42,24 +41,24 @@ fn shape_same_proto(
 // == lane.model and no shim keys, so NOTHING mutates → short-circuit emits the original bytes.
 #[test]
 fn pristine_same_proto_is_byte_identical_body_model() {
-    let cases: &[(Protocol, &'static str, serde_json::Value)] = &[
+    let cases: &[(&'static str, &'static str, serde_json::Value)] = &[
         (
-            Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "anthropic",
             json!({"model":"claude-3","max_tokens":7,"messages":[{"role":"user","content":"hi"}]}),
         ),
         (
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "openai",
             json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":0.5}),
         ),
         (
-            Protocol::cohere(),
+            crate::proto::PROTO_COHERE,
             "cohere",
             json!({"model":"command-r","messages":[{"role":"user","content":"hi"}]}),
         ),
         (
-            Protocol::responses(),
+            crate::proto::PROTO_RESPONSES,
             "responses",
             json!({"model":"gpt-4o","input":"hi"}),
         ),
@@ -68,7 +67,7 @@ fn pristine_same_proto_is_byte_identical_body_model() {
         // lane.model == body.model → rewrite_model_if_needed is a no-op (#3 not triggered).
         let lane_model = body.get("model").and_then(|m| m.as_str()).unwrap();
         let hop_bytes = crate::json::to_vec(body).unwrap();
-        let out = shape_same_proto(proto.clone(), name, lane_model, body.clone());
+        let out = shape_same_proto(*proto, name, lane_model, body.clone());
         assert_eq!(
             out, hop_bytes,
             "{name}: pristine same-proto request must short-circuit to the retained original bytes"
@@ -85,7 +84,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // Body-model protocol: rewrite_model_if_needed installs `upstream_model`.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", Protocol::openai(), "http://unused.local")
+            LaneSpec::new("config-key", crate::proto::PROTO_OPENAI, "http://unused.local")
                 .upstream_model("upstream-real"),
         )
         .build();
@@ -113,7 +112,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // URL-model protocol: upstream_path_for_stream embeds upstream_model in the path.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", Protocol::bedrock(), "http://unused.local")
+            LaneSpec::new("config-key", crate::proto::PROTO_BEDROCK, "http://unused.local")
                 .upstream_model("upstream.real/model"),
         )
         .build();
@@ -139,7 +138,7 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
         .lane(
             LaneSpec::new(
                 "claude-3-5-sonnet",
-                Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "https://us-central1-aiplatform.googleapis.com",
             )
             .path_base(vbase),
@@ -178,14 +177,14 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
 // MODEL-IN-URL protocols (gemini/bedrock): a pristine native request carries NO body `model`
 #[test]
 fn pristine_same_proto_is_byte_identical_url_model() {
-    let cases: &[(Protocol, &'static str, serde_json::Value)] = &[
+    let cases: &[(&'static str, &'static str, serde_json::Value)] = &[
         (
-            Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             "gemini",
             json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}]}),
         ),
         (
-            Protocol::bedrock(),
+            crate::proto::PROTO_BEDROCK,
             "bedrock",
             json!({"messages":[{"role":"user","content":[{"text":"hi"}]}]}),
         ),
@@ -197,7 +196,7 @@ fn pristine_same_proto_is_byte_identical_url_model() {
         // default rewrite inserts the lane model which the same-proto strip then removes — a net
         // no-op on the Value, so canonical re-serialization still yields the identical bytes. Both
         // satisfy the byte-fidelity contract (the test that matters); only the path differs.
-        let out = shape_same_proto(proto.clone(), name, "url-model-x", body.clone());
+        let out = shape_same_proto(*proto, name, "url-model-x", body.clone());
         assert_eq!(
             out, hop_bytes,
             "{name}: pristine same-proto url-model request egress must be byte-identical to input"
@@ -217,7 +216,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
         .expect("gemini declares a json-array shim key");
     let body = json!({"model":"gpt-4o","messages":[],(gemini_array_shim_key):true});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::openai(), "openai", "gpt-4o", body);
+    let out = shape_same_proto(crate::proto::PROTO_OPENAI, "openai", "gpt-4o", body);
     assert_ne!(
         out, hop_bytes,
         "#1: array-shim key present must invalidate the short-circuit"
@@ -234,7 +233,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
 fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
     let body = json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::gemini(), "gemini", "url-model-x", body);
+    let out = shape_same_proto(crate::proto::PROTO_GEMINI, "gemini", "url-model-x", body);
     assert_ne!(
         out, hop_bytes,
         "#2: `stream` on a path-model egress must invalidate"
@@ -252,7 +251,7 @@ fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
 fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
     let body = json!({"model":"gpt-4o","messages":[],"stream":true});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::openai(), "openai", "gpt-4o", body);
+    let out = shape_same_proto(crate::proto::PROTO_OPENAI, "openai", "gpt-4o", body);
     assert_eq!(
         out, hop_bytes,
         "#2 neg: `stream` on a body-model egress must be PRESERVED → request stays pristine"
@@ -265,7 +264,7 @@ fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
 fn invalidator_3_model_rewrite_forces_non_pristine() {
     let body = json!({"model":"client-alias","messages":[]});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::openai(), "openai", "gpt-4o-real", body);
+    let out = shape_same_proto(crate::proto::PROTO_OPENAI, "openai", "gpt-4o-real", body);
     assert_ne!(
         out, hop_bytes,
         "#3: a model alias differing from lane.model must invalidate"
@@ -283,7 +282,7 @@ fn invalidator_3_model_rewrite_forces_non_pristine() {
 fn invalidator_3_matching_model_stays_pristine() {
     let body = json!({"model":"gpt-4o-real","messages":[]});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::openai(), "openai", "gpt-4o-real", body);
+    let out = shape_same_proto(crate::proto::PROTO_OPENAI, "openai", "gpt-4o-real", body);
     assert_eq!(
         out, hop_bytes,
         "#3 neg: a body model already matching lane.model must NOT invalidate (byte-identical)"
@@ -296,7 +295,7 @@ fn invalidator_3_matching_model_stays_pristine() {
 fn invalidator_4_same_proto_model_shim_strip_forces_non_pristine() {
     let body = json!({"model":"router-shim","contents":[{"role":"user","parts":[{"text":"hi"}]}]});
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::gemini(), "gemini", "url-model-x", body);
+    let out = shape_same_proto(crate::proto::PROTO_GEMINI, "gemini", "url-model-x", body);
     assert_ne!(
         out, hop_bytes,
         "#4: a same-proto path-model body `model` must invalidate"
@@ -331,7 +330,7 @@ fn same_proto_gemini_thought_signature_round_trips_verbatim() {
         ]
     });
     let hop_bytes = crate::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(Protocol::gemini(), "gemini", "url-model-x", body);
+    let out = shape_same_proto(crate::proto::PROTO_GEMINI, "gemini", "url-model-x", body);
     assert_eq!(
         out, hop_bytes,
         "same-proto gemini->gemini functionCall+thoughtSignature must relay byte-identically"

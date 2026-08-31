@@ -62,7 +62,7 @@ fn fixture() -> (
         .lane(
             crate::test_support::LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("openai")

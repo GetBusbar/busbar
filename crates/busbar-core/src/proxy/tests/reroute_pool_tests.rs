@@ -91,12 +91,12 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "primary",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &primary.base_url(),
         ))
         .lane(LaneSpec::new(
             "twin",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &twin.base_url(),
         ))
         // The test `forward` helper dispatches against the default (`""`) pool cell.
@@ -202,7 +202,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &primary.base_url(),
             )
             // One slot, which the test then holds for the whole request.
@@ -210,7 +210,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         )
         .lane(LaneSpec::new(
             "twin",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &twin.base_url(),
         ))
         .pool("", &[(0, 1), (1, 1)])

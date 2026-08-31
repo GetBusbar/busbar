@@ -100,11 +100,11 @@ async fn a_governed_deployment(
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::Protocol::anthropic(), &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
                 "B",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),

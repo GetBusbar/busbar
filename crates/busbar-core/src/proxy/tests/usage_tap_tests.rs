@@ -288,7 +288,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "m",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -373,7 +373,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "m",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -479,7 +479,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai")

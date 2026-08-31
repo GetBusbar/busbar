@@ -671,7 +671,7 @@ async fn test_cohere_ingress_to_openai_backend() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -722,7 +722,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -780,7 +780,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
     // The lane MODEL is "foo" so that resolution via the path model proves the path parse.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -900,7 +900,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -1000,7 +1000,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // into the client's native binary eventstream framing.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -1132,7 +1132,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     // path-independent — it keys off the upstream Content-Type, not the URL).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::bedrock(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1269,7 +1269,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
     // relay under test is path-independent (it keys off the upstream Content-Type).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::bedrock(), &upstream_base)
+            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &upstream_base)
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1361,7 +1361,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     // point the lane's upstream path at a route the mock answers.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::bedrock(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1444,7 +1444,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -1506,7 +1506,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai"),
@@ -1575,7 +1575,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
     // `/model/{model}/converse`, which the mock does not serve.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::bedrock(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1645,7 +1645,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
     // model and action, which the mock does not serve.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::gemini(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_GEMINI, &server.base_url())
                 .provider("google")
                 .path("/v1/messages"),
         )
@@ -1700,7 +1700,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -1788,7 +1788,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -1870,7 +1870,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -1942,7 +1942,7 @@ async fn test_body_model_parse_error_is_observable() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -1985,7 +1985,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -2039,7 +2039,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(MODEL, crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new(MODEL, crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool(POOL, &[(0, 1)])
@@ -2120,7 +2120,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         .lane(
             LaneSpec::new(
                 "rekey-model",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -2227,7 +2227,7 @@ async fn timing_gate_hot_path_p50_p99() {
         .lane(
             LaneSpec::new(
                 "timing-gate-model",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -2289,7 +2289,7 @@ async fn test_body_model_missing_model_is_observable() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -2330,7 +2330,7 @@ async fn test_path_model_non_object_body_is_observable() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -2372,7 +2372,7 @@ async fn test_gemini_unsupported_action_is_observable() {
         .lane(
             LaneSpec::new(
                 "foo",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -2452,7 +2452,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -2520,7 +2520,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -2594,7 +2594,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -2653,7 +2653,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     // OpenAI SSE into Anthropic SSE via the writer's `write_response_event`.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -2720,7 +2720,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -3104,7 +3104,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
         .lane(
             LaneSpec::new(
                 "tunedModels/abc:1",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -4144,7 +4144,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai"),
@@ -4234,7 +4234,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("co", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("co", &[(0, 1)])
@@ -4322,7 +4322,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("re", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("re", &[(0, 1)])
@@ -4407,7 +4407,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
         .lane(
             LaneSpec::new(
                 "anthropic.claude-3:haiku",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -4474,7 +4474,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("co", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("co", &[(0, 1)])
@@ -4548,7 +4548,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("re", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("re", &[(0, 1)])
@@ -4656,12 +4656,12 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL_BAD,
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &bad_server.base_url(),
         ))
         .lane(LaneSpec::new(
             MODEL_GOOD,
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &good_server.base_url(),
         ))
         // Weight 100 vs 1: the failing member is guaranteed to be tried FIRST (see determinism
@@ -4742,12 +4742,12 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL_BAD,
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &bad_server.base_url(),
         ))
         .lane(LaneSpec::new(
             MODEL_GOOD,
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &good_server.base_url(),
         ))
         // Same determinism trick: member 1 (the one that fails mid-stream) is guaranteed first.
@@ -4930,7 +4930,7 @@ async fn test_no_client_error_message_carries_router_prefix() {
 /// request is otherwise valid. Returns `(addr, handle, secret)`.
 async fn governed_pool_acl_router(
     model: &str,
-    protocol: crate::proto::Protocol,
+    protocol: &'static str,
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use crate::governance::{GovState, MemoryStore};
@@ -4974,7 +4974,7 @@ async fn governed_pool_acl_router(
 async fn test_governance_pool_acl_403_cohere_native_envelope() {
     crate::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("co", crate::proto::Protocol::openai(), "zai").await;
+        governed_pool_acl_router("co", crate::proto::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
         .bearer_auth(secret)
@@ -5007,7 +5007,7 @@ async fn test_governance_pool_acl_403_cohere_native_envelope() {
 async fn test_governance_pool_acl_403_responses_native_envelope() {
     crate::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("re", crate::proto::Protocol::openai(), "zai").await;
+        governed_pool_acl_router("re", crate::proto::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
         .bearer_auth(secret)
@@ -5047,7 +5047,7 @@ async fn test_governance_pool_acl_403_responses_native_envelope() {
 async fn test_governance_pool_acl_403_openai_native_envelope() {
     crate::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("gpt-4o", crate::proto::Protocol::openai(), "openai").await;
+        governed_pool_acl_router("gpt-4o", crate::proto::PROTO_OPENAI, "openai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
         .bearer_auth(secret)
@@ -5085,7 +5085,7 @@ async fn test_governance_pool_acl_403_openai_native_envelope() {
 async fn test_governance_pool_acl_403_gemini_native_envelope() {
     crate::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("foo", crate::proto::Protocol::openai(), "zai").await;
+        governed_pool_acl_router("foo", crate::proto::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
         .bearer_auth(secret)
@@ -5129,7 +5129,7 @@ async fn test_governance_pool_acl_403_gemini_native_envelope() {
 async fn test_governance_pool_acl_403_bedrock_native_envelope() {
     crate::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("foo", crate::proto::Protocol::openai(), "zai").await;
+        governed_pool_acl_router("foo", crate::proto::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
         .bearer_auth(secret)
@@ -5226,11 +5226,11 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::Protocol::anthropic(), &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
                 "B",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -5316,11 +5316,11 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::Protocol::anthropic(), &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
                 "B",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -5377,7 +5377,7 @@ async fn test_adhoc_success_round_trip_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -5411,7 +5411,7 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("anthropic"),
@@ -5493,7 +5493,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("anthropic"),
@@ -5628,7 +5628,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -5705,7 +5705,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
@@ -6003,7 +6003,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -6090,7 +6090,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     // through `forward_resolved`'s by_model arm — the site under test.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(model, crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new(model, crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .build();

@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::config::{HealthCfg, HealthMode};
-use crate::proto::Protocol;
 use crate::store::BreakerState;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use axum::http::StatusCode;
@@ -27,7 +26,7 @@ async fn probe_once(resp: MockResponse) -> (Arc<crate::state::App>, MockServer) 
     let server = MockServer::new(state).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -51,7 +50,7 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -145,7 +144,7 @@ async fn test_probe_skips_lane_without_key() {
     // The lane must stay Closed even though no upstream is reachable.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), "http://127.0.0.1:1")
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
                 .api_key("")
                 .health(health_active()),
         )
@@ -170,7 +169,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -224,7 +223,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -273,7 +272,7 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -315,7 +314,7 @@ async fn test_probe_uses_upstream_model_override() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("config-key", Protocol::bedrock(), &server.base_url())
+            LaneSpec::new("config-key", crate::proto::PROTO_BEDROCK, &server.base_url())
                 .api_key("sk-test")
                 .upstream_model("anthropic.claude-3-5-sonnet-20241022-v2:0")
                 .health(health_active()),
@@ -346,7 +345,7 @@ async fn test_probe_uses_upstream_model_override() {
 async fn test_spawn_probers_retains_no_strong_app_ref() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", Protocol::anthropic(), "http://127.0.0.1:1")
+            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
                 .api_key("k")
                 .health(health_active()),
         )
@@ -409,7 +408,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("l", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("l", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(HealthCfg {
                     mode: HealthMode::Active,
@@ -463,7 +462,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("l", Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("l", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(HealthCfg {
                     mode: HealthMode::Active,

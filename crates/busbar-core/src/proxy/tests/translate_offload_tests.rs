@@ -43,7 +43,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])

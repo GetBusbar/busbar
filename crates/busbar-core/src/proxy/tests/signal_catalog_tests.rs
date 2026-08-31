@@ -66,7 +66,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
     let mut builder = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)]);
@@ -161,7 +161,7 @@ async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
         .hook_env(env)
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -237,7 +237,7 @@ async fn breaker_state_projects_open_after_a_trip() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -303,7 +303,7 @@ async fn error_rate_projects_the_outcome_window_fraction() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])

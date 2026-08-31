@@ -521,7 +521,12 @@ pub struct LaneSpec {
     model: String,
     provider: String,
     base_url: String,
-    protocol: std::sync::Arc<crate::proto::Protocol>,
+    // NEUTRAL FIXTURE (plane-extraction §5, Phase 1.5): a lane needs only its protocol's registry
+    // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
+    // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
+    // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
+    // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
+    protocol: &'static str,
     max: usize,
     api_key: String,
     error_map: std::collections::HashMap<String, String>,
@@ -549,12 +554,12 @@ pub struct LaneSpec {
 
 #[allow(dead_code)]
 impl LaneSpec {
-    pub fn new(model: &str, protocol: crate::proto::Protocol, base_url: &str) -> Self {
+    pub fn new(model: &str, protocol: &'static str, base_url: &str) -> Self {
         Self {
             model: model.into(),
             provider: "test-provider".into(),
             base_url: base_url.into(),
-            protocol: std::sync::Arc::new(protocol),
+            protocol,
             max: 10,
             api_key: "k".into(),
             error_map: std::collections::HashMap::new(),
@@ -661,7 +666,7 @@ impl LaneSpec {
             "bearer" => crate::config::ProviderAuth::Bearer,
             other => panic!("unexpected test auth style in LaneSpec: {other}"),
         });
-        let credential = crate::egress_auth::resolve(self.protocol.name(), auth);
+        let credential = crate::egress_auth::resolve(self.protocol, auth);
         crate::state::Lane {
             // The REAL boot prebuild (same as production appbuild), so the engine's prebuilt-vs-live
             // header paths are both exercised by the fixture protocols' real credentials.
@@ -674,7 +679,7 @@ impl LaneSpec {
             // reads (and the probe/forward byte-identity proofs cover it). Test base URLs always
             // parse; a fixture that breaks that should fail loudly here.
             egress_targets: crate::proxy::build_egress_targets(
-                self.protocol.name_static(),
+                self.protocol,
                 self.path.as_deref(),
                 self.path_base.as_deref(),
                 self.upstream_model.as_deref().unwrap_or(&self.model),
@@ -690,8 +695,8 @@ impl LaneSpec {
             base_url: self.base_url.clone(),
             api_key: busbar_api::Redacted::new(self.api_key.clone()),
             // G6 A4b Lane inversion: `Lane.protocol` is the interned protocol NAME now, not an
-            // `Arc<Protocol>`. The builder still holds the fixture `Protocol` for `.name()`/credential.
-            protocol: self.protocol.name_static(),
+            // `Arc<Protocol>`. The builder holds that interned name directly (Phase 1.5 neutral fixture).
+            protocol: self.protocol,
             max: self.max,
             error_map: std::sync::Arc::new(self.error_map.clone()),
             context_max: self.context_max,

@@ -88,7 +88,7 @@ fn route_policy_headers_absent_when_both_gates_closed() {
 // ══ THE UNRESOLVED-INGRESS ERROR SHAPE IS CORE'S OWN, NOT A DIALECT'S ═════════════════════════════
 //
 // `ingress_error`/`mid_stream_error_bytes` used to resolve an unknown ingress name to
-// `Protocol::responses()` and shape the error with THAT dialect's writer. Every LLM dialect is a
+// `crate::proto::PROTO_RESPONSES` and shape the error with THAT dialect's writer. Every LLM dialect is a
 // droppable plugin (`busbar-llm`) now, so there is no dialect core can promise is linked, and the
 // fallback became core's own (`agnostic_error_envelope`/`agnostic_stream_error_frame`).
 //

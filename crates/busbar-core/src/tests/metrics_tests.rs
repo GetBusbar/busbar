@@ -151,7 +151,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-a", &[(0, 1)])
@@ -214,7 +214,7 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-b", &[(0, 1)])
@@ -298,7 +298,7 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-b", &[(0, 1)])
@@ -362,7 +362,7 @@ fn test_scrape_gauges_lane_state_no_governance() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "model-x",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://x",
         ))
         .pool("pool-x", &[(0, 1)])
@@ -409,7 +409,7 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("cap-model", crate::proto::Protocol::openai(), "http://c")
+            LaneSpec::new("cap-model", crate::proto::PROTO_OPENAI, "http://c")
                 .max(1)
                 .sem(sem.clone()),
         )
@@ -486,7 +486,7 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("unb-model", crate::proto::Protocol::openai(), "http://u")
+            LaneSpec::new("unb-model", crate::proto::PROTO_OPENAI, "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("unb-pool", &[(0, 1)])
@@ -519,7 +519,7 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "brk-model",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://b",
         ))
         .pool("brk-pool", &[(0, 1)])
@@ -558,7 +558,7 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "q-model",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://q",
         ))
         .pool("q-pool", &[(0, 1)])
@@ -583,7 +583,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "q-live-model",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://q",
         ))
         .pool("q-live-pool", &[(0, 1)])
@@ -691,7 +691,7 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "model-broken",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://broken",
         ))
         .pool("pool-broken", &[(0, 1)])
@@ -728,7 +728,7 @@ fn test_lane_state_healthy_is_zero() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "model-h",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://h",
         ))
         .pool("pool-h", &[(0, 1)])
@@ -774,7 +774,7 @@ fn test_lane_state_half_open_via_sibling_pool_cell() {
     let (app, store) = TestApp::new()
         .lane(LaneSpec::new(
             "model-ho",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://ho",
         ))
         .pool("pool-tripped", &[(0, 1)])
@@ -836,7 +836,7 @@ fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
     let (app, store) = TestApp::new()
         .lane(LaneSpec::new(
             "model-by",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://by",
         ))
         .pool("some-pool", &[(0, 1)])
@@ -885,7 +885,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     let (app, store) = TestApp::new()
         .lane(LaneSpec::new(
             "model-zero",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://zero",
         ))
         .pool("poolX", &[(0, 1)])
@@ -981,7 +981,7 @@ fn test_key_gauge_limit_truncation() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-limit", &[(0, 1)])
@@ -1058,7 +1058,7 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
     TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-bound", &[(0, 1)])
@@ -1122,7 +1122,7 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://m",
         ))
         .pool("pool-ci", &[(0, 1)])

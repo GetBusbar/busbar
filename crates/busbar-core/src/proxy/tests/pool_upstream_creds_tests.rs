@@ -5,7 +5,6 @@
 //! for every combination of {override present / absent} × {pool known / unknown}.
 
 use crate::auth::UpstreamCreds;
-use crate::proto::Protocol;
 use crate::state::PoolRuntime;
 use crate::test_support::{LaneSpec, TestApp};
 
@@ -15,7 +14,7 @@ use crate::test_support::{LaneSpec, TestApp};
 fn no_override_fast_path_returns_all_pools_default() {
     for default in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
         let app = TestApp::new()
-            .lane(LaneSpec::new("m0", Protocol::openai(), "http://localhost"))
+            .lane(LaneSpec::new("m0", crate::proto::PROTO_OPENAI, "http://localhost"))
             .pool("p", &[(0, 1)])
             .upstream_creds(default)
             .build();
@@ -37,8 +36,8 @@ fn no_override_fast_path_returns_all_pools_default() {
 #[test]
 fn override_present_runs_full_lookup() {
     let app = TestApp::new()
-        .lane(LaneSpec::new("m0", Protocol::openai(), "http://localhost"))
-        .lane(LaneSpec::new("m1", Protocol::openai(), "http://localhost"))
+        .lane(LaneSpec::new("m0", crate::proto::PROTO_OPENAI, "http://localhost"))
+        .lane(LaneSpec::new("m1", crate::proto::PROTO_OPENAI, "http://localhost"))
         .pool("base", &[(0, 1)])
         .pool("pt", &[(1, 1)])
         // All-pools default is Own; the `pt` pool overrides to Passthrough.

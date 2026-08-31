@@ -59,7 +59,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])
@@ -119,7 +119,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])

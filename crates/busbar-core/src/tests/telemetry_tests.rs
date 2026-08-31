@@ -18,8 +18,8 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// families and are exercised in `plane::metrics_tests` / `a2a::relay_tests`.
 const LLM: &str = "llm";
 
-fn openai() -> crate::proto::Protocol {
-    crate::proto::Protocol::openai()
+fn openai() -> &'static str {
+    crate::proto::PROTO_OPENAI
 }
 
 /// Multi-thread adds must sum exactly, INCLUDING while a concurrent scraper is flushing the bank

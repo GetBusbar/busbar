@@ -86,7 +86,7 @@ async fn cross_protocol_response_reports_routed_lane_model_when_upstream_omits_i
     let app = TestApp::new()
         .lane(LaneSpec::new(
             LANE_MODEL,
-            crate::proto::Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])
@@ -148,7 +148,7 @@ async fn cross_protocol_response_never_overrides_an_upstream_provided_model() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             LANE_MODEL,
-            crate::proto::Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])

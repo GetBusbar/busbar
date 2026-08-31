@@ -408,7 +408,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -534,7 +534,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -613,7 +613,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai")
@@ -745,7 +745,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "glm-4.5",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -881,7 +881,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "glm-4.5",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -990,7 +990,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1121,7 +1121,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1195,7 +1195,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1296,7 +1296,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1395,7 +1395,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .api_key("sk-operator-secret"),
@@ -1480,7 +1480,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
         .lane(
             LaneSpec::new(
                 "claude-bedrock",
-                crate::proto::Protocol::bedrock(),
+                crate::proto::PROTO_BEDROCK,
                 &server.base_url(),
             )
             .provider("aws"),
@@ -1568,7 +1568,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -1645,7 +1645,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -1721,7 +1721,7 @@ data: {"type":"message_stop"}"#
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -1791,7 +1791,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -1921,7 +1921,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic")
@@ -2030,7 +2030,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic")
@@ -2121,7 +2121,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::bedrock(),
+                crate::proto::PROTO_BEDROCK,
                 &server.base_url(),
             )
             .provider("aws")
@@ -2206,7 +2206,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -2286,7 +2286,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -2408,7 +2408,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -2497,7 +2497,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai"),
@@ -2571,7 +2571,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai"),
@@ -2661,7 +2661,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai")
@@ -2767,7 +2767,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai"),
@@ -2846,7 +2846,7 @@ async fn test_truncated_body_does_not_refund_budget() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("openai")
@@ -2939,7 +2939,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1", // never reached: parse fails before any egress
         ))
         .pool("p", &[(0, 1)])
@@ -3006,7 +3006,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         .lane(
             LaneSpec::new(
                 "m",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .budget(1),
@@ -3113,7 +3113,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3196,7 +3196,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 
     // Lane 0: OpenAI, budget-limited with a single remaining unit (matches the 2xx-headers spend).
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::Protocol::openai(), "http://127.0.0.1:1").budget(1))
+        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").budget(1))
         .pool("p", &[(0, 1)])
         .build();
 
@@ -3306,7 +3306,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3451,7 +3451,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3556,7 +3556,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3661,7 +3661,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
         .lane(
             LaneSpec::new(
                 "m",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .budget(1),
@@ -3741,7 +3741,7 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),

@@ -20,7 +20,7 @@ fn forward_future_size_is_pinned() {
     let app = crate::test_support::TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("", &[(0, 1)])

@@ -29,14 +29,14 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("primary", &[(0, 1)])
@@ -112,14 +112,14 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1", // connect-refused → forward_once Err(transport) arm
         ))
         .pool("primary", &[(0, 1)])
@@ -198,14 +198,14 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("primary", &[(0, 1)])
@@ -306,7 +306,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         .lane(
             LaneSpec::new(
                 "a-origin",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
@@ -315,7 +315,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         .lane(
             LaneSpec::new(
                 "b-member",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
@@ -323,7 +323,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         // Lane 2: pool A's FALLBACK member — LIVE. Only reached if the cycle re-enters A (bug).
         .lane(LaneSpec::new(
             "a-fallback",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("A", &[(0, 1)])
@@ -397,7 +397,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .dead("administratively down for test"),
@@ -405,7 +405,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .lane(
             LaneSpec::new(
                 "fbmember",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .budget(1),
@@ -495,12 +495,12 @@ fn test_metric_pool_label_resolves_model_for_default_cell() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-sonnet",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .build();

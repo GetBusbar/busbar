@@ -147,7 +147,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
         .lane(
             LaneSpec::new(
                 "alpha",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_a.base_url(),
             )
             .provider("p"),
@@ -155,7 +155,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
         .lane(
             LaneSpec::new(
                 "beta",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_b.base_url(),
             )
             .provider("p"),
@@ -212,7 +212,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         .lane(
             LaneSpec::new(
                 "gone",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_dead.base_url(),
             )
             .provider("p")
@@ -221,7 +221,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         .lane(
             LaneSpec::new(
                 "soon",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_soon.base_url(),
             )
             .provider("p"),
@@ -272,7 +272,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
         .lane(
             LaneSpec::new(
                 "solo",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("p"),
@@ -319,7 +319,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_primary.base_url(),
             )
             .provider("p"),
@@ -327,7 +327,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "spare",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_ok.base_url(),
             )
             .provider("p"),
@@ -335,7 +335,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "blocked",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server_blocked.base_url(),
             )
             .provider("p"),
@@ -443,7 +443,7 @@ fn saturated() -> (
 fn saturated_lane(model: &str, sem: &std::sync::Arc<tokio::sync::Semaphore>) -> LaneSpec {
     LaneSpec::new(
         model,
-        crate::proto::Protocol::anthropic(),
+        crate::proto::PROTO_ANTHROPIC,
         "http://127.0.0.1:1",
     )
     .provider("p")
@@ -553,7 +553,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
         .lane(
             LaneSpec::new(
                 "fast",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &fast.base_url(),
             )
             .provider("p"),
@@ -625,7 +625,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
         .lane(
             LaneSpec::new(
                 "fast",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &fast.base_url(),
             )
             .provider("p")
@@ -679,7 +679,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
         .lane(
             LaneSpec::new(
                 "fast",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &fast.base_url(),
             )
             .provider("p"),
@@ -718,7 +718,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
         .lane(
             LaneSpec::new(
                 "tripped",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
@@ -754,7 +754,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
         .lane(saturated_lane("a", &sem_a)) // idx 0 — pool A
         .lane(saturated_lane("b", &sem_b)) // idx 1 — pool B
         .lane(
-            LaneSpec::new("c", crate::proto::Protocol::anthropic(), &fast.base_url()).provider("p"),
+            LaneSpec::new("c", crate::proto::PROTO_ANTHROPIC, &fast.base_url()).provider("p"),
         ) // idx 2 — pool C (fast)
         .pool("pa", &[(0, 1)])
         .failover(long_failover())
@@ -847,7 +847,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
@@ -855,7 +855,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
         .lane(
             LaneSpec::new(
                 "fast",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &fast.base_url(),
             )
             .provider("p"),
@@ -901,7 +901,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .lane(
             LaneSpec::new(
                 "sibling",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &sibling.base_url(),
             )
             .provider("p"),
@@ -960,7 +960,7 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
         .lane(
             LaneSpec::new(
                 "tripped",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
@@ -1017,7 +1017,7 @@ fn retry_after_empty_candidate_set_uses_floor_not_one() {
         .lane(
             LaneSpec::new(
                 "m",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
@@ -1043,7 +1043,7 @@ fn retry_after_empty_candidate_set_uses_floor_not_one() {
 /// A lane wired to a REAL mock server AND a shared 1-permit semaphore: at-capacity while the test
 /// holds the permit, dispatchable once the test frees it (so the queue can actually serve on it).
 fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>) -> LaneSpec {
-    LaneSpec::new(model, crate::proto::Protocol::anthropic(), base_url)
+    LaneSpec::new(model, crate::proto::PROTO_ANTHROPIC, base_url)
         .provider("p")
         .max(1)
         .sem(sem.clone())
@@ -1244,7 +1244,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
         .lane(
             LaneSpec::new(
                 "svc",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("p")
@@ -1479,7 +1479,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
         .lane(
             LaneSpec::new(
                 "down",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),

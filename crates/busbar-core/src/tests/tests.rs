@@ -543,7 +543,7 @@ async fn split_admin_listener_no_double_exposure() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])

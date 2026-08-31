@@ -993,7 +993,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1122,7 +1122,7 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1221,7 +1221,7 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1304,7 +1304,7 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1382,7 +1382,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -1495,7 +1495,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         .lane(
             LaneSpec::new(
                 "glm-4.5",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -2198,7 +2198,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -2325,7 +2325,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -2449,7 +2449,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -2544,7 +2544,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3158,7 +3158,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3246,7 +3246,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3338,7 +3338,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3415,7 +3415,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3524,7 +3524,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3635,7 +3635,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3763,7 +3763,7 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-upstream-key"),
@@ -3884,7 +3884,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     // Default auth = empty chain (open front door). Admin token present (governance active).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -3918,7 +3918,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     let (gov, _secret) = dp_gov_with_key();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -3954,7 +3954,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     let key_id = gov.all_keys().unwrap()[0].id.clone();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -3998,7 +3998,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     let (gov, secret) = dp_gov_with_key();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -4034,7 +4034,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     gov.update_key(&key_id, Some(false), None).unwrap(); // freeze it
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -4073,7 +4073,7 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
     );
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
@@ -4232,7 +4232,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])

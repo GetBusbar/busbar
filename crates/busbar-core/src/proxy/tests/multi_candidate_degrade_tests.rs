@@ -10,7 +10,6 @@
 
 use super::translate_request_cross_protocol;
 use crate::operation::Operation;
-use crate::proto::Protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
@@ -28,7 +27,7 @@ fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -72,7 +71,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -110,7 +109,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            Protocol::openai(),
+            crate::proto::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -146,7 +145,7 @@ fn single_candidate_cross_protocol_is_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -183,7 +182,7 @@ fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "text-embedding-004",
-            Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();
@@ -222,7 +221,7 @@ fn single_input_embeddings_to_gemini_is_allowed() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "text-embedding-004",
-            Protocol::gemini(),
+            crate::proto::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();

@@ -50,12 +50,12 @@ fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
 #[test]
 fn egress_targets_match_reference_composition_all_protocols() {
     for proto in [
-        crate::proto::Protocol::openai(),
-        crate::proto::Protocol::anthropic(),
-        crate::proto::Protocol::gemini(),
-        crate::proto::Protocol::cohere(),
-        crate::proto::Protocol::bedrock(),
-        crate::proto::Protocol::responses(),
+        crate::proto::PROTO_OPENAI,
+        crate::proto::PROTO_ANTHROPIC,
+        crate::proto::PROTO_GEMINI,
+        crate::proto::PROTO_COHERE,
+        crate::proto::PROTO_BEDROCK,
+        crate::proto::PROTO_RESPONSES,
     ] {
         let app = TestApp::new()
             .lane(LaneSpec::new("m-1", proto, "http://127.0.0.1:1"))
@@ -73,7 +73,7 @@ fn egress_targets_honor_azure_path_override_with_query() {
         .lane(
             LaneSpec::new(
                 "gpt-4o",
-                crate::proto::Protocol::openai(),
+                crate::proto::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .path("/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"),
@@ -102,7 +102,7 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
         .lane(
             LaneSpec::new(
                 "claude",
-                crate::proto::Protocol::bedrock(),
+                crate::proto::PROTO_BEDROCK,
                 "http://127.0.0.1:1",
             )
             .upstream_model("anthropic.claude-3-sonnet-20240229-v1:0"),

@@ -80,7 +80,7 @@ async fn run(
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -159,7 +159,7 @@ async fn global_gate_reject_short_circuits_the_request() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead — a dispatch would fail; the reject must prevent it
         ))
         .pool("p", &[(0, 1)])
@@ -214,7 +214,7 @@ async fn global_gate_abstain_does_not_reject() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -349,12 +349,12 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m1",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("fb", &[(0, 1), (1, 1)])
@@ -441,14 +441,14 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::Protocol::anthropic(),
+                crate::proto::PROTO_ANTHROPIC,
                 "http://localhost",
             )
             .dead("down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -627,7 +627,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -712,7 +712,7 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -738,7 +738,7 @@ async fn completion_tap_reports_ok_outcome() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -763,7 +763,7 @@ async fn attempt_tap_carries_attempt_story() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -794,7 +794,7 @@ async fn route_tap_reports_surviving_candidates() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -860,7 +860,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(), // anthropic ingress → anthropic lane: same-protocol
+            crate::proto::PROTO_ANTHROPIC, // anthropic ingress → anthropic lane: same-protocol
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -907,7 +907,7 @@ async fn pool_scoped_rw_gate_rewrites_the_body() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -951,7 +951,7 @@ async fn on_error_fallback_hook_fires_and_decides() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -990,7 +990,7 @@ async fn on_error_chain_exhausted_applies_terminal() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1033,7 +1033,7 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -1070,7 +1070,7 @@ async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -1096,7 +1096,7 @@ async fn pool_gate_reject_fires_from_pool_runtime_gates() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead — the reject must prevent dispatch
         ))
         .pool("p", &[(0, 1)])
@@ -1126,7 +1126,7 @@ async fn reject_priority_tie_break_surfaces_lowest_priority() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1157,12 +1157,12 @@ async fn multi_restrict_disjoint_intersection_fails_closed() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "eu-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .lane(LaneSpec::new(
             "baa-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1197,12 +1197,12 @@ async fn multi_restrict_intersection_dispatches_only_the_survivor() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "eu-only",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: dispatching here would error, not 200
         ))
         .lane(LaneSpec::new(
             "eu-baa",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &survivor.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1240,12 +1240,12 @@ async fn stale_order_filtered_against_post_restrict_set() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "excluded",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: the stale order names ONLY this lane
         ))
         .lane(LaneSpec::new(
             "kept-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &survivor.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1280,12 +1280,12 @@ async fn order_last_in_chain_wins() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "lane-a",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &alpha.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane-b",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &beta.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1320,17 +1320,17 @@ async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate(
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "base-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &base.base_url(),
         ))
         .lane(LaneSpec::new(
             "low-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &low.base_url(),
         ))
         .lane(LaneSpec::new(
             "excluded-lane",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: never actually reachable, only named by the stale order
         ))
         .pool("p", &[(0, 1), (1, 1), (2, 1)])
@@ -1368,12 +1368,12 @@ async fn global_gate_order_arm_is_honored() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "lane-a",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &alpha.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane-b",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &beta.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1503,7 +1503,7 @@ async fn send_user_projects_governance_key_identity() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1565,7 +1565,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1668,7 +1668,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1763,7 +1763,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1872,7 +1872,7 @@ async fn reject_rides_the_full_forward_path() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://unused.invalid",
         ))
         .pool("pa", &[(0, 1)])
@@ -2011,7 +2011,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -2030,7 +2030,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
     let app2 = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -2056,7 +2056,7 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -2148,7 +2148,7 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::Protocol::anthropic(),
+            crate::proto::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
