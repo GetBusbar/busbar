@@ -5,14 +5,21 @@
 
 use crate::ir::{IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
+// The core-CONSUMED openai-family helpers (`bearer_error_code`/`openai_context_length_prose_scan`
+// reach `crate::proxy::KIND_*`/`crate::breaker`) and the openai-family dialect consts stay in core.
 use busbar_core::proto::openai_family::{
-    bearer_error_code, openai_context_length_prose_scan, ERR_TYPE_AUTHENTICATION,
-    ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED,
-    ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR, OPENAI_FAMILY_DEFAULT_MODEL,
+    bearer_error_code, openai_context_length_prose_scan, OPENAI_FAMILY_DEFAULT_MODEL,
     OPENAI_FAMILY_MAX_OPEN_TOOLS,
 };
+// The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
+// re-export, so this plugin names no `busbar-core` implementation path for it.
 use busbar_core::proto::*;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::{
+    ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_SERVER_ERROR,
+};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).

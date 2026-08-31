@@ -5,13 +5,17 @@
 
 use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
-use busbar_core::proto::openai_family::{
-    bearer_error_code, CODE_INVALID_API_KEY, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
-    ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
-    ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR,
-};
+// `bearer_error_code` (reaches `crate::proxy::KIND_*`) and `CODE_INVALID_API_KEY` stay in core.
+use busbar_core::proto::openai_family::{bearer_error_code, CODE_INVALID_API_KEY};
+// The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
+// re-export, so this plugin names no `busbar-core` implementation path for it.
 use busbar_core::proto::*;
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::{
+    ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_SERVER_ERROR,
+};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
