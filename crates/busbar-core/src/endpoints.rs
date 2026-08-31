@@ -235,11 +235,15 @@ fn list_models_dialect(
     // byte-identical to the prior three-arm `if`: an incidental `x-api-key`/SigV4 on a models-list
     // GET must not steer the envelope, only the two fingerprints the SDKs actually send here do.
     let mut sniff = axum::http::HeaderMap::new();
-    if let Some(v) = headers.get("anthropic-version") {
-        sniff.insert("anthropic-version", v.clone());
-    }
-    if let Some(v) = headers.get("x-goog-api-key") {
-        sniff.insert("x-goog-api-key", v.clone());
+    for &name in crate::proto::known_protocols() {
+        let Some(decl) = crate::proto::decl_for(name) else {
+            continue;
+        };
+        for &hn in decl.list_models_fingerprint_headers {
+            if let Some(v) = headers.get(hn) {
+                sniff.insert(hn, v.clone());
+            }
+        }
     }
     let sniff_path = if gemini_path {
         "/v1beta/models/"

@@ -178,6 +178,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     residual_claims: Some(residual_claims),
     residual_default: false,
     vendor_response_metadata: None,
+    // The Anthropic SDK always sends `anthropic-version`; its presence disambiguates the shared
+    // list-models surface as Anthropic. NARROWER than `claims` on purpose (no `x-api-key`/path).
+    list_models_fingerprint_headers: &["anthropic-version"],
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

@@ -149,6 +149,8 @@ pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto:
     residual_claims: None,
     residual_default: false,
     vendor_response_metadata: None,
+    // MCP serves no model-discovery surface, so it declares no list-models fingerprint header.
+    list_models_fingerprint_headers: &[],
 };
 
 // ══ THE NOTIFICATION HALF ════════════════════════════════════════════════════════════════════════

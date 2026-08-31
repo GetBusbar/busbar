@@ -135,6 +135,8 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     residual_claims: Some(residual_claims),
     residual_default: false,
     vendor_response_metadata: None,
+    // Cohere carries no wire-fingerprint header for the shared list-models surface.
+    list_models_fingerprint_headers: &[],
 };
 
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by

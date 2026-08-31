@@ -5,12 +5,13 @@
 //! re-exports it (glob) so every `crate::egress_auth::gate::…` name resolves unchanged and hosts the
 //! core-only gate tests, which name `crate::admin::audit` and `crate::audit`.
 
-// The gate serves the MCP and A2A egress paths and nothing else; with BOTH compiled out the glob
-// re-export names nothing any in-core caller uses, exactly as the pre-split module read dead there.
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(unused_imports)
-)]
+// This outbound trust/egress auth gate is served only by a trust-fronting plane; with none such
+// compiled in the glob re-export names nothing any in-core caller uses, exactly as the pre-split
+// module read dead there. Gated on the neutral `egress-auth-gate` CAPABILITY marker (naming a
+// capability, not a plane, per plane-purity §2.1) — enabled transitively by `plane-mcp`/`plane-a2a`,
+// so `not(feature = "egress-auth-gate")` is byte-identical to the original
+// `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
+#![cfg_attr(not(feature = "egress-auth-gate"), allow(unused_imports))]
 
 pub use busbar_substrate::egress_auth::gate::*;
 

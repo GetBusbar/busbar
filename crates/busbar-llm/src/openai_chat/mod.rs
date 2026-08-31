@@ -160,6 +160,8 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // request yet a dialect must be named (a bare `GET /v1/models`, an un-resolved degraded response).
     residual_default: true,
     vendor_response_metadata: None,
+    // OpenAI is the residual default for the shared list-models surface — no fingerprint header.
+    list_models_fingerprint_headers: &[],
 };
 
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most

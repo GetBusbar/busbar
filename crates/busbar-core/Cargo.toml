@@ -147,7 +147,7 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # do. Default-on. The binary's `proto-llm` (which also carries the `dep:busbar-llm` edge) forwards to
 # this via `busbar-core/plane-llm`.
 plane-llm = ["busbar-substrate/plane-llm"]
-plane-mcp = ["egress-seam", "busbar-substrate/plane-mcp"]
+plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-mcp"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -159,7 +159,7 @@ plane-mcp = ["egress-seam", "busbar-substrate/plane-mcp"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["egress-seam", "egress-stream", "card-signing", "busbar-substrate/plane-a2a"]
+plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-a2a"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (plane-extraction §2.1 / the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
@@ -180,6 +180,17 @@ plane-a2a = ["egress-seam", "egress-stream", "card-signing", "busbar-substrate/p
 egress-seam = []
 egress-stream = []
 card-signing = []
+#   jsonrpc-ingress  — the RFC 9728 JSON-RPC discovery/metadata ingress (`ingress::protocol`'s
+#                   re-export + the `App`-facing `ResourceMetadata`/`metadata_handler` stayers). Served
+#                   ONLY by the JSON-RPC-fronted planes; enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), so its truth value — and the dead-code allowance the
+#                   gated module carries when NO such plane is compiled in — is byte-identical to the
+#                   plane-token gate it replaced, while the gated source names a capability, not a plane.
+#   egress-auth-gate — the outbound trust/egress auth gate (`egress_auth::gate`'s re-export). Served
+#                   ONLY by the trust-fronting planes; enabled by `plane-mcp` OR `plane-a2a` (was
+#                   `any(plane-mcp, plane-a2a)`), byte-identical for the same reason.
+jsonrpc-ingress = []
+egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.

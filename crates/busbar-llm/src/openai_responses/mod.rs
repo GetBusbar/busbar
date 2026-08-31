@@ -130,6 +130,8 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     residual_claims: Some(residual_claims),
     residual_default: false,
     vendor_response_metadata: None,
+    // No wire-fingerprint header disambiguates OpenAI Responses on the shared list-models surface.
+    list_models_fingerprint_headers: &[],
 };
 use std::sync::OnceLock;
 

@@ -125,7 +125,12 @@ pub(crate) fn build_egress_targets(
     let Some(rh) = crate::handlers::request_handler(protocol) else {
         return Ok(out);
     };
-    let llm: [Operation; 7] = [
+    // The seven cross-dialect chat/completion-family operations, kept as a local seed set (a neutral
+    // `Operation` list, naming no plane) so the boot table pre-computes an egress target for each even
+    // before a protocol's own `ProtocolDecl::verbs` are folded in below. Deduped against
+    // `Operation::ALL` and the registered declarations' verbs, so a protocol that declares any of them
+    // takes exactly one entry.
+    let family_ops: [Operation; 7] = [
         Operation::CHAT,
         Operation::EMBEDDINGS,
         Operation::MODERATION,
@@ -134,7 +139,7 @@ pub(crate) fn build_egress_targets(
         Operation::SPEECH,
         Operation::RERANK,
     ];
-    let ops = llm
+    let ops = family_ops
         .iter()
         .chain(Operation::ALL.iter())
         .chain(crate::proto::registry::declared_verbs().iter());

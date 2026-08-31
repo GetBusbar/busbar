@@ -836,6 +836,20 @@ pub struct ProtocolDecl {
     /// per-dialect key lists (and their differing lookup shapes) in
     /// `warn_untranslatable_response_metadata`.
     pub vendor_response_metadata: Option<VendorResponseMetadataFn>,
+
+    /// THE WIRE-FINGERPRINT HEADERS this dialect declares as SAFE disambiguators of the SHARED
+    /// `GET /v1(beta)/models` list-models surface — the header names whose PRESENCE alone identifies
+    /// this dialect's caller on that endpoint (Anthropic's `anthropic-version`, Gemini's
+    /// `x-goog-api-key`). `&[]` for a protocol with no such header fingerprint (the OpenAI residual,
+    /// and any protocol that serves no model-discovery surface).
+    ///
+    /// This is DELIBERATELY NARROWER than [`Self::claims`]: the router's full predicate also claims on
+    /// a dialect's CREDENTIAL header (Anthropic's `x-api-key`, Bedrock's `AWS4-HMAC-SHA256`
+    /// `authorization`) and on PATHS, but an incidental credential header on a models-list GET must NOT
+    /// steer the response envelope. `busbar_core`'s list-models handler copies only these declared
+    /// headers into the map it hands the detection fold, so it names no dialect while staying
+    /// byte-identical to the prior hand-coded two-header sniff.
+    pub list_models_fingerprint_headers: &'static [&'static str],
 }
 
 impl ProtocolDecl {

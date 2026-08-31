@@ -272,8 +272,16 @@ pub(crate) use chat_fixture::CHAT;
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
 pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    op_for(protocol, Operation::CHAT, transport)
-        .expect("a chat-serving protocol is registered (the busbar-llm plugin registers openai)")
+    op_for(protocol, Operation::CHAT, transport).unwrap_or_else(|| {
+        // Unreachable in any shipped configuration: a chat plugin always registers the residual chat
+        // protocol and its siblings, and the sole production caller asks for that residual name. The
+        // diagnostic names the registry's residual-default protocol (whatever the plugin declared)
+        // rather than a hard-coded dialect, so core spells no dialect here.
+        panic!(
+            "a chat-serving protocol is registered (registry residual chat protocol: {:?})",
+            crate::proto::residual_default_dialect()
+        )
+    })
 }
 
 /// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and

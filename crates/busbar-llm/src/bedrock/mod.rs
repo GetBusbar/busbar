@@ -146,6 +146,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     residual_claims: Some(residual_claims),
     residual_default: false,
     vendor_response_metadata: Some(vendor_response_metadata),
+    // No wire-fingerprint header disambiguates Bedrock on the shared list-models surface (its
+    // `AWS4-HMAC-SHA256` credential must NOT steer a models-list GET; the OpenAI residual wins).
+    list_models_fingerprint_headers: &[],
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):
