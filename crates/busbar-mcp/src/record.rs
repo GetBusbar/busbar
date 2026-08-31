@@ -221,8 +221,15 @@ mod tests {
             out.extend_from_slice(&(b.len() as u64).to_be_bytes());
             out.extend_from_slice(&b);
         }
-        let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
-            (1000u64, "fs", "fs_read", "dispatched", "", "sha256:aaa", 7u64);
+        let (ts, server, tool, outcome, reason, tool_digest, pin_generation) = (
+            1000u64,
+            "fs",
+            "fs_read",
+            "dispatched",
+            "",
+            "sha256:aaa",
+            7u64,
+        );
         // The pre-framed content SUFFIX the record's digest is sealed over: ts, server, tool, outcome,
         // reason, tool_digest, pin_generation — the exact order and framing the seam writes.
         let mut content = Vec::new();
