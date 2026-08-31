@@ -1,0 +1,23 @@
+{
+  "control": "a2aproject/a2a-python @ 1.1.2 (samples/hello_world_agent.py)",
+  "spec": "github.com/a2aproject/A2A @ v1.0.1",
+  "recorded_by": "independent A2A test battery (a2aht), 2026-08-08",
+  "how_to_read_this": [
+    "See known-deviations-a2a-go.json for the full explanation of this format.",
+    "In short: the test stays at full strength, the failure is accounted for,",
+    "and a second or changed or fixed deviation breaks the green."
+  ],
+  "deviations": [
+    {
+      "test": "core.list_tasks_shape",
+      "verdict": "real-defect-in-control",
+      "clause": "SPEC 3.1.4 List Tasks: 'When includeArtifacts is false (the default), the artifacts field MUST be omitted entirely from each Task object in the response. The field should not be present as an empty array or null value.'",
+      "evidence": "without includeArtifacts=true",
+      "observed_bytes": "ListTasks with no includeArtifacts parameter returns task objects whose keys are ['artifacts', 'contextId', 'history', 'id', 'status']; the artifacts field is present and populated. Verified by hand with method ListTasks, params {\"pageSize\": 1}.",
+      "judgement": "Real defect in a2a-sdk 1.1.2. The default for includeArtifacts is false, and the spec is explicit that the field must then be absent rather than empty. Confirmed as a control defect and not a misreading by the first control, a2a-go v2.4.0, whose ListTasks the harness could not reach for other reasons, and by direct reading of the clause, which admits no other interpretation.",
+      "impact_if_a_subject_did_this": "Task listings carry every artifact of every task. On an agent with large artifacts this turns a cheap paginated poll into an unbounded transfer, and it discloses artifact content to any caller authorised only to enumerate tasks.",
+      "first_seen": "2026-08-08",
+      "upstream": "not yet reported"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "control": "a2aproject/a2a-go @ v2.4.0 (a2a serve --echo)",
+  "spec": "github.com/a2aproject/A2A @ v1.0.1",
+  "recorded_by": "independent A2A test battery (a2aht), 2026-08-08",
+  "how_to_read_this": [
+    "These are the places where the PINNED CONTROL violates the specification.",
+    "Each record keeps its test at full strength. The test still runs and still",
+    "asserts. Matching it here only accounts for the failure, so the suite is",
+    "green overall while continuing to assert the behaviour.",
+    "A SECOND deviation is not covered by these records and breaks the green.",
+    "A deviation that changes shape breaks the green. A deviation that gets",
+    "fixed upstream breaks the green, so the record must be removed on purpose",
+    "rather than quietly rotting here.",
+    "Nothing in this file may be a spec ambiguity. If the spec permits the",
+    "behaviour then the TEST is too strict and the test must be fixed instead."
+  ],
+  "deviations": [
+    {
+      "test": "core.timestamps_are_utc_z",
+      "verdict": "real-defect-in-control",
+      "clause": "SPEC 5.6.1 Timestamps: 'Timezone: UTC (denoted by Z suffix)' and 'Timestamps MUST NOT include timezone offsets other than Z (all times are UTC).'",
+      "evidence": "which does not end in 'Z'",
+      "observed_bytes": "\"timestamp\": \"2026-08-08T16:35:07.065632-07:00\" in TaskStatus.timestamp on the response to POST /message:send",
+      "judgement": "Real defect in a2a-go v2.4.0. It serialises task status timestamps in the host's local zone instead of UTC. Confirmed as a control defect and not a misreading of the spec by the second control, a2a-python 1.1.2, which emits '2026-08-08T23:23:34.117771Z' correctly for the same field. Note this defect is invisible to anyone testing on a UTC host, which is most CI, so it would not have been found by a suite that only ran in CI.",
+      "impact_if_a_subject_did_this": "Any client sorting or comparing task times across agents in different regions orders them wrongly, and any client parsing strictly for a trailing Z rejects the response outright.",
+      "first_seen": "2026-08-08",
+      "upstream": "not yet reported"
+    },
+    {
+      "test": "core.unsupported_version_is_rejected",
+      "verdict": "real-defect-in-control",
+      "clause": "SPEC 3.6.2 Server Responsibilities: 'Agents MUST process requests using the semantics of the requested A2A-Version (matching Major.Minor). If the version is not supported by the interface, agents MUST return a VersionNotSupportedError.'",
+      "evidence": "a version it does not declare support for",
+      "observed_bytes": "POST /message:send with header 'A2A-Version: 0.5' against a card declaring only protocolVersion 1.0 returns HTTP 200 and a completed task, instead of VersionNotSupportedError (SPEC 5.4 maps that to HTTP 400 / JSON-RPC -32009).",
+      "judgement": "Real defect in a2a-go v2.4.0. It ignores the A2A-Version header entirely rather than negotiating on it. Confirmed as a control defect by the second control, a2a-python 1.1.2, which rejects the same request. The spec is unusually explicit here, with a worked example in SPEC 6.4, so there is no ambiguity to hide behind.",
+      "impact_if_a_subject_did_this": "A client pinned to a newer protocol version is silently served older semantics and loses functionality with no error anywhere, which is exactly the silent-downgrade failure SPEC 3.6.3 warns about.",
+      "first_seen": "2026-08-08",
+      "upstream": "not yet reported"
+    },
+    {
+      "test": "adv.wrong_types",
+      "verdict": "real-defect-in-control",
+      "clause": "SPEC 3.3.2 Error Handling, Validation Errors: 'Servers MUST validate all input parameters before processing.' The mapped error is HTTP 400 / JSON-RPC -32602, not a server fault.",
+      "evidence": "part is null",
+      "observed_bytes": "POST /message:send with body {\"message\":{\"messageId\":\"m9\",\"role\":\"ROLE_USER\",\"parts\":[null]}} returns HTTP 500 with message 'event producer panic: runtime error: invalid memory address or nil pointer dereference'. On the JSON-RPC binding the same input returns JSON-RPC error -32603 inside an HTTP 200. An earlier run of the same input produced 'gob: encodeArray: nil element', so more than one code path is reachable.",
+      "judgement": "Real defect in a2a-go v2.4.0, and the most serious finding in this battery: a null element inside the parts array reaches a nil dereference, so a 60-byte well-formed JSON document panics a goroutine in an unauthenticated request path. Confirmed as a control defect by the second control, a2a-python 1.1.2, which rejects the same input cleanly. Worth reporting upstream.",
+      "impact_if_a_subject_did_this": "An unauthenticated remote crash. Any peer, hostile or merely buggy, can fault the agent at will.",
+      "first_seen": "2026-08-08",
+      "upstream": "not yet reported"
+    }
+  ]
+}

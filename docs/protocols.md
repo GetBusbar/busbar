@@ -1,6 +1,6 @@
 # Wire protocols and cross-protocol translation
 
-Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features: losslessly, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back.
+Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back. Same-protocol routes are byte-for-byte identical to calling the provider directly; cross-protocol, read [what "lossless" means here](#what-lossless-means-here) before you rely on the word, because that section also lists what does not cross in 1.6.0.
 
 This document covers:
 
@@ -17,17 +17,24 @@ This document covers:
 
 ## One protocol in, any backend out
 
-<svg viewBox="0 0 760 400" role="img" aria-label="Any of six client protocols enters Busbar, is translated through a superset intermediate representation, and reaches any of six backend protocols, losslessly and in both directions." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 0 760 434" role="img" aria-label="Any of six client protocols enters Busbar and is translated through a superset intermediate representation to reach any of six backend protocols, in both directions. When the client and backend speak the same protocol the hop is a byte-for-byte passthrough that skips the IR; cross-protocol hops are translated, and a few provider-only fields such as safetySettings, guardrailConfig, documents, previous_response_id, top_k and seed do not cross." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
     <marker id="ir-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
+    <marker id="pt-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a3e635"/>
+    </marker>
   </defs>
-  <rect x="0" y="0" width="760" height="400" fill="#ffffff"/>
-  <text x="102" y="26" text-anchor="middle" fill="#64748b" font-size="12" font-weight="700" letter-spacing="0.04em">CLIENT SPEAKS</text>
-  <text x="658" y="26" text-anchor="middle" fill="#64748b" font-size="12" font-weight="700" letter-spacing="0.04em">BACKEND SPEAKS</text>
+  <rect x="0" y="0" width="760" height="434" fill="#111a2e"/>
+  <text x="102" y="26" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="0.04em">CLIENT SPEAKS</text>
+  <text x="658" y="26" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="0.04em">BACKEND SPEAKS</text>
+  <!-- passthrough lane: same protocol in and out bypasses the hub, byte-for-byte -->
+  <line x1="184" y1="62" x2="576" y2="62" stroke="#a3e635" stroke-width="1.5" stroke-opacity="0.9" stroke-dasharray="5 4" marker-start="url(#pt-both)" marker-end="url(#pt-both)"/>
+  <rect x="296" y="52" width="168" height="20" rx="6" fill="#111a2e"/>
+  <text x="380" y="66" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">same protocol: passthrough</text>
   <!-- spokes (drawn first, under the chips) -->
-  <g stroke="#cbd5e1" stroke-width="1.5" marker-start="url(#ir-both)" marker-end="url(#ir-both)">
+  <g stroke="#94a3b8" stroke-width="1.5" marker-start="url(#ir-both)" marker-end="url(#ir-both)">
     <line x1="184" y1="62"  x2="296" y2="200"/>
     <line x1="184" y1="120" x2="296" y2="200"/>
     <line x1="184" y1="178" x2="296" y2="200"/>
@@ -42,29 +49,38 @@ This document covers:
     <line x1="464" y1="200" x2="576" y2="352"/>
   </g>
   <!-- hub -->
-  <rect x="300" y="152" width="160" height="96" rx="16" fill="#0f172a" stroke="#a3e635" stroke-width="2.5"/>
+  <rect x="300" y="152" width="160" height="96" rx="16" fill="#a3e635" fill-opacity="0.05" stroke="#a3e635" stroke-width="2.5" stroke-opacity="0.5"/>
   <text x="380" y="196" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">Superset IR</text>
-  <text x="380" y="216" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">lossless both ways</text>
+  <text x="380" y="216" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">both ways, natively</text>
   <!-- protocol chips -->
-  <g font-size="13" font-weight="600" fill="#0f172a">
+  <g font-size="13" font-weight="600" fill="#e6edf7">
     <g>
-      <rect x="24"  y="40"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="66"  text-anchor="middle">OpenAI</text>
-      <rect x="24"  y="98"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="124" text-anchor="middle">Anthropic</text>
-      <rect x="24"  y="156" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="182" text-anchor="middle">Gemini</text>
-      <rect x="24"  y="214" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="240" text-anchor="middle">Bedrock</text>
-      <rect x="24"  y="272" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="298" text-anchor="middle">Cohere</text>
-      <rect x="24"  y="330" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="356" text-anchor="middle">Responses</text>
+      <rect x="24"  y="40"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="66"  text-anchor="middle">OpenAI</text>
+      <rect x="24"  y="98"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="124" text-anchor="middle">Anthropic</text>
+      <rect x="24"  y="156" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="182" text-anchor="middle">Gemini</text>
+      <rect x="24"  y="214" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="240" text-anchor="middle">Bedrock</text>
+      <rect x="24"  y="272" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="298" text-anchor="middle">Cohere</text>
+      <rect x="24"  y="330" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="356" text-anchor="middle">Responses</text>
     </g>
     <g>
-      <rect x="576" y="40"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="66"  text-anchor="middle">OpenAI</text>
-      <rect x="576" y="98"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="124" text-anchor="middle">Anthropic</text>
-      <rect x="576" y="156" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="182" text-anchor="middle">Gemini</text>
-      <rect x="576" y="214" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="240" text-anchor="middle">Bedrock</text>
-      <rect x="576" y="272" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="298" text-anchor="middle">Cohere</text>
-      <rect x="576" y="330" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="356" text-anchor="middle">Responses</text>
+      <rect x="576" y="40"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="66"  text-anchor="middle">OpenAI</text>
+      <rect x="576" y="98"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="124" text-anchor="middle">Anthropic</text>
+      <rect x="576" y="156" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="182" text-anchor="middle">Gemini</text>
+      <rect x="576" y="214" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="240" text-anchor="middle">Bedrock</text>
+      <rect x="576" y="272" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="298" text-anchor="middle">Cohere</text>
+      <rect x="576" y="330" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="356" text-anchor="middle">Responses</text>
     </g>
   </g>
+  <!-- legend: passthrough vs translated -->
+  <g font-size="11" letter-spacing="0.01em">
+    <line x1="60" y1="408" x2="92" y2="408" stroke="#a3e635" stroke-width="1.5" stroke-opacity="0.9" stroke-dasharray="5 4"/>
+    <text x="100" y="412" fill="#94a3b8">same protocol: <tspan fill="#a3e635">passthrough</tspan>, skips the IR</text>
+    <line x1="430" y1="408" x2="462" y2="408" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="470" y="412" fill="#94a3b8">cross-protocol: translated through the IR</text>
+  </g>
 </svg>
+
+*Same-protocol hops (an aligned in/out pair) are byte-for-byte passthrough and skip the IR; only cross-protocol hops are translated. A few provider-only fields (`safetySettings`, `guardrailConfig`, `documents`, `previous_response_id`, `top_k`, `seed`, ...) do not cross a protocol hop, see [What survives translation and what does not](#what-survives-translation-and-what-does-not).*
 
 Each request Busbar receives speaks **one** protocol, the one the client chose. You can pick *any* of the six on the way in, but a single request is exactly one of them. The important part: a pool has **no fixed input protocol**. It's just a routing target. So different clients can reach the *same* pool, each in its own protocol, and Busbar fans each request out to whichever backend in the pool serves it, translating both ways when they differ.
 
@@ -96,7 +112,7 @@ Every registered SDK talks to Busbar by changing exactly two things:
 
 Nothing else changes in your application code. The SDK still calls the same method (`chat.completions.create`, `messages.create`, whatever). The body it constructs is valid for its native protocol. Busbar accepts it, resolves the model/pool, and forwards: translating to the lane's protocol if necessary.
 
-**How ingress protocol identification actually works** (`proto::detect::protocol_id`): mostly path-determined, with a small, deliberate header-first exception for auth-carrier ambiguity. The URL path is authoritative for every route this doc lists below — but a request carrying one of a few protocol-specific auth headers (`anthropic-version`/`anthropic-beta`, `x-goog-api-key`, or bare `x-api-key`, or an AWS SigV4 `Authorization` header) is routed by that header FIRST, before the path is even consulted. This exists specifically so a curl user who copies Anthropic's docs (which often omit `anthropic-version` in the simplest examples) still lands on the right protocol via `x-api-key` alone. It also means: **`x-api-key`, `x-goog-api-key`, `anthropic-version`/`anthropic-beta`, and an AWS SigV4 `Authorization` header are NOT interchangeable "any carrier reaches any protocol" tokens** — sending one of these headers on a request whose BODY and PATH are for a *different* protocol routes to the header's protocol, not the path's, and typically 404s once that protocol's own operation resolver doesn't recognize the path. Stick to each protocol's own native auth carrier (or a bearer token, which never forces a specific protocol) and this never comes up in practice. No body-sniffing and no true content-negotiation either way: identification only ever looks at the path and this small, fixed set of headers.
+**How ingress protocol identification actually works** (`proto::detect::protocol_id`): mostly path-determined, with a small, deliberate header-first exception for auth-carrier ambiguity. The URL path is authoritative for every route this doc lists below, but a request carrying one of a few protocol-specific auth headers (`anthropic-version`/`anthropic-beta`, `x-goog-api-key`, or bare `x-api-key`, or an AWS SigV4 `Authorization` header) is routed by that header FIRST, before the path is even consulted. This exists specifically so a curl user who copies Anthropic's docs (which often omit `anthropic-version` in the simplest examples) still lands on the right protocol via `x-api-key` alone. It also means: **`x-api-key`, `x-goog-api-key`, `anthropic-version`/`anthropic-beta`, and an AWS SigV4 `Authorization` header are NOT interchangeable "any carrier reaches any protocol" tokens**. Sending one of these headers on a request whose BODY and PATH are for a *different* protocol routes to the header's protocol, not the path's, and typically 404s once that protocol's own operation resolver doesn't recognize the path. Stick to each protocol's own native auth carrier (or a bearer token, which never forces a specific protocol) and this never comes up in practice. No body-sniffing and no true content-negotiation either way: identification only ever looks at the path and this small, fixed set of headers.
 
 ---
 
@@ -249,7 +265,7 @@ POST /v1beta/models/{model}:generateContent
 POST /v1beta/models/{model}:streamGenerateContent
 ```
 
-Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted, served through the same fallback dispatch as every other body-model/path-model protocol (see the note on ingress identification above) — anything under `/v1/models/` or `/v1beta/models/` other than a bare `GET` (which lists models) resolves to Gemini. The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
+Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted, served through the same fallback dispatch as every other body-model/path-model protocol (see the note on ingress identification above). Anything under `/v1/models/` or `/v1beta/models/` other than a bare `GET` (which lists models) resolves to Gemini. The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
 
 **Auth carrier (ingress):** `x-goog-api-key: <token>` (the header the Gemini SDK sends). Busbar also accepts `Authorization: Bearer` on this route (any of Busbar's carriers validate the same token). With a non-empty `auth.chain`, the value is verified as a Busbar key: not forwarded to Google.
 
@@ -323,7 +339,7 @@ response = bedrock.converse(
 
 ## Operations: more than chat
 
-Since 1.2, chat is one of six operations. Embeddings, moderations, image generation, audio (transcription, speech-to-English translation, and text-to-speech), and rerank all run through the same lossless translation layer, in both directions, errors and usage accounting included. A client speaking one protocol can call any operation on a backend speaking another, wherever both sides support it.
+Since 1.2, chat is one of six operations. Embeddings, moderations, image generation, audio (transcription, speech-to-English translation, and text-to-speech), and rerank all run through the same translation layer, in both directions, errors and usage totals included. A client speaking one protocol can call any operation on a backend speaking another, wherever both sides support it.
 
 There is nothing to configure. A lane or pool serves whichever operations its protocol supports; you call the operation's surface instead of the chat surface, with the same model or pool name.
 
@@ -332,11 +348,11 @@ There is nothing to configure. A lane or pool serves whichever operations its pr
 | Operation | openai | anthropic | gemini | bedrock | cohere | responses |
 |---|---|---|---|---|---|---|
 | Chat | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Embeddings | ✓ | — | ✓ | ✓ | ✓ | — |
-| Moderations | ✓ | — | — | — | — | — |
-| Image generation | ✓ | — | ✓ | ✓ | — | — |
-| Audio (transcription and speech) | ✓ | — | ✓ | — | — | — |
-| Rerank | — | — | — | ✓ | ✓ | — |
+| Embeddings | ✓ | n/a | ✓ | ✓ | ✓ | n/a |
+| Moderations | ✓ | n/a | n/a | n/a | n/a | n/a |
+| Image generation | ✓ | n/a | ✓ | ✓ | n/a | n/a |
+| Audio (transcription and speech) | ✓ | n/a | ✓ | n/a | n/a | n/a |
+| Rerank | n/a | n/a | n/a | ✓ | ✓ | n/a |
 
 The matrix reads both ways: a checked cell means that protocol speaks the operation as a client dialect (ingress) and as a backend (egress). Any checked ingress can route to any checked egress on the same row; Busbar translates between them.
 
@@ -353,12 +369,12 @@ Each protocol keeps its own real wire surface for each operation, exactly as its
 
 ### Calling an operation a backend lacks
 
-The dots in the matrix are real gaps: some backends do not implement some operations. Calling one anyway (image generation against an Anthropic lane, for example) returns a clean, well-formed 404 in the caller's own protocol dialect. It never crashes, never leaks an upstream error shape, and never affects the lane's health for other traffic. In a pool, a backend without the operation is simply not a candidate for that request.
+The `n/a` cells in the matrix are real gaps: some backends do not implement some operations. Calling one anyway (image generation against an Anthropic lane, for example) returns a clean, well-formed 404 in the caller's own protocol dialect. It never crashes, never leaks an upstream error shape, and never affects the lane's health for other traffic. In a pool, a backend without the operation is simply not a candidate for that request.
 
 ### Image edits and variations are a supported operation, unsupported sub-op
 
-`/v1/images/edits` and `/v1/images/variations` route as `Operation::Image`, same as
-`/v1/images/generations` — but every egress writer in this release emits only
+`/v1/images/edits` and `/v1/images/variations` route as `Operation::IMAGE`, same as
+`/v1/images/generations`. But every egress writer in this release emits only
 `/v1/images/generations`. A request naming an `image` to edit or vary (an edit/variation body, not a
 plain generation) returns a 404 naming the operation and the model, distinct from the no-backend 404
 above: the operation IS supported, this particular sub-op is not.
@@ -371,7 +387,7 @@ The six protocols split into two groups based on where the target model (or pool
 
 The `"model"` field is in the JSON body. Busbar reads it, resolves it, and begins the forwarding pipeline. The `"stream"` intent is also in the body (`"stream": true`).
 
-These three protocols share one ingress implementation (`ingress::dispatch::operation_ingress`, reached via the single axum fallback route `ingress::protocol_dispatch` — see the note on static routing above). The only difference between them is the protocol name and the shape of their native error envelopes.
+These three protocols share one ingress implementation (`ingress::dispatch::operation_ingress`, reached via the single axum fallback route `ingress::protocol_dispatch`, described in the note on static routing above). The only difference between them is the protocol name and the shape of their native error envelopes.
 
 ### Path-model protocols: `gemini`, `bedrock`
 
@@ -410,7 +426,7 @@ Steps, in order:
 6. Router shim keys are stripped (the Gemini JSON-array flag, and `"stream"` for path-model egress where stream intent is in the URL).
 7. The `"model"` field is rewritten to the selected lane's actual model identifier.
 
-(When ingress and egress are the same protocol, steps 1–5 are skipped, only shim-key cleanup and model rewrite run.)
+(When ingress and egress are the same protocol, steps 1 through 5 are skipped, only shim-key cleanup and model rewrite run.)
 
 **Response translation** (non-streaming):
 
@@ -432,7 +448,7 @@ Busbar reassembles frames that arrive split across TCP chunks, threads per-reque
 
 ### Same-protocol passthrough
 
-When ingress and egress protocols match, the IR round-trip is still used — `StreamTranslate::new_same_proto` decodes each response frame through the reader into IR purely as a usage side-channel — but the translator re-emits the ORIGINAL frame bytes verbatim instead of re-serializing from IR. The bytes the client receives are the upstream's bytes; busbar never re-encodes them, and every field, annotation and vendor extension survives on the wire. That is not the same claim as "as cheap as native passthrough": each frame still pays a JSON decode to extract usage (the two token counts), and the decoded value is otherwise discarded. On the Anthropic same-protocol path this decode is elided for every frame except `message_start`/`message_delta`/`error`; every other same-protocol pair still decodes every frame. The request side is byte-for-byte only when the client named the lane's exact wire model — a pool-alias route rewrites the model and re-serializes (see the `claude-sonnet` example below).
+When ingress and egress protocols match, the IR round-trip is still used (`StreamTranslate::new_same_proto` decodes each response frame through the reader into IR purely as a usage side-channel), but the translator re-emits the ORIGINAL frame bytes verbatim instead of re-serializing from IR. The bytes the client receives are the upstream's bytes; busbar never re-encodes them, and every field, annotation and vendor extension survives on the wire. That is not the same claim as "as cheap as native passthrough": each frame still pays a JSON decode to extract usage (the two token counts), and the decoded value is otherwise discarded. On the Anthropic same-protocol path this decode is elided for every frame except `message_start`/`message_delta`/`error`; every other same-protocol pair still decodes every frame. The request side is byte-for-byte only when the client named the lane's exact wire model. A pool-alias route rewrites the model and re-serializes (see the `claude-sonnet` example below).
 
 A `busbar_translations_total{from, to}` Prometheus counter is incremented per cross-protocol hop and is not touched for same-protocol requests.
 
@@ -448,6 +464,12 @@ Same-protocol error responses (`4xx`) are relayed verbatim.
 
 ### What "lossless" means here
 
+The claim busbar makes, in full, so you can check it rather than take it:
+
+> **Same-protocol routes are byte-for-byte identical to calling the provider directly: busbar forwards your original bytes, it does not re-serialize them. Cross-protocol, every modelled field survives in the target's native shape, and what cannot cross is dropped deliberately: your client always gets a response its own SDK parses, and the backend always gets a request it accepts.**
+
+The first sentence is unconditional and is the stronger of the two: see [Same-protocol note](#same-protocol-note). The second holds for everything the IR models, and [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express) names the constructs that have nowhere to go on the other side. As of 1.6.0 there is no third list: what was published here as [Known gaps](#closed-in-160) is closed, and every remaining drop emits a `warn!` naming the field.
+
 Busbar's translation is **lossless** in a specific, testable sense: **neither end can tell the hop happened.**
 
 - **The client is never confused.** It gets a response its own SDK parses cleanly, in its own protocol's shape, that never contradicts what it sent: no `finish_reason`/`stop_reason` outside its enum, no field in a shape its validator rejects, no identifier minted by a foreign vendor.
@@ -456,6 +478,28 @@ Busbar's translation is **lossless** in a specific, testable sense: **neither en
 The reference is native-to-native: a translated exchange should behave exactly as if the client had spoken the backend's protocol directly. A difference counts as *loss* only if it trips one of those two tests, a client that can't parse what it got back, or a backend that rejects what it was sent. Field-level differences that trip neither test (e.g. an upstream `id` replaced with an ingress-native one) are not loss.
 
 Where a construct genuinely has **no representation** in the target protocol: a rare, inherent limit, see [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express), Busbar degrades it to the closest valid native form **and emits a `warn!`**, never something either end would reject. The degradation is observable in logs; it is never silent and never yields an unparseable or malformed wire body.
+
+### Closed in 1.6.0
+
+This section used to be headed "Known gaps in 1.6.0" and published a table of measured defects. **That table is empty.** Every construct it named now either crosses correctly, or has no representation in the target protocol and degrades to the closest valid native form with a `warn!` — the second case is a design limit and lives in [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express), not here.
+
+The table is kept as an inventory of what closed, because "we fixed it" is worth less than "here is the construct, here is where it crosses, here is the test that proves it".
+
+| Construct | How it crosses now | Proven by |
+|---|---|---|
+| Non-image attachments: OpenAI `input_audio` / `file`, Responses `input_file`, Anthropic `document`, Bedrock `document` / `video`, Gemini non-image `inlineData` / `fileData`, Cohere tool-result `document` | `IrBlock::Media { kind: Document \| Audio \| Video, source, name, cache_control }`. Every reader populates it and every writer projects it into its own native slot (Gemini `inlineData`/`fileData` takes any mime; Bedrock has `document` and `video`; Anthropic and Responses have `document`/`input_file`; OpenAI Chat has `input_audio` and `file`). Where a target genuinely has no slot — Anthropic has no audio or video content block, Bedrock Converse has no audio block — the attachment is dropped with a `warn!` naming the kind, **never** as an empty text block, which is indistinguishable from having sent nothing | `openai_attachments_survive_the_ir_rather_than_becoming_empty_text`, `attachments_reach_gemini_as_inline_data`, `responses_input_file_survives_the_ir`, `bedrock_document_is_modelled_without_double_emitting`, `cohere_tool_result_document_is_not_stringified`, `gemini_non_image_inline_data_is_not_an_image_block` |
+| Anthropic `search_result` blocks | The retrieved passages are entirely text by Anthropic's own schema, so they cross as a `Text` block carrying the passage plus a source/title header, with the provenance attached as an `IrCitation`. The raw block stays parked in the unmodeled-block sentinel, so an Anthropic→Anthropic hop still re-emits the original bytes verbatim | `anthropic_search_result_reaches_a_foreign_client` |
+| Response citations out of a **Cohere** backend | The Cohere response reader reads `message.citations` through `read_cohere_citations` into `IrCitation` (neutral fields plus the byte-exact `raw` escape) | `cohere_response_citations_reach_a_foreign_client` |
+| Streaming citation deltas toward OpenAI, Cohere **and Bedrock** clients | All three emit natively: OpenAI `choices[].delta.annotations`, Cohere `citation-start`, Bedrock `contentBlockDelta.delta.citation`. The Bedrock writer declares `max_citations_per_delta() == Some(1)` so a multi-citation delta is fanned out into one frame each rather than serialized as an array its union decoder rejects. Its BUFFERED twin landed with it — a cited text block becomes a Converse `citationsContent` block — because closing only the streaming half would have left the same asymmetry inverted: sources when you stream, none when you do not. An uncited text block keeps the plain `{"text": …}` shape, so no ordinary response is reshaped | `streamed_citations_reach_openai_and_cohere_clients`, `streamed_citations_reach_a_bedrock_client`, `buffered_citations_reach_a_bedrock_client`, `bedrock_uncited_text_keeps_the_plain_shape`, `bedrock_citation_omits_a_location_it_cannot_honestly_fill` |
+| Usage **sub-buckets**, buffered **and streaming** | `IrUsageDetail { reasoning_tokens, cache_creation_5m_input_tokens, cache_creation_1h_input_tokens, search_units }`. Every field is a SLICE of a total in `IrUsage`, never an addition, so carrying a bucket can never change what busbar bills. Read from OpenAI `completion_tokens_details`, Responses `output_tokens_details`, Gemini `thoughtsTokenCount`, Anthropic `usage.cache_creation.ephemeral_{5m,1h}_input_tokens` and Cohere `billed_units.search_units` — on the terminal STREAM frame as well as the buffered body, so the same request no longer reports a breakdown at `stream: false` and a hard `0` at `stream: true` | `openai_reasoning_tokens_reach_the_ir`, `responses_reasoning_tokens_are_not_zeroed`, `gemini_thoughts_token_count_is_the_reasoning_sub_bucket`, `anthropic_cache_tier_split_survives_the_ir`, `cohere_search_units_reach_the_ir`, `streamed_usage_sub_buckets_are_not_zeroed`, `streamed_anthropic_cache_tiers_survive`, `streamed_cohere_search_units_survive` |
+| Gemini `groundingMetadata` | A Google-Search-grounded answer puts its sources in `groundingMetadata` (`groundingChunks[]` + `groundingSupports[]`), not in the older `citationMetadata`. Both are now read into `IrCitation`s, so a grounded answer reaches an OpenAI, Anthropic or Cohere client with its provenance intact instead of as an unattributed paragraph. Sources with no support spans still cross (Google omits the spans on some replies) | `gemini_grounding_metadata_reaches_a_foreign_client`, `gemini_grounding_chunks_cross_without_support_spans` |
+| Request knobs that ride the `extra` map | Still cleared at the seam — that is correct for a field with no analog — but **every** key is now named in one `warn!` before the clear, sorted and greppable, with `cachedContent` and `messages[].name` additionally getting their own line naming the specific consequence. No key leaves silently | `ir/variant.rs` `prepare_for_egress`; `cross_protocol_extra_tests.rs` |
+| Cohere assistant `tool_plan` | Read as an `IrBlock::Thinking`, not prepended to the assistant turn, and re-emitted into Cohere's native `message.tool_plan` slot. The model's internal plan can no longer surface to the end user as the first paragraph of the answer | `cohere_tool_plan_is_reasoning_not_visible_text` |
+| `tools[].strict` | First-class on `IrTool`, carried in both directions across the OpenAI Chat ↔ Responses pair (the two dialects that model it). The other four targets have no per-tool strict flag, so they drop it with a `warn!` naming the affected tools — see the cannot-express table below | `tool_strict_crosses_the_openai_responses_pair` |
+| `messages[].name` | No protocol other than OpenAI Chat models a participant name, so this is a target-protocol limit (see the cannot-express table). Two things changed: it now survives a **same-protocol re-serialize** (a pool-alias route used to strip it from every message), and the cross-protocol drop emits a `warn!` naming it in the caller's own vocabulary | `openai_message_name_survives_a_same_protocol_reserialize` |
+| Response-side provider metadata: Gemini `safetyRatings`, Bedrock guardrail `trace` | These genuinely cannot cross (see the cannot-express table) — a guardrail assessment is an AWS account artifact and a harm-category rating uses Google's own vocabulary, and no target protocol has a field of that shape. What changed is that the drop is now **signalled**: the cross-protocol response seam names the fields present in the upstream body before they are discarded | `proto::warn_untranslatable_response_metadata`, called from `translate_response_cross_protocol` |
+
+**The standing rule this section now enforces:** a construct either crosses, or it is dropped with a `warn!` that names it. There is no third category. If you find one, it is a bug — please file it.
 
 ### Always preserved
 
@@ -466,10 +510,11 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | `system` prompt | `IrRequest.system` |
 | Messages (user / assistant / tool turns) | `IrRequest.messages: Vec<IrMessage>` |
 | Text blocks | `IrBlock::Text { text, cache_control, citations }` |
-| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, redacted, cache_control }` — `redacted: true` means `text` holds opaque provider-encrypted bytes, not plaintext |
+| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, redacted, cache_control }`. `redacted: true` means `text` holds opaque provider-encrypted bytes, not plaintext |
 | Tool definitions | `IrRequest.tools`: `IrTool { name, description, input_schema }` |
 | Tool-use and tool-result blocks | `IrBlock::ToolUse`, `IrBlock::ToolResult` |
 | Image blocks | `IrBlock::Image { source: IrImageSource, cache_control }` (media type and data live in `IrImageSource::Base64 { media_type, data }`) |
+| Document / audio / video attachments | `IrBlock::Media { kind: IrMediaKind, source: IrImageSource, name, cache_control }` — the same typed source carrier `Image` uses. Projected into each target's native slot; dropped with a `warn!` naming the kind only where the target has no slot at all (Anthropic and Bedrock have no audio block; Bedrock and OpenAI Chat have no video/document-audio pairing respectively) |
 | Prompt-cache breakpoints (`cache_control`) | First-class on text, tool-use, tool-result, **thinking, and image** blocks: an Anthropic cache breakpoint survives a same-protocol re-serialize instead of vanishing |
 | Structured output (`response_format` / `responseSchema`) | `IrRequest.response_format`, mapped into **each backend's native shape** (OpenAI `json_schema`, Cohere `json_object`, Gemini `responseMimeType`/`responseSchema`), never forwarded in a foreign shape the backend rejects |
 | Stop reason (`finish_reason` / `stop_reason` / `finishReason`) | Normalized to a **valid member of each protocol's enum** on egress: an unknown/foreign reason degrades to that protocol's SDK-safe value rather than leaking an off-enum string the client can't parse |
@@ -480,9 +525,11 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | `stream` flag | `IrRequest.stream` |
 | `n` (multiple completions) | `IrRequest.n`, a first-class field written only by protocols that model it (OpenAI `n`, Gemini `candidateCount`); preserved across those hops, omitted where the target has no analog |
 | `frequency_penalty`, `presence_penalty`, `seed` | First-class IR fields; survive cross-protocol hops (dropped with `warn!` where the target protocol has no analog) |
-| Grounding/web-search citations | `IrCitation` (with `raw` escape hatch for byte-exact Anthropic re-emit); streaming `citations_delta` included |
+| Grounding/web-search citations | `IrCitation` (with `raw` escape hatch for byte-exact Anthropic re-emit), in **both** directions on **all six** protocols, streaming included: Anthropic `citations_delta`, Gemini `citationMetadata` **and `groundingMetadata`**, Cohere `message.citations` / `citation-start`, OpenAI and Responses `annotations`, Bedrock `citationsContent` (buffered) and `contentBlockDelta.citation` (streaming). A citation whose location cannot be honestly expressed in the target (an Anthropic page number has no Bedrock character-offset equivalent) crosses with its title and quoted text and no location, rather than with a fabricated one |
 | Serving model name | `IrResponse.model` (so pooled cross-protocol responses report which model served) |
-| Token usage | `IrUsage` (input/output tokens, with input-usage backfill on streams that only report it at message start) |
+| Token usage | `IrUsage` (input/output tokens plus cache-creation and cache-read, with input-usage backfill on streams that only report it at message start) |
+| Usage **sub-buckets** | `IrUsageDetail { reasoning_tokens, cache_creation_5m_input_tokens, cache_creation_1h_input_tokens, search_units }` — attribution only, never added to a total, so carrying a bucket cannot change what busbar bills. Carried on the buffered **and** streaming paths |
+| `tools[].strict` | `IrTool.strict`, across the OpenAI Chat ↔ Responses pair; dropped with a `warn!` naming the tools on the four targets that have no per-tool strict flag |
 
 **Usage-token cross-protocol nuance (Anthropic/Bedrock → OpenAI/Gemini/Responses):** Anthropic and Bedrock responses carry a separate `cache_creation` token bucket that has no equivalent field in the OpenAI, Gemini, or Responses wire shapes. When such a response is translated to one of those protocols, the reported `prompt_tokens` / `input_tokens` total *includes* cache-creation tokens (so billing is complete), but the `cached_tokens` sub-field reflects only cache-read tokens, because the target wire shape has no cache-creation bucket to place them in. Billing is unaffected (all consumed tokens are counted); only the sub-field breakdown differs.
 
@@ -490,7 +537,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 
 This is not loss in the sense defined above: lossless means neither end can tell the hop happened, and these are fields that have *no place to go* on the other side of the hop. Forwarding them anyway would make the backend reject the request, which is the one thing translation must never do. So they are dropped at the seam, deliberately. On a **same-protocol** route none of this applies: every one of these fields survives byte-for-byte (see [Same-protocol note](#same-protocol-note)).
 
-The tables below are **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed (last verified against 1.2.0; re-checked each release).
+The tables below were **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed. **That measurement was made against 1.2.0 and has not been re-run since**, so on 1.6.0 read these rows as the engine's documented intent rather than a fresh reading. A 1.6.0 re-measurement is outstanding; the rows will carry its version and date when it lands. The most recent audit of the translation path (1.6.0, by code read plus an executed read/write round trip per protocol) is what produced [Closed in 1.6.0](#closed-in-160) above.
 
 Two things can happen to a field on a cross-protocol hop:
 
@@ -519,6 +566,10 @@ Two things can happen to a field on a cross-protocol hop:
 | Responses | `previous_response_id` | dropped at seam | conversation state lives at OpenAI; a foreign backend answers without that context |
 | Responses | `reasoning.effort` | **carried when the target lane declares `reasoning: true`** (to Anthropic/Gemini thinking budgets via the effort table); dropped with a warn otherwise | reasoning strength crosses protocols, gated by operator config |
 | Responses | `store`, `truncation`, `include`, `metadata` | dropped at seam | bookkeeping and OpenAI-side behaviors lost |
+| OpenAI | `messages[].name` | dropped at seam (with `warn!`) | no other protocol frames a turn as anything but (role, content), so a multi-speaker transcript reaches the backend without its speaker labels. Survives a same-protocol route byte-for-byte, including a pool-alias re-serialize |
+| OpenAI, Responses | `tools[].strict` | IR-carried; dropped with a `warn!` naming the tools by targets with no per-tool strict flag (Anthropic, Gemini, Bedrock, Cohere) | the model's tool arguments are no longer *guaranteed* to conform to the schema, so validate them on that route. Cohere's `strict_tools` is a request-level switch, not a per-tool one, so it is not an equivalent |
+| Gemini | `safetyRatings` (response side) | dropped at the response seam (with `warn!`) | harm-category ratings use Google's own category and probability vocabulary; no target protocol has a field of that shape. `promptFeedback.blockReason` **is** mapped to a stop reason, so a blocked prompt still reads as blocked, and `groundingMetadata` **is** carried (as citations) |
+| Bedrock | guardrail `trace` (response side) | dropped at the response seam (with `warn!`) | a guardrail assessment is an AWS account artifact with no cross-vendor shape. If the trace is compliance evidence, route to a same-protocol Bedrock lane, where the upstream body reaches the client verbatim |
 
 Some fields that LOOK protocol-specific actually have an exact analog on the other side, so Busbar carries them instead of dropping them (measured, both directions): OpenAI `user` travels as Anthropic `metadata.user_id` (the same end-user identifier), OpenAI `parallel_tool_calls` travels as Anthropic `tool_choice.disable_parallel_tool_use` (the same switch, inverted), **the reasoning ask crosses all three protocols that model it** (`reasoning_effort` / `thinking.budget_tokens` / `thinkingBudget`, converted through a configurable effort table and gated by the per-lane `reasoning` capability flag; see the [configuration reference](https://getbusbar.com/docs/configuration/#cross-protocol-reasoning-reasoning)), and **logprobs cross the OpenAI/Gemini pair in full**: the ask (`logprobs`/`top_logprobs` ↔ `generationConfig.responseLogprobs`/`logprobs`) travels one way and the per-token data (`choices[].logprobs.content[]` ↔ `candidates[].logprobsResult`) travels back, buffered and streaming. Cohere's logprobs stay same-protocol-only: its wire shape carries bare token IDs under Cohere's own tokenizer, which cannot honestly fill another protocol's token-string shape. A generic OpenAI `metadata` object still drops (Anthropic's metadata only holds `user_id`).
 
@@ -532,7 +583,7 @@ Fields that the ingress reader encounters but does not model as first-class IR f
 
 ### Same-protocol note
 
-On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte when the client named the lane's exact wire model (a pool-alias route rewrites the model and re-serializes instead); the response body is streamed byte-for-byte in every case. Every field, every annotation, every vendor extension survives on the wire, because busbar never re-encodes them — but the response side still decodes each frame into IR as a usage side-channel and discards the result; "byte-for-byte" describes what reaches the client, not how much work busbar does to get there. See "Same-protocol passthrough" above.
+On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte when the client named the lane's exact wire model (a pool-alias route rewrites the model and re-serializes instead); the response body is streamed byte-for-byte in every case. Every field, every annotation, every vendor extension survives on the wire, because busbar never re-encodes them. But the response side still decodes each frame into IR as a usage side-channel and discards the result; "byte-for-byte" describes what reaches the client, not how much work busbar does to get there. See "Same-protocol passthrough" above.
 
 ---
 
@@ -573,7 +624,7 @@ pools:
 ```bash
 export BUSBAR_ADMIN_TOKEN=my-admin-token
 export ANTHROPIC_KEY=sk-ant-...
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 
 # Mint a caller key (the signed token is shown once):
 BUSBAR_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
@@ -730,7 +781,7 @@ When SWRR selects the `gemini-flash` lane (roughly a quarter of the time at thes
 - Busbar constructs the upstream URL `POST <gemini base_url>/v1beta/models/<lane model>:generateContent` with `x-goog-api-key: <GEMINI_KEY>`.
 - Gemini responds in its own format; the Gemini reader parses it; the Anthropic writer produces an Anthropic Messages response. The Anthropic SDK receives it and sees a valid `Message` object. `message.content[0].text` holds the response.
 
-When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation — but this specific example passes `model="ignored"`, so busbar must rewrite the model field to the lane's wire model; that rewrite is exactly what takes the request OFF the byte-for-byte fast path, so the body is materialized and re-serialized with the model corrected and the `x-api-key` header injected. A request that already names the lane's exact wire model stays byte-for-byte.
+When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation. But this specific example passes `model="ignored"`, so busbar must rewrite the model field to the lane's wire model; that rewrite is exactly what takes the request OFF the byte-for-byte fast path, so the body is materialized and re-serialized with the model corrected and the `x-api-key` header injected. A request that already names the lane's exact wire model stays byte-for-byte.
 
 The application code is identical in both cases.
 
@@ -749,7 +800,7 @@ The IR is a superset every reader maps into and every writer maps out of, and th
 | `responses` | translated | translated | translated | translated | passthrough | translated |
 | `cohere` | translated | translated | translated | translated | translated | passthrough |
 
-"Passthrough" means the request and response bodies are forwarded byte-for-byte on the wire — nothing is re-encoded before it reaches the client. It does NOT mean no IR round-trip: as "Same-protocol passthrough" above describes, the response side still decodes each frame through the IR as a usage side-channel; only the re-encode is skipped. "Translated" means the request and each response frame passes through the IR AND is re-serialized from it. Both paths produce valid wire output in the ingress protocol.
+"Passthrough" means the request and response bodies are forwarded byte-for-byte on the wire. Nothing is re-encoded before it reaches the client. It does NOT mean no IR round-trip: as "Same-protocol passthrough" above describes, the response side still decodes each frame through the IR as a usage side-channel; only the re-encode is skipped. "Translated" means the request and each response frame passes through the IR AND is re-serialized from it. Both paths produce valid wire output in the ingress protocol.
 
 A heterogeneous pool (members spanning more than one egress protocol) emits a warning at startup. The warning is informational, the pool works, but tells you that some requests through it will translate and some will not, depending on which lane SWRR picks.
 

@@ -37,6 +37,47 @@ listen: "0.0.0.0:8080"
 #   client_ca: { file: /etc/busbar/admin-client-ca.pem }   # present ⇒ mTLS required on the admin plane
 # admin_require_mtls: true                               # false ⇒ waive the exposed-admin mTLS guard
 
+# ── busbar AS an OAuth 2.1 authorization server (oauth_as:) ──────────────────────────────────────
+# ABSENT BY DEFAULT, and absent means nothing is built: no server, no store, no signing key, no
+# background sweep and no route. Uncomment it only if agents must log in to busbar WITHOUT an
+# identity provider - which is the case Codex, ChatGPT and Claude.ai are in, because enterprise IdPs
+# do not enable RFC 7591 dynamic client registration.
+#
+# With an IdP, leave this out: busbar is the OAuth RESOURCE server, tokens come from Okta/Entra/
+# Auth0, and `mcp.authorization_servers` names them. The two modes are independent and both ship.
+#
+# oauth_as:
+#   # RFC 8414 `issuer`: this authorization server's identity, and the base every endpoint is
+#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, `{issuer}/consent`,
+#   # and `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
+#   # (RFC 8414 s3.1 puts the well-known segment first; RFC 9728 puts it last - the two documents
+#   # this deployment serves build their paths in opposite orders).
+#   # No trailing slash, no query, no fragment: all three are boot refusals, because RFC 9207 has
+#   # clients compare this value byte-for-byte.
+#   issuer: "https://gw.example.com"
+#
+#   # The ES256 signing key: base64 of a PKCS#8 v1 DER P-256 private key. Produce one with
+#   #   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER | base64
+#   # OMITTED is legal and generates an EPHEMERAL key at boot, with a warning: every token the
+#   # deployment issued stops verifying when the process restarts. Fine for a trial, wrong for
+#   # anything else. There is deliberately no default key - a default would be a published private
+#   # key that signs valid tokens for every deployment that never set this field.
+#   signing_key: { env: BUSBAR_AS_SIGNING_KEY }
+#
+#   # WHAT A SELF-REGISTERED CLIENT GETS, AND NOTHING MORE. Empty by default, so a client that
+#   # registers itself and asks for a scope is REFUSED (`invalid_client_metadata`) rather than
+#   # quietly narrowed. This is a ceiling, and nothing at runtime moves it.
+#   default_grant: []
+#
+#   # There is NO registration toggle. With `oauth_as:` configured, all three ways a client
+#   # obtains a client_id are ON: pre-registration, Client ID Metadata Documents, and RFC 7591
+#   # dynamic client registration at {issuer}/register. What keeps that safe is the ceiling
+#   # above: registration confers nothing beyond `default_grant`, which is empty until you
+#   # widen it.
+#
+#   # Access token lifetime in seconds; default 600. Short on purpose - clients refresh.
+#   access_token_ttl_secs: 600
+
 # ── Client authentication ────────────────────────────────────────────────────────────────────────
 # identity-providers - DEFINE each identity provider ONCE (name -> {module, settings,
 # max_admin_scope, token}); auth.chain / auth.admin_auth / role_bindings then REFERENCE it BY BARE
@@ -265,6 +306,44 @@ pools:
         consecutive_n: 2         # two consecutive failures trip the member out
       base_cooldown_secs: 5      # quick first probe-back…
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
+
+# ── MCP: busbar as an MCP server (optional; ABSENT by default) ───────────────────────────────────
+# Presence of this block is what makes this deployment an MCP server. Absent, busbar mounts no MCP
+# ingress and no `.well-known` document at all — a gateway that is not an MCP server does not answer
+# as one.
+#
+# WHAT AN AGENT DOES, end to end, with no prior configuration:
+#   1. It POSTs to the endpoint with no credential and gets `401` with
+#      `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`.
+#   2. It fetches that document (RFC 9728) and learns which authorization servers may mint tokens
+#      for this resource, and what this resource calls itself.
+#   3. It does ordinary OAuth against your IdP, asking for a token whose audience is `canonical_uri`.
+#   4. It comes back, and busbar checks the token's audience is ITSELF before anything else happens.
+#
+# busbar is the RESOURCE SERVER here, never the authorization server: the tokens are minted by your
+# existing IdP (Okta, Entra, Auth0) and nothing in busbar issues one.
+#
+# mcp:
+#   # The RFC 8707 resource indicator. This is THE audience every inbound token must carry, compared
+#   # for exact equality — and the endpoint's mount path is DERIVED from it (`/mcp` here), so the
+#   # path a client posts to and the identifier its token is bound to cannot drift apart. It is
+#   # configured rather than taken from the request's Host header on purpose: deriving it from the
+#   # request would let a caller choose its own audience, which is the whole defence, undone.
+#   canonical_uri: "https://gateway.example.com/mcp"
+#
+#   # Your IdP's issuer(s), advertised in the metadata document. At least one is REQUIRED: it is the
+#   # entire content of the answer a client with no credential came here for.
+#   authorization_servers:
+#     - "https://login.example.com"
+#
+#   # Advisory metadata. Authorization is decided by the caller's grant, never by this list.
+#   scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
+#
+#   # Browser origins accepted on the ingress (the DNS-rebinding defence). EMPTY IS THE DEFAULT and
+#   # it means no browser origin is accepted. Agents send no `Origin` at all and are unaffected;
+#   # loopback origins are always accepted, because a browser only sends one for a document served
+#   # from loopback, which the rebinding attacker's page never is.
+#   allowed_origins: []
 
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
 # ALL telemetry egress is the single `export:` NAMED map (1.5.3): `<name>: { module, settings }`,

@@ -2,7 +2,7 @@
 
 Busbar is the **reliability layer for your AI traffic**: the breaker-and-failover control plane that sits between your application and every provider it calls. This page is for the person deciding whether to adopt it: the specific problems it solves, what it *enables* that you would otherwise have to build yourself, and an honest comparison with the tools you are probably weighing it against.
 
-It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates losslessly across six wire protocols, so you never trade away a provider's native features to get portability.
+It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](https://getbusbar.com/docs/protocols/#what-lossless-means-here)).
 
 ---
 
@@ -18,7 +18,7 @@ Busbar provides genuine in-flight failover. Requests that have not yet received 
 
 Every provider ships an SDK that speaks its own wire format. Migrating from Anthropic to OpenAI, or adding a second provider as a fallback, means updating call sites across your codebase. In practice, teams don't do this until they have to, and by then the migration is a project.
 
-Busbar presents a single endpoint to your application. You configure which provider or pool of providers lives behind it. Swapping or adding a provider is a config change, not a code change. Because Busbar translates losslessly between all six supported wire protocols (Anthropic, OpenAI, OpenAI Responses, Gemini, Amazon Bedrock, Cohere), your application does not need to know or care which model answered the request.
+Busbar presents a single endpoint to your application. You configure which provider or pool of providers lives behind it. Swapping or adding a provider is a config change, not a code change. Because Busbar translates between all six supported wire protocols (Anthropic, OpenAI, OpenAI Responses, Gemini, Amazon Bedrock, Cohere), giving your client a response its own SDK parses whichever backend served it, your application does not need to know or care which model answered the request.
 
 ### Cost control requires a control plane
 
@@ -54,13 +54,13 @@ The short version. LiteLLM is a Python-native router with a big preconfigured ca
 
 ## The operational story
 
-Busbar ships as a single static binary. Deployment is:
+Busbar ships as a single self-contained binary: no runtime, no interpreter, no sidecar. Deployment is:
 
 1. Write a `config.yaml` (providers + models, optionally pools and governance).
 2. Set the environment variables your config references (one per provider key).
 3. Run the binary.
 
-There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
+There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, `mysql`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 
@@ -93,6 +93,6 @@ One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4
 
 ## Current status
 
-Busbar is licensed **Apache-2.0**. The wire protocol translation, the data-plane HTTP surface, and the circuit breaker model are stable under Semantic Versioning; the config format is an operator artifact with a tooled migration path between releases, and the admin API carries its own contract version. The test suite covers over 2,300 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
+Busbar is licensed **Apache-2.0**. The wire protocol translation, the data-plane HTTP surface, and the circuit breaker model are stable under Semantic Versioning; the config format is an operator artifact with a tooled migration path between releases, and the admin API carries its own contract version. The test suite covers over 5,500 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
 
 Apache-2.0 is permissive: use it commercially, modify it privately, redistribute it, with an explicit patent grant and no copyleft obligations.
