@@ -51,6 +51,38 @@ fn identity_rejects_unknown_fields() {
     );
 }
 
+/// Plugin#5 regression: auth v2 is wire-ADDITIVE in the new-engine→old-plugin direction, so the
+/// engine→plugin request structs must TOLERATE an unknown field a newer engine appended (ignore it),
+/// never fail the whole login closed. This is the counterpart of `identity_rejects_unknown_fields`:
+/// the fence belongs ONLY on the plugin→engine `Identity` return, not on inbound requests.
+#[test]
+fn engine_to_plugin_requests_tolerate_unknown_fields() {
+    // BeginLoginRequest with a field a future engine added.
+    let begin = r#"{"redirect_uri":"https://x/cb","state":"s","code_challenge":"c","future_field":"ignored"}"#;
+    let b: BeginLoginRequest = serde_json::from_str(begin)
+        .expect("a newer engine's extra field must be ignored, not rejected");
+    assert_eq!(b.redirect_uri, "https://x/cb");
+
+    // CompleteLoginRequest with an unknown field.
+    let complete = r#"{"code":"authcode","future_field":{"nested":true}}"#;
+    let c: CompleteLoginRequest = serde_json::from_str(complete)
+        .expect("CompleteLoginRequest must tolerate an unknown field");
+    assert_eq!(c.code.as_deref(), Some("authcode"));
+
+    // HttpRequest (the hop description) with an unknown field.
+    let hop = r#"{"method":"POST","url":"https://idp/token","future_field":42}"#;
+    let h: HttpRequest =
+        serde_json::from_str(hop).expect("HttpRequest must tolerate an unknown field");
+    assert_eq!(h.method, "POST");
+
+    // The identity-only fence is UNCHANGED: the plugin→engine return still rejects a smuggled field.
+    let rogue = r#"{"sub":"x","groups":[],"admin_scope":"full"}"#;
+    assert!(
+        serde_json::from_str::<Identity>(rogue).is_err(),
+        "Identity must still reject unknown fields — the additive relaxation is inbound-only"
+    );
+}
+
 /// Identity <-> Principal is lossless (the seam the auth chain consumes; groups ↔ roles).
 #[test]
 fn identity_principal_roundtrip() {

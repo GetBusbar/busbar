@@ -106,8 +106,12 @@ pub enum AuthRequest {
 /// Input to [`AuthRequest::BeginLogin`]. Every field is core-generated or public; there is NO secret
 /// slot in this type's transitive graph — the confidential-client secret never crosses to the plugin
 /// on the begin path.
+// NO `#[serde(deny_unknown_fields)]`: this is an engine→plugin request. Auth ABI v2 is wire-ADDITIVE
+// (cold/mod.rs `AUTH_ABI_VERSION`), so a NEWER engine may append a field a request carries; an OLDER
+// plugin must IGNORE the unknown field, not reject the whole login (fail-closed) — the safe
+// new-engine→old-plugin direction the ABI doc promises. The identity-only guarantee that DOES need a
+// structural fence lives on the plugin→engine `Identity` RETURN, which keeps its `deny_unknown_fields`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BeginLoginRequest {
     /// The redirect/callback URL the IdP will send the browser back to (busbar's `/auth/token`).
     pub redirect_uri: String,
@@ -128,8 +132,8 @@ pub struct BeginLoginRequest {
 /// old ad-hoc username/password), plus — after the core has executed a module-described
 /// [`AuthResponse::TokenExchange`] hop — the resulting `token_response` fed back so the module can
 /// verify it and produce an [`Identity`].
+// NO `#[serde(deny_unknown_fields)]`: engine→plugin request, wire-additive (see `BeginLoginRequest`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct CompleteLoginRequest {
     /// OAuth authorization code returned to the callback.
     #[serde(default)]
@@ -158,8 +162,9 @@ pub struct CompleteLoginRequest {
 /// socket, and never holds the confidential-client secret). `secret_form_field` names the form key
 /// the CORE fills with the `client_secret` value — the plugin writes the KEY, never the VALUE, so the
 /// secret is structurally core-only.
+// NO `#[serde(deny_unknown_fields)]`: this hop-description crosses the same wire-additive auth-v2 seam
+// (see `BeginLoginRequest`); an unknown field a newer peer added must be ignored, not reject the hop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HttpRequest {
     /// HTTP method (`POST` for a token exchange, `GET` for a userinfo hop).
     pub method: String,
