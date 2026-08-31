@@ -333,19 +333,17 @@ pub(crate) fn a2a_hydrate(
     ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
     // With `store: memory` `ctx` carries no store and in-flight tasks are ephemeral BY DESIGN — the
-    // same skip the old `let Some(store) = ctx.store` guard opened with.
-    if !ctx.has_store() {
+    // same skip the old `let Some(store) = ctx.store` guard opened with. The plane OWNS its durable
+    // task set now (`crate::taskstore`), so it drives the generic `PlaneRecord` store directly: attach
+    // it as the registry's sink, then rehydrate the working set + per-task provenance chains off it.
+    let Some(store) = ctx.plane_store() else {
         return Ok(());
-    }
-    // REGISTER the durable `task_event` stream FIRST — the host attaches its own sink from the same
-    // plane-narrowed store at register time, so the host-side chain and the task-row upserts reach one
-    // backend. THEN attach the row-upsert sink and rehydrate, each through a NEUTRAL `PlaneBootCtx`
-    // method so this hook names no `App`/`BootCtx`/`TASKS`: the register, the sink attach and the
-    // dispatch-scoped restore stay wholly core-side (see `impl PlaneBootCtx for BootCtx`).
-    ctx.register_task_event_stream();
-    ctx.attach_a2a_durable_sinks();
-    match ctx.restore_task_log() {
-        Ok(s) if s.empty => {}
+    };
+    crate::taskstore::TASKS.set_sink(store.clone());
+    // The readability predicate is the plane's own `Task::from_row` (a known state/direction token, a
+    // present identity); the chain verification is computed plane-side over the plane's `TaskEventRow`.
+    match crate::taskstore::TASKS.restore_from_store(store.as_ref(), crate::a2a::task::readable_row) {
+        Ok(s) if s == crate::taskstore::Rehydrated::default() => {}
         Ok(s) => {
             tracing::info!(
                 active = s.active,
@@ -365,12 +363,13 @@ pub(crate) fn a2a_hydrate(
                 );
             }
             // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so it is
-            // logged at ERROR and names the task rather than being folded into a count.
+            // logged at ERROR and names the task rather than being folded into a count. (The restore
+            // path already logged each break; this repeats at the hook for the boot summary.)
             for brk in &s.chain_breaks {
                 diag_error!(
                     A2A_TASK_CHAIN_VERIFY_FAILED,
-                    task_id = %brk.task_id,
-                    break_detail = %brk.detail,
+                    task_id = %brk.scope,
+                    break_detail = %brk,
                     "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
                 );
             }
@@ -435,7 +434,7 @@ pub(crate) fn a2a_start(
         // reading, in config and in the admin API, as though mutual TLS were configured.
         let a2a_identities = crate::a2a::transport::resolve_client_identities(
             plane.agent_defs(),
-            host.a2a_secret_resolver().as_ref(),
+            host.secret_resolver().as_ref(),
         )
         .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
         // THE PER-AGENT TRANSPORTS, BUILT ONCE at boot. The identities were resolved just above (a
@@ -581,10 +580,6 @@ pub mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;
 pub mod task;
-/// PUBLIC re-export of the A2A task codec so the composition root (`main`) can bind it to the neutral
-/// `busbar_substrate::plane_host::TaskCodec` seam via `install_task_codec` — the one public a2a symbol
-/// the binary names for this seam, mirroring how it names `busbar_core::egress::seam::CoreHostlessEgress`.
-pub use task::A2aTaskCodec;
 pub(crate) mod transport;
 pub mod verbs;
 pub(crate) mod verify;

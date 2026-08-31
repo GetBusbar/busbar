@@ -20,14 +20,11 @@ use std::sync::Arc;
 const SCRATCH_KEY: &str = "a2a";
 
 /// INSTALL THE A2A CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production — the
-/// neutral `TaskCodec`, core's `TaskReader` backing, the parse-time section-list provider, and the
-/// self-enveloping admin-verb backing. All four are idempotent `OnceLock`/set-once installs. Called
-/// from `A2aPlane::from_config` (so every plane build installs them) AND directly by A2A tests that
-/// drive the process-wide `TASKS` host WITHOUT building a plane (idmap/local/verify/…): those reach
-/// core's `taskstore::with_global_task_host`, whose reads resolve through the installed `TaskReader`.
+/// parse-time section-list provider and the self-enveloping admin-verb backing. Idempotent set-once
+/// installs. The durable task set (`crate::taskstore::TASKS`) is owned by the plane and drives the
+/// generic `PlaneRecord` store directly, so there is no task codec/reader seam to install here any
+/// more (both were deleted with the relocation).
 pub fn install_test_seams() {
-    busbar_substrate::plane_host::install_task_codec(&crate::a2a::task::A2aTaskCodec);
-    busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
     busbar_substrate::plane::config::install_plane_sections(
         busbar_core::plane::config::config_sections,
     );

@@ -389,12 +389,12 @@ fn record_attempt(
         Err(PushRefusal::Transport(_) | PushRefusal::Status(_)) => provenance::EV_PUSH_FAILED,
         Err(PushRefusal::NoCallback) => return,
     };
-    if let Err(e) = engine_host.task_record_push_delivery(
+    if let Err(e) = crate::taskstore::TASKS.record_push_delivery(
         &task.task_id,
         kind,
         engine_host.clock_now_secs(),
         // No inbound request originates a delivery; `request_id` is a join key and is excluded from
-        // the digest for exactly this reason (see `provenance::digest_fields`).
+        // the digest for exactly this reason.
         "",
     ) {
         diag_debug!(

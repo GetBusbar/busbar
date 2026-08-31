@@ -59,7 +59,7 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// mount is the only place a token can have been checked against this plane's resource indicator,
 /// so it is the only place the presented credential is an A2A inbound credential.
 fn credential_kind_of(engine_host: &dyn busbar_substrate::plane_host::EngineHost) -> &'static str {
-    let bound = engine_host.a2a_audience_bound();
+    let bound = engine_host.plane_audience_bound(crate::PLANE_DECL.key);
     if bound {
         CREDENTIAL_KIND_A2A_INBOUND
     } else {
@@ -982,7 +982,7 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if engine_host.gate_attached(1, &admitted.dispatch.agent_id) {
+    if engine_host.gate_attached(crate::PLANE_DECL.key, &admitted.dispatch.agent_id) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
         // dispatch gate, now inverted so this plane body no longer names `busbar_core::hooks::gate::decide` or
         // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
@@ -1014,7 +1014,7 @@ async fn admitted(
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
             host2.gate_decide(
-                1,
+                crate::PLANE_DECL.key,
                 &agent,
                 request_id,
                 &tool,
@@ -1506,13 +1506,10 @@ async fn admitted(
         // BACK TO `working`, which chains a `task.resumed` provenance event. The transition table
         // refuses this from a terminal state, so a caller cannot resurrect finished work by
         // re-using its `contextId`.
-        if let Err(e) = engine_host.task_journal_write(
+        if let Err(e) = crate::taskstore::TASKS.transition(
             &task_id,
-            busbar_substrate::plane_host::TaskWrite::Transition {
-                to_state: super::task::TaskState::Working.as_str(),
-            },
-            now,
             &request_id,
+            super::task::plan_transition(super::task::TaskState::Working, now),
         ) {
             diag_warn!(A2A_INTERRUPTED_TASK_UNRESUMED, task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
             return (
@@ -1554,14 +1551,7 @@ async fn admitted(
                 return plane_absent();
             }
         };
-        if let Err(e) = engine_host.task_journal_write(
-            &task_id,
-            busbar_substrate::plane_host::TaskWrite::Submit {
-                row: &task.to_row(),
-            },
-            now,
-            &request_id,
-        ) {
+        if let Err(e) = crate::taskstore::TASKS.submit(&task.to_row(), &request_id) {
             // Error-once latch: a store that refuses the submit is a STABLE condition (a store
             // outage persists across every inbound submission), and this path runs per request.
             // Error on the TRANSITION into the failing state; hold subsequent failures at debug so
@@ -1586,11 +1576,9 @@ async fn admitted(
         // THE PER-TASK HASH-CHAIN EVENT FOR THE HOP: who delegated, to which registered agent,
         // recorded BEFORE the socket rather than after it, so a hop that never returns still left a
         // chained record saying it was made.
-        if let Err(e) = engine_host.task_journal_write(
+        if let Err(e) = crate::taskstore::TASKS.record_dispatch(
             &task_id,
-            busbar_substrate::plane_host::TaskWrite::Dispatch {
-                agent_id: hop.target_agent_id.as_deref().unwrap_or(&agent_id),
-            },
+            hop.target_agent_id.as_deref().unwrap_or(&agent_id),
             now,
             &request_id,
         ) {
@@ -1611,7 +1599,8 @@ async fn admitted(
     }
 
     if let Some(pinned) = callback.as_ref() {
-        if let Err(e) = engine_host.task_set_push_callback(&task_id, Some(pinned.url.clone()), now)
+        if let Err(e) =
+            crate::taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now)
         {
             // The local caches below are STILL populated — delivery for this process lifetime
             // beats none — but the failure is now visible, and the post-restart implication is
@@ -1726,7 +1715,7 @@ async fn admitted(
     // BUSBAR'S OWN CREDENTIAL FOR THIS BACKEND, or none — and it can only be minted against the
     // grant obtained above. A configured credential that will not resolve is a REFUSAL and not a
     // quiet unauthenticated hop: an operator who configured one meant the backend to see one.
-    let resolver = engine_host.a2a_secret_resolver();
+    let resolver = engine_host.secret_resolver();
     let lease = match target_cred.as_ref() {
         Some(cred) => match super::creds::mint_from(&grant, cred, resolver.as_ref(), now_ms) {
             Ok(lease) => Some(lease),
@@ -2280,8 +2269,8 @@ async fn stream_hop(
     // at zero would spend the first N advances re-asserting a position the store already holds —
     // harmless, because the store refuses to rewind, but it would make the cursor stop counting
     // this stream's chunks and start counting from scratch, which is the number a resubscribe reads.
-    let mut cursor: u64 = busbar_substrate::plane_host::task_reader()
-        .and_then(|reader| reader.get_unscoped(&ctx.task_id))
+    let mut cursor: u64 = crate::taskstore::TASKS
+        .get_unscoped(&ctx.task_id)
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
@@ -2302,15 +2291,9 @@ async fn stream_hop(
                 // ALREADY ON A BLOCKING THREAD, so the delivery is made inline rather than spawned:
                 // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
                 // order also means the receiver sees the states in the order they happened.
-                match engine_host
-                    .task_journal_write(
-                        &task_id,
-                        busbar_substrate::plane_host::TaskWrite::Transition {
-                            to_state: state.as_str(),
-                        },
-                        now,
-                        &request_id,
-                    )
+                match crate::taskstore::TASKS
+                    .transition(&task_id, &request_id, super::task::plan_transition(state, now))
+                    .map_err(|e| e.to_string())
                     .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
                 {
                     Ok(task) => {
@@ -2348,12 +2331,7 @@ async fn stream_hop(
                 cursor = cursor.saturating_add(1);
                 // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
                 // so a duplicate delivery cannot rewind it.
-                let _ = engine_host.task_journal_write(
-                    &task_id,
-                    busbar_substrate::plane_host::TaskWrite::AdvanceCursor { cursor },
-                    now,
-                    &request_id,
-                );
+                let _ = crate::taskstore::TASKS.advance_cursor(&task_id, cursor, now, &request_id);
             }
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.
@@ -2509,15 +2487,13 @@ async fn stream_hop(
                 // A BROKEN STREAM IS A TERMINAL FAILURE and the caller is told, for the same
                 // reason `fail_task` tells them: silence and "still working" are the same thing to
                 // a receiver, and this is the case where they are most different.
-                let recorded = watched_engine_host
-                    .task_journal_write(
+                let recorded = crate::taskstore::TASKS
+                    .transition(
                         &watched_task,
-                        busbar_substrate::plane_host::TaskWrite::Transition {
-                            to_state: super::task::TaskState::Failed.as_str(),
-                        },
-                        watched_now,
                         &watched_request,
+                        super::task::plan_transition(super::task::TaskState::Failed, watched_now),
                     )
+                    .map_err(|e| e.to_string())
                     .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
                 if let Ok(task) = recorded {
                     notify_push(Arc::clone(&watched_engine_host), &watched_seam, task);
@@ -2562,16 +2538,13 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
     }
     // POST-hop: the durable `task_event` transition is written through the admitted `EngineHost`,
     // which mints its own transient `HostCtx` per call — no `Send + 'static` route need be reopened.
-    let recorded = ctx
-        .engine_host
-        .task_journal_write(
+    let recorded = crate::taskstore::TASKS
+        .transition(
             &ctx.task_id,
-            busbar_substrate::plane_host::TaskWrite::Transition {
-                to_state: state.as_str(),
-            },
-            ctx.now,
             &ctx.request_id,
+            super::task::plan_transition(state, ctx.now),
         )
+        .map_err(|e| e.to_string())
         .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
     match recorded {
         // THE STATE CHANGED, SO THE CALLER IS TOLD. This is the line that was missing: a caller
@@ -2673,16 +2646,13 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
         // refusal and the row keeps its last-known state, readable from busbar's own store. Either
         // way: `503` + an EXACT `Retry-After` from the cell's own deadline.
         if !ctx.addressed {
-            let recorded = ctx
-                .engine_host
-                .task_journal_write(
+            let recorded = crate::taskstore::TASKS
+                .transition(
                     &ctx.task_id,
-                    busbar_substrate::plane_host::TaskWrite::Transition {
-                        to_state: super::task::TaskState::Rejected.as_str(),
-                    },
-                    ctx.now,
                     &ctx.request_id,
+                    super::task::plan_transition(super::task::TaskState::Rejected, ctx.now),
                 )
+                .map_err(|e| e.to_string())
                 .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
             match recorded {
                 Ok(task) => notify_push(Arc::clone(&ctx.engine_host), &ctx.seam, task),
@@ -2824,15 +2794,13 @@ fn end_task(
     request_id: &str,
     now: u64,
 ) {
-    let recorded = engine_host
-        .task_journal_write(
+    let recorded = crate::taskstore::TASKS
+        .transition(
             task_id,
-            busbar_substrate::plane_host::TaskWrite::Transition {
-                to_state: super::task::TaskState::Failed.as_str(),
-            },
-            now,
             request_id,
+            super::task::plan_transition(super::task::TaskState::Failed, now),
         )
+        .map_err(|e| e.to_string())
         .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
     match recorded {
         // A FAILURE IS A TERMINAL STATE AND THE CALLER WANTS IT MOST. A push callback that only
@@ -2981,7 +2949,7 @@ pub(crate) async fn validate_callback(
 /// The member names are [`super::idmap`]'s, because they are the same fact: the ids this reads are
 /// exactly the ids that translation rewrites.
 fn addressed_task(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     envelope: &serde_json::Value,
     principal: &str,
 ) -> Option<super::task::Task> {
@@ -2993,7 +2961,7 @@ fn addressed_task(
         // Through the neutral seam: `task_get_scoped` collapses "not this caller's" and "no such
         // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the scoped oracle is
         // unchanged; a row that does not parse back is treated as unaddressed for the same reason.
-        if let Some(row) = engine_host.task_get_scoped(principal, named) {
+        if let Some(row) = crate::taskstore::TASKS.get_scoped(principal, named).ok() {
             if let Ok(task) = super::task::Task::from_row(&row) {
                 return Some(task);
             }
@@ -3021,9 +2989,8 @@ fn resumable_task(
     context_id: &str,
     agent_ids: &[&str],
 ) -> Option<super::task::Task> {
-    let mut candidates: Vec<super::task::Task> = busbar_substrate::plane_host::task_reader()
-        .map(|reader| reader.list_scoped(principal))
-        .unwrap_or_default()
+    let mut candidates: Vec<super::task::Task> = crate::taskstore::TASKS
+        .list_scoped(principal)
         .iter()
         // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
         // so the `is_interrupted` / field reads stay codec-side. Working-set rows are always readable.

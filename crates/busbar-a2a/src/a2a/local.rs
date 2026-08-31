@@ -261,9 +261,8 @@ pub(crate) fn list_tasks(
     // SCOPED FIRST, filtered second. `list_scoped` is the authorization boundary of
     // THE SCOPING RULE: a caller can only ever be shown its own rows, and every filter
     // below narrows that set rather than widening it.
-    let mut rows: Vec<Task> = busbar_substrate::plane_host::task_reader()
-        .map(|reader| reader.list_scoped(principal))
-        .unwrap_or_default()
+    let mut rows: Vec<Task> = crate::taskstore::TASKS
+        .list_scoped(principal)
         .iter()
         // The engine is `TaskRow`-neutral; this A2A caller converts back to the canonical `Task` at
         // its boundary with the codec. Working-set rows were validated on the way in, so `from_row`
@@ -353,9 +352,7 @@ fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
 fn prune() {
     if let Ok(mut map) = configs().lock() {
         map.retain(|task_id, _| {
-            busbar_substrate::plane_host::task_reader()
-                .and_then(|reader| reader.get_unscoped(task_id))
-                .is_some()
+            crate::taskstore::TASKS.get_unscoped(task_id).is_some()
         });
     }
 }
@@ -489,7 +486,7 @@ pub(crate) fn delivery_auth(
 /// THE TASK A PUSH-CONFIG REQUEST NAMES, resolved through the SAME scoped lookup every other read on
 /// this plane uses, so an id belonging to another principal is `TaskNotFound` and not a config.
 fn addressed(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     params: &serde_json::Value,
     principal: &str,
 ) -> Option<Task> {
@@ -499,7 +496,7 @@ fn addressed(
             // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the existence
             // oracle is unchanged. A row that does not parse back is treated as absent for the same
             // reason — a task this verb cannot reconstruct is one it cannot address.
-            if let Some(row) = engine_host.task_get_scoped(principal, id) {
+            if let Some(row) = crate::taskstore::TASKS.get_scoped(principal, id).ok() {
                 if let Ok(task) = Task::from_row(&row) {
                     return Some(task);
                 }
@@ -594,7 +591,8 @@ pub(crate) async fn create_push_config(
         Err(message) => return err(rpc_id, A2aError::InvalidParams, message),
     };
 
-    if let Err(e) = engine_host.task_set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
+    if let Err(e) =
+        crate::taskstore::TASKS.set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
     {
         // Error-once latch: a store that cannot record a push config is a STABLE condition (a store
         // outage persists across every registration) and this path runs per request. Error on the
@@ -730,7 +728,7 @@ pub(crate) fn delete_push_config(
         // failed durable clear must NOT proceed as if deleted: the local config entry is kept,
         // the delivery pins are kept, and the caller gets the internal error so its retry is
         // meaningful (the verb is idempotent, so retrying is free).
-        if let Err(e) = engine_host.task_set_push_callback(&task.task_id, None, now) {
+        if let Err(e) = crate::taskstore::TASKS.set_push_callback(&task.task_id, None, now) {
             // Error-once latch: a store that cannot clear a push config is a STABLE condition (a
             // store outage persists across every delete) and this path runs per request. Error on
             // the transition into the failing state; hold subsequent failures at debug.
@@ -778,7 +776,7 @@ pub(crate) fn delete_push_config(
 /// what it alone knows — that it issued no such task to this caller, or that it recorded the ending
 /// of this one — and is deciding nothing about a task that is still running.
 pub(crate) fn subscribe_refusal(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
     principal: &str,
@@ -788,7 +786,7 @@ pub(crate) fn subscribe_refusal(
     let named = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(serde_json::Value::as_str))?;
-    match engine_host.task_get_scoped(principal, named) {
+    match crate::taskstore::TASKS.get_scoped(principal, named).ok() {
         // NOT BUSBAR'S, OR NOT THIS CALLER'S — one answer for both, because "there is no such task"
         // and "there is such a task and it is not yours" must not be distinguishable. The neutral
         // seam collapses both to `None` exactly as the old `get_scoped` `Err(Denied)` did.

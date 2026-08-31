@@ -120,11 +120,10 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
 /// callers ([`super::originate`]) pass the task's OWN `principal`, which is the owner by definition
 /// and therefore always admitted — they are not exceptions to the rule, they are instances of it.
 ///
-/// The boundary is [`busbar_core::plane::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
+/// The boundary is [`crate::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
 /// One predicate, one owner; see the module header.
 pub(crate) fn backend_id_for(principal: &str, busbar_id: &str) -> Option<String> {
-    busbar_substrate::plane_host::task_reader()
-        .and_then(|reader| reader.get_scoped(principal, busbar_id))?;
+    crate::taskstore::TASKS.get_scoped(principal, busbar_id).ok()?;
     table().by_busbar_id.get(busbar_id).cloned()
 }
 

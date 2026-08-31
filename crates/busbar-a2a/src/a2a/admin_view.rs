@@ -125,5 +125,5 @@ pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::Conta
         .iter()
         .map(|(n, d)| (n.as_str(), d.hooks.as_slice()))
         .collect();
-    next.reresolve_container_gates(1, &containers, &agents.all_agent_hooks);
+    next.reresolve_container_gates(crate::PLANE_DECL.key, &containers, &agents.all_agent_hooks);
 }

@@ -76,7 +76,7 @@ fn originate(
         }
     };
     let now_ms = now.saturating_mul(1_000);
-    let resolver = engine_host.a2a_secret_resolver();
+    let resolver = engine_host.secret_resolver();
     let lease = match admitted.outbound_cred.as_ref() {
         Some(cred) => match super::creds::mint_from(&grant, cred, resolver.as_ref(), now_ms) {
             Ok(lease) => Some(lease),
@@ -328,9 +328,8 @@ pub(super) async fn refresh_listed_tasks(
     // THE ROWS THIS CALLER OWNS ON THIS AGENT, and the backend's name for each. Built BEFORE the
     // hop, because it is also the whitelist: an id that is not in here is an id the answer cannot
     // move.
-    let ours: HashMap<String, String> = busbar_substrate::plane_host::task_reader()
-        .map(|reader| reader.list_scoped(principal))
-        .unwrap_or_default()
+    let ours: HashMap<String, String> = crate::taskstore::TASKS
+        .list_scoped(principal)
         .iter()
         // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
         // so the `is_terminal` / field reads below stay codec-side. Working-set rows are always
@@ -408,15 +407,9 @@ pub(super) async fn refresh_listed_tasks(
         // A refusal is the table doing its job — a backend re-reporting a state busbar already
         // holds, or one the table forbids — and is not an error to raise at a caller who asked for
         // a list.
-        match engine_host
-            .task_journal_write(
-                busbar_id,
-                busbar_substrate::plane_host::TaskWrite::Transition {
-                    to_state: state.as_str(),
-                },
-                now,
-                busbar_id,
-            )
+        match crate::taskstore::TASKS
+            .transition(busbar_id, busbar_id, super::task::plan_transition(state, now))
+            .map_err(|e| e.to_string())
             .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
         {
             Ok(task) => notify_push(Arc::clone(engine_host), &seam, task),

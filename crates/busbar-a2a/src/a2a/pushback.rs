@@ -294,7 +294,7 @@ pub(crate) async fn push_notification(
             "a push notification is one task document",
         );
     }
-    let Some(row) = ctx.host.task_get_unscoped(&task_id) else {
+    let Some(row) = crate::taskstore::TASKS.get_unscoped(&task_id) else {
         // The token verified and the row is gone — a task compacted out from under a backend that
         // is still reporting on it. `401` and not `404`, for the reason `task_of` gives one answer:
         // whether a task exists is not something this endpoint tells its caller.
@@ -327,16 +327,13 @@ pub(crate) async fn push_notification(
         // a retry, and `transition` would refuse a move to the state it is already in.
         task
     } else {
-        let recorded = ctx
-            .host
-            .task_journal_write(
+        let recorded = crate::taskstore::TASKS
+            .transition(
                 &task_id,
-                busbar_substrate::plane_host::TaskWrite::Transition {
-                    to_state: reported.as_str(),
-                },
-                now,
                 &task_id,
+                super::task::plan_transition(reported, now),
             )
+            .map_err(|e| e.to_string())
             .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()));
         match recorded {
             Ok(t) => t,

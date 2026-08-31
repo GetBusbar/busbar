@@ -396,42 +396,6 @@ pub fn readable_row(row: &crate::TaskRow) -> Result<(), String> {
     Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// THE A2A TASK CODEC the core TASKS engine reaches through the neutral
-/// [`busbar_substrate::plane_host::TaskCodec`] seam. A ZST (so `&A2aTaskCodec` promotes to `'static`),
-/// installed once by the composition root (`main`) under `plane-a2a`. Each method forwards to the
-/// A2A-side codec fragment the engine must not name — so core's `task_journal_write`, boot restore and
-/// `task_set_push_callback` name no `crate::a2a` type. Byte-identical to the former in-core reaches.
-pub struct A2aTaskCodec;
-
-impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
-    fn plan_transition(
-        &self,
-        to_state: &str,
-        now: u64,
-    ) -> Result<
-        Box<dyn FnOnce(&crate::TaskRow) -> Result<(crate::TaskRow, &'static str), String>>,
-        String,
-    > {
-        let to = TaskState::parse(to_state).map_err(|e| e.to_string())?;
-        Ok(Box::new(plan_transition(to, now)))
-    }
-
-    fn floor_callback(&self, task_id: &str, callback: Option<String>) -> Option<String> {
-        super::pushnotify::floor_callback(task_id, callback)
-    }
-
-    fn readable_row(&self, row: &crate::TaskRow) -> Result<(), String> {
-        readable_row(row)
-    }
-}
-
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/task_tests.rs"]
 mod task_tests;
-
-// THE DURABLE TASK SET's tests — relocated from busbar-core's `plane::taskstore` when the dual-compile
-// was removed: they exercise core's `taskstore` (through `busbar_core::plane::taskstore`) with THIS
-// plane's task row types, so they live on the plane that owns the row.
-#[cfg(all(test, feature = "test-support"))]
-#[path = "tests/taskstore_tests.rs"]
-mod taskstore_tests;
