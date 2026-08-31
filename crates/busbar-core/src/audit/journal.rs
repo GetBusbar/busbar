@@ -106,6 +106,12 @@ pub(crate) struct Restored {
     /// judge on its own, and what a wholesale deletion of one scope's evidence looks like. Named (not
     /// merely counted) so the wrapper can log WHICH.
     pub(crate) empty_scopes: Vec<String>,
+    /// Records the reframe callback could NOT decode — a body the store held but this build cannot
+    /// read back (a format from a store no released build wrote, or a corrupt row). Counted and
+    /// SKIPPED per-record rather than allowed to abort the whole rehydrate: dropping every other
+    /// scope's working set because one row would not decode is strictly worse than losing the one row,
+    /// exactly as a chain break is tolerated per-scope rather than refused wholesale.
+    pub(crate) unreadable: usize,
     /// Chains that FAILED to verify. Tamper evidence. The records are still restored and the chain
     /// still resumes from the broken tail; the break is reported, never silently re-based onto.
     pub(crate) chain_breaks: Vec<ChainBreak>,
@@ -511,11 +517,17 @@ impl<R: NeutralRecord> Journal<R> {
         let mut out = Restored::default();
         let mut positions = self.positions();
         for scope in &scopes {
-            let records: Vec<R> = store
-                .list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))?
-                .iter()
-                .map(|body| reframe(scope, body))
-                .collect::<StoreResult<_>>()?;
+            // Reframe per-record: an undecodable body is SKIPPED and counted, never `?`-aborted —
+            // aborting here would drop every scope after this one, the all-or-nothing failure a
+            // chain break is already spared from. `unreadable` carries the skipped count; the wrapper
+            // reports it.
+            let mut records: Vec<R> = Vec::new();
+            for body in store.list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))? {
+                match reframe(scope, &body) {
+                    Ok(r) => records.push(r),
+                    Err(_) => out.unreadable += 1,
+                }
+            }
             if records.is_empty() {
                 out.empty_scopes.push(scope.clone());
                 Self::commit_position(

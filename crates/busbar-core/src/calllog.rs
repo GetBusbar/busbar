@@ -464,6 +464,12 @@ pub struct Restored {
     /// enumerated-but-empty chain is the one shape the verifier cannot judge on its own (see
     /// [`verify_chain`]), and it is what a wholesale deletion of one caller's evidence looks like.
     pub empty_chains: usize,
+    /// Records the store held but this build could NOT decode — a body from a store format no released
+    /// build wrote, or a corrupt row. COUNTED and SKIPPED per-record rather than allowed to abort the
+    /// whole rehydrate: losing every other principal's working set because one record would not decode
+    /// is strictly worse than losing the one record, exactly as a chain break is tolerated per-scope
+    /// rather than refused wholesale.
+    pub unreadable: usize,
     /// Chains that FAILED to verify. Tamper evidence. The records are still restored and the chain
     /// still resumes — refusing would let anyone who can write to the store erase a caller's history
     /// by corrupting one byte — but the break is reported and the chain continues from the broken
@@ -565,14 +571,39 @@ impl PlaneCallLog {
         let principals = store.list_plane_record_parents(KIND_CALL)?;
         let mut out = Restored::default();
         for principal in &principals {
-            let bodies =
+            let raw =
                 store.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.clone()))?;
             out.principals += 1;
+            let store_returned_nothing = raw.is_empty();
+            // Decode each stored body per-record BEFORE seeding, so a single undecodable row is
+            // COUNTED and SKIPPED rather than faulting the seam and `?`-aborting the whole rehydrate
+            // (which would drop every OTHER principal's working set). A chain break is already
+            // tolerated per-principal below; an unreadable record is the same class of defensive
+            // robustness. The GOOD-record path is unchanged: with every body decodable, `bodies` is
+            // `raw` in order, and the seed is byte-identical.
+            let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(raw.len());
+            for body in raw {
+                match reframe_call(principal, &body) {
+                    Ok(_) => bodies.push(body),
+                    Err(e) => {
+                        out.unreadable += 1;
+                        tracing::error!(
+                            principal = %principal,
+                            error = %e,
+                            "a persisted per-call record could NOT be decoded on restore; it is being \
+                             skipped and counted rather than aborting the whole rehydrate. The other \
+                             records for this principal are still restored."
+                        );
+                    }
+                }
+            }
             out.records += bodies.len();
-            if bodies.is_empty() {
+            if store_returned_nothing {
                 // The store named this principal and then produced nothing for it. Reported, never
                 // silently skipped: it is exactly what one caller's evidence being deleted wholesale
-                // looks like, and the verifier alone cannot tell it from "never called".
+                // looks like, and the verifier alone cannot tell it from "never called". (An
+                // enumerated principal whose records were all UNREADABLE is a different condition,
+                // already counted into `unreadable` and reported above, not folded in here.)
                 out.empty_chains += 1;
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,

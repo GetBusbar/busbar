@@ -419,14 +419,27 @@ impl TaskRegistry {
         store: &dyn PlaneStore,
         readable: impl Fn(&TaskRow) -> Result<(), String>,
     ) -> StoreResult<Rehydrated> {
-        let rows: Vec<TaskRow> = store
-            .list_plane_records(KIND_TASK, &PlaneSelector::All)?
-            .iter()
-            .map(|b| TaskRow::from_body(b))
-            .collect::<StoreResult<_>>()?;
+        let bodies = store.list_plane_records(KIND_TASK, &PlaneSelector::All)?;
         let mut out = Rehydrated::default();
         let mut tasks = self.tasks();
-        for row in &rows {
+        for body in &bodies {
+            // Decode per-row: a single row this build cannot parse is COUNTED as unreadable and
+            // SKIPPED, never allowed to `?`-abort the whole rehydrate (which would drop every OTHER
+            // task's working set). This is the same tolerance a chain break already gets below.
+            let row = match TaskRow::from_body(body) {
+                Ok(r) => r,
+                Err(e) => {
+                    busbar_substrate::diag_error!(
+                        crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
+                        error = %e,
+                        "a persisted A2A task row could not be DECODED on restore; it is being \
+                         skipped and counted rather than aborting the whole rehydrate"
+                    );
+                    out.unreadable += 1;
+                    continue;
+                }
+            };
+            let row = &row;
             if let Err(e) = readable(row) {
                 busbar_substrate::diag_error!(
                     crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
@@ -442,11 +455,29 @@ impl TaskRegistry {
                 out.terminal += 1;
                 continue;
             }
-            let events: Vec<TaskEventRow> = store
+            // Decode each event per-record: an undecodable event is counted and skipped, not
+            // `?`-aborted. A gap in the chain that a skip leaves is caught by `verify_chain` below and
+            // reported as a chain break — the same tamper-evidence path — rather than losing the whole
+            // working set to one bad row.
+            let mut events: Vec<TaskEventRow> = Vec::new();
+            for b in store
                 .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(row.task_id.clone()))?
                 .iter()
-                .map(|b| TaskEventRow::from_body(b))
-                .collect::<StoreResult<_>>()?;
+            {
+                match TaskEventRow::from_body(b) {
+                    Ok(ev) => events.push(ev),
+                    Err(e) => {
+                        busbar_substrate::diag_error!(
+                            crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
+                            task_id = %row.task_id,
+                            error = %e,
+                            "a persisted A2A task EVENT could not be DECODED on restore; it is being \
+                             skipped and counted rather than aborting the whole rehydrate"
+                        );
+                        out.unreadable += 1;
+                    }
+                }
+            }
             if let Err(brk) = verify_chain(&events) {
                 busbar_substrate::diag_error!(
                     crate::diagnostics::A2A_TASK_CHAIN_VERIFY_FAILED,

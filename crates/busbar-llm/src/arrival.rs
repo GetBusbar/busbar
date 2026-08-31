@@ -74,6 +74,7 @@ pub fn gemini_arrival(a: Arrival) -> Fut {
     ))
 }
 
+#[tracing::instrument(level = "debug", name = "gemini_ingress", skip_all)]
 async fn gemini_ingress(
     host: Arc<dyn ArrivalHost>,
     ctx: ArrivalCtx,
@@ -264,6 +265,7 @@ pub fn bedrock_arrival(a: Arrival) -> Fut {
     }
 }
 
+#[tracing::instrument(level = "debug", name = "bedrock_converse", skip_all)]
 async fn bedrock_converse(
     host: Arc<dyn ArrivalHost>,
     ctx: ArrivalCtx,
@@ -284,6 +286,7 @@ async fn bedrock_converse(
     bedrock_ingress(host, ctx, model_id, op, false, headers, body).await
 }
 
+#[tracing::instrument(level = "debug", name = "bedrock_converse_stream", skip_all)]
 async fn bedrock_converse_stream(
     host: Arc<dyn ArrivalHost>,
     ctx: ArrivalCtx,
