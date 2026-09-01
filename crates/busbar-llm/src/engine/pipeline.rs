@@ -28,7 +28,7 @@ const TRANSLATE_OFFLOAD_THRESHOLD: usize = 128 * 1024;
 /// The send stage's three exits, so the attempt-cap and budget-deadline wrappers compose without
 /// nesting error types: a response (or client error), the per-attempt hang cap firing, or the
 /// non-streaming failover budget expiring.
-enum SendOutcome {
+pub(crate) enum SendOutcome {
     Sent(Result<http::Response<hyper::body::Incoming>, crate::engine::EgressError>),
     AttemptTimeout(u64),
     BudgetTimeout,
@@ -39,13 +39,13 @@ enum SendOutcome {
 /// * the failover-budget deadline and a connect that exceeded its 10s bound are TIMEOUTS
 ///   (reqwest reported both via `is_timeout()`);
 /// * every other client error (refused, TLS failure, reset before headers) is CONNECT class.
-enum EgressSendError {
+pub(crate) enum EgressSendError {
     Timeout,
     Client(crate::engine::EgressError),
 }
 
 impl EgressSendError {
-    fn is_timeout(&self) -> bool {
+    pub(crate) fn is_timeout(&self) -> bool {
         match self {
             EgressSendError::Timeout => true,
             // Walk the source chain for an io timeout: hyper surfaces our connector's 10s
@@ -328,14 +328,14 @@ pub(crate) fn forward_with_pool_parsed<'a>(
 /// transport failure, or an untranslatable 2xx) simply leave it armed and let the `return` unwind
 /// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
 /// supplementing them (calling both would double-refund).
-struct BudgetSpendGuard<'a> {
-    store: &'a dyn busbar_core::store::LaneRuntime,
-    lane: usize,
-    armed: bool,
+pub(crate) struct BudgetSpendGuard<'a> {
+    pub(crate) store: &'a dyn busbar_core::store::LaneRuntime,
+    pub(crate) lane: usize,
+    pub(crate) armed: bool,
 }
 
 impl BudgetSpendGuard<'_> {
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -389,7 +389,7 @@ impl Drop for BudgetSpendGuard<'_> {
 ///     ("...(read_response, degraded path); ...") — replaced here with a structured `degraded` field
 ///     on both call sites (machine-filterable instead of embedded in a format string).
 #[allow(clippy::too_many_arguments)]
-async fn translate_response_cross_protocol(
+pub(crate) async fn translate_response_cross_protocol(
     app: &Arc<App>,
     i: usize,
     ingress_protocol: &str,
@@ -3080,9 +3080,6 @@ pub(crate) fn resolve_breaker_cfg(
         }
     }
 }
-
-mod walk;
-pub(crate) use walk::*;
 
 #[cfg(test)]
 #[path = "tests/inject_include_usage_tests.rs"]

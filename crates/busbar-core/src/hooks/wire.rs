@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// says which. The vocabulary is append-only — hooks MUST ignore unknown ops per the contract.
 pub(crate) const OP_DECIDE: &str = "decide";
 pub(crate) const OP_TRANSFORM: &str = "transform";
-pub(crate) const OP_NOTIFY: &str = "notify";
+pub const OP_NOTIFY: &str = "notify";
 
 /// The stable request schema sent to a hook: the request projection, every candidate, and context.
 /// The request-side wire structs deliberately do NOT derive `Debug`: behind the opt-ins they
@@ -46,7 +46,7 @@ pub(crate) struct HookRequest<'a> {
 /// `response` carries the outcome (`ok` | `failed` | `rejected_by_gate` — the SYNTHETIC
 /// completion that lets an audit tap see denials) and the response status.
 #[derive(Serialize)]
-pub(crate) struct HookStageProjection<'a> {
+pub struct HookStageProjection<'a> {
     pub(crate) at: &'static str,
     /// The dispatched candidate's model name (ONE name for one concept across the wire — the
     /// same string `candidates[].model` carries on decide payloads).
@@ -506,7 +506,7 @@ pub(crate) fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply>
 /// A parsed, validated `rewrite` reply — part of the hook contract (`busbar-api`); re-exported so
 /// engine-internal paths are unchanged. FAIL-CLOSED: `parse_rewrite` (below) returns `None` for a
 /// malformed rewrite so the caller proceeds with the ORIGINAL body, never a corrupted one.
-pub(crate) use busbar_api::RewriteReply;
+pub use busbar_api::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
@@ -564,7 +564,7 @@ const REJECT_STATUS_DEFAULT: u16 = 403;
 /// becomes `REJECT_STATUS_DEFAULT` (403). Shared by `parse_reject_detail` (the transports' reply
 /// seam) and forward's policy-outcome seam (defense in depth for a `RoutingDecision::Reject`
 /// constructed directly by a policy impl), so no producer can mint a success/redirect/5xx.
-pub(crate) fn clamp_reject_status(status: u16) -> u16 {
+pub fn clamp_reject_status(status: u16) -> u16 {
     if (400..=499).contains(&status) {
         status
     } else {
@@ -590,7 +590,7 @@ const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy.";
 /// Shared by `normalize` (the transports' reply path) and by `forward`'s seam mapping (defense in
 /// depth for a `RoutingDecision::Reject` constructed directly by a policy impl), so the "safe to
 /// log, safe for the client" guarantee holds for EVERY producer of a rejection.
-pub(crate) fn sanitize_reject_message(raw: &str) -> String {
+pub fn sanitize_reject_message(raw: &str) -> String {
     let filtered: Vec<char> = raw
         .chars()
         .filter(|c| {
@@ -623,7 +623,7 @@ pub(crate) fn sanitize_reject_message(raw: &str) -> String {
 
 /// Build the wire projection from the live request/candidates/context. Borrows everywhere — the
 /// projection is serialized immediately by the transport, never stored.
-pub(crate) fn build<'a>(
+pub fn build<'a>(
     op: &'static str,
     req: &'a RoutingRequest<'_>,
     candidates: &'a [Candidate<'_>],

@@ -151,8 +151,8 @@ pub use busbar_substrate::store::{
 // Its fields stay `pub(crate)`, so the struct-as-type is `pub` while the permit/probe internals are
 // not externally accessible — no `private_interfaces` leak.
 pub struct Admit {
-    pub(crate) permit: Permit,
-    pub(crate) probe_epoch: Option<u64>,
+    pub permit: Permit,
+    pub probe_epoch: Option<u64>,
 }
 
 /// RAII concurrency permit, held for the request's lifetime and released on drop.
@@ -164,7 +164,7 @@ pub struct Admit {
 /// lanes: two shared-atomic writes per request on a cache line every worker fights over, paying
 /// full contention for a limit that could never bind.)
 #[must_use]
-pub(crate) enum Permit {
+pub enum Permit {
     // The permit is never READ — it exists to be HELD (its Drop returns the slot).
     Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
     Unbounded,
@@ -635,7 +635,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
 }
 
 mod in_memory;
-pub(crate) use in_memory::*;
+pub use in_memory::*;
 
 mod planes;
 pub use planes::{PlaneBreakers, MAX_POOL_MEMBERS};

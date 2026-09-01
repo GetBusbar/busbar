@@ -41,7 +41,7 @@ pub fn install_stream_translator_factory(f: StreamTranslatorFactory) {
 /// `test-support` consumers (the plugin test binaries) have `cfg(test)` false and reach the installed
 /// factory, which their own test setup fills through [`install_stream_translator_factory`].
 #[cfg(test)]
-pub(crate) fn new_stream_translator(
+pub fn new_stream_translator(
     ingress: &str,
     egress: &str,
     is_sse: bool,
@@ -50,7 +50,7 @@ pub(crate) fn new_stream_translator(
 }
 
 #[cfg(not(test))]
-pub(crate) fn new_stream_translator(
+pub fn new_stream_translator(
     ingress: &str,
     egress: &str,
     is_sse: bool,

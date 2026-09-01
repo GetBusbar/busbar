@@ -795,7 +795,7 @@ impl GovState {
     ///   attribute to the live window rather than being dropped - bounded to one in-flight
     ///   request, never lost.
     /// - no cell → insert fresh (defensive; post-admission the cell exists).
-    pub(crate) fn record_usage(
+    pub fn record_usage(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -863,7 +863,7 @@ impl GovState {
     /// (ridden by the same 100ms-tick flusher that drains budgets) does the actual store write, so
     /// a response is durably reflected within one `usage_flush_interval_ms` tick, not "eventually,
     /// whenever the blocking pool gets to it".
-    pub(crate) fn record_metering(
+    pub fn record_metering(
         &self,
         key_id: &str,
         model: &str,
@@ -995,7 +995,7 @@ impl GovState {
     // Wired into production routing: `proxy engine::decide_policy_order` calls this on the key it
     // looked up (one lookup shared with the `send_user` identity projection) to produce the
     // per-lane `usage` signal; the in-crate tests also exercise it directly.
-    pub(crate) fn rate_headroom(
+    pub fn rate_headroom(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -1642,7 +1642,7 @@ impl GovState {
     /// `{bucket_id, spend_micros_at_current_rate, remaining_micros, window}`. Read-only, built off
     /// the default hot path (only routing-policy pools request it). A missing budget group yields
     /// the key-only view.
-    pub(crate) fn budget_state(
+    pub fn budget_state(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,

@@ -245,7 +245,7 @@ impl<'a> Chain<'a> {
 
 /// The resolved cost model: the effective integer rate table + the group limit topology + the
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
-pub(crate) struct CostModel {
+pub struct CostModel {
     /// `None` = `rate_card` absent = token pricing 0 for every model. `Some` = the AUTHORITATIVE
     /// effective table, straight from the top-level `rate_card:` (the ONLY cost source).
     rates: Option<HashMap<String, RateNanos>>,

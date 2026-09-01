@@ -131,7 +131,7 @@ impl UpstreamClients {
     /// blocking-pool threads, non-unix workers without ids) keeps the prior behavior: assigned a
     /// shard round-robin on FIRST use for its lifetime — a once-per-thread counter bump, never a
     /// per-request write.
-    pub(crate) fn get(&self) -> &Client {
+    pub fn get(&self) -> &Client {
         let id = crate::state::worker_id();
         if id != usize::MAX {
             // min: defensive only — the composition root sizes shards to the worker count, so a
@@ -172,7 +172,7 @@ impl UpstreamClients {
 pub(crate) struct UpstreamClientSettings {
     /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
     /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
     pub(crate) pool_max_idle_per_host: usize,
     /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
@@ -240,7 +240,7 @@ pub struct App {
     /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
     /// flat field encoded), never a panic. Neutral: names no dialect.
     pub(crate) llm_runtime_key: &'static str,
-    pub(crate) store: Arc<dyn LaneRuntime>,
+    pub store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
     /// clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
@@ -286,7 +286,7 @@ pub struct App {
     /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
     /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
-    pub(crate) client_settings: UpstreamClientSettings,
+    pub client_settings: UpstreamClientSettings,
     pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
@@ -294,7 +294,7 @@ pub struct App {
     /// pass, zero cost. Only `rw` gates land here — the grant is enforced at RESOLUTION, so a
     /// `ro`/`no` hook can never rewrite (the bidirectional grant holds by construction). Each entry is
     /// `(per-hook transform deadline, transport)`.
-    pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
+    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
     /// GLOBAL request-stage TAP hooks — the `kind: tap` hooks in `global_hooks` observing at the
     /// `request` stage, resolved to their transports. Fired FIRE-AND-FORGET (spawned off the request
     /// path) before dispatch — a tap can never delay or fail the request. Empty (the default) = no
@@ -302,24 +302,24 @@ pub struct App {
     /// carries the tap's `prompt: ro` grant so a granted tap receives the prompt-content projection and
     /// a `prompt: no` tap receives shape-only. Other stages (candidate/routing/response + synthetic
     /// rejected-completion) are follow-ups.
-    pub(crate) tap_hooks: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub(crate) tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
     /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub(crate) tap_hooks_routing: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
     /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
     /// see gate denials too) and response status.
-    pub(crate) tap_hooks_response: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
     /// GLOBAL DECISION gates — the non-rewrite `kind: gate` hooks in `global_hooks`, resolved to
     /// their full `ResolvedPolicy` (transport + on_error/on_empty/grants), each with its `priority`.
     /// Fired CONCURRENTLY on every request in the phase-2 decision reconcile, merged with the pool's
     /// own gates into one priority-sorted chain (reject wins / restricts intersect / order
     /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
     /// priority so the merge's stable sort keeps globals-first on ties.
-    pub(crate) global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
     /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
     /// resolved to their transports ONCE per config generation and keyed by server name.
     ///
@@ -362,7 +362,7 @@ pub struct App {
     /// per request. All-zero (the default) when no hook
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
     /// check downstream short-circuits on.
-    pub(crate) requested_signals: crate::hooks::RequestedSignals,
+    pub requested_signals: crate::hooks::RequestedSignals,
     /// Does this config generation grant ANY hook access to prompt CONTENT (`prompt: ro` / `rw`)?
     /// Built ONCE alongside `requested_signals` above by `hooks::any_content_hook`, and recomputed
     /// on every snapshot that rewrites `hook_registry` — never per request.
@@ -371,7 +371,7 @@ pub struct App {
     /// every deployment that runs no content hook) means the IR is never built and the request path
     /// pays nothing at all. See `hooks::any_content_hook` for why the gate keys on the deployment's
     /// grants rather than on the request's protocols.
-    pub(crate) any_content_hook: bool,
+    pub any_content_hook: bool,
     /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
     /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
     /// from the resolved `export:` block, never per request.
@@ -396,7 +396,7 @@ pub struct App {
     /// projection in `cost.groups()` (which buckets limits per window and drops `child_default`).
     /// A group mutation swaps a new `App` snapshot (clone → mutate this map → re-validate → rebuild
     /// `cost` via `CostModel::with_groups`), never mutating in place. Empty when none configured.
-    pub(crate) groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    pub groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     /// Group names defined in the BASE config file (pre-overlay). A `PUT`/`DELETE` on a base group is
     /// a 409 (edit config.yaml — the API cannot silently shadow or subtract operator file config, and
     /// the additive overlay can't durably remove a base group); API-created (overlay) groups mutate
@@ -577,7 +577,7 @@ pub struct App {
     /// The resolved COST MODEL (rate card + budget groups + flat fee), rebuilt with the config on
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
-    pub(crate) cost: std::sync::Arc<crate::cost::CostModel>,
+    pub cost: std::sync::Arc<crate::cost::CostModel>,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -591,12 +591,12 @@ pub struct App {
     /// Global fallback for the translation-injected `max_tokens` (`limits.default_max_tokens`), used
     /// at the cross-protocol seam when a lane has no per-lane `default_max_tokens`. Defaults to
     /// `proto::DEFAULT_MAX_TOKENS` (4096). Read by `IrReq::prepare_for_egress` at the cross-protocol seam.
-    pub(crate) default_max_tokens: u32,
+    pub default_max_tokens: u32,
     /// Resolved effort-word → thinking-budget table for the cross-protocol reasoning carry
     /// (`limits.reasoning_effort_budgets`, defaults 1024/4096/8192/16384), ordered
     /// [minimal, low, medium, high]. Stamped onto the IR at the egress seam so writers project
     /// effort words and numeric budgets with the operator's numbers.
-    pub(crate) reasoning_effort_budgets: [u32; 4],
+    pub reasoning_effort_budgets: [u32; 4],
     /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
     /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
@@ -683,7 +683,7 @@ impl App {
     /// Prefer [`App::pool_upstream_creds`] on any path that knows its pool: a pool's own
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
-    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+    pub fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
         // The plane runtime relocated out of core (money-path Phase 3-4 C), so this pool-less default
         // is read through the NEUTRAL view seam rather than by downcasting the plane's `NativeRuntime`.
         // Byte-identical: the view projects the same `upstream_credentials` field, and the zero-plane

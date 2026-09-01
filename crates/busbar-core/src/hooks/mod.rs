@@ -43,7 +43,7 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 pub(crate) mod gate;
 pub(crate) mod plugin;
 pub(crate) mod scrape;
-pub(crate) mod wire;
+pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
@@ -52,7 +52,7 @@ pub(crate) mod wire;
 // `PolicyError`/`PolicyResult` are re-exported for the `#[cfg(test)]` hook-seam tests (which
 // implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
-pub(crate) use busbar_api::{
+pub use busbar_api::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
@@ -60,7 +60,7 @@ pub(crate) use busbar_api::{
 // `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
 // internal paths reference them as `crate::hooks::Signal` etc.
 #[allow(unused_imports)]
-pub(crate) use busbar_api::{Signal, SignalBag, SignalValue};
+pub use busbar_api::{Signal, SignalBag, SignalValue};
 
 /// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
 /// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
@@ -82,7 +82,7 @@ impl RequestedSignals {
     /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
     /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
     #[inline]
-    pub(crate) fn wants(self, s: Signal) -> bool {
+    pub fn wants(self, s: Signal) -> bool {
         debug_assert!(
             s.bit() < 64,
             "Signal::bit() exceeded the u64 bitmask width; grow RequestedSignals to a bitset"
@@ -92,7 +92,7 @@ impl RequestedSignals {
 
     /// True iff NOTHING is declared anywhere — the zero-cost default generation.
     #[inline]
-    pub(crate) fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.0 == 0
     }
 
@@ -318,11 +318,11 @@ pub enum ResolvedPolicy {
 /// sees a projection its own grants don't allow — and its own `on_empty`).
 #[derive(Clone)]
 pub struct FallbackHook {
-    pub(crate) policy: Arc<dyn RoutingPolicy>,
-    pub(crate) timeout: std::time::Duration,
-    pub(crate) send_prompt: bool,
-    pub(crate) send_user: bool,
-    pub(crate) on_empty: crate::config::PolicyOnError,
+    pub policy: Arc<dyn RoutingPolicy>,
+    pub timeout: std::time::Duration,
+    pub send_prompt: bool,
+    pub send_user: bool,
+    pub on_empty: crate::config::PolicyOnError,
 }
 
 /// Resolve a pool's routing config into a runtime policy ONCE at config load. Returns `None` for the

@@ -31,7 +31,7 @@ use std::time::Instant;
 /// The hot-path stages attributed by the profiler. Ordering here is the report order. Keep this in
 /// sync with the `start`/`record` call sites; a stage with no call site simply reports zero samples.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Stage {
+pub enum Stage {
     /// `auth_middleware` pre-handler work: carrier token extract + chain/cache verdict + extension
     /// inserts (the span ends BEFORE `next.run`, so downstream time is not attributed here).
     MwAuth,
@@ -260,7 +260,7 @@ impl Drop for Timer {
 /// disabled run does not even take the `Instant`. Bind it to a `let _t = ...;` and let the scope end
 /// (or `drop(_t)`) record the span.
 #[inline]
-pub(crate) fn start(stage: Stage) -> Option<Timer> {
+pub fn start(stage: Stage) -> Option<Timer> {
     if enabled() {
         Some(Timer::new(stage))
     } else {

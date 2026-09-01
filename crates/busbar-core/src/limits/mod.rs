@@ -213,14 +213,14 @@ pub(crate) fn usage_flush_interval_ms() -> u64 {
 }
 
 /// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
-pub(crate) fn default_probe_interval_secs() -> u64 {
+pub fn default_probe_interval_secs() -> u64 {
     get()
         .map(|l| l.default_probe_interval_secs)
         .unwrap_or(DEFAULT_PROBE_INTERVAL_SECS)
 }
 
 /// Process-wide active-probe timeout fallback (seconds). Per-lane `health.timeout_secs` overrides.
-pub(crate) fn default_probe_timeout_secs() -> u64 {
+pub fn default_probe_timeout_secs() -> u64 {
     get()
         .map(|l| l.default_probe_timeout_secs)
         .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)

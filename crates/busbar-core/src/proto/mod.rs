@@ -13,7 +13,7 @@ use axum::http::{header::HeaderValue, HeaderName};
 // the 1.0 binary; production code refers to the canonical `crate::breaker::CanonicalSignal` directly.
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::breaker::CanonicalSignal;
-pub(crate) use crate::breaker::StatusClass;
+pub use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
@@ -51,7 +51,7 @@ pub use busbar_substrate::proto::{
 ///
 /// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
 /// these fields survives byte-for-byte — never logs a word about them.
-pub(crate) fn warn_untranslatable_response_metadata(
+pub fn warn_untranslatable_response_metadata(
     egress: &str,
     ingress: &str,
     body: &serde_json::Value,
@@ -143,7 +143,7 @@ pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'
 /// THE REGISTRY-SUPPLIED RESIDUAL DEFAULT dialect — the name core falls back to when no dialect
 /// claims a request yet one must be named. `None` when no residual-default protocol is installed.
 /// Reads [`ProtocolDecl::residual_default`], so the literal default dialect name leaves core.
-pub(crate) fn residual_default_dialect() -> Option<&'static str> {
+pub fn residual_default_dialect() -> Option<&'static str> {
     registry::residual_default_protocol()
 }
 
@@ -161,7 +161,7 @@ pub(crate) fn residual_default_dialect() -> Option<&'static str> {
 /// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
 /// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
 /// the default generic copy.
-pub(crate) fn vendor_auth_failure_message(proto: &str) -> &'static str {
+pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
     registry::decl_for(proto)
         .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
@@ -219,7 +219,7 @@ pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
 /// core (names zero concrete stream IR). See `stream_translator.rs`.
 pub(crate) mod stream_translator;
 pub use stream_translator::install_stream_translator_factory;
-pub(crate) use stream_translator::new_stream_translator;
+pub use stream_translator::new_stream_translator;
 /// Core's OWN test binary routes the streaming-translator seam straight to the `busbar-llm` concrete
 /// factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
 /// suites that drive `new_stream_translator` standalone keep working after the `#[path]` witness of the
@@ -374,7 +374,7 @@ pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
         .map(|d| d.name)
 }
 
-pub(crate) fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::header::HeaderMap {
+pub fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::header::HeaderMap {
     let mut map = http::header::HeaderMap::new();
     for (name, value) in headers {
         map.insert(name, value);

@@ -105,7 +105,7 @@ pub(crate) const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// the std `DefaultHasher`, whose seed is randomized), so callers that need a process-independent
 /// hash (SWRR shard selection, session affinity) get identical results everywhere. Distribution,
 /// not cryptographic strength, is all that matters.
-pub(crate) fn fnv1a_u64(s: &str) -> u64 {
+pub fn fnv1a_u64(s: &str) -> u64 {
     let mut hash = FNV1A_OFFSET_BASIS;
     for &byte in s.as_bytes() {
         hash ^= byte as u64;
@@ -542,7 +542,7 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 
 /// Breaker configuration per pool.
 #[derive(Debug, Clone)]
-pub(crate) struct BreakerCfg {
+pub struct BreakerCfg {
     pub(crate) base_cooldown_secs: u64,
     pub(crate) max_cooldown_secs: u64,
     pub(crate) honor_retry_after: bool,

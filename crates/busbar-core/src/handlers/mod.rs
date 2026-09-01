@@ -132,7 +132,7 @@ pub struct OpDispatch {
 }
 
 /// The engine's operation handle. (Kept as `Op` so the engine's signatures read unchanged.)
-pub(crate) type Op = OpDispatch;
+pub type Op = OpDispatch;
 
 /// Build one framed dispatch cell. This is the free-function form of what was `Transport::frame`;
 /// it moved here (core) when `Transport` itself moved to the neutral substrate, because framing
@@ -154,18 +154,18 @@ pub(crate) const fn frame(
 impl OpDispatch {
     /// Stable identifier — a bounded metric label / tracing span field. VALUE use only; the engine
     /// must never compare or `match` on it (that would be an operation-identity branch).
-    pub(crate) fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         self.operation.name()
     }
     /// The transport this exchange rides — a bounded label, the third axis's counterpart to
     /// [`Self::name`]. VALUE use only, for exactly the reason [`Self::name`] is.
-    pub(crate) fn transport(&self) -> crate::transport::Transport {
+    pub fn transport(&self) -> crate::transport::Transport {
         self.transport
     }
     /// WHAT THIS ATTEMPT'S FAILURE MEANT — the attributed outcome the breaker classifies, read by
     /// THIS cell's own codec ([`OperationHandler::extract_error`]). It needs nothing but the cell,
     /// so a caller that holds no `Lane` attributes a failure the same way the lane path does.
-    pub(crate) fn extract_error(
+    pub fn extract_error(
         &self,
         status: u16,
         body: &[u8],
@@ -184,28 +184,28 @@ impl OpDispatch {
     ///
     /// This is a floor and not a replacement deliberately: it removes a failure the cell cannot be
     /// trusted to prevent, and removes nothing the cell legitimately decides.
-    pub(crate) fn streaming(&self) -> bool {
+    pub fn streaming(&self) -> bool {
         self.operation.shape().may_stream() && self.op_handler.streaming()
     }
     /// The caller's stream INTENT, under the same shape floor and for the same reason: a caller
     /// cannot ask for an incremental answer to an exchange that has no increments.
-    pub(crate) fn wants_stream(&self, body: &Value) -> bool {
+    pub fn wants_stream(&self, body: &Value) -> bool {
         self.operation.shape().may_stream() && self.op_handler.wants_stream(body)
     }
-    pub(crate) fn body_affinity_key<'a>(&self, body: &'a Value) -> Option<&'a str> {
+    pub fn body_affinity_key<'a>(&self, body: &'a Value) -> Option<&'a str> {
         self.op_handler.body_affinity_key(body)
     }
-    pub(crate) fn taps_nonstream_usage(&self) -> bool {
+    pub fn taps_nonstream_usage(&self) -> bool {
         self.op_handler.taps_usage()
     }
-    pub(crate) fn extract_usage(
+    pub fn extract_usage(
         &self,
         ingress_protocol: &str,
         body: &[u8],
     ) -> Option<crate::billing::TokenUsage> {
         self.op_handler.extract_usage(ingress_protocol, body)
     }
-    pub(crate) fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
+    pub fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
         // The registry read the trait default used to do, hoisted here so the relocated substrate
         // `OperationHandler::egress_accept` names no core registry. Resolve the egress protocol's
         // declared streaming `Accept` and hand it in; the trait picks it (streaming) or the universal
@@ -280,7 +280,7 @@ pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
 /// handler are pinned EQUAL in both directions by
 /// `registry_tests::the_declared_verbs_are_the_verbs_the_handler_serves`, so this check can only
 /// ever fire on a decl that is lying, never on a legitimate route.
-pub(crate) fn op_for(
+pub fn op_for(
     protocol: &str,
     operation: Operation,
     transport: crate::transport::Transport,

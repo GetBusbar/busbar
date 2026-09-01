@@ -795,7 +795,7 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// per-protocol decision lives in the writer vtable, not in this agnostic function. `BedrockWriter`
 /// overrides to (403, "auth"); `GeminiWriter` to (400, "invalid_request_error"); all others use the
 /// default (401, "authentication_error"). An unknown future proto falls back to the default.
-pub(crate) fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
+pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
     crate::proto::decl_for(proto)
         .map(|d| d.auth_failure_status_and_kind)
         .unwrap_or((StatusCode::UNAUTHORIZED, crate::proxy::KIND_AUTHENTICATION))

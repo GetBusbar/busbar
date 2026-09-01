@@ -367,7 +367,7 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 /// design exists for. Both stay OFF at the default `RUST_LOG=info` filter either way: `DEBUG` is
 /// less verbose than `TRACE`, so nothing about the "off by default" contract changes with this
 /// choice.
-pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
 
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus an

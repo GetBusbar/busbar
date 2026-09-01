@@ -65,8 +65,21 @@ busbar-api = { path = "../api" }
 busbar-timing = { path = "../busbar-timing" }
 axum = { workspace = true }
 bytes = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+sonic-rs = { workspace = true }
 tracing = { workspace = true }
+# The relocated money-path engine (src/engine): the pool/lane routing tables, the egress pipeline,
+# the active-probe health loop and the native fallback plane. These are the runtime deps those files
+# name directly; the engine calls DOWN into busbar-core for the neutral egress/auth/health primitives.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures = { workspace = true }
+metrics = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+url = { workspace = true }
+smallvec = { workspace = true }
 # Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
 # bytes, hex-encoded.
 getrandom = { workspace = true }
@@ -83,3 +96,14 @@ busbar-core = { path = "../busbar-core", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp" }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The relocated money-path tests (src/engine/{proxy_tests,engine_tests}) drive the engine through
+# core's test_support mock harness and name these directly.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
+reqwest = { workspace = true, features = ["http2"] }
+proptest = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+metrics = { workspace = true }
+http = { workspace = true }

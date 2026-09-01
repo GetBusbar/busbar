@@ -75,7 +75,7 @@ pub(crate) struct Lane {
     /// documents the vocabulary and the never-`Url::join` encoding rule). A lookup miss is exactly
     /// the old per-request `upstream_path` `None` arm: the lane's protocol has no handler.
     pub(crate) egress_targets:
-        HashMap<(busbar_core::operation::Operation, bool), busbar_core::proxy::EgressTarget>,
+        HashMap<(busbar_core::operation::Operation, bool), crate::engine::EgressTarget>,
     /// Boot-prebuilt egress auth headers for `Own`-mode dispatch, or `None` when this lane's
     /// credential is not lane-constant (OAuth mints, SigV4 signs — those stay per-request). Built
     /// by `egress_auth::prebuild_auth` from the SAME `headers_for` call the request path makes, so
@@ -97,7 +97,7 @@ impl Lane {
         &self,
         op: busbar_core::operation::Operation,
         stream: bool,
-    ) -> Option<&busbar_core::proxy::EgressTarget> {
+    ) -> Option<&crate::engine::EgressTarget> {
         self.egress_targets.get(&(op, stream))
     }
 }

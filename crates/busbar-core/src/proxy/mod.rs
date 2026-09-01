@@ -76,21 +76,24 @@ pub use busbar_substrate::proxy::{
     KIND_API_ERROR, KIND_OVERLOADED, KIND_SERVER_ERROR, KIND_TIMEOUT,
 };
 pub const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
-pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
+pub const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
 /// the error-KIND tokens above: they label the *category* of network failure recorded in the
 /// breaker store, not the protocol-level error kind surfaced to the caller.
-pub(crate) const ERR_NET_CONNECT: &str = "connect";
-pub(crate) const ERR_NET_TIMEOUT: &str = "timeout";
-const ERR_NET_TRANSPORT: &str = "transport";
+// `pub` (was crate-internal): the relocated LLM engine (`busbar-llm`) names these at
+// `busbar_core::proxy::ERR_NET_*` / `DISPOSITION_*` on its money-path failure-classification, the
+// allowed plane→core edge.
+pub const ERR_NET_CONNECT: &str = "connect";
+pub const ERR_NET_TIMEOUT: &str = "timeout";
+pub const ERR_NET_TRANSPORT: &str = "transport";
 /// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
-const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
+pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
-pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
-pub(crate) const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub const DISPOSITION_HARD_DOWN: &str = "hard_down";
+pub const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
 
 tokio::task_local! {
     /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL

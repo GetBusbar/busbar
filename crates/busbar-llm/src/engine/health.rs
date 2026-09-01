@@ -26,6 +26,8 @@ use busbar_core::config::HealthMode;
 use busbar_core::state::App;
 use busbar_core::store::{now, BreakerCfg};
 
+use crate::engine::AppEngineExt;
+
 /// Cap on the bytes read from a non-2xx probe response before breaker classification, mirroring the
 /// request path's size-capped read: a hostile/misconfigured upstream must not force an unbounded
 /// heap allocation just because a probe failed. 64 KiB is far more than any error envelope needs.

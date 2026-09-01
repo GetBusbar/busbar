@@ -227,7 +227,7 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 /// `path` override, so no new protocol is needed. An un-encodable key yields no auth header (the
 /// upstream then rejects with 401, classified by the breaker like any other auth failure).
 pub(crate) fn lane_auth_headers(
-    lane: &busbar_core::state::Lane,
+    lane: &crate::engine::Lane,
     key: &str,
     ctx: &busbar_core::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {

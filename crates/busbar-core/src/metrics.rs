@@ -174,13 +174,13 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // policy that produced a ranked order (Prefer / on_error: first). `policy` is the native/transport
 // NAME (a fixed enumeration: cheapest/fastest/least_busy/usage/webhook/script) and `pool` is the
 // configured pool name (bounded at startup) — both safe, bounded labels (no request-derived data).
-pub(crate) const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_total"; // labels: policy, pool
+pub const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_total"; // labels: policy, pool
 
 // Routing-policy REJECTIONS (the hook's reject verb — a guardrail said no; a 4xx to the caller,
 // no upstream dispatched). `status` is hook-influenced but BOUNDED: the forward seam that
 // constructs `RejectRequest` clamps it to 400..=499 for EVERY producer (wire-normalized or
 // direct-constructed), so the worst-case label fan-out is 100 per (policy, pool) — a safe label.
-pub(crate) const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_total"; // labels: policy, pool, status
+pub const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_total"; // labels: policy, pool, status
 
 // Request-log webhook deliveries DROPPED because the in-flight delivery semaphore was saturated (the
 // webhook endpoint is slow/unreachable and the bounded delivery pool is full). Incremented once per
@@ -221,7 +221,7 @@ pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notificatio
 // informed by nothing measured — this counter is how it gets chosen by a number instead. A steady
 // non-zero rate means a content-granted hook is being asked to screen requests it is not being
 // shown; raise the ceiling or narrow what reaches the hook.
-pub(crate) const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
+pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
 
 // A same-protocol 2xx response body the usage tap could not decode into token usage, so the request
 // was billed 0 tokens. Labeled by `protocol` (the ingress protocol, a fixed enumeration) and
@@ -252,7 +252,7 @@ pub(crate) const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total";
 // full 2xx reaching the client. Incremented once per truncated response. Unlabeled. An operator
 // alerts on a non-zero rate to detect an over-cap billing gap. (The client response is unaffected —
 // it streams verbatim; only the billing side-channel is capped.)
-pub(crate) const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
+pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
 
 // The write-behind metering accumulator (`pending_metering`) was at its cap when a NEW
 // `(key_id, bucket, model, provider)` cell arrived — a sustained governance-store outage with diverse

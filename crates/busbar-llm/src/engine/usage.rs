@@ -18,7 +18,7 @@ use busbar_core::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 pub(crate) fn record_resp_usage(
     usage: Option<busbar_core::billing::Billing>,
     usage_sink: &Option<UsageSink>,
-    lane: Option<&busbar_core::state::Lane>,
+    lane: Option<&crate::engine::Lane>,
 ) {
     if let Some(busbar_core::billing::Billing::Tokens(t)) = usage {
         // `usage` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection the response codec
@@ -80,7 +80,7 @@ pub(crate) fn tier_tokens(u: &busbar_core::billing::TokenUsage) -> busbar_api::T
 /// response has a serving lane).
 pub(crate) fn ledger_and_meter(
     sink: &UsageSink,
-    lane: &busbar_core::state::Lane,
+    lane: &crate::engine::Lane,
     usage: Option<&busbar_core::billing::TokenUsage>,
     tier: &busbar_api::TierTokens,
 ) {
@@ -114,7 +114,7 @@ pub(crate) fn ledger_and_meter(
 pub(crate) fn record_token_usage(
     usage: &busbar_core::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
-    lane: Option<&busbar_core::state::Lane>,
+    lane: Option<&crate::engine::Lane>,
 ) {
     if let Some(sink) = usage_sink {
         let Some(lane) = lane else { return };
@@ -157,7 +157,7 @@ pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
 /// `50` in a latency-critical pool, with the model-level value as the fallback for pools (and
 /// the default `""` cell) that don't override it.
 pub(crate) fn effective_attempt_timeout_ms(
-    cands: &[busbar_core::state::WeightedLane],
+    cands: &[crate::engine::WeightedLane],
     i: usize,
     lane_default: Option<u64>,
 ) -> Option<u64> {
@@ -172,7 +172,7 @@ pub(crate) fn effective_attempt_timeout_ms(
 /// over the model-level flag (same layering as `effective_attempt_timeout_ms`), default false —
 /// a lane never receives thinking params unless some level of config claimed the capability.
 pub(crate) fn effective_reasoning(
-    cands: &[busbar_core::state::WeightedLane],
+    cands: &[crate::engine::WeightedLane],
     i: usize,
     lane_default: bool,
 ) -> bool {

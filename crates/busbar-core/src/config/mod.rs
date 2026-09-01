@@ -1321,7 +1321,7 @@ pub enum ProviderAuth {
 /// Active health-probe mode for a provider's lanes.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum HealthMode {
+pub enum HealthMode {
     /// No active probing. Health is inferred purely from organic traffic (the breaker trips on
     /// real failures and recovers via the half-open probe). This is the default.
     #[default]
@@ -1340,13 +1340,13 @@ pub struct HealthCfg {
     /// Probing strategy (see `HealthMode`). Defaults to `none` — a `health:` block with only an
     /// interval does nothing until a mode is chosen.
     #[serde(default)]
-    pub(crate) mode: HealthMode,
+    pub mode: HealthMode,
     /// Seconds between probes for this provider's lanes (default 30, floored at 1).
     #[serde(default)]
-    pub(crate) interval_secs: Option<u64>,
+    pub interval_secs: Option<u64>,
     /// Per-probe request timeout in seconds (default 5, floored at 1).
     #[serde(default)]
-    pub(crate) timeout_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -2349,7 +2349,7 @@ impl HookCfg {
 /// `user:bob` leaf whose chain climbs through `engineering`. The walk is bounded by the tree size (a
 /// validated-acyclic tree cannot revisit a node without a cycle), so an untrusted/malformed tree can
 /// never spin here.
-pub(crate) fn caller_in_hook_groups(
+pub fn caller_in_hook_groups(
     caller_group: Option<&str>,
     hook_groups: &[String],
     groups_tree: &std::collections::BTreeMap<String, GroupCfg>,
@@ -2608,14 +2608,14 @@ pub struct FailoverCfg {
     /// Failover wall-clock budget in seconds (one canonical name; the pre-1.0 `deadline_secs`
     /// alias is GONE).
     #[serde(default = "default_failover_timeout")]
-    pub(crate) timeout_secs: u64,
+    pub timeout_secs: u64,
     /// Member model names excluded from this pool's candidate set — never selected (primary or
     /// failover). A per-pool blocklist for temporarily benching a member without editing `members`.
     #[serde(default)]
-    pub(crate) exclusions: Option<Vec<String>>,
+    pub exclusions: Option<Vec<String>>,
     /// Maximum failover hops per request (one canonical name; the pre-1.0 `cap` alias is GONE).
     #[serde(default = "default_max_hops")]
-    pub(crate) max_hops: usize,
+    pub max_hops: usize,
 }
 
 /// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
@@ -2625,7 +2625,7 @@ pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 /// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
 /// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
 /// monotonic-clock `Instant` math (see `RequestCtx::new`).
-pub(crate) const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
+pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
 /// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
 pub const DEFAULT_FAILOVER_CAP: usize = 3;
 
