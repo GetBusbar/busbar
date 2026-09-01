@@ -192,6 +192,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
         // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };

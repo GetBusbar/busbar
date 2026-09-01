@@ -925,6 +925,9 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
                 base_url: &lane.base_url,
             })
     }
+    fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
     fn queued_depth(&self, pool: &str) -> u64 {
         self.queued_depth.depth(pool)
     }

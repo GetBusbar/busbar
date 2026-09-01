@@ -487,6 +487,24 @@ pub struct PlaneDecl {
         ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
 
+    /// PROJECT THIS PLANE'S PER-GENERATION RUNTIME SLOT into the NEUTRAL [`crate::plane_host::EngineTablesView`]
+    /// read seam — the cold/scrape-path viewer the core-resident `/metrics`, `/v1/models` and telemetry
+    /// label readers reach a data-plane's routing tables through WITHOUT naming the plane's concrete
+    /// `Lane`/`WeightedLane`/runtime type. The argument is the plane's own runtime object (the value
+    /// `build_runtime` inserted into `plane_slots[runtime_slot_key(<decl key>)]`), erased as `&dyn Any`;
+    /// the plane downcasts it to its own runtime type inside the plane crate and returns a borrow as the
+    /// substrate trait object. Core's [`crate::plane_host::PlaneSlots`]-driven `engine_tables_view` calls
+    /// this at most once per scrape/discovery read and falls back to the substrate-resident
+    /// [`crate::plane_host::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
+    /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
+    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
+    #[allow(clippy::type_complexity)]
+    pub viewer: Option<
+        fn(
+            &(dyn std::any::Any + Send + Sync),
+        ) -> &dyn crate::plane_host::EngineTablesView,
+    >,
+
     /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
     /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no

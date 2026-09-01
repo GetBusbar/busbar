@@ -60,6 +60,7 @@ static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };

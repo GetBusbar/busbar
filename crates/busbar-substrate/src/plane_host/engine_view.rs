@@ -65,6 +65,11 @@ pub trait EngineTablesView {
     /// A neutral view of the lane at `idx`, or `None` when the index is out of range.
     fn lane_view(&self, idx: usize) -> Option<LaneView<'_>>;
 
+    /// The total number of configured lanes — the upper bound the staying `/stats` and telemetry
+    /// readers iterate `0..lane_count()` over (each index then read through [`Self::lane_view`] /
+    /// the neutral store cell). Zero for the empty view.
+    fn lane_count(&self) -> usize;
+
     /// The live `on_exhausted: queue` park depth for `pool` (0 when the pool never queues).
     fn queued_depth(&self, pool: &str) -> u64;
 }
@@ -92,6 +97,9 @@ impl EngineTablesView for EmptyEngineTablesView {
     }
     fn lane_view(&self, _idx: usize) -> Option<LaneView<'_>> {
         None
+    }
+    fn lane_count(&self) -> usize {
+        0
     }
     fn queued_depth(&self, _pool: &str) -> u64 {
         0
