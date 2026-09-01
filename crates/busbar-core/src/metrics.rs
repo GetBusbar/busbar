@@ -896,7 +896,7 @@ pub(crate) fn record_plane_request_duration(
 /// Flushes the TELEMETRY BANK (per-thread hot-path cells; see `telemetry.rs`) into the recorder
 /// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
 /// for the banked hot-path counters/histograms alongside the macro-emitted ones.
-pub(crate) fn render() -> String {
+pub fn render() -> String {
     // Test-only: a scrape is a drain too — see `telemetry::drain_serial`.
     #[cfg(test)]
     let _serial = crate::telemetry::drain_serial::lock();

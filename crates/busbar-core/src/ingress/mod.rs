@@ -830,7 +830,7 @@ async fn delegate_body_arrival(
 
 // POST /<provider>/<model>/v1/messages — ad-hoc direct. Same relocation as `named`.
 #[tracing::instrument(level = "debug", name = "adhoc", skip_all, fields(provider = %provider, model = %model))]
-pub(crate) async fn adhoc(
+pub async fn adhoc(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path((provider, model)): Path<(String, String)>,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,

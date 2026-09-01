@@ -1,8 +1,20 @@
-use super::*;
-use crate::auth::AuthMiddleware;
-use crate::config::AuthCfg;
-use crate::proxy::forward_with_pool;
-use crate::state::now;
+use crate::engine::AppEngineExt as _;
+use crate::test_support::*;
+use busbar_core::auth::AuthMiddleware;
+use busbar_core::config::AuthCfg;
+use crate::engine::forward_with_pool;
+use busbar_core::state::now;
+// The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
+// integration suite, now that it lives in the plane crate and globs the plane's `test_support`.
+use std::time::Duration;
+use bytes::Bytes;
+use axum::{
+    body::Body,
+    extract::State,
+    http::{header, Request, Response, StatusCode},
+    routing::any,
+};
+use serde_json::Value;
 
 use reqwest::Client;
 use serde_json::json;
@@ -11,11 +23,11 @@ use serde_json::json;
 /// the production entry point is a single `forward_with_pool`). Binds anthropic ingress, the
 /// lane-default breaker cell (empty pool name), and no affinity.
 async fn forward(
-    app: std::sync::Arc<crate::state::App>,
-    cands: Vec<crate::state::WeightedLane>,
+    app: std::sync::Arc<busbar_core::state::App>,
+    cands: Vec<crate::engine::WeightedLane>,
     body: bytes::Bytes,
     caller_token: Option<&str>,
-    usage_sink: Option<crate::proxy::UsageSink>,
+    usage_sink: Option<crate::engine::UsageSink>,
 ) -> axum::response::Response {
     forward_with_pool(
         &app,
@@ -25,7 +37,7 @@ async fn forward(
         "",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         usage_sink,
     )
     .await
@@ -56,7 +68,7 @@ async fn capture_latency_metrics() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -70,7 +82,7 @@ async fn capture_latency_metrics() {
         .unwrap(),
     );
     let cands = || {
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -89,12 +101,12 @@ async fn capture_latency_metrics() {
     // `Server-Timing: busbar;dur` header actually reports — instead of the total-including-the-
     // loopback-HTTP figure the raw handle time conflates. `dur` is busbar's OWN added latency.
     use std::sync::atomic::Ordering;
-    let run_once = |app: std::sync::Arc<crate::state::App>,
-                    cands: Vec<crate::state::WeightedLane>,
+    let run_once = |app: std::sync::Arc<busbar_core::state::App>,
+                    cands: Vec<crate::engine::WeightedLane>,
                     body: bytes::Bytes| async move {
         let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
         let t = std::time::Instant::now();
-        let _ = crate::proxy::UPSTREAM_RTT_US
+        let _ = crate::engine::UPSTREAM_RTT_US
             .scope(slot.clone(), forward(app, cands, body, None, None))
             .await;
         let total_ns = t.elapsed().as_nanos() as u64;
@@ -154,7 +166,7 @@ async fn capture_latency_metrics() {
     );
     // When `BUSBAR_PROFILE` is set, emit the per-stage breakdown accumulated across the run (the
     // `BUSBAR_PROFILE stage=...` lines). No-op otherwise.
-    crate::profile::dump();
+    busbar_core::profile::dump();
     server.shutdown().await;
 }
 
@@ -249,7 +261,7 @@ async fn test_mock_server_5xx_error() {
 #[tokio::test]
 async fn test_non_stream_json_relay() {
     // ensure the Prometheus recorder is live so the forward path's counters record.
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -260,7 +272,7 @@ async fn test_non_stream_json_relay() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -269,7 +281,7 @@ async fn test_non_stream_json_relay() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -289,9 +301,9 @@ async fn test_non_stream_json_relay() {
     // the forward path (forward → forward_with_pool) must have emitted the
     // upstream-attempt counter into the Prometheus exposition.
     assert!(
-        crate::metrics::render().contains(crate::metrics::UPSTREAM_ATTEMPTS_TOTAL),
+        busbar_core::metrics::render().contains(busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL),
         "forward path should emit {} into /metrics",
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL
+        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL
     );
     server.shutdown().await;
 }
@@ -303,7 +315,7 @@ async fn test_non_stream_json_relay() {
 /// no model, while direct routes that passed through verbatim kept it).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_preserves_model() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -318,7 +330,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
     // Lane speaks the OpenAI protocol; ingress below is Anthropic → cross-protocol translation.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
@@ -330,7 +342,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -341,7 +353,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -363,8 +375,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 /// TPM never tripped. After recording, a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -380,16 +392,16 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "tpm".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pa".to_string()]),
@@ -404,13 +416,13 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -421,16 +433,16 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -485,8 +497,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 /// stream fully drains (160 tokens charged), a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
     // (prompt 100 + completion 60). The OpenAI reader decodes bare `data:`-framed chunks the
@@ -509,16 +521,16 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "tpm-stream".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pas".to_string()]),
@@ -533,13 +545,13 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Tokens,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Tokens,
                 amount: 30,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -551,16 +563,16 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     // Lane speaks OpenAI; ingress below is Anthropic streaming → cross-protocol SSE reframe.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pas", &[(0, 1)])
         .keys_chain()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -613,7 +625,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
 /// tripped (unlimited requests) and `ok` stayed 0.
 #[tokio::test]
 async fn test_max_requests_budget_caps_lane_and_counts_ok() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -632,14 +644,14 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     // limited lane: max_requests=2 lifetime cap (sets limited=true, budget=2).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.6", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("glm-4.6", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("z")
                 .budget(2),
         )
         .pool("pc", &[(0, 1)])
         .build();
 
-    let cands = vec![crate::state::WeightedLane {
+    let cands = vec![crate::engine::WeightedLane {
         reasoning: None,
         idx: 0,
         weight: 1,
@@ -661,7 +673,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
             "pc",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;
@@ -678,7 +690,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
         "pc",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -706,7 +718,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 /// the time.
 #[tokio::test]
 async fn test_failover_exclusions_remove_member_from_pool() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let mk_server = |model: &'static str| async move {
         let state = Arc::new(MockServerState::new());
         for _ in 0..6 {
@@ -728,41 +740,32 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("alpha", crate::proto::PROTO_ANTHROPIC, &server_a.base_url())
+            LaneSpec::new("alpha", crate::proto_codec::PROTO_ANTHROPIC, &server_a.base_url())
                 .provider("p"),
         )
         .lane(
-            LaneSpec::new("beta", crate::proto::PROTO_ANTHROPIC, &server_b.base_url())
+            LaneSpec::new("beta", crate::proto_codec::PROTO_ANTHROPIC, &server_b.base_url())
                 .provider("p"),
         )
         .pool("pe", &[(0, 1), (1, 1)])
-        .pool_runtime(
+        .pool_failover(
             "pe",
-            crate::state::PoolRuntime {
-                upstream_credentials: None,
-                members: Default::default(),
-                failover: Some(crate::config::FailoverCfg {
-                    timeout_secs: 120,
-                    exclusions: Some(vec!["beta".to_string()]),
-                    max_hops: 3,
-                }),
-                affinity: None,
-                breaker: None,
-                policy: None,
-                gates: Vec::new(),
-                rewrite_hooks: Vec::new(),
+            busbar_core::config::FailoverCfg {
+                timeout_secs: 120,
+                exclusions: Some(vec!["beta".to_string()]),
+                max_hops: 3,
             },
         )
         .build();
 
     let cands = vec![
-        crate::state::WeightedLane {
+        crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
             attempt_timeout_ms: None,
         },
-        crate::state::WeightedLane {
+        crate::engine::WeightedLane {
             reasoning: None,
             idx: 1,
             weight: 1,
@@ -784,7 +787,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
             "pe",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;
@@ -815,12 +818,12 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 /// supersedes the 0.16.2 note describing `/metrics` as intentionally open.
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
-    crate::metrics::init();
-    metrics::counter!(crate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_core::metrics::init();
+    metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let app = TestApp::new().build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -842,7 +845,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     assert!(ct.starts_with("text/plain"), "content-type was {ct}");
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains(crate::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_core::metrics::REQUESTS_TOTAL),
         "exposition should contain a metric; got:\n{body}"
     );
 
@@ -860,19 +863,18 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 /// the test-only groups module stands in for a real chain module.)
 #[tokio::test]
 async fn test_metrics_requires_auth_in_chain_mode() {
-    crate::metrics::init();
-    metrics::counter!(crate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_core::metrics::init();
+    metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let token = "grp:metrics-scrapers";
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
-        ..crate::config::AuthCfg::default_none()
-    };
+    let auth_cfg = busbar_core::config::AuthCfg::with_chain(vec![
+        busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+    ]);
     let app = TestApp::new()
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -907,7 +909,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     );
     let body = authed.text().await.unwrap();
     assert!(
-        body.contains(crate::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_core::metrics::REQUESTS_TOTAL),
         "authed exposition should contain a metric; got:\n{body}"
     );
 
@@ -917,20 +919,20 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 /// governance-enabled router enforces virtual-key auth + allowed-pools over real HTTP.
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::governance::{GovState, MemoryStore};
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "tester".to_string(),
                 allowed_pools: Some(vec!["allowedpool".to_string()]),
                 group: None,
@@ -945,7 +947,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 
     let app = TestApp::new().keys_chain().governance(gov).build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -995,13 +997,13 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 /// a virtual key over its budget is rejected (429 for body/Anthropic ingress) before forwarding.
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
-    use crate::governance::{GovState, MemoryStore, Store};
+    use busbar_core::governance::{GovState, MemoryStore, Store};
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
@@ -1009,7 +1011,7 @@ async fn test_governance_budget_over_quota() {
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "broke".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1037,13 +1039,13 @@ async fn test_governance_budget_over_quota() {
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrp".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(crate::config::groups::LimitWindow::Total),
+                per: Some(busbar_core::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1051,7 +1053,7 @@ async fn test_governance_budget_over_quota() {
             ..Default::default()
         },
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
     // Enforcement is now IN-MEMORY (authoritative): hydrate the budget cells from the store — exactly
     // as boot does — so the admission gate sees the pre-seeded over-budget spend. (Without this the
     // store seed would be invisible to the in-memory gate and the request would be admitted.)
@@ -1063,7 +1065,7 @@ async fn test_governance_budget_over_quota() {
         .cost(cost)
         .build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1115,12 +1117,12 @@ async fn test_governance_budget_over_quota() {
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use crate::governance::{GovState, MemoryStore, Store};
+    use busbar_core::governance::{GovState, MemoryStore, Store};
 
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
@@ -1128,7 +1130,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "broke-multi".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1156,13 +1158,13 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "bgrpm".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(crate::config::groups::LimitWindow::Total),
+                per: Some(busbar_core::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1170,7 +1172,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
             ..Default::default()
         },
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
     // Enforcement is IN-MEMORY (authoritative): hydrate the budget cells from the durable store — as
     // boot does — so the pre-seeded over-budget spend is visible to the admission gate.
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
@@ -1180,7 +1182,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .governance(gov)
         .cost(cost)
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1191,7 +1193,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 /// envelope (`error.type == "insufficient_quota"`).
 #[tokio::test]
 async fn test_budget_over_quota_openai_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1223,7 +1225,7 @@ async fn test_budget_over_quota_openai_envelope() {
 /// envelope (`error.type == "insufficient_quota"`).
 #[tokio::test]
 async fn test_budget_over_quota_responses_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1256,7 +1258,7 @@ async fn test_budget_over_quota_responses_envelope() {
 /// a BARE top-level `message` with NO `error`/`type` wrapper.
 #[tokio::test]
 async fn test_budget_over_quota_cohere_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1284,7 +1286,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 /// (the canonical quota shape; the old behavior yielded a mismatched INVALID_ARGUMENT status).
 #[tokio::test]
 async fn test_budget_over_quota_gemini_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1321,7 +1323,7 @@ async fn test_budget_over_quota_gemini_envelope() {
 /// `x-amzn-errortype` / `x-amzn-RequestId` headers a native Bedrock runtime response carries.
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1359,20 +1361,20 @@ async fn test_budget_over_quota_bedrock_envelope() {
 /// a virtual key over its RPM is rejected with 429 + Retry-After.
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::governance::{GovState, MemoryStore};
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "rl".to_string(),
                 allowed_pools: None,
                 // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
@@ -1388,13 +1390,13 @@ async fn test_governance_rate_limit_429() {
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Requests,
                 amount: 2,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1405,10 +1407,10 @@ async fn test_governance_rate_limit_429() {
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1471,19 +1473,19 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::governance::{GovState, MemoryStore};
 
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "rl-multi".to_string(),
                 allowed_pools: None, // all pools
                 group: Some("rl0".to_string()),
@@ -1498,13 +1500,13 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -1515,9 +1517,9 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1528,7 +1530,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 /// envelope (`error.type == "rate_limit_error"`) and the `Retry-After` header.
 #[tokio::test]
 async fn test_rate_limit_429_openai_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1565,7 +1567,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 /// envelope (`error.type == "rate_limit_error"`).
 #[tokio::test]
 async fn test_rate_limit_429_responses_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1595,7 +1597,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 /// a BARE top-level `message` with NO `error`/`type` wrapper.
 #[tokio::test]
 async fn test_rate_limit_429_cohere_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1626,7 +1628,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 /// Gemini error envelope — `error.code == 429` and `error.status == "RESOURCE_EXHAUSTED"`.
 #[tokio::test]
 async fn test_rate_limit_429_gemini_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1666,7 +1668,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
 /// `x-amzn-RequestId` headers a native Bedrock runtime response always carries.
 #[tokio::test]
 async fn test_rate_limit_429_bedrock_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1711,14 +1713,14 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_governance_admin_api() {
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::governance::{GovState, MemoryStore};
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // A signing key is required to MINT signed-token keys (1.5.0).
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -1726,7 +1728,7 @@ async fn test_governance_admin_api() {
 
     let app = TestApp::new().keys_chain().governance(gov).build();
 
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1833,7 +1835,7 @@ async fn test_sse_incremental_arrival() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -1842,7 +1844,7 @@ async fn test_sse_incremental_arrival() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1864,7 +1866,7 @@ async fn test_sse_incremental_arrival() {
     let text = String::from_utf8_lossy(&collected_bytes);
     let mut events_found = 0;
     for line in text.lines() {
-        if line.starts_with("data: event-") && !line.contains(crate::proto::SSE_DONE_SENTINEL) {
+        if line.starts_with("data: event-") && !line.contains(busbar_core::proto::SSE_DONE_SENTINEL) {
             events_found += 1;
         }
     }
@@ -1889,7 +1891,7 @@ async fn test_sse_done_terminator_has_data_prefix() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -1898,7 +1900,7 @@ async fn test_sse_done_terminator_has_data_prefix() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1943,7 +1945,7 @@ async fn test_sse_events_single_data_prefix() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -1952,7 +1954,7 @@ async fn test_sse_events_single_data_prefix() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1995,7 +1997,7 @@ async fn test_permit_lifetime_during_stream() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .max(1)
@@ -2008,7 +2010,7 @@ async fn test_permit_lifetime_during_stream() {
     assert_eq!(sem.available_permits(), 1);
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2062,12 +2064,12 @@ async fn test_pre_first_byte_failover() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
@@ -2079,13 +2081,13 @@ async fn test_pre_first_byte_failover() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -2140,12 +2142,12 @@ async fn test_midstream_abort_records_and_no_failover() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
@@ -2157,13 +2159,13 @@ async fn test_midstream_abort_records_and_no_failover() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -2229,7 +2231,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-key"),
@@ -2237,7 +2239,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
 
     // Scenario A response: pushed immediately before the forward() that consumes it.
@@ -2248,7 +2250,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app_passthrough.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2284,15 +2286,13 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
         status: StatusCode::UNAUTHORIZED,
     });
 
-    let auth_cfg_token = AuthCfg {
-        chain: vec![crate::config::AuthChainEntry::bare("keys")],
-        ..crate::config::AuthCfg::default_none()
-    };
+    let auth_cfg_token =
+        AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("keys")]);
     let app_token = TestApp::new()
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-key"),
@@ -2304,7 +2304,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
         app_token.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2398,7 +2398,7 @@ async fn test_passthrough_forwards_caller_token() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("busbar-central-key"),
@@ -2406,7 +2406,7 @@ async fn test_passthrough_forwards_caller_token() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
 
     // Caller's Bearer token (NOT busbar's key)
@@ -2416,7 +2416,7 @@ async fn test_passthrough_forwards_caller_token() {
     // Forward with caller's token (simulating what auth middleware would extract)
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2462,12 +2462,12 @@ async fn test_failover_exclusions() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
@@ -2479,13 +2479,13 @@ async fn test_failover_exclusions() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -2543,17 +2543,17 @@ async fn test_failover_cap() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane2",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1), (2, 1)])
@@ -2565,19 +2565,19 @@ async fn test_failover_cap() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 2,
                 weight: 1,
@@ -2633,16 +2633,16 @@ async fn test_failover_deadline() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
-        .failover(crate::config::FailoverCfg {
+        .failover(busbar_core::config::FailoverCfg {
             timeout_secs: 120,
             exclusions: None,
             max_hops: 3,
@@ -2654,13 +2654,13 @@ async fn test_failover_deadline() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -2723,7 +2723,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -2734,7 +2734,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
     // Forward request (tap integrated in FirstByteBody)
     let response = forward(
         app.clone(),
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2765,7 +2765,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
 #[cfg(test)]
 mod disposition_matrix_tests {
     use super::*;
-    use crate::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
+    use busbar_core::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
     use std::collections::HashMap;
 
     #[test]
@@ -2773,35 +2773,35 @@ mod disposition_matrix_tests {
         // Exhaustive check: all valid StatusClass names must parse correctly
         assert_eq!(
             status_class_from_str("rate_limit"),
-            Some(crate::breaker::StatusClass::RateLimit)
+            Some(busbar_core::breaker::StatusClass::RateLimit)
         );
         assert_eq!(
             status_class_from_str("overloaded"),
-            Some(crate::breaker::StatusClass::Overloaded)
+            Some(busbar_core::breaker::StatusClass::Overloaded)
         );
         assert_eq!(
             status_class_from_str("server_error"),
-            Some(crate::breaker::StatusClass::ServerError)
+            Some(busbar_core::breaker::StatusClass::ServerError)
         );
         assert_eq!(
             status_class_from_str("timeout"),
-            Some(crate::breaker::StatusClass::Timeout)
+            Some(busbar_core::breaker::StatusClass::Timeout)
         );
         assert_eq!(
             status_class_from_str("network"),
-            Some(crate::breaker::StatusClass::Network)
+            Some(busbar_core::breaker::StatusClass::Network)
         );
         assert_eq!(
             status_class_from_str("auth"),
-            Some(crate::breaker::StatusClass::Auth)
+            Some(busbar_core::breaker::StatusClass::Auth)
         );
         assert_eq!(
             status_class_from_str("billing"),
-            Some(crate::breaker::StatusClass::Billing)
+            Some(busbar_core::breaker::StatusClass::Billing)
         );
         assert_eq!(
             status_class_from_str("client_error"),
-            Some(crate::breaker::StatusClass::ClientError)
+            Some(busbar_core::breaker::StatusClass::ClientError)
         );
 
         // Unknown values return None (no _ => fallback)
@@ -2824,7 +2824,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, crate::breaker::StatusClass::Billing);
+        assert_eq!(sig.class, busbar_core::breaker::StatusClass::Billing);
 
         // Different code not in map → fallback to HTTP status classification
         let raw2 = RawUpstreamError {
@@ -2834,7 +2834,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, crate::breaker::StatusClass::ServerError);
+        assert_eq!(sig2.class, busbar_core::breaker::StatusClass::ServerError);
     }
 
     #[test]
@@ -2849,7 +2849,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, crate::breaker::StatusClass::Auth);
+        assert_eq!(sig.class, busbar_core::breaker::StatusClass::Auth);
 
         // HTTP 429 → RateLimit (universal spec)
         let raw2 = RawUpstreamError {
@@ -2859,7 +2859,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, crate::breaker::StatusClass::RateLimit);
+        assert_eq!(sig2.class, busbar_core::breaker::StatusClass::RateLimit);
 
         // HTTP 500 → ServerError (universal spec)
         let raw3 = RawUpstreamError {
@@ -2869,7 +2869,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig3 = normalize_raw_error(&raw3, &error_map);
-        assert_eq!(sig3.class, crate::breaker::StatusClass::ServerError);
+        assert_eq!(sig3.class, busbar_core::breaker::StatusClass::ServerError);
 
         // HTTP 400 → ClientError (universal spec)
         let raw4 = RawUpstreamError {
@@ -2879,7 +2879,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig4 = normalize_raw_error(&raw4, &error_map);
-        assert_eq!(sig4.class, crate::breaker::StatusClass::ClientError);
+        assert_eq!(sig4.class, busbar_core::breaker::StatusClass::ClientError);
     }
 
     #[tokio::test]
@@ -2899,7 +2899,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -2911,7 +2911,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -2959,7 +2959,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -2971,7 +2971,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3022,7 +3022,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -3034,7 +3034,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3080,7 +3080,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -3092,7 +3092,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3138,7 +3138,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -3150,7 +3150,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3196,7 +3196,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("z.ai")
@@ -3208,7 +3208,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3262,7 +3262,7 @@ mod disposition_matrix_tests {
         let msg = v["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             msg,
-            crate::proto::vendor_auth_failure_message("anthropic"),
+            busbar_core::proto::vendor_auth_failure_message("anthropic"),
             "auth message must be vendor-plausible copy, not busbar-internal vocabulary: {v}"
         );
         assert!(
@@ -3305,7 +3305,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server1.base_url(),
                 )
                 .provider("z.ai")
@@ -3320,7 +3320,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server2.base_url(),
                 )
                 .provider("z.ai")
@@ -3334,7 +3334,7 @@ mod disposition_matrix_tests {
         // Lane 1 with error_map: code 1113 → billing → HardDown
         let _response_1 = forward(
             app_1.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3354,7 +3354,7 @@ mod disposition_matrix_tests {
         // Lane 2 without mapping: HTTP 400 → ClientFault → no trip
         let _response_2 = forward(
             app_2.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3379,9 +3379,9 @@ mod disposition_matrix_tests {
         // An EMPTY error_map is valid (HTTP-status classification still applies, like the
         // shipped `anthropic` catalog entry) — it must NOT fail validation. A present entry
         // with an unknown StatusClass value must still fail.
-        use crate::config::RootCfg;
+        use busbar_core::config::RootCfg;
 
-        let model = crate::config::ModelCfg {
+        let model = busbar_core::config::ModelCfg {
             reasoning: None,
             prompt_caching: None,
             max_requests: -1,
@@ -3391,9 +3391,9 @@ mod disposition_matrix_tests {
             upstream_model: None,
             attempt_timeout_ms: None,
         };
-        let pool = crate::config::PoolCfg {
+        let pool = busbar_core::config::PoolCfg {
             upstream_credentials: None,
-            members: vec![crate::config::PoolMember {
+            members: vec![busbar_core::config::PoolMember {
                 reasoning: None,
                 model: "m".into(),
                 weight: 1,
@@ -3406,7 +3406,7 @@ mod disposition_matrix_tests {
             failover: None,
             on_exhausted: None,
             affinity: None,
-            policy: crate::config::PoolPolicy::default(),
+            policy: busbar_core::config::PoolPolicy::default(),
             gates: Vec::new(),
             base_named: false,
             ..Default::default()
@@ -3415,10 +3415,10 @@ mod disposition_matrix_tests {
             let mut providers = HashMap::new();
             providers.insert(
                 "p".to_string(),
-                crate::config::ProviderCfg {
+                busbar_core::config::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
-                    api_key: crate::config::SecretRef::env("API_KEY"),
+                    api_key: busbar_core::config::SecretRef::env("API_KEY"),
                     health: None,
                     error_map,
                     path: None,
@@ -3435,18 +3435,18 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
-                tool_defs: crate::plane::config::ToolsSection::default().0,
+                tool_defs: busbar_core::plane::config::ToolsSection::default().0,
                 // No endpoint plane configured.
                 endpoint_resources: Default::default(),
                 oauth_as: None,
-                agent_defs: crate::plane::config::AgentsSection::default().0,
+                agent_defs: busbar_core::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
-                upstream_credentials: crate::auth::UpstreamCreds::Own,
+                upstream_credentials: busbar_core::auth::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
-                admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+                admin_listen: busbar_core::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
                 admin_tls: None,
                 auth: None,
                 admin_auth: vec!["admin-tokens".to_string()],
@@ -3463,14 +3463,14 @@ mod disposition_matrix_tests {
                 blocked_metadata_hosts: Vec::new(),
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
-                limits: crate::config::LimitsResolved::default(),
+                limits: busbar_core::config::LimitsResolved::default(),
                 export: Default::default(),
                 identity_providers: Default::default(),
                 export_defs: Default::default(),
             }
         };
 
-        use crate::config_validate::validate;
+        use busbar_core::config_validate::validate;
         // Empty error_map → valid.
         assert!(
             validate(&make(std::collections::HashMap::new())).is_ok(),
@@ -3507,7 +3507,7 @@ mod disposition_matrix_tests {
         // This FAILS the correctness check: billing should map to HardDown, not TransientUpstream
         assert_eq!(
             sig.class,
-            crate::breaker::StatusClass::RateLimit,
+            busbar_core::breaker::StatusClass::RateLimit,
             "Wrong mapping: 1113 incorrectly classified as rate_limit instead of billing"
         );
 
@@ -3517,7 +3517,7 @@ mod disposition_matrix_tests {
         let correct_sig = normalize_raw_error(&raw, &correct_map);
         assert_eq!(
             correct_sig.class,
-            crate::breaker::StatusClass::Billing,
+            busbar_core::breaker::StatusClass::Billing,
             "Correct mapping: 1113 → billing"
         );
     }
@@ -3537,7 +3537,7 @@ mod disposition_matrix_tests {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("anthropic"),
@@ -3548,7 +3548,7 @@ mod disposition_matrix_tests {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -3567,7 +3567,7 @@ mod disposition_matrix_tests {
         let t = now();
         let breaker_state = app.store.breaker_state(0);
         assert!(
-            matches!(breaker_state, crate::store::BreakerState::Closed),
+            matches!(breaker_state, busbar_core::store::BreakerState::Closed),
             "client fault must not trip breaker"
         );
 
@@ -3607,11 +3607,11 @@ mod disposition_matrix_tests {
 
         let app = TestApp::new()
             .lane(
-                LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server0.base_url())
+                LaneSpec::new("lane0", crate::proto_codec::PROTO_ANTHROPIC, &server0.base_url())
                     .provider("anthropic"),
             )
             .lane(
-                LaneSpec::new("lane1", crate::proto::PROTO_ANTHROPIC, &server1.base_url())
+                LaneSpec::new("lane1", crate::proto_codec::PROTO_ANTHROPIC, &server1.base_url())
                     .provider("anthropic"),
             )
             .pool("default", &[(0, 1), (1, 1)])
@@ -3621,13 +3621,13 @@ mod disposition_matrix_tests {
         let response = forward(
             app.clone(),
             vec![
-                crate::state::WeightedLane {
+                crate::engine::WeightedLane {
                     reasoning: None,
                     idx: 0,
                     weight: 1,
                     attempt_timeout_ms: None,
                 },
-                crate::state::WeightedLane {
+                crate::engine::WeightedLane {
                     reasoning: None,
                     idx: 1,
                     weight: 1,
@@ -3684,12 +3684,12 @@ async fn test_exhaustion_status_503_with_retry_after() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "lane0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1), (1, 1)])
@@ -3700,13 +3700,13 @@ async fn test_exhaustion_status_503_with_retry_after() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -3742,7 +3742,7 @@ async fn test_exhaustion_status_503_with_retry_after() {
 /// return distinguishable bodies, so we can assert WHICH member served.
 #[tokio::test]
 async fn test_exhaustion_least_bad_selects_soonest() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
 
     // Lane 0 server (the "wrong" member — far cooldown). Marker identifies it if picked.
     let state0 = Arc::new(MockServerState::new());
@@ -3765,19 +3765,19 @@ async fn test_exhaustion_least_bad_selects_soonest() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server0.base_url())
+            LaneSpec::new("lane0", crate::proto_codec::PROTO_ANTHROPIC, &server0.base_url())
                 .cooldown_until(t0 + 600) // far expiry
                 .streak(3)
                 .err(5),
         )
         .lane(
-            LaneSpec::new("lane1", crate::proto::PROTO_ANTHROPIC, &server1.base_url())
+            LaneSpec::new("lane1", crate::proto_codec::PROTO_ANTHROPIC, &server1.base_url())
                 .cooldown_until(t0 + 5) // SOONEST expiry → least-bad should pick this one
                 .streak(3)
                 .err(5),
         )
         .pool("leastbad", &[(0, 1), (1, 1)])
-        .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
@@ -3786,13 +3786,13 @@ async fn test_exhaustion_least_bad_selects_soonest() {
     let response = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -3804,7 +3804,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
         "leastbad",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -3841,7 +3841,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
 /// decremented after one served request.
 #[tokio::test]
 async fn test_forward_once_records_success_and_spends_budget() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -3851,14 +3851,14 @@ async fn test_forward_once_records_success_and_spends_budget() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("lane0", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("lane0", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .cooldown_until(t0 + 600) // Open → normal selection finds nothing → LeastBad path
                 .streak(3)
                 .err(5)
                 .budget(2), // limited lane: 2 lifetime requests remaining
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     let before = app.store.snapshot(0, store_now());
@@ -3868,7 +3868,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -3879,7 +3879,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
         "leastbad",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -3906,7 +3906,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 /// and the smuggled shim key never reaches the backend.
 #[tokio::test]
 async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
             events: vec![
@@ -3918,7 +3918,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt", crate::proto::PROTO_OPENAI, &server.base_url()).provider("openai"),
+            LaneSpec::new("gpt", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("openai"),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -3933,7 +3933,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     .unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -3944,7 +3944,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
         "p",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -3980,7 +3980,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
 /// `forward_once`.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
     for (upstream_status, want_kind) in [
         (StatusCode::UNAUTHORIZED, "authentication_error"),
         (StatusCode::FORBIDDEN, "permission_error"),
@@ -3995,20 +3995,20 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
         // normal selection finds nothing and LeastBad serves via forward_once.
         let app = TestApp::new()
             .lane(
-                LaneSpec::new("lane0", crate::proto::PROTO_OPENAI, &server.base_url())
+                LaneSpec::new("lane0", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                     .provider("zai")
                     .cooldown_until(t0 + 600)
                     .streak(3)
                     .err(5),
             )
             .pool("leastbad", &[(0, 1)])
-            .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+            .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
             .build();
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward_with_pool(
             &app,
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -4019,7 +4019,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
             "leastbad",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;
@@ -4049,7 +4049,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
 /// This is the safety-critical test for multi-level fallback chains.
 #[tokio::test]
 async fn test_fallback_pool_loop_guard() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
 
     // No upstream is ever reached (all pools exhausted); the server only supplies base_urls.
     let state = Arc::new(MockServerState::new());
@@ -4060,7 +4060,7 @@ async fn test_fallback_pool_loop_guard() {
     let tripped = |key: &str| {
         LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         )
         .api_key(key)
@@ -4088,11 +4088,11 @@ async fn test_fallback_pool_loop_guard() {
         .fallback_pool("pool_b", &[(2, 1), (3, 1)])
         .on_exhausted(
             "pool_a",
-            crate::config::OnExhausted::FallbackPool("pool_b".to_string()),
+            busbar_core::config::OnExhausted::FallbackPool("pool_b".to_string()),
         )
         .on_exhausted(
             "pool_b",
-            crate::config::OnExhausted::FallbackPool("pool_a".to_string()),
+            busbar_core::config::OnExhausted::FallbackPool("pool_a".to_string()),
         )
         .build();
 
@@ -4102,13 +4102,13 @@ async fn test_fallback_pool_loop_guard() {
     let response = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -4120,7 +4120,7 @@ async fn test_fallback_pool_loop_guard() {
         "pool_a",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4139,7 +4139,7 @@ async fn test_fallback_pool_loop_guard() {
 /// backup, not a 503-with-header stub. This is the test skipped.
 #[tokio::test]
 async fn test_fallback_pool_routes_to_backup() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
 
     // Backup member (lane 2) returns a recognizable success body.
     let state = Arc::new(MockServerState::new());
@@ -4154,7 +4154,7 @@ async fn test_fallback_pool_routes_to_backup() {
     let tripped = |key: &str| {
         LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         )
         .api_key(key)
@@ -4169,7 +4169,7 @@ async fn test_fallback_pool_routes_to_backup() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("key-2")
@@ -4179,7 +4179,7 @@ async fn test_fallback_pool_routes_to_backup() {
         .fallback_pool("backup", &[(2, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("backup".to_string()),
+            busbar_core::config::OnExhausted::FallbackPool("backup".to_string()),
         )
         .build();
 
@@ -4188,13 +4188,13 @@ async fn test_fallback_pool_routes_to_backup() {
     let response = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -4206,7 +4206,7 @@ async fn test_fallback_pool_routes_to_backup() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4258,7 +4258,7 @@ async fn test_sticky_session_while_healthy() {
     }
 
     let mk_lane = |base_url: String, key: &str| {
-        LaneSpec::new("test-model", crate::proto::PROTO_ANTHROPIC, &base_url).api_key(key)
+        LaneSpec::new("test-model", crate::proto_codec::PROTO_ANTHROPIC, &base_url).api_key(key)
     };
 
     let app = TestApp::new()
@@ -4274,19 +4274,19 @@ async fn test_sticky_session_while_healthy() {
     let response1 = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 2,
                 weight: 1,
@@ -4298,7 +4298,7 @@ async fn test_sticky_session_while_healthy() {
         "sticky-test",
         Some("session-abc"),
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4312,19 +4312,19 @@ async fn test_sticky_session_while_healthy() {
     let response2 = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 2,
                 weight: 1,
@@ -4336,7 +4336,7 @@ async fn test_sticky_session_while_healthy() {
         "sticky-test",
         Some("session-abc"),
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4356,19 +4356,19 @@ async fn test_sticky_session_while_healthy() {
     let response3 = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 2,
                 weight: 1,
@@ -4380,7 +4380,7 @@ async fn test_sticky_session_while_healthy() {
         "sticky-test",
         Some("session-xyz"),
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4425,7 +4425,7 @@ async fn test_sticky_session_while_healthy() {
 /// fail.
 #[tokio::test]
 async fn test_sticky_yields_when_tripped() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
 
     // Separate mock servers for each lane, each returning a distinguishable body
     // so we can assert WHICH member served.
@@ -4453,7 +4453,7 @@ async fn test_sticky_yields_when_tripped() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server0.base_url(),
             )
             .api_key("test-key-0")
@@ -4465,7 +4465,7 @@ async fn test_sticky_yields_when_tripped() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server1.base_url(),
             )
             .api_key("test-key-1")
@@ -4481,13 +4481,13 @@ async fn test_sticky_yields_when_tripped() {
     let response = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -4499,7 +4499,7 @@ async fn test_sticky_yields_when_tripped() {
         "failover-test",
         Some("session-abc"),
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4542,13 +4542,13 @@ async fn test_health_probe_recovers_tripped_lane() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server0.base_url(),
             )
             .provider("p")
             .api_key("test-key")
-            .health(crate::config::HealthCfg {
-                mode: crate::config::HealthMode::Dead,
+            .health(busbar_core::config::HealthCfg {
+                mode: busbar_core::config::HealthMode::Dead,
                 interval_secs: None,
                 timeout_secs: None,
             }),
@@ -4559,15 +4559,15 @@ async fn test_health_probe_recovers_tripped_lane() {
     app.store.record_hard_down(0, "test trip");
     assert_ne!(
         app.store.breaker_state(0),
-        crate::store::BreakerState::Closed,
+        busbar_core::store::BreakerState::Closed,
         "lane should be tripped before the probe"
     );
 
-    crate::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
+    crate::engine::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
 
     assert_eq!(
         app.store.breaker_state(0),
-        crate::store::BreakerState::Closed,
+        busbar_core::store::BreakerState::Closed,
         "a 2xx health probe must recover the tripped lane"
     );
     server0.shutdown().await;
@@ -4587,22 +4587,22 @@ async fn test_health_probe_failure_records_transient() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server0.base_url(),
             )
             .provider("p")
             .api_key("test-key")
-            .health(crate::config::HealthCfg {
-                mode: crate::config::HealthMode::Active,
+            .health(busbar_core::config::HealthCfg {
+                mode: busbar_core::config::HealthMode::Active,
                 interval_secs: None,
                 timeout_secs: None,
             }),
         )
         .build();
 
-    let before = app.store.snapshot(0, crate::store::now()).err;
-    crate::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
-    let after = app.store.snapshot(0, crate::store::now()).err;
+    let before = app.store.snapshot(0, busbar_core::store::now()).err;
+    crate::engine::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
+    let after = app.store.snapshot(0, busbar_core::store::now()).err;
     assert_eq!(
         after,
         before + 1,
@@ -4637,7 +4637,7 @@ async fn test_sticky_from_system_block() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server0.base_url(),
             )
             .api_key("test-key-0"),
@@ -4645,7 +4645,7 @@ async fn test_sticky_from_system_block() {
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server1.base_url(),
             )
             .api_key("test-key-1"),
@@ -4666,13 +4666,13 @@ async fn test_sticky_from_system_block() {
     let response1 = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -4684,7 +4684,7 @@ async fn test_sticky_from_system_block() {
         "system-test",
         None, // No header - should derive from system block
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4698,13 +4698,13 @@ async fn test_sticky_from_system_block() {
     let response2 = forward_with_pool(
         &app,
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -4716,7 +4716,7 @@ async fn test_sticky_from_system_block() {
         "system-test",
         None, // No header - should derive from system block
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -4774,7 +4774,7 @@ async fn openai_mock_handler(
 /// OpenAI ingress same-protocol passthrough test.
 #[tokio::test]
 async fn test_openai_ingress_same_protocol_passthrough() {
-    use crate::ingress;
+    use busbar_core::ingress;
     use axum::http::HeaderMap;
 
     // Create a custom mock server that listens at /v1/chat/completions (OpenAI endpoint)
@@ -4813,7 +4813,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     // Build a lane with OpenAI protocol (upstream_path = /v1/chat/completions)
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("test-model", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("test-model", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai-mock")
                 .api_key("test-key"),
         )
@@ -4827,14 +4827,14 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
     // Call openai_ingress handler directly
-    let response = ingress::operation_ingress(
+    let response = crate::native_ingress::operation_ingress_inner(
         &app,
-        &crate::governance::GovCtx::default(),
-        &crate::auth::CallerToken::default(),
+        &busbar_core::governance::GovCtx::default(),
+        None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -4881,7 +4881,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
 /// OpenAI ingress missing model → 400.
 #[tokio::test]
 async fn test_openai_ingress_missing_model() {
-    use crate::ingress;
+    use busbar_core::ingress;
     use axum::http::HeaderMap;
 
     // Build a minimal App (no lanes needed for this test)
@@ -4893,14 +4893,14 @@ async fn test_openai_ingress_missing_model() {
     });
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
-    let response = ingress::operation_ingress(
+    let response = crate::native_ingress::operation_ingress_inner(
         &app,
-        &crate::governance::GovCtx::default(),
-        &crate::auth::CallerToken::default(),
+        &busbar_core::governance::GovCtx::default(),
+        None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -4914,13 +4914,13 @@ async fn test_openai_ingress_missing_model() {
 /// emitted, so caller path segments can't inflate `/metrics` cardinality).
 #[tokio::test]
 async fn test_adhoc_rejects_unconfigured_provider_model() {
-    use crate::ingress;
+    use busbar_core::ingress;
 
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "https://configured.example.com",
             )
             .provider("openai")
@@ -4932,10 +4932,11 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 
     // Attacker-chosen provider/model that isn't configured → 404, no upstream reached.
     let resp = ingress::adhoc(
-        crate::state::CurrentApp(app.clone()),
+        busbar_core::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
-        axum::extract::Extension(crate::governance::GovCtx::default()),
-        axum::extract::Extension(crate::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_core::governance::GovCtx::default()),
+        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::http::HeaderMap::new(),
         body.clone(),
     )
     .await;
@@ -4947,10 +4948,11 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 
     // Configured model but WRONG provider → 400 (must match the lane's provider).
     let resp2 = ingress::adhoc(
-        crate::state::CurrentApp(app),
+        busbar_core::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
-        axum::extract::Extension(crate::governance::GovCtx::default()),
-        axum::extract::Extension(crate::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_core::governance::GovCtx::default()),
+        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::http::HeaderMap::new(),
         body,
     )
     .await;
@@ -4964,7 +4966,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 /// OpenAI ingress unknown model → 404.
 #[tokio::test]
 async fn test_openai_ingress_unknown_model() {
-    use crate::ingress;
+    use busbar_core::ingress;
     use axum::http::HeaderMap;
 
     // Build a minimal App with no "nope" model
@@ -4977,14 +4979,14 @@ async fn test_openai_ingress_unknown_model() {
     });
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
-    let response = ingress::operation_ingress(
+    let response = crate::native_ingress::operation_ingress_inner(
         &app,
-        &crate::governance::GovCtx::default(),
-        &crate::auth::CallerToken::default(),
+        &busbar_core::governance::GovCtx::default(),
+        None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5019,7 +5021,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("anthropic"),
         )
         .build();
@@ -5036,7 +5038,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
     // Forward with ingress_protocol="openai" to trigger translation into anthropic lane
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5047,7 +5049,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
         "m",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5089,7 +5091,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
 /// `forward` wrapper (Anthropic ingress) and returned the raw Anthropic body.
 #[tokio::test]
 async fn test_openai_ingress_single_model_anthropic_response_translated() {
-    use crate::ingress;
+    use busbar_core::ingress;
 
     let state = Arc::new(MockServerState::new());
     // Backend returns a native Anthropic message response.
@@ -5109,20 +5111,20 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     // Model is in by_model but NOT in any pool — the branch the bug lived in.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("z.ai"),
         )
         .build();
 
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
-    let resp = ingress::operation_ingress(
+    let resp = crate::native_ingress::operation_ingress_inner(
         &app,
-        &crate::governance::GovCtx::default(),
-        &crate::auth::CallerToken::default(),
+        &busbar_core::governance::GovCtx::default(),
+        None,
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5149,7 +5151,7 @@ async fn forwarded_openai_to_anthropic(
     lane_default: Option<u32>,
     request_body: serde_json::Value,
 ) -> serde_json::Value {
-    use crate::ingress;
+    use busbar_core::ingress;
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -5165,21 +5167,21 @@ async fn forwarded_openai_to_anthropic(
     });
     let server = MockServer::new(state.clone()).await;
 
-    let mut spec = LaneSpec::new("glm-4.5", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+    let mut spec = LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
         .provider("z.ai");
     if let Some(d) = lane_default {
         spec = spec.default_max_tokens(d);
     }
     let app = TestApp::new().lane(spec).build();
 
-    let resp = ingress::operation_ingress(
+    let resp = crate::native_ingress::operation_ingress_inner(
         &app,
-        &crate::governance::GovCtx::default(),
-        &crate::auth::CallerToken::default(),
+        &busbar_core::governance::GovCtx::default(),
+        None,
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5209,7 +5211,7 @@ async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
     .await;
     assert_eq!(
             got.get("max_tokens").and_then(|v| v.as_u64()),
-            Some(crate::proto::DEFAULT_MAX_TOKENS as u64),
+            Some(busbar_core::proto::DEFAULT_MAX_TOKENS as u64),
             "absent max_tokens must be backfilled with the fallback on →anthropic translation; got: {got}"
         );
 }
@@ -5262,7 +5264,7 @@ async fn test_same_protocol_anthropic_passthrough() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("anthropic")
                 .api_key("test-key"),
         )
@@ -5279,7 +5281,7 @@ async fn test_same_protocol_anthropic_passthrough() {
     // Forward with ingress_protocol="anthropic" - same protocol, no translation should occur
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5290,7 +5292,7 @@ async fn test_same_protocol_anthropic_passthrough() {
         "m",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5319,7 +5321,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai-provider"),
         )
         .build();
@@ -5329,7 +5331,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
         json!({"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true});
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5340,7 +5342,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
         "m",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5395,7 +5397,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai-provider"),
         )
         .build();
@@ -5404,7 +5406,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
     let anthropic_body = json!({"model":"m","messages":[{"role":"user","content":"hi"}]});
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5415,7 +5417,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
         "m",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5478,7 +5480,7 @@ async fn test_context_length_failover_no_penalty() {
     let server = MockServer::new(state.clone()).await;
 
     let mk_lane = |key: &str| {
-        LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+        LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
             .provider("anthropic")
             .api_key(key)
     };
@@ -5491,13 +5493,13 @@ async fn test_context_length_failover_no_penalty() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -5518,7 +5520,7 @@ async fn test_context_length_failover_no_penalty() {
     );
 
     // KEY: neither lane was penalized — context-length is a request problem, not a lane fault.
-    let now = crate::state::now();
+    let now = busbar_core::state::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, now),
@@ -5559,7 +5561,7 @@ async fn test_prefers_larger_context_max() {
         .lane(
             LaneSpec::new(
                 "small-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("test-key-0")
@@ -5568,7 +5570,7 @@ async fn test_prefers_larger_context_max() {
         .lane(
             LaneSpec::new(
                 "large-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .api_key("test-key-1")
@@ -5583,13 +5585,13 @@ async fn test_prefers_larger_context_max() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -5606,7 +5608,7 @@ async fn test_prefers_larger_context_max() {
     assert_eq!(response.status().as_u16(), 200);
 
     // Verify: lane 0 was NOT penalized (context-length is not a lane fault)
-    let t = crate::state::now();
+    let t = busbar_core::state::now();
     assert!(
         app.store.usable(0, t),
         "lane 0 should remain usable after context-length"
@@ -5635,7 +5637,7 @@ async fn test_same_size_pool_exhausts() {
     let mk_lane = |key: &str| {
         LaneSpec::new(
             "model-8k",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         )
         .api_key(key)
@@ -5653,13 +5655,13 @@ async fn test_same_size_pool_exhausts() {
     let response = forward(
         app.clone(),
         vec![
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
             },
-            crate::state::WeightedLane {
+            crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 1,
                 weight: 1,
@@ -5676,7 +5678,7 @@ async fn test_same_size_pool_exhausts() {
     assert_eq!(response.status().as_u16(), 503);
 
     // Verify: neither lane was penalized (context-length is not a lane fault)
-    let t = crate::state::now();
+    let t = busbar_core::state::now();
     for idx in 0..2 {
         assert_eq!(
             app.store.cooldown_remaining(idx, t),
@@ -5694,7 +5696,7 @@ async fn test_same_size_pool_exhausts() {
 /// arm recorded a spurious failure on every completed stream, tripping healthy streaming lanes.
 #[tokio::test]
 async fn test_clean_sse_end_records_success_not_failure() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
 
     // Push several clean SSE responses (each ends normally with message_stop + [DONE]).
@@ -5715,7 +5717,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -5726,7 +5728,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "stream": true, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50})).unwrap();
         let resp = forward(
             app.clone(),
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 reasoning: None,
                 idx: 0,
                 weight: 1,
@@ -5766,7 +5768,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
 /// store cooldown floor) that no test previously covered — the header was silently dropped.
 #[tokio::test]
 async fn test_429_retry_after_header_sets_cooldown_floor() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Single lane; a 429 with Retry-After: 45. streak=0 → computed backoff is the base (15s),
     // so a floor of 45 must dominate, proving the header was honored end-to-end.
@@ -5780,7 +5782,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "test-model",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("default", &[(0, 1)])
@@ -5798,7 +5800,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
     let t0 = now();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5809,7 +5811,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
         "default",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5830,7 +5832,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
 /// an unbounded 1ms spin-loop with no deadline check (a head-of-line-blocking DoS surface).
 #[tokio::test]
 async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
 
@@ -5840,14 +5842,14 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
         .lane(
             LaneSpec::new(
                 "busy-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .max(1),
         )
         .pool("default", &[(0, 1)])
         // 1s failover deadline so the test is fast but still exercises the bounded wait.
-        .failover(crate::config::FailoverCfg {
+        .failover(busbar_core::config::FailoverCfg {
             timeout_secs: 1,
             max_hops: 0,
             exclusions: None,
@@ -5861,7 +5863,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
     let started = std::time::Instant::now();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -5872,7 +5874,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
         "default",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -5899,7 +5901,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
 /// truly unbounded.
 #[tokio::test]
 async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
@@ -5908,7 +5910,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
         .lane(
             LaneSpec::new(
                 "unbounded-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .max(tokio::sync::Semaphore::MAX_PERMITS),
@@ -5945,7 +5947,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
 /// (N+1)th concurrent acquire is denied until a permit frees.
 #[tokio::test]
 async fn test_bounded_max_concurrent_still_enforces_the_cap() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
@@ -5953,7 +5955,7 @@ async fn test_bounded_max_concurrent_still_enforces_the_cap() {
         .lane(
             LaneSpec::new(
                 "capped-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .max(2), // cap = 2
@@ -5986,7 +5988,7 @@ fn test_lanespec_sem_override_is_shared() {
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:0")
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:0")
                 .max(1)
                 .sem(sem.clone()),
         )
@@ -6018,7 +6020,7 @@ fn test_lanespec_sem_override_is_shared() {
 fn test_lanespec_runtime_state_setters_land_in_built_app() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:0")
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:0")
                 .cooldown_until(now() + 600)
                 .streak(3)
                 .err(5)

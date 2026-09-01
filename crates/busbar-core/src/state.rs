@@ -733,6 +733,19 @@ impl App {
         self.plane_slots.get(key)
     }
 
+    /// MUTABLE plane-slot access for in-place TEST mutation — the successor to the deleted inherent
+    /// `App::llm_runtime_mut`, now that the plane's runtime type lives in the plane crate and core
+    /// names none of it. A plane's relocated tests reach their own runtime through this neutral seam:
+    /// `Arc::get_mut(app.plane_slot_mut(key)?).downcast_mut::<TheirRuntime>()`. Returns the slot's
+    /// `Arc` mutably so the caller can `Arc::get_mut` it (uniquely-owned in a sole-owner test `App`).
+    #[allow(dead_code)]
+    pub fn plane_slot_mut(
+        &mut self,
+        key: &str,
+    ) -> Option<&mut Arc<dyn std::any::Any + Send + Sync>> {
+        self.plane_slots.get_mut(key)
+    }
+
     /// The per-container submission-gate map for the plane identified by the opaque registry
     /// `plane_key`, or `None` when the plane attached no gates this generation — a pure
     /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a
@@ -1049,7 +1062,7 @@ impl AppHandle {
 /// post-apply configuration: a handler takes `CurrentApp(app): CurrentApp` instead of
 /// `State(app): State<Arc<App>>`, and the rest of its body is unchanged (`app` is still `Arc<App>`).
 /// A local newtype is required because the orphan rule forbids `impl FromRef<_> for Arc<App>`.
-pub struct CurrentApp(pub(crate) Arc<App>);
+pub struct CurrentApp(pub Arc<App>);
 
 impl<S> axum::extract::FromRequestParts<S> for CurrentApp
 where

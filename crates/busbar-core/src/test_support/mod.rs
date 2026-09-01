@@ -165,7 +165,7 @@ impl MockServerState {
     pub fn push(&self, response: MockResponse) {
         self.queued_replies.lock().unwrap().push(response);
     }
-    fn next_response(&self) -> Option<MockResponse> {
+    pub fn next_response(&self) -> Option<MockResponse> {
         self.queued_replies.lock().unwrap().pop()
     }
 
@@ -2130,9 +2130,6 @@ pub mod warn_capture;
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
 
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every

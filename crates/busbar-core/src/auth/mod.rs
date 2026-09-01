@@ -60,7 +60,7 @@ pub use busbar_api::UpstreamCreds;
 /// The caller's bearer token, threaded into request extensions by `auth_middleware` so handlers can
 /// forward it upstream in passthrough mode. `None` when no usable bearer token was presented.
 #[derive(Clone, Default)]
-pub(crate) struct CallerToken(pub(crate) Option<String>);
+pub struct CallerToken(pub Option<String>);
 
 // MANUAL Debug that NEVER prints the token contents. `CallerToken` wraps a caller credential and is
 // threaded into request extensions, so it can be reached by any future code that debug-formats the

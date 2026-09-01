@@ -1484,7 +1484,7 @@ impl GovState {
     /// budget to zero - a transient store blip at boot would let a maxed-out key spend its whole cap
     /// again. Propagate any store error so boot fails loudly (the supervisor restarts) rather than
     /// resuming with an unenforced ledger. Returns `Ok(())` only when every bucket hydrated cleanly.
-    pub(crate) fn hydrate_budgets(
+    pub fn hydrate_budgets(
         &self,
         cost: &crate::cost::CostModel,
         now: u64,

@@ -102,7 +102,7 @@ tracing-subscriber = { workspace = true }
 # The relocated money-path tests (src/engine/{proxy_tests,engine_tests}) drive the engine through
 # core's test_support mock harness and name these directly.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
-reqwest = { workspace = true, features = ["http2"] }
+reqwest = { workspace = true, features = ["http2", "json"] }
 proptest = { workspace = true }
 hyper-util = { workspace = true }
 # The relocated money-path tests drive these directly (config round-trips + the audit-chain crc).

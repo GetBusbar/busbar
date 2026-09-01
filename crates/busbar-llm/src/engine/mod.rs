@@ -131,6 +131,9 @@ mod egress_target_tests;
 #[path = "proxy_tests/forward_once_pool_cell_tests.rs"]
 mod forward_once_pool_cell_tests;
 #[cfg(test)]
+#[path = "proxy_tests/forward_pool_integration_tests.rs"]
+mod forward_pool_integration_tests;
+#[cfg(test)]
 #[path = "proxy_tests/hook_non_chat_projection_tests.rs"]
 mod hook_non_chat_projection_tests;
 #[cfg(test)]

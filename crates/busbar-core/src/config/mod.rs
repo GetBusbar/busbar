@@ -405,7 +405,7 @@ pub struct RootCfg {
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
-    pub(crate) oauth_as: Option<crate::oauth_as::config::AsIdentity>,
+    pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
     /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -413,7 +413,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub(crate) tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -428,7 +428,7 @@ pub struct RootCfg {
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
     /// `pools.upstream_credentials:` key (1.5.3 — moved off the retired `auth.upstream_credentials:`).
     /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule).
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
+    pub upstream_credentials: crate::auth::UpstreamCreds,
     /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
     /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
     /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
@@ -436,24 +436,24 @@ pub struct RootCfg {
     /// The ADMIN auth chain module names (from `auth.admin_auth:`, in order) gating
     /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
     /// warning).
-    pub(crate) admin_auth: Vec<String>,
+    pub admin_auth: Vec<String>,
     /// The top-level `groups:` limit tree.
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
     /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`.
-    pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
+    pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
-    pub(crate) per_request_fee: i64,
+    pub per_request_fee: i64,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
-    pub(crate) store: Option<StoreCfg>,
+    pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
     /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
     /// built-in `env` / `file` modules take no config and must not appear here.
-    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Names of hooks that fire on EVERY request — the registry names lowered from the reserved
     /// all-pools attach key `pools.hooks:` (1.5.3), in order. RUNTIME-only: there is no
     /// config-facing `global_hooks:` key any more.
-    pub(crate) global_hooks: Vec<String>,
+    pub global_hooks: Vec<String>,
     /// Operator-supplied additions to the hardcoded cloud-metadata denylist (see
     /// [`SecurityCfg::blocked_metadata_hosts`]). Resolved from `DeployCfg.security`; empty when no
     /// `security:` block is present. Threaded into `config_validate::validate` so a provider
@@ -465,7 +465,7 @@ pub struct RootCfg {
     /// when the guard runs; a host on the denylist is permitted iff it appears in this union (or
     /// `allow_all_metadata` is set). Matched with the same canonicalization as the block check (an IP
     /// entry unblocks all its spellings). Default empty.
-    pub(crate) allow_metadata_hosts: Vec<String>,
+    pub allow_metadata_hosts: Vec<String>,
     /// Nuclear override (`security.allow_all_metadata`): when true the metadata SSRF guard is fully
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
@@ -479,16 +479,16 @@ pub struct RootCfg {
     /// The resolved `export:` block — the built-in observability exporters. Default
     /// (all-`None`) ⇒ collection inert. Read at App construction to install the recorder + build the
     /// `/metrics` plugin route (prometheus) and to configure the request-log sinks.
-    pub(crate) export: ExportCfg,
+    pub export: ExportCfg,
     /// The `identity-providers:` NAMED-DEFINITION map, carried through resolve VERBATIM (the
     /// EFFECTIVE map: base `config.yaml` + the overlay's API-applied entries, merged pre-resolve).
     /// `auth`/`admin_auth` above are the RESOLVED projection of it; this is the definition surface
     /// the admin API reads and rewrites (`GET/PUT/PATCH/DELETE /identity-providers/{name}`).
-    pub(crate) identity_providers: IdentityProviders,
+    pub identity_providers: IdentityProviders,
     /// The `export:` NAMED-DEFINITION map, carried through resolve VERBATIM — the definition twin of
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
-    pub(crate) export_defs: ExportDefs,
+    pub export_defs: ExportDefs,
     /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
     /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
     /// control plane derives its runtime `AgentRegistration` from this plus what the store has
@@ -500,10 +500,10 @@ pub struct RootCfg {
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
-    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
     /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
-    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
 }
 
 impl RootCfg {
@@ -1249,35 +1249,35 @@ pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
     #[serde(default = "default_protocol")]
-    pub(crate) protocol: String,
+    pub protocol: String,
     pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
-    pub(crate) api_key: SecretRef,
+    pub api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
     pub health: Option<HealthCfg>,
     // error_map is REQUIRED on every provider — NO default (fail loud if missing)
-    pub(crate) error_map: HashMap<String, String>,
+    pub error_map: HashMap<String, String>,
     /// Optional upstream request-path override (see ProviderDef::path).
     #[serde(default)]
-    pub(crate) path: Option<String>,
+    pub path: Option<String>,
     /// Optional path-BASE override (see ProviderDef::path_base) — replaces a URL-model protocol's
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
-    pub(crate) path_base: Option<String>,
+    pub path_base: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
-    pub(crate) token_url: Option<String>,
+    pub token_url: Option<String>,
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
-    pub(crate) scope: Option<String>,
+    pub scope: Option<String>,
     /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
     #[serde(default)]
-    pub(crate) subject: Option<String>,
+    pub subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
-    pub(crate) auth: Option<ProviderAuth>,
+    pub auth: Option<ProviderAuth>,
     /// Per-provider SURGICAL escape hatch: the cloud-metadata hosts/IPs to UNBLOCK for THIS
     /// provider's `base_url` (and path-override composition) only. Each entry carves a single
     /// exception out of the metadata denylist (hardcoded ∪ `security.blocked_metadata_hosts`) — e.g.
@@ -1291,7 +1291,7 @@ pub struct ProviderCfg {
     /// client-driven SSRF and local models (Ollama / vLLM) "just work" with no entry. Default empty
     /// (all metadata blocked).
     #[serde(default)]
-    pub(crate) allow_metadata_hosts: Vec<String>,
+    pub allow_metadata_hosts: Vec<String>,
 }
 
 /// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
@@ -1547,53 +1547,53 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
 
 #[derive(Debug, Clone, Default)]
 pub struct PoolCfg {
-    pub(crate) members: Vec<PoolMember>,
+    pub members: Vec<PoolMember>,
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (a
     /// SCALAR, so the entity value REPLACES the inherited one — it does not union). `None` = inherit
     /// the `pools:`-level default. Moved here (out of the retired `auth.upstream_credentials:`) in
     /// 1.5.3: whose credential reaches the upstream is a routing property of the pool, not of the
     /// inbound auth chain.
-    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// Per-pool breaker settings (resolved into `store::BreakerCfg` at startup; drives trip
     /// thresholds and cooldown backoff for this pool's lanes).
-    pub(crate) breaker: Option<BreakerCfg>,
-    pub(crate) failover: Option<FailoverCfg>,
-    pub(crate) on_exhausted: Option<OnExhaustedCfg>,
-    pub(crate) affinity: Option<AffinityCfg>,
+    pub breaker: Option<BreakerCfg>,
+    pub failover: Option<FailoverCfg>,
+    pub on_exhausted: Option<OnExhaustedCfg>,
+    pub affinity: Option<AffinityCfg>,
     /// The pool's native ranking STRATEGY (a strategy name in `hooks: [...]`). `weighted`
     /// (default / absent) is today's SWRR
     /// with ZERO added cost — no `RoutingPolicy` object, byte-identical hot path. `cheapest`/`fastest`/
     /// `least_busy`/`usage` resolve a native ordering policy that runs once before the failover loop.
     /// This is the pool's ranking FLOOR.
-    pub(crate) policy: PoolPolicy,
+    pub policy: PoolPolicy,
     /// The pool's GATES (the non-strategy names in `hooks: [...]`). Each names an entry in the
     /// top-level `hooks:` registry; validated to be `kind: gate` at startup.
     /// Empty = no per-pool gate (pure native ordering). Config order is preserved — it is the
     /// phase-2 chain order (order last-wins; reject/restrict commute).
-    pub(crate) gates: Vec<String>,
+    pub gates: Vec<String>,
     /// Whether the pool EXPLICITLY named its base ordering strategy (a strategy name in
     /// `hooks: [...]`), vs leaving it defaulted. `false` (defaulted) is the pool that INHERITS the
     /// `default:` hook when one is registered (else the compiled-in `weighted` backstop); `true` means
     /// the operator picked a base, so the `default:` hook does NOT override it. `policy` alone can't
     /// carry this — it defaults to `Weighted` indistinguishably from an explicit `weighted`.
-    pub(crate) base_named: bool,
+    pub base_named: bool,
     /// NEUTRAL ROUTING KNOB (1.6.0): pool-level member weights, `{ member-name: weight }`. When
     /// present, the pool load-balances by these weights; when absent, the pool fails over in member
     /// order (first = primary). This is the uniform-grammar way to weight members without per-member
     /// rich objects; on the LLM plane a per-member `weight:` still wins for byte-identity, and this
     /// map refines any member the operator did not weight inline. Empty ⇒ ordered failover.
-    pub(crate) weights: std::collections::BTreeMap<String, u32>,
+    pub weights: std::collections::BTreeMap<String, u32>,
     /// NEUTRAL ROUTING KNOB (1.6.0): the pool's routing tier label (`large`/`small`/…), a plane-neutral
     /// hint read by ranking policies. Applies to every member lacking its own inline `tier:`. `None` ⇒
     /// no pool tier.
-    pub(crate) tier: Option<String>,
+    pub tier: Option<String>,
     /// NEUTRAL ROUTING KNOB (1.6.0): pool-level per-attempt response-headers cap (ms), applied to every
     /// member lacking an inline `attempt_timeout_ms:`. `None` ⇒ the model-level default stands.
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// NEUTRAL ROUTING KNOB: the operations that may be performed TWICE after a dispatch has gone out
     /// (reads/searches/queries). Plane-neutral field; the values name the plugin's verbs. EMPTY BY
     /// DEFAULT = fail-safe (reroute-before-first-byte only). Read on the MCP/A2A planes; inert on LLM.
-    pub(crate) repeatable: Vec<String>,
+    pub repeatable: Vec<String>,
 }
 
 /// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
@@ -1909,7 +1909,7 @@ pub(crate) fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Ve
 /// FLOOR; a gate named in the pool's `hooks:` list can override it per-request.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PoolPolicy {
+pub enum PoolPolicy {
     /// Smooth-weighted-round-robin (SWRR). Default and also the absent case. Zero added cost.
     #[default]
     Weighted,
@@ -2393,32 +2393,32 @@ fn default_policy_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PoolMember {
+pub struct PoolMember {
     /// The member's REFERENCED NAME — a `models:` key on the LLM plane, a `tools:` key on the MCP
     /// plane, an `agents:` key on the A2A plane. Named `model` for the LLM byte-identity path that
     /// reads it; the [`PoolMember::name`] accessor is the plane-neutral reader. 1.6.0: a member may
     /// be written as a BARE NAME (uniform grammar across every plane) or, on the LLM plane, as the
     /// legacy rich object `{ model, weight, context_max, tier, attempt_timeout_ms, reasoning, tags }`.
-    pub(crate) model: String,
-    pub(crate) weight: u32,
-    pub(crate) context_max: Option<usize>,
+    pub model: String,
+    pub weight: u32,
+    pub context_max: Option<usize>,
     /// Operator-declared routing tier (e.g. `"large"`/`"small"`/`"primary"`/`"overflow"`). Projected
     /// into the routing `Candidate` (via `MemberMeta`) and read by hook plugin policies.
-    pub(crate) tier: Option<String>,
+    pub tier: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms) for THIS member in THIS pool — overrides the
     /// model-level `attempt_timeout_ms`, so one model can be patient in an image pool (10000) and
     /// ruthless in a realtime pool (50). See `ModelCfg::attempt_timeout_ms` for semantics.
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// Per-pool override of the model-level `reasoning` capability flag (member wins), so the same
     /// lane can allow thinking in a research pool and refuse it in a latency-critical one. See
     /// `ModelCfg::reasoning` for semantics.
-    pub(crate) reasoning: Option<bool>,
+    pub reasoning: Option<bool>,
     /// Free-form operator tags (e.g. `["opus"]`) a policy can match on. Projected into the routing
     /// `Candidate` and read by hook plugin policies.
     ///
     /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED: `rate_card` is the ONLY cost
     /// source, and routing (`cheapest`) derives its scalar from the member's model's rate entry.
-    pub(crate) tags: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 impl PoolMember {
@@ -2574,7 +2574,7 @@ fn default_consecutive_n() -> u32 {
 /// Breaker configuration per pool with full trip settings (ADR-0002).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BreakerCfg {
+pub struct BreakerCfg {
     #[serde(default = "default_cooldown")]
     pub(crate) base_cooldown_secs: u64,
     #[serde(default = "default_max_cooldown")]
@@ -2810,7 +2810,7 @@ fn default_listen() -> String {
 /// default. The default binds LOOPBACK so a zero-config deployment boots (an exposed default would
 /// trip the mTLS boot-guard); to manage Busbar off-host, set an exposed `admin_listen` with
 /// `admin_tls.client_ca_file` (mTLS) or an explicit `admin_require_mtls: false` waiver.
-pub(crate) const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
+pub const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
 
 fn default_admin_listen() -> String {
     DEFAULT_ADMIN_LISTEN_ADDR.into()
@@ -3526,7 +3526,7 @@ fn default_governance_store() -> String {
 /// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SecretModuleCfg {
+pub struct SecretModuleCfg {
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.

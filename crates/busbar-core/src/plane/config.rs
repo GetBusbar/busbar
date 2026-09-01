@@ -269,7 +269,7 @@ where
 /// neutral seam the MCP plane's `ToolsCfg` deserializes through, so `DeployCfg` names no `crate::mcp`
 /// type. Absent ⇒ the plane's `Default` (an empty registry).
 #[derive(Debug)]
-pub(crate) struct ToolsSection(pub(crate) Box<dyn PlaneCfg>);
+pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
 impl Default for ToolsSection {
     fn default() -> Self {
@@ -288,7 +288,7 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
 /// THE `agents:` A2A REGISTRY as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
 /// neutral seam the A2A plane's `AgentsCfg` deserializes through. Absent ⇒ an empty registry.
 #[derive(Debug)]
-pub(crate) struct AgentsSection(pub(crate) Box<dyn PlaneCfg>);
+pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
 impl Default for AgentsSection {
     fn default() -> Self {

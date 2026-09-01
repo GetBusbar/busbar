@@ -775,7 +775,7 @@ pub use busbar_api::PlaneRequestCtx;
 /// The name core uses internally for the resolved governance context. Core owns the governance
 /// concept and keeps its own spelling; a plane names [`PlaneRequestCtx`] instead so an extracted
 /// plane carries no core-private governance type.
-pub(crate) type GovCtx = PlaneRequestCtx;
+pub type GovCtx = PlaneRequestCtx;
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
 /// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit

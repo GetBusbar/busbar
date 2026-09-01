@@ -324,6 +324,12 @@ pub(crate) trait AppEngineExt {
     fn engine_tables(&self) -> EngineTables<'_>;
     /// This snapshot's LLM data-plane runtime, read through the opaque plane slot; EMPTY on absence.
     fn llm_runtime(&self) -> &NativeRuntime;
+    /// MUTABLE access to this snapshot's LLM data-plane runtime for IN-PLACE TEST mutation — the
+    /// successor to the deleted inherent `App::llm_runtime_mut`. Reaches the runtime through the
+    /// neutral `plane_slot_mut` seam + `Arc::get_mut` + downcast; panics (as the inherent method did)
+    /// when the slot is absent or not uniquely owned, both test-setup invariants.
+    #[cfg(any(test, feature = "test-support"))]
+    fn llm_runtime_mut(&mut self) -> &mut NativeRuntime;
 }
 
 impl AppEngineExt for busbar_core::state::App {
@@ -346,6 +352,17 @@ impl AppEngineExt for busbar_core::state::App {
             Some(rt) => rt,
             None => empty_native_runtime(),
         }
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
+        let key = busbar_substrate::plane_host::runtime_slot_key(crate::PLANE_DECL.key);
+        std::sync::Arc::get_mut(
+            self.plane_slot_mut(key)
+                .expect("fallback-plane runtime slot present for in-place test mutation"),
+        )
+        .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
+        .downcast_mut::<NativeRuntime>()
+        .expect("fallback-plane runtime slot is a NativeRuntime")
     }
 }
 

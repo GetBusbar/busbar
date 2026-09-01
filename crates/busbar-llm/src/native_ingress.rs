@@ -34,7 +34,7 @@ fn multipart_model(body: &[u8]) -> Option<String> {
     (!m.is_empty()).then_some(m)
 }
 #[allow(clippy::too_many_arguments)]
-async fn operation_ingress_inner(
+pub(crate) async fn operation_ingress_inner(
     app: &Arc<App>,
     gov: &busbar_api::PlaneRequestCtx,
     caller_token: Option<&str>,
