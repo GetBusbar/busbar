@@ -965,7 +965,10 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
-        crate::health::spawn_probers(&next);
+        // The active-probe prober spawn RELOCATED into the LLM plane with `health.rs` (1.6.0 money-path
+        // Phase 3-4 C): the probers read the plane's own `Lane`/`NativeRuntime` tables, so the plane
+        // spawns them off its freshly-stored runtime through the `PlaneDecl::on_swap` seam fired in the
+        // loop above — core no longer names `crate::health::spawn_probers`.
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to

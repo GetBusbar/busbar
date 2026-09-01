@@ -20,13 +20,17 @@ use crate::preflight::{
     resolve_signing_key, validate_secret_refs,
 };
 use crate::router::project_auth_scope_caps;
-use crate::state::{App, Lane, WeightedLane};
+use crate::state::App;
 use crate::store::{HealthState, LaneData};
+use busbar_substrate::plane_host::{
+    LlmAffinityInput, LlmAuthStyle, LlmBuildInput, LlmClientSettings, LlmFailoverInput,
+    LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput, LlmPoolMemberInput,
+};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    handlers, health, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard,
+    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard,
     oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
     store, telemetry, tls, transport, trust,
 };
@@ -118,6 +122,58 @@ pub fn stateful_plane_ephemeral_store_warn(
         )
     } else {
         None
+    }
+}
+
+/// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`LlmAuthStyle`] the carrier holds
+/// (`None` ⇒ the protocol's native auth). The LLM plane maps it back to drive `egress_auth::*`.
+fn auth_style_of(auth: Option<config::ProviderAuth>) -> LlmAuthStyle {
+    match auth {
+        None => LlmAuthStyle::Default,
+        Some(config::ProviderAuth::Bearer) => LlmAuthStyle::Bearer,
+        Some(config::ProviderAuth::ApiKey) => LlmAuthStyle::ApiKey,
+        Some(config::ProviderAuth::JwtBearer) => LlmAuthStyle::JwtBearer,
+        Some(config::ProviderAuth::OAuthClientCredentials) => LlmAuthStyle::OAuthClientCredentials,
+    }
+}
+
+/// Mirror a provider `health:` block into the neutral [`LlmHealthInput`] carrier field.
+fn health_input_of(h: &config::HealthCfg) -> LlmHealthInput {
+    LlmHealthInput {
+        mode: match h.mode {
+            config::HealthMode::None => LlmHealthMode::None,
+            config::HealthMode::Dead => LlmHealthMode::Dead,
+            config::HealthMode::Active => LlmHealthMode::Active,
+        },
+        interval_secs: h.interval_secs,
+        timeout_secs: h.timeout_secs,
+    }
+}
+
+/// Mirror a pool `failover:` block into the neutral [`LlmFailoverInput`] carrier field.
+fn failover_input_of(f: &config::FailoverCfg) -> LlmFailoverInput {
+    LlmFailoverInput {
+        timeout_secs: f.timeout_secs,
+        exclusions: f.exclusions.clone(),
+        max_hops: f.max_hops,
+    }
+}
+
+/// Mirror a pool `affinity:` block into the neutral [`LlmAffinityInput`] carrier field (the single
+/// supported `session` mode is implied by presence; only the header name is carried).
+fn affinity_input_of(a: &config::AffinityCfg) -> LlmAffinityInput {
+    LlmAffinityInput {
+        header_name: a.header_name.clone(),
+    }
+}
+
+/// Mirror a pool `on_exhausted:` policy into the neutral [`LlmOnExhausted`] carrier field.
+fn on_exhausted_input_of(o: &config::OnExhausted) -> LlmOnExhausted {
+    match o {
+        config::OnExhausted::Status503 => LlmOnExhausted::Status503,
+        config::OnExhausted::FallbackPool(name) => LlmOnExhausted::FallbackPool(name.clone()),
+        config::OnExhausted::LeastBad => LlmOnExhausted::LeastBad,
+        config::OnExhausted::Queue { max_ms } => LlmOnExhausted::Queue { max_ms: *max_ms },
     }
 }
 
@@ -582,7 +638,14 @@ pub fn build_app_from_config(
     // loud on a genuine conflict instead.
     let model_context_max = resolve_model_context_max(&cfg.pools)?;
 
-    let mut lanes = Vec::new();
+    // Every lane, flattened into the NEUTRAL `LlmLaneInput` carrier (1.6.0 money-path Phase 3-4 C):
+    // the LLM plane's `build_runtime` reconstructs the concrete `Lane` (egress targets, resolved
+    // credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
+    // `egress_auth::*` calls that used to run here moved in-plane (the allowed plane→core edge), so
+    // core names no `Lane`/`EgressTarget`/`CredentialProvider`. This loop keeps only the NEUTRAL work:
+    // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
+    // provider's config into neutral scalars.
+    let mut lane_inputs: Vec<LlmLaneInput> = Vec::new();
     for (idx, ld) in lanes_data.iter().enumerate() {
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
@@ -601,148 +664,107 @@ pub fn build_app_from_config(
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
-        // the empty-key warning); no second read of the secret-bearing env var.
+        // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
+        // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
         let api_key = provider_api_keys
             .get(&ld.provider)
             .cloned()
             .unwrap_or_default();
-        // Resolve the outbound credential once. Most auth styles are a simple sync lookup; the OAuth
-        // styles parse their credential material here (failing loud on a bad key) and start a
-        // background token minter/refresher. `api_key` carries that material.
-        //
-        // Both OAuth mechanisms vet their token endpoint (oauth `token_url`, jwt-bearer SA `token_uri`)
-        // for SSRF against the operator's REAL metadata posture so the boot-time check matches
-        // config_validate's validate-time check EXACTLY (validate == apply) and both mechanisms behave
-        // identically: the allow-override set is the SAME union config_validate builds (this provider's
-        // `allow_metadata_hosts` ∪ the global `security.allow_metadata_hosts`), plus the nuclear
-        // `allow_all_metadata` and the operator's extra `blocked_metadata_hosts`. Threading it into
-        // jwt-bearer too means a global `blocked_metadata_hosts` deny is enforced on a jwt
-        // `token_uri`, and `allow_all_metadata` uniformly disables the guard for both.
-        let allow_overrides: Vec<String> = provider_cfg
-            .allow_metadata_hosts
-            .iter()
-            .chain(cfg.allow_metadata_hosts.iter())
-            .cloned()
-            .collect();
-        let ssrf = egress_auth::MetadataSsrfPolicy {
-            allow_overrides: &allow_overrides,
-            allow_all: cfg.allow_all_metadata,
-            blocked_hosts: &cfg.blocked_metadata_hosts,
-        };
-        let credential = match provider_cfg.auth {
-            // `jwt-bearer`: `api_key` is the service-account JSON (inline) or a key-file path. A
-            // configured `scope:` overrides the default cloud-platform scope (else `None` → default).
-            // A configured `subject:` (RFC 7523 `sub`) is opt-in: `None` (the default, every existing
-            // Vertex AI config) omits the claim entirely, unchanged from before this field existed.
-            Some(config::ProviderAuth::JwtBearer) => egress_auth::jwt_bearer::build(
-                &api_key,
-                provider_cfg.scope.as_deref(),
-                provider_cfg.subject.as_deref(),
-                &ssrf,
-            )
-            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", ld.provider))?,
-            // `oauth-client-credentials`: `api_key` is `client_id:client_secret`; `token_url`+`scope`
-            // come from the provider config (required — the config validator also rejects them absent).
-            Some(config::ProviderAuth::OAuthClientCredentials) => {
-                let token_url = provider_cfg.token_url.as_deref().ok_or_else(|| {
-                    format!(
-                        "provider '{}' (oauth-client-credentials auth) requires `token_url`",
-                        ld.provider
-                    )
-                })?;
-                let scope = provider_cfg.scope.as_deref().ok_or_else(|| {
-                    format!(
-                        "provider '{}' (oauth-client-credentials auth) requires `scope`",
-                        ld.provider
-                    )
-                })?;
-                egress_auth::oauth_client_credentials::build(&api_key, token_url, scope, &ssrf)
-                    .map_err(|e| {
-                        format!(
-                            "provider '{}' (oauth-client-credentials auth): {e}",
-                            ld.provider
-                        )
-                    })?
-            }
-            _ => egress_auth::resolve(&provider_cfg.protocol, provider_cfg.auth),
-        };
+        // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
+        // egress-target build + SigV4 signed-host derivation).
         let base_url = provider_cfg.base_url.trim_end_matches('/').to_string();
-        // Precompute every (operation × stream) egress target ONCE at apply — path render, SigV4
-        // canonical encoding, and the WHATWG URL parse are all pure functions of lane-constant
-        // config, so the forward path reads a table instead of recomputing them per request. A
-        // URL that does not parse fails HERE (validate/apply), never per request.
-        let egress_targets = proxy::build_egress_targets(
-            protocol,
-            provider_cfg.path.as_deref(),
-            provider_cfg.path_base.as_deref(),
-            ld.upstream_model.as_deref().unwrap_or(&ld.model),
-            &base_url,
-        )
-        .map_err(|e| format!("provider '{}': {e}", ld.provider))?;
-        // Prebuild the Own-mode auth headers iff the credential is lane-constant (static bearer /
-        // api-key / declared non-signing schemes). OAuth and SigV4 stay per-request by definition.
-        let prebuilt_auth =
-            egress_auth::prebuild_auth(&credential, &api_key, &proxy::host_from_base(&base_url));
-        lanes.push(Lane {
-            egress_targets,
-            prebuilt_auth,
+        lane_inputs.push(LlmLaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
-            // Precompute the SigV4 signed-host once at boot (pure function of base_url) so the forward
-            // path borrows it into SigningContext instead of re-parsing/allocating it per request.
-            signing_host: proxy::host_from_base(&base_url),
+            protocol: protocol.to_string(),
             base_url,
-            api_key: busbar_api::Redacted::new(api_key),
-            credential,
-            protocol,
-            max: ld.max,
-            error_map: Arc::new(provider_cfg.error_map.clone()),
-            context_max: model_context_max.get(&ld.model).copied().flatten(),
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            health: provider_cfg.health.clone(),
             upstream_model: ld.upstream_model.clone(),
+            api_key_plaintext: api_key,
+            auth_style: auth_style_of(provider_cfg.auth),
+            scope: provider_cfg.scope.clone(),
+            token_url: provider_cfg.token_url.clone(),
+            subject: provider_cfg.subject.clone(),
+            error_map: provider_cfg.error_map.clone(),
+            health: provider_cfg.health.as_ref().map(health_input_of),
+            allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
+            context_max: model_context_max.get(&ld.model).copied().flatten(),
+            default_max_tokens: model_default_max_tokens.get(&ld.model).copied().flatten(),
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
-            default_max_tokens: model_default_max_tokens.get(&ld.model).copied().flatten(),
+            max_concurrent: ld.max,
+            limited: ld.limited,
+            budget: ld.budget,
         });
     }
 
-    let mut pools = HashMap::new();
+    // Every pool, flattened into the NEUTRAL `LlmPoolInput` carrier: member (weight/meta) projections
+    // plus the pool's neutral `failover`/`affinity`/`on_exhausted`/`upstream_credentials` config. The
+    // plane's `build_runtime` rebuilds the `WeightedLane`/`PoolRuntime` tables from these; the pool's
+    // ROUTING POLICY / gates / rewrites are NOT carried (they resolve core-side behind
+    // `App::resolve_pool_*` — their value is the core-owned `ResolvedPolicy`, which must not cross the
+    // downcast). The member `by_model` lookup stays here so an unknown-model pool member fails boot
+    // LOUD at the composition root (not deep inside the plane).
+    let mut pool_inputs: Vec<LlmPoolInput> = Vec::with_capacity(cfg.pools.len());
     for (name, pool) in &cfg.pools {
-        // Wire per-member weights from config into the pool structure.
-        // Each pool member has a weight; default is 1 if not specified.
-        let mut weighted_members: Vec<WeightedLane> = Vec::with_capacity(pool.members.len());
+        let mut members: Vec<LlmPoolMemberInput> = Vec::with_capacity(pool.members.len());
         for m in pool.members.iter() {
-            {
-                let Some(&lane_idx) = by_model.get(&m.model) else {
-                    return Err(format!(
-                        "pool '{name}' references unknown model '{}'",
-                        m.model
-                    ));
-                };
-                weighted_members.push(WeightedLane {
-                    idx: lane_idx,
-                    weight: m.weight, // from config PoolMember.weight (default 1)
-                    // Per-member attempt cap: one model, different hang budgets per pool/workload.
-                    attempt_timeout_ms: m.attempt_timeout_ms,
-                    reasoning: m.reasoning,
-                });
-            }
+            let Some(&lane_idx) = by_model.get(&m.model) else {
+                return Err(format!(
+                    "pool '{name}' references unknown model '{}'",
+                    m.model
+                ));
+            };
+            members.push(LlmPoolMemberInput {
+                model: m.model.clone(),
+                lane_idx,
+                weight: m.weight, // from config PoolMember.weight (default 1)
+                reasoning: m.reasoning,
+                attempt_timeout_ms: m.attempt_timeout_ms,
+                tier: m.tier.clone(),
+                // The routing cost scalar derives from the member's MODEL's rate_card entry — cost
+                // lives on no pool member; resolved core-side (the plane has no rate card).
+                cost_per_mtok: cfg
+                    .rate_card
+                    .as_ref()
+                    .and_then(|card| card.get(&m.model))
+                    .map(crate::config::rate_entry_per_mtok),
+                tags: m.tags.clone(),
+            });
         }
-        pools.insert(name.clone(), weighted_members);
+        pool_inputs.push(LlmPoolInput {
+            name: name.clone(),
+            members,
+            failover: pool.failover.as_ref().map(failover_input_of),
+            affinity: pool.affinity.as_ref().map(affinity_input_of),
+            on_exhausted: pool
+                .on_exhausted
+                .as_ref()
+                .map(|o| on_exhausted_input_of(&o.to_runtime()))
+                .unwrap_or_default(),
+            upstream_credentials: pool.upstream_credentials,
+        });
     }
 
-    eprintln!("busbar: {} models, {} pools", lanes.len(), pools.len());
-    for (n, wl_vec) in &pools {
-        let agg: usize = wl_vec.iter().map(|wl| lanes[wl.idx].max).sum();
+    eprintln!(
+        "busbar: {} models, {} pools",
+        lane_inputs.len(),
+        pool_inputs.len()
+    );
+    for p in &pool_inputs {
+        let agg: usize = p
+            .members
+            .iter()
+            .map(|m| lane_inputs[m.lane_idx].max_concurrent)
+            .sum();
         eprintln!(
             "  pool /{} = [{}] aggregate {}",
-            n,
-            wl_vec
+            p.name,
+            p.members
                 .iter()
-                .map(|wl| lanes[wl.idx].model.clone())
+                .map(|m| lane_inputs[m.lane_idx].model.clone())
                 .collect::<Vec<_>>()
                 .join(", "),
             agg
@@ -803,96 +825,25 @@ pub fn build_app_from_config(
         )),
     };
 
-    // Global default failover config — the fallback for pools that don't set their own. A fixed
-    // default (not "whatever pool HashMap iteration happens to yield first", which was
-    // nondeterministic across restarts).
-    let failover_cfg = Some(crate::config::FailoverCfg {
-        timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-        exclusions: None,
-        max_hops: crate::config::DEFAULT_FAILOVER_CAP,
-    });
+    // The global default failover config, the fallback-pool routing table, and the upstream HTTP
+    // client (with its warm-pool carry-over) are all part of the LLM data-plane runtime bundle now —
+    // rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral `LlmBuildInput` carrier
+    // (1.6.0 money-path Phase 3-4 C). Core no longer names `FailoverCfg`/`UpstreamClients`/the moved
+    // egress-client builders here; it carries only the neutral client-affecting scalars below.
 
-    // The fallback-pool routing table: on_exhausted `fallback_pool:<name>` looks a pool up here,
-    // so it mirrors the pools map (any pool can be a fallback target).
-    let fallback_pools = pools.clone();
-
-    // The upstream HTTP client, built ONCE — as N per-thread SHARDS (see `UpstreamClients`): each
-    // worker thread keeps its own client/pool, so no request ever crosses another core's pool
-    // lock. Constructed before the pool-runtime loop so the webhook routing transport can reuse
-    // it (a shard clone shares that shard's connection pool + the `redirect:none` SSRF posture);
-    // the sharded set is then moved into `App` below.
     // The client-affecting subset of the resolved limits (timeout, pool sizing, protocol posture).
     // Carried onto `App` so the NEXT apply can compare; the `redirect: none` SSRF posture and every
-    // other builder input below are compile-time constants, so this snapshot is exhaustive over what
-    // the build reads from config.
+    // other builder input is a compile-time constant, so this snapshot is exhaustive over what the
+    // client build reads from config. The plane's `build_runtime` reuses the prior warm client iff
+    // its own copy of these scalars is unchanged.
     let new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
-    // REUSE the prior sharded client (for its warm connection pool + kept-alive upstream sockets)
-    // ONLY when NONE of the client-affecting settings changed. If any changed — a looser/tighter
-    // request timeout, resized idle pool, flipped http1-only/h2c posture — REBUILD so the new
-    // setting actually takes effect this apply instead of silently lingering on the old client until
-    // a full process restart. An unrelated apply (settings identical) still reuses, so the pool is
-    // not churned needlessly. The rebuilt client keeps the same `redirect: none` posture and
-    // per-thread shard structure.
-    let reuse_prior_client = prior.is_some_and(|p| p.client_settings == new_client_settings);
-    let upstream_client = if let (true, Some(p)) = (reuse_prior_client, prior) {
-        // REUSED across applies: the pooled connections + their kept-alive upstream sockets.
-        p.llm_runtime().client.clone()
-    } else {
-        // Opt-in HTTP/2 PRIOR-KNOWLEDGE for CLEARTEXT upstreams (no TLS/ALPN to negotiate over):
-        // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE=1` makes the shared client assume h2 without ALPN. This
-        // is a PROCESS-WIDE, DEFAULT-OFF switch — production keeps ALPN (safe against h1 upstreams);
-        // it exists so a cleartext h2c backend (e.g. the benchmark mock, or an in-mesh h2c service)
-        // can exercise multiplexing without TLS. It FORCES h2, so every configured upstream must speak
-        // h2c when set — never enable it against a mixed/h1 fleet. Read once at client-build time.
-        // Home is `advanced.upstream_h2_prior_knowledge` in config.yaml (carried on `cfg.limits`). The
-        // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0 — it
-        // no longer has any effect.
-        let h2_prior_knowledge = cfg.limits.upstream_h2_prior_knowledge;
-        // Opt-out ESCAPE HATCH for the ALPN h2 default: `BUSBAR_UPSTREAM_HTTP1_ONLY=1` pins the
-        // shared client to HTTP/1.1 (reqwest `.http1_only()`), so ALPN never offers h2 at all. This
-        // is a PROCESS-WIDE, DEFAULT-OFF switch — production keeps the ALPN default (h2 where the
-        // backend accepts it, h1 otherwise); it exists as an operational rollback lever in case a
-        // specific upstream negotiates h2 but misbehaves on it (flow-control stalls, broken
-        // keep-alive pings, intermediary bugs) and you need the pre-h2 wire behavior back without a
-        // rebuild. Mutually exclusive in spirit with the h2c opt-in above (forcing h1 AND forcing
-        // h2 makes no sense); if both are set, http1-only wins because it is applied last. Read
-        // once at client-build time. Home is `advanced.upstream_http1_only` in config.yaml (carried on
-        // `cfg.limits`). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was deprecated in 1.5.3 and removed in
-        // 1.6.0 — it no longer has any effect.
-        let http1_only = cfg.limits.upstream_http1_only;
-        let shard_count = crate::state::UpstreamClients::shard_count();
-        // The per-host idle budget is divided across shards so the TOTAL kept-alive sockets
-        // toward any single upstream stay at the configured value (never below 1 per shard).
-        let idle_per_host_per_shard = cfg
-            .limits
-            .pool_max_idle_per_host
-            .div_ceil(shard_count)
-            .max(1);
-        // The owned egress client: every knob the old reqwest builder set — and WHY —
-        // lives in `proxy::egress_client`'s parity ledger; this site keeps only what appbuild
-        // owns: the per-shard idle division above and the resolved limit/protocol flags. The old
-        // client-level TOTAL timeout is re-provided at the call sites (the engine bounds a
-        // non-streaming request with one deadline; the streaming ceiling lives in the stream
-        // body), because a pool client cannot know which requests stream.
-        //
-        // Proxy-env parity stance (interim, owner ruling pending): reqwest honored HTTPS_PROXY
-        // implicitly; the owned client FAILS LOUD at boot instead of silently bypassing a
-        // configured proxy — the dangerous direction for an egress-controlled deployment.
-        crate::proxy::install_proxy_tunnel_if_configured()?;
-        let make_one = || {
-            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                idle_per_host_per_shard,
-                cfg.limits.pool_idle_timeout_secs,
-                http1_only,
-                h2_prior_knowledge,
-            ))
-        };
-        crate::state::UpstreamClients::build(shard_count, make_one)
+    let llm_client_settings = LlmClientSettings {
+        pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
+        pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
+        http1_only: cfg.limits.upstream_http1_only,
+        h2_prior_knowledge: cfg.limits.upstream_h2_prior_knowledge,
     };
 
-    // The `default:` hook (if any) — the base ordering that pools which named none inherit, replacing
-    // the compiled-in weighted backstop (everything-is-a-hook model). At most one (validated).
-    let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
     // The hook plugin-resolution environment: the validated registry + shared projectors. Every hook
     // `plugin:` ref opens a `DlopenPolicy` through this. Built once and cloned into each resolver and
     // onto `App` (for the control-plane reads + scrape).
@@ -935,91 +886,13 @@ pub fn build_app_from_config(
     // SecretRefs, so neither catches an `open()` failure — this pass does.
     hook_env.preopen_gate_hooks(&cfg.hooks)?;
 
-    // Per-pool runtime config (failover/exclusions), keyed by pool name.
-    let mut pool_runtime = std::collections::HashMap::new();
-    for (pool_name, pool_cfg) in &cfg.pools {
-        pool_runtime.insert(
-            pool_name.clone(),
-            state::PoolRuntime {
-                failover: pool_cfg.failover.clone(),
-                // 1.5.3: the pool's own `upstream_credentials:` OVERRIDES the all-pools
-                // `pools.upstream_credentials:` default; `None` inherits it.
-                upstream_credentials: pool_cfg.upstream_credentials,
-                affinity: pool_cfg.affinity.clone(),
-                breaker: pool_cfg.breaker.as_ref().map(store::BreakerCfg::from),
-                // Operator-declared member metadata (tier/cost/tags) keyed by lane idx, for the
-                // routing Candidate projection. Mirrors the WeightedLane construction's target→lane
-                // mapping (by_model). Read only inside the policy arm of the seam.
-                members: pool_cfg
-                    .members
-                    .iter()
-                    .filter_map(|m| {
-                        by_model.get(&m.model).map(|&idx| {
-                            (
-                                idx,
-                                state::MemberMeta {
-                                    tier: m.tier.clone(),
-                                    // The routing cost scalar derives from the member's
-                                    // MODEL's rate_card entry - cost lives on no pool member.
-                                    cost_per_mtok: cfg
-                                        .rate_card
-                                        .as_ref()
-                                        .and_then(|card| card.get(&m.model))
-                                        .map(crate::config::rate_entry_per_mtok),
-                                    tags: m.tags.clone(),
-                                },
-                            )
-                        })
-                    })
-                    .collect(),
-                // Resolve the routing policy ONCE here. `weighted` (default) ⇒ `None` ⇒ the zero-cost
-                // inline SWRR path; a `default:` hook replaces that base for pools that named none; a
-                // `kind: hook` plugin base opens a `DlopenPolicy` through the plugin registry.
-                policy: hooks::resolve_pool_ordering(
-                    pool_cfg,
-                    &cfg.hooks,
-                    &hook_env,
-                    default_hook.as_deref(),
-                    app_config_version,
-                ),
-                // This pool's decision gates, resolved once here (priority carried for the phase-2
-                // chain merge). NOT re-resolved on config apply yet — same scope caveat as `policy`.
-                gates: hooks::resolve_pool_gates(
-                    pool_cfg,
-                    &cfg.hooks,
-                    &hook_env,
-                    app_config_version,
-                ),
-                rewrite_hooks: hooks::resolve_pool_rewrites(
-                    pool_cfg,
-                    &cfg.hooks,
-                    &hook_env,
-                    app_config_version,
-                ),
-            },
-        );
-    }
-
-    // Does ANY pool override `upstream_credentials:`? Resolved ONCE here so the per-request
-    // `App::pool_upstream_creds` accessor can skip the String-keyed `pool_runtime` HashMap probe on
-    // the common config (no override) and return the all-pools default with a `Copy` read.
-    let any_pool_upstream_creds_override = pool_runtime
-        .values()
-        .any(|rt| rt.upstream_credentials.is_some());
-
-    // Parse on_exhausted configs per pool
-    let mut on_exhausted_cfgs = std::collections::HashMap::new();
-    for (pool_name, pool_cfg) in &cfg.pools {
-        if let Some(ref on_exc) = pool_cfg.on_exhausted {
-            // The structured config value maps directly (unknown spellings already failed parse).
-            let mode = on_exc.to_runtime();
-            tracing::info!(pool = %pool_name, on_exhausted = ?mode, "pool exhaustion policy");
-            on_exhausted_cfgs.insert(pool_name.clone(), mode);
-        } else {
-            // Default to Status503 if not specified
-            on_exhausted_cfgs.insert(pool_name.clone(), crate::config::OnExhausted::Status503);
-        }
-    }
+    // The per-pool runtime bundle (member metadata + resolved failover/affinity/breaker), the
+    // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the LLM
+    // data-plane runtime now — rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral
+    // `LlmPoolInput` members of the carrier (1.6.0 money-path Phase 3-4 C). The pool ROUTING POLICIES
+    // (`resolve_pool_{ordering,gates,rewrites}`) stay resolved-and-read core-side behind the
+    // `App::resolve_pool_*` down-facade (their value is the core-owned `ResolvedPolicy`, which must not
+    // cross the neutral downcast), so they are NOT resolved here into a plane type either.
 
     // PLUGIN PRE-FLIGHT: the same fail-closed pipeline `--validate` runs (consistency -> policy ->
     // three-phase scan -> store resolution). Runs on EVERY construction path (boot, apply, reload),
@@ -1296,33 +1169,11 @@ pub fn build_app_from_config(
     // caller is responsible for invoking the returned closure — after its own persist step (if any)
     // has succeeded, never before.
 
-    // The probe schedule is live state, not config-derived: it carries each lane's next-probe deadline
-    // and the prober generation. `App::clone` shares it (Arc), so an in-place mutation swap keeps the
-    // phase; a REBUILD must do the same, or a mutation cadence faster than the probe interval —
-    // /config/settings meters at 10/min, the default interval is 30s — replaces every generation before
-    // its first tick and probing goes dark while still logging that it is enabled. Carried ONLY when the
-    // lane set is identical, because deadlines are indexed by lane: a changed lane set makes the old
-    // indices mean something else, and a genuine lane change SHOULD re-establish probing.
-    //
-    // zip ≡ set-equality HERE, not in general: `cfg.models` is a `HashMap<String, ModelCfg>`, so model
-    // names are UNIQUE keys, and both lane vectors are built by sorting those keys before reaching this
-    // point. Two vectors built from the same unique-key set via the same deterministic sort are
-    // identical element-for-element, so an elementwise compare and a set compare accept exactly the
-    // same configs. Do NOT reuse this shortcut for a lane source that is not sorted-from-a-unique-key-
-    // set: there the zip would start accepting a shifted-index pairing.
-    let probe_schedule = match prior {
-        Some(p)
-            if p.llm_runtime().lanes.len() == lanes.len()
-                && p.llm_runtime()
-                    .lanes
-                    .iter()
-                    .zip(lanes.iter())
-                    .all(|(a, b)| a.model == b.model && a.provider == b.provider) =>
-        {
-            p.llm_runtime().probe_schedule.clone()
-        }
-        _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
-    };
+    // The active-probe schedule (live state, carried across an apply only when the lane set is
+    // identical) is part of the LLM data-plane runtime now — its lane-indexed deadlines + the
+    // prior-runtime carry-over compare move IN-PLANE to the LLM plane's `build_runtime`, which reads
+    // the prior generation's runtime through the neutral `PlaneSlots` seam. Core no longer names
+    // `health::ProbeSchedule` here.
 
     // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
     // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
@@ -1427,20 +1278,18 @@ pub fn build_app_from_config(
 
     // THE LLM DATA-PLANE RUNTIME for this config generation — the pool/lane/failover/egress bundle,
     // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<llm plane
-    // key>)`), the SAME opaque slot MCP/A2A ride, composed through the LLM plane's own type-erasing
-    // `build_runtime` seam (R3/R4 sub-phase B — the bundle moved off the flat `App::llm_runtime` field).
-    // Built ONCE here (`queued_depth` fresh per generation; every other field the value the flat field
-    // carried). `tslots` is built FIRST so its `&lanes`/`&pools`/`&by_model` borrows run before those
-    // locals move into the bundle. With the LLM plane compiled out (the featureless binary) there is no
-    // decl and no slot is inserted; `App::llm_runtime` then reads the empty default — byte-identical to
-    // the always-present-but-empty flat field that build carried.
-    // NEUTRAL label projections (money-path Phase 3-4 B): pool→member-idx list, the direct-model
-    // index, and a lane-idx→model resolver — so `AppSlots::build` banks this plane's label space
-    // without naming `Lane`/`WeightedLane`. Built BEFORE `lanes`/`pools`/`by_model` move into the
-    // runtime bundle below (the projections borrow them; NLL releases the borrows at the build call).
-    let ts_pools: Vec<(&str, Vec<usize>)> = pools
+    // key>)`), the SAME opaque slot MCP/A2A ride, now composed through the LLM plane's OWN type-erasing
+    // `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core populates the neutral
+    // `LlmBuildInput` carrier from the resolved config and hands it across the `&dyn Any` seam; the
+    // plane rebuilds its `Lane`/`WeightedLane`/`PoolRuntime`/`NativeRuntime` tables IN-PLANE. Core names
+    // no plane runtime type here, exactly as it composes the MCP runtime above.
+    //
+    // NEUTRAL telemetry label projections (money-path Phase 3-4 B): pool→member-idx list, the
+    // direct-model index, and a lane-idx→model resolver — banked into `AppSlots::build` from the neutral
+    // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no `Lane`/`WeightedLane`.
+    let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
         .iter()
-        .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+        .map(|p| (p.name.as_str(), p.members.iter().map(|m| m.lane_idx).collect()))
         .collect();
     let ts_by_model: Vec<(&str, usize)> = by_model
         .iter()
@@ -1449,45 +1298,42 @@ pub fn build_app_from_config(
     let tslots = Arc::new(telemetry::AppSlots::build(
         &ts_pools,
         &ts_by_model,
-        |idx| lanes.get(idx).map(|lane| lane.model.as_str()),
+        |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
         crate::plane::fallback_key(),
     ));
-    let llm_runtime = crate::state::NativeRuntime {
-        lanes,
-        by_model,
-        pools,
-        pool_runtime,
-        fallback_pools,
-        on_exhausted_cfgs,
-        failover_cfg,
-        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-        probe_schedule,
+
+    // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
+    // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
+    let llm_build_input = LlmBuildInput {
+        lanes: lane_inputs,
+        pools: pool_inputs,
         upstream_credentials: cfg.upstream_credentials,
-        any_pool_upstream_creds_override,
-        client: upstream_client.clone(),
+        allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
+        allow_all_metadata: cfg.allow_all_metadata,
+        blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
+        client_settings: llm_client_settings,
     };
+
     let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
-    // Compose the slot through the CORE-LOCAL constructor, NOT the decl's `build_runtime` fn pointer the
-    // way MCP composes its runtime: `NativeRuntime` is still a busbar-core type THIS phase, and the
-    // plane crate that owns the fallback decl (`busbar-llm`) may not name a `busbar_core::` item, so the
-    // decl's `build_runtime` stays `None` and `appbuild` names the constructor directly. (This also
-    // sidesteps the dual-compile hazard the fn pointer would carry — core's test binary links the plane
-    // decl against a SECOND core copy, across which a `NativeRuntime` downcast fails.) Phase 3 relocates
-    // `NativeRuntime` to `busbar-llm`, at which point this becomes the plane's own `build_runtime` and
-    // the decl carries the pointer like MCP.
-    //
-    // GATED on a genuine fallback (LLM) plane existing — NOT merely on `fallback_key()` resolving —
-    // because `fallback_key()` degrades to the FIRST registered plane's key when no plane flags itself
-    // fallback (the plane suites' dependency-copy of core, which registers only MCP/A2A). Composing the
-    // runtime slot then would key it under that sibling's `runtime_slot_key` and clobber the sibling's
-    // own runtime. `is_fallback` answers "is this key a real fallback plane", so the slot is written
-    // only where the fallback plane actually owns it; elsewhere `App::llm_runtime` reads the empty
-    // default (no LLM money path runs in such a build anyway).
+    // Compose the LLM runtime slot through the fallback plane's OWN `build_runtime` fn-pointer, exactly
+    // as the MCP runtime is composed above — passing the neutral carrier erased to `&dyn Any` and the
+    // prior generation's snapshot through the neutral `PlaneSlots` seam (for the warm-client /
+    // probe-schedule carry-over the plane now owns). GATED on a genuine fallback (LLM) plane existing —
+    // NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the FIRST
+    // registered plane's key when no plane flags itself fallback (the plane suites' dependency-copy of
+    // core, which registers only MCP/A2A); writing the slot then would clobber that sibling's runtime.
+    // With the LLM plane's `build_runtime` still `None` (pre-M3b) no slot is inserted and
+    // `App::llm_runtime` reads the empty default — byte-identical to the featureless zero-plane boot.
     if crate::plane::is_fallback(crate::plane::fallback_key()) {
-        plane_slots.insert(
-            llm_runtime_key,
-            crate::state::compose_native_runtime_slot(llm_runtime),
-        );
+        if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+            .and_then(|d| d.build_runtime)
+        {
+            let slot = f(
+                &llm_build_input as &dyn std::any::Any,
+                prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+            );
+            plane_slots.insert(llm_runtime_key, slot);
+        }
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything

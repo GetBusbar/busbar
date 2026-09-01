@@ -163,7 +163,10 @@ pub mod export;
 pub mod failover;
 pub mod governance;
 pub mod handlers;
-pub mod health;
+// `health` (the active-probe schedule + prober loop) RELOCATED into `busbar-llm/src/engine/health.rs`
+// with the money-path engine (1.6.0 money-path Phase 3-4 C): the probers read the plane's own
+// `Lane`/`NativeRuntime` tables, so they moved in-plane. Core no longer names a `ProbeSchedule`; the
+// LLM plane spawns its probers off its own runtime through the plane `on_swap` seam.
 pub mod hooks;
 pub mod ingress;
 pub mod ir;

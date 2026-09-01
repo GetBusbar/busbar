@@ -607,7 +607,7 @@ pub(crate) fn build_with_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.engine_tables().pools().contains_key(p),
+        &|p| current.engine_tables_view().pools().iter().any(|(n, _)| *n == p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -690,7 +690,7 @@ pub(crate) fn build_without_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.engine_tables().pools().contains_key(p),
+        &|p| current.engine_tables_view().pools().iter().any(|(n, _)| *n == p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -871,12 +871,9 @@ impl AdminService {
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
-        let providers: std::collections::BTreeSet<&str> = self
-            .app
-            .engine_tables()
-            .lanes()
-            .iter()
-            .map(|l| l.provider.as_str())
+        let view = self.app.engine_tables_view();
+        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
+            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
             .collect();
 
         Ok(InfoView {
@@ -889,8 +886,8 @@ impl AdminService {
             uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
             started_at: PROCESS_START_EPOCH.get().copied(),
             topology: TopologyInfo {
-                pools: self.app.engine_tables().pools().len(),
-                models: self.app.engine_tables().by_model().len(),
+                pools: view.pools().len(),
+                models: view.model_indices().len(),
                 providers: providers.len(),
             },
             config_persistence: self.app.overlay_path.is_some(),
@@ -902,19 +899,19 @@ impl AdminService {
     /// by name for a stable, diff-friendly listing. Live per-member
     /// status is an additive follow-up.
     pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
-        let mut pools: Vec<PoolView> = self
-            .app
-            .engine_tables()
+        let view = self.app.engine_tables_view();
+        let mut pools: Vec<PoolView> = view
             .pools()
             .iter()
-            .map(|(name, members)| PoolView {
-                name: name.clone(),
-                members: members
+            .map(|(name, _)| PoolView {
+                name: name.to_string(),
+                members: view
+                    .pool_members(name)
                     .iter()
-                    .map(|m| PoolMemberView {
+                    .map(|&(idx, weight)| PoolMemberView {
                         // `idx` is the stable lane handle; project the lane's model name.
-                        model: self.app.engine_tables().lanes()[m.idx].model.clone(),
-                        weight: m.weight,
+                        model: view.lane_view(idx).map(|l| l.model.to_string()).unwrap_or_default(),
+                        weight,
                     })
                     .collect(),
             })
@@ -927,22 +924,26 @@ impl AdminService {
     /// latency/tallies), from the same store signals the routing seam ranks on. Read scope.
     /// `not_found` if the pool is unknown.
     pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
-        let members = self
-            .app
-            .engine_tables()
-            .pools()
-            .get(name)
-            .ok_or_else(|| AdminError::not_found(format!("pool `{name}`")))?;
-        Ok(self.pool_detail(name, members))
+        let view = self.app.engine_tables_view();
+        // A pool is known iff it appears in the neutral pool label space; `pool_members` returns its
+        // `(lane idx, weight)` members (empty for an unknown pool, which `pools()` distinguishes).
+        if !view.pools().iter().any(|(n, _)| *n == name) {
+            return Err(AdminError::not_found(format!("pool `{name}`")));
+        }
+        let members = view.pool_members(name);
+        Ok(self.pool_detail(name, &members))
     }
 
     /// Project one pool's LIVE member status — the shared core of `GET /pools/{name}` and
-    /// `GET /pools?detail=true` (one projection, two readers — the shapes can never diverge).
-    fn pool_detail(&self, name: &str, members: &[crate::state::WeightedLane]) -> PoolDetailView {
+    /// `GET /pools?detail=true` (one projection, two readers — the shapes can never diverge). Takes the
+    /// NEUTRAL `(lane idx, weight)` member projection ([`EngineTablesView::pool_members`]) so this core
+    /// admin reader names no plane `WeightedLane`.
+    fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
+        let view = self.app.engine_tables_view();
         let now = crate::store::now();
         let members = members
             .iter()
-            .map(|m| {
+            .map(|&(idx, weight)| {
                 // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
                 // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
                 // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
@@ -950,22 +951,22 @@ impl AdminService {
                 // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
                 // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
-                let snap = self.app.store.snapshot(m.idx, now);
+                let snap = self.app.store.snapshot(idx, now);
                 PoolMemberStatusView {
-                    model: self.app.engine_tables().lanes()[m.idx].model.clone(),
-                    weight: m.weight,
+                    model: view.lane_view(idx).map(|l| l.model.to_string()).unwrap_or_default(),
+                    weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the
                     // single-flight recovery probe. `ready_in` is `select_weighted_in`'s own
                     // side-effect-free predicate — exactly what this read-only endpoint must report.
-                    usable: self.app.store.ready_in(name, m.idx, now),
+                    usable: self.app.store.ready_in(name, idx, now),
                     cooldown_remaining_seconds: self
                         .app
                         .store
-                        .cooldown_remaining_in(name, m.idx, now),
-                    available_concurrency: self.app.store.available_permits(m.idx),
+                        .cooldown_remaining_in(name, idx, now),
+                    available_concurrency: self.app.store.available_permits(idx),
                     inflight: snap.inflight,
-                    latency_ms: self.app.store.lane_latency_ms(m.idx),
+                    latency_ms: self.app.store.lane_latency_ms(idx),
                     ok: snap.ok,
                     err: snap.err,
                     dead: snap.dead,
@@ -984,12 +985,11 @@ impl AdminService {
     /// call (the summary + per-pool detail split forced an M+1 fan-out per dashboard refresh).
     /// Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
-        let mut pools: Vec<PoolDetailView> = self
-            .app
-            .engine_tables()
+        let view = self.app.engine_tables_view();
+        let mut pools: Vec<PoolDetailView> = view
             .pools()
             .iter()
-            .map(|(name, members)| self.pool_detail(name, members))
+            .map(|(name, _)| self.pool_detail(name, &view.pool_members(name)))
             .collect();
         pools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(pools))
@@ -998,14 +998,13 @@ impl AdminService {
     /// `GET /api/v1/admin/models` — every model lane + its upstream provider. Read scope. Sorted by
     /// model name. No credentials.
     pub(crate) async fn list_models(&self) -> Result<Page<ModelView>, AdminError> {
-        let mut models: Vec<ModelView> = self
-            .app
-            .engine_tables()
-            .lanes()
-            .iter()
-            .map(|l| ModelView {
-                model: l.model.clone(),
-                provider: l.provider.clone(),
+        let view = self.app.engine_tables_view();
+        let mut models: Vec<ModelView> = (0..view.lane_count())
+            .filter_map(|i| {
+                view.lane_view(i).map(|l| ModelView {
+                    model: l.model.to_string(),
+                    provider: l.provider.to_string(),
+                })
             })
             .collect();
         models.sort_by(|a, b| a.model.cmp(&b.model));
@@ -1015,9 +1014,12 @@ impl AdminService {
     /// `GET /api/v1/admin/providers` — distinct upstream providers + the count of model lanes routing
     /// through each. Read scope. Sorted by provider name.
     pub(crate) async fn list_providers(&self) -> Result<Page<ProviderView>, AdminError> {
-        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-        for lane in self.app.engine_tables().lanes() {
-            *counts.entry(lane.provider.as_str()).or_insert(0) += 1;
+        let view = self.app.engine_tables_view();
+        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for i in 0..view.lane_count() {
+            if let Some(l) = view.lane_view(i) {
+                *counts.entry(l.provider.to_string()).or_insert(0) += 1;
+            }
         }
         let providers = counts
             .into_iter()

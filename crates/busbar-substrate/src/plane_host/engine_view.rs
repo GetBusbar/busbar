@@ -70,6 +70,12 @@ pub trait EngineTablesView {
     /// the neutral store cell). Zero for the empty view.
     fn lane_count(&self) -> usize;
 
+    /// The `(lane index, member weight)` pairs of `pool`'s members, in config order — the NEUTRAL
+    /// projection the core-resident admin pool listing (`GET /admin/pools[/{name}][?detail]`) renders
+    /// each member's weight and (via [`Self::lane_view`]) model from, so it names no plane
+    /// `WeightedLane`. Empty for an unknown pool. Cold admin path; allocates.
+    fn pool_members(&self, pool: &str) -> Vec<(usize, u32)>;
+
     /// The live `on_exhausted: queue` park depth for `pool` (0 when the pool never queues).
     fn queued_depth(&self, pool: &str) -> u64;
 
@@ -115,6 +121,9 @@ impl EngineTablesView for EmptyEngineTablesView {
     }
     fn lane_count(&self) -> usize {
         0
+    }
+    fn pool_members(&self, _pool: &str) -> Vec<(usize, u32)> {
+        Vec::new()
     }
     fn queued_depth(&self, _pool: &str) -> u64 {
         0

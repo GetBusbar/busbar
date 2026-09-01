@@ -294,6 +294,12 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     fn lane_count(&self) -> usize {
         self.lanes.len()
     }
+    fn pool_members(&self, pool: &str) -> Vec<(usize, u32)> {
+        self.pools
+            .get(pool)
+            .map(|members| members.iter().map(|wl| (wl.idx, wl.weight)).collect())
+            .unwrap_or_default()
+    }
     fn queued_depth(&self, pool: &str) -> u64 {
         self.queued_depth.depth(pool)
     }
