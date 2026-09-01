@@ -1,5 +1,5 @@
 use super::{attempt_cap, effective_attempt_timeout_ms};
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 
 fn member(idx: usize, attempt_timeout_ms: Option<u64>) -> WeightedLane {
     WeightedLane {

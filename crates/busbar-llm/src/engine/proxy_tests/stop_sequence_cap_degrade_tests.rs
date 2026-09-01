@@ -13,8 +13,8 @@ use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> crate::transport::Transport {
-    crate::transport::Transport::Http
+fn http() -> busbar_core::transport::Transport {
+    busbar_core::transport::Transport::Http
 }
 
 // ---- CROSS-PROTOCOL over-cap stop list: CLAMPED to cap and forwarded at 200 (v1.5.4). ----
@@ -26,7 +26,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            crate::proto::PROTO_COHERE,
+            crate::proto_codec::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();
@@ -35,14 +35,14 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -63,7 +63,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            crate::proto::PROTO_COHERE,
+            crate::proto_codec::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();
@@ -72,14 +72,14 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -100,7 +100,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gemini-1.5-pro",
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();
@@ -109,14 +109,14 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -137,7 +137,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -147,14 +147,14 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
         "max_tokens": 16,
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "anthropic",
-        crate::handlers::chat("anthropic", http()),
+        busbar_core::handlers::chat("anthropic", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -178,7 +178,7 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
-            crate::proto::PROTO_COHERE,
+            crate::proto_codec::PROTO_COHERE,
             "http://unused.local",
         ))
         .build();
@@ -187,14 +187,14 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop_sequences": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "cohere",
-        crate::handlers::chat("cohere", http()),
+        busbar_core::handlers::chat("cohere", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",

@@ -1351,6 +1351,14 @@ pub fn build_app_from_config(
         allow_all_metadata: cfg.allow_all_metadata,
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
         client_settings: llm_client_settings,
+        // The FIXED global-default failover (production has no operator knob for it) — carried so the
+        // plane's `build_runtime` sets `NativeRuntime.failover_cfg` identically to the pre-pivot inline
+        // lowering, and so the test fixture can override the whole-App deadline.
+        default_failover: Some(busbar_substrate::plane_host::LlmFailoverInput {
+            timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
+            exclusions: None,
+            max_hops: crate::config::DEFAULT_FAILOVER_CAP,
+        }),
     };
 
     let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());

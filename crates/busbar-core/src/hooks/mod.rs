@@ -1441,7 +1441,7 @@ pub(crate) fn resolve_rewrite_hooks(
 /// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
 /// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
 /// `proxy::engine` / `proxy::hooks`.
-pub(crate) type TapEntry = (
+pub type TapEntry = (
     std::time::Duration,
     bool,
     Arc<dyn RoutingPolicy>,

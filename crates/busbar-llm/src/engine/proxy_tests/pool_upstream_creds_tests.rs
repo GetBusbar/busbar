@@ -4,8 +4,9 @@
 //! byte-identical to: same credential resolved as the pre-fix unconditional `pool_runtime` probe,
 //! for every combination of {override present / absent} × {pool known / unknown}.
 
-use crate::auth::UpstreamCreds;
-use crate::state::PoolRuntime;
+use crate::engine::AppEngineExt as _;
+use busbar_core::auth::UpstreamCreds;
+use crate::engine::PoolRuntime;
 use crate::test_support::{LaneSpec, TestApp};
 
 /// COMMON config (no pool sets `upstream_credentials:`): the flag is `false`, so the accessor takes
@@ -16,7 +17,7 @@ fn no_override_fast_path_returns_all_pools_default() {
         let app = TestApp::new()
             .lane(LaneSpec::new(
                 "m0",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "http://localhost",
             ))
             .pool("p", &[(0, 1)])
@@ -45,12 +46,12 @@ fn override_present_runs_full_lookup() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m1",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://localhost",
         ))
         .pool("base", &[(0, 1)])

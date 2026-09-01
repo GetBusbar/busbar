@@ -34,6 +34,74 @@
 //! from one file deeper — because the parent module is this crate's root in one shape and
 //! `crate::proto` in the other, and only a relative path is correct in both.
 
+// THE ALLOCATION-COUNT PERF-GATE INSTRUMENT, ported from busbar-core WITH the money-path engine tests
+// (money-path Phase 3-4 C M4). The gate (`engine/proxy_tests/alloc_gate.rs`) drives one openai>openai
+// passthrough through the real forward path and asserts the per-request heap-allocation count has not
+// regressed. Its instrument must be THIS test binary's `#[global_allocator]` (an allocator is a binary
+// property, set by the crate under test), so it is installed here under the same target gate core uses.
+// jemalloc-delegating so the telemetry tests' mallctl counters stay byte-accurate; per-thread counter
+// so concurrent `cargo test` threads never inflate the measured thread.
+#[cfg(all(test, not(target_env = "msvc")))]
+pub(crate) use alloc_gate_instrument::CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+mod alloc_gate_instrument {
+    use std::alloc::{GlobalAlloc, Layout};
+    use tikv_jemallocator::Jemalloc;
+
+    thread_local! {
+        static ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A jemalloc wrapper that counts allocations per-thread — the instrument behind the alloc gate.
+    pub(crate) struct CountingJemalloc;
+
+    impl CountingJemalloc {
+        /// Allocations observed on THIS thread since process start (or last `reset`).
+        pub(crate) fn count() -> u64 {
+            ALLOC_COUNT.with(|c| c.get())
+        }
+        /// Reset this thread's counter to zero, returning the previous value.
+        pub(crate) fn reset() -> u64 {
+            ALLOC_COUNT.with(|c| c.replace(0))
+        }
+        #[inline]
+        fn bump() {
+            ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    // SAFETY: every method delegates verbatim to `Jemalloc` (a sound `GlobalAlloc`); the only added
+    // work is a per-thread `Cell` increment, which allocates nothing and cannot re-enter the allocator.
+    // `dealloc` is NOT counted — the gate measures allocation COUNT.
+    unsafe impl GlobalAlloc for CountingJemalloc {
+        #[inline]
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc(layout)
+        }
+        #[inline]
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            Jemalloc.dealloc(ptr, layout)
+        }
+        #[inline]
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc_zeroed(layout)
+        }
+        #[inline]
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            Self::bump();
+            Jemalloc.realloc(ptr, layout, new_size)
+        }
+    }
+}
+
 /// **G6 A4b relocation.** The concrete chat IR + leaf-op IR, moved here from busbar-core. Core keeps
 /// the neutral `ir::facts` trait / `ir::handle` / `ir::invoke` / `ir::subscribe` and re-includes this
 /// module via `#[path]` for its test build so `crate::ir::IrRequest` still resolves there.
@@ -73,6 +141,27 @@ pub mod arrival;
 /// ([`arrival`]) converge on its [`native_ingress::operation_ingress`] / [`native_ingress::
 /// ingress_path_model`] entry points.
 pub mod native_ingress;
+
+/// THE MONEY-PATH TEST FIXTURE, re-exported from core's now-plane-agnostic `test_support` (money-path
+/// Phase 3-4 C M4). The relocated engine tests name `crate::test_support::{LaneSpec, TestApp,
+/// MockServer, …}`; the fixture builds the LLM runtime through the neutral `LlmBuildInput` +
+/// `build_runtime` seam (naming no `Lane`/`NativeRuntime`), so it lives ONCE in core and the plane's
+/// tests reach it here. Gated exactly as core's is.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    pub use busbar_core::test_support::*;
+
+    /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
+    /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
+    /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep
+    /// back-edge); with the money-path tests relocated here it is built in-plane, naming its own cell —
+    /// no cross-crate `#[cfg(test)]` reach, and no `busbar-core[test-support] → busbar-llm` cycle.
+    pub const CHAT: busbar_core::handlers::Op = busbar_core::handlers::frame(
+        busbar_core::transport::Transport::Http,
+        busbar_core::operation::Operation::CHAT,
+        &crate::chat_handle::ChatOperation("openai"),
+    );
+}
 
 /// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
 /// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).

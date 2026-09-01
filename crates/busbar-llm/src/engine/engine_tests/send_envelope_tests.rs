@@ -15,7 +15,8 @@
 //! waiting on it, and a regression back to the unbounded send hangs the test's own 30s guard
 //! rather than passing vacuously.
 
-use crate::state::WeightedLane;
+use busbar_core::store::LaneRuntime as _;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
@@ -59,7 +60,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])
@@ -78,7 +79,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
     // awaits socket I/O forever and this test fails by its own bound instead of hanging CI.
     let resp = tokio::time::timeout(
         std::time::Duration::from_secs(30_000), // paused-clock units; auto-advance skips to timers
-        crate::proxy::forward_with_pool(
+        crate::engine::forward_with_pool(
             &app,
             vec![member(0)],
             body,
@@ -86,7 +87,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
             "p",
             None,
             "openai",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -102,7 +103,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
         resp.status()
     );
     assert_eq!(
-        app.store.snapshot(0, crate::store::now()).err,
+        app.store.snapshot(0, busbar_core::store::now()).err,
         1,
         "the ceiling expiry must record a breaker transient, not just an error status"
     );
@@ -119,14 +120,14 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &format!("http://{addr}"),
         ))
         .pool("p", &[(0, 1)])
-        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
     // The only member's breaker is Open → the pool is exhausted → least_bad degrades onto it.
-    app.store.force_open_in("p", 0, crate::store::now() + 300);
+    app.store.force_open_in("p", 0, busbar_core::store::now() + 300);
 
     let body: bytes::Bytes = serde_json::to_vec(&json!({
         "model": "gpt-4o",
@@ -138,7 +139,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
 
     let resp = tokio::time::timeout(
         std::time::Duration::from_secs(30_000), // paused-clock guard; see the sibling test
-        crate::proxy::forward_with_pool(
+        crate::engine::forward_with_pool(
             &app,
             vec![member(0)],
             body,
@@ -146,7 +147,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
             "p",
             None,
             "openai",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -159,7 +160,7 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
         resp.status()
     );
     assert_eq!(
-        app.store.snapshot(0, crate::store::now()).err,
+        app.store.snapshot(0, busbar_core::store::now()).err,
         1,
         "the degraded-path ceiling expiry must record the breaker transient too"
     );

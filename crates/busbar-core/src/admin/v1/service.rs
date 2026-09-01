@@ -473,7 +473,7 @@ pub(crate) fn validate_hook_settings_size(
     Ok(())
 }
 
-pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, AdminError> {
+pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, AdminError> {
     // ── validate the definition (fail-closed, before any mutation) ──
     if name.trim().is_empty() {
         return Err(AdminError::Validation("hook name must not be empty".into()));
@@ -565,7 +565,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
 /// the rewrite/tap transports. Lanes/store untouched (breaker state preserved). Same GLOBAL scope as
 /// `build_with_hook`: pool-`hook:` references are resolved into `pool_runtime` at startup and are NOT
 /// re-resolved here — that (plus the dangling-ref 409) lands with the broader config/apply.
-pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> {
+pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> {
     if !current.hook_registry.contains_key(name) {
         return Err(AdminError::not_found(format!("hook `{name}`")));
     }

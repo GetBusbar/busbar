@@ -1,5 +1,6 @@
+use crate::engine::AppEngineExt as _;
 use super::{record_token_usage, stable_hash, UsageSink};
-use crate::billing::TokenUsage;
+use busbar_core::billing::TokenUsage;
 use std::sync::Arc;
 
 /// `apply_rewrite_to_body` replaces the `messages` array + injects tools on a chat-shaped body,
@@ -7,7 +8,7 @@ use std::sync::Arc;
 /// returns false, so the request proceeds with the original body.
 #[test]
 fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
-    use crate::hooks::wire::RewriteReply;
+    use busbar_core::hooks::wire::RewriteReply;
 
     // Chat-shaped body → messages replaced, tool injected (appended to existing tools).
     let mut v = serde_json::json!({
@@ -53,7 +54,7 @@ fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
 /// responses into the input list; a non-text rewrite message aborts untouched.
 #[test]
 fn apply_rewrite_renders_per_dialect() {
-    use crate::hooks::wire::RewriteReply;
+    use busbar_core::hooks::wire::RewriteReply;
     let rw = RewriteReply {
         messages: vec![
             serde_json::json!({"role": "user", "content": "compressed"}),
@@ -98,7 +99,7 @@ fn apply_rewrite_renders_per_dialect() {
 /// user turns.
 #[test]
 fn gemini_rewrite_role_round_trips_model_and_assistant() {
-    use crate::hooks::wire::RewriteReply;
+    use busbar_core::hooks::wire::RewriteReply;
 
     // Projection canonicalizes the gemini-native `model` role to `assistant`.
     let g_body = serde_json::json!({
@@ -112,7 +113,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
         &[],
         super::APPLICATION_JSON,
         "gemini",
-        Some(crate::operation::Operation::CHAT),
+        Some(busbar_core::operation::Operation::CHAT),
     )
     .expect("the gemini reader accepts this body");
     let p = f.prompt();
@@ -155,8 +156,8 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 /// whatever it sees →"B" ends at "B", proving B ran on A's output.
 #[tokio::test]
 async fn apply_global_rewrites_chains_in_order() {
-    use crate::hooks::wire::RewriteReply;
-    use crate::hooks::{
+    use busbar_core::hooks::wire::RewriteReply;
+    use busbar_core::hooks::{
         Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     };
 
@@ -204,7 +205,7 @@ async fn apply_global_rewrites_chains_in_order() {
         &mut v,
         "pool",
         "anthropic",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         false,
         1,
     )
@@ -226,7 +227,7 @@ async fn apply_global_rewrites_chains_in_order() {
 // window-attribution intent is asserted on the token ledger itself.)
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
@@ -235,13 +236,13 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // day bucket (a loose day budget materialises it without ever blocking).
     let groups = std::collections::BTreeMap::from([(
         "daygrp".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 1_000_000,
-                per: Some(crate::config::groups::LimitWindow::Day),
+                per: Some(busbar_core::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -249,7 +250,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &groups));
+    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -267,7 +268,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // different (later) day — making the bug observable: the old code charged into "today".
     let charged_at: u64 = 1_700_000_000; // 2023-11-14 (day window = 1_700_000_000/86400*86400)
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
-    let today_window = crate::store::now() / SECS_PER_DAY * SECS_PER_DAY;
+    let today_window = busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window, today_window,
         "test precondition: charged_at must be a different day than now, or the bug is masked"
@@ -288,7 +289,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "m",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -316,7 +317,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // ...and NOT in today's window (which the old `now()`-based code would have used).
     let in_today = gov
-        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, crate::store::now())
+        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, busbar_core::store::now())
         .expect("usage read")
         .tokens;
     assert_eq!(
@@ -325,7 +326,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // The key's all-time attribution bucket sees the tokens regardless of the day (sanity).
     assert_eq!(
-        gov.usage_for(&cost, &key.id, crate::store::now())
+        gov.usage_for(&cost, &key.id, busbar_core::store::now())
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0),
@@ -340,12 +341,12 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 /// clamps to `u64::MAX` and `record_ir_usage` returns without panicking.
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 
     let store = Arc::new(MemoryStore::new());
     // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -373,7 +374,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "m",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai"),
@@ -415,7 +416,7 @@ fn test_stable_hash_is_deterministic() {
 /// assertion is that spend is derived, and derived at the card's rate.
 #[test]
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
@@ -423,7 +424,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
     let card = std::collections::BTreeMap::from([(
         "gpt-4o".to_string(),
-        crate::config::RateEntryCfg {
+        busbar_core::config::RateEntryCfg {
             input_utok: 1000.0,
             output_utok: 1000.0,
             cache_read_utok: 0.0,
@@ -432,13 +433,13 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     )]);
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(crate::config::groups::LimitWindow::Day),
+                per: Some(busbar_core::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -446,7 +447,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts(
+    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
         Some(&card),
         0,
         &groups,
@@ -479,7 +480,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "gpt-4o",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("zai")

@@ -88,7 +88,7 @@ fn route_policy_headers_absent_when_both_gates_closed() {
 // ══ THE UNRESOLVED-INGRESS ERROR SHAPE IS CORE'S OWN, NOT A DIALECT'S ═════════════════════════════
 //
 // `ingress_error`/`mid_stream_error_bytes` used to resolve an unknown ingress name to
-// `crate::proto::PROTO_RESPONSES` and shape the error with THAT dialect's writer. Every LLM dialect is a
+// `crate::proto_codec::PROTO_RESPONSES` and shape the error with THAT dialect's writer. Every LLM dialect is a
 // droppable plugin (`busbar-llm`) now, so there is no dialect core can promise is linked, and the
 // fallback became core's own (`agnostic_error_envelope`/`agnostic_stream_error_frame`).
 //
@@ -104,7 +104,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     let resp = ingress_error(
         "no-such-protocol",
         StatusCode::SERVICE_UNAVAILABLE,
-        crate::proxy::KIND_OVERLOADED,
+        crate::engine::KIND_OVERLOADED,
         "everything is on fire",
     );
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -117,7 +117,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
         .expect("body");
     let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON envelope");
     assert_eq!(
-        v["error"]["type"], crate::proxy::KIND_OVERLOADED,
+        v["error"]["type"], crate::engine::KIND_OVERLOADED,
         "core's envelope states the agnostic kind verbatim; the old `responses` fallback rewrote it \
          to `server_error`"
     );
@@ -143,6 +143,6 @@ fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
         .trim_end_matches("\n\n")
         .to_string();
     let v: serde_json::Value = serde_json::from_str(&payload).expect("valid JSON");
-    assert_eq!(v["error"]["type"], crate::proxy::KIND_API_ERROR);
+    assert_eq!(v["error"]["type"], crate::engine::KIND_API_ERROR);
     assert_eq!(v["error"]["message"], "upstream vanished");
 }

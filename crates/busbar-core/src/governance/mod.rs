@@ -20,7 +20,7 @@ use crate::diagnostics::{
 /// TEST code can reference it as `crate::governance::SECS_PER_DAY`; production modules that need the
 /// same value independently (e.g. `sigv4.rs`) keep a private copy where layering prohibits importing
 /// it for a one-line constant.
-pub(crate) const SECS_PER_DAY: u64 = 86_400;
+pub const SECS_PER_DAY: u64 = 86_400;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window

@@ -1,3 +1,4 @@
+use busbar_core::store::LaneRuntime as _;
 use super::{
     cross_protocol_error_kind, egress_accept, egress_user_agent, forward_with_pool, ingress_error,
     ingress_stream_content_type, read_capped, shape_cross_protocol_error, ReadEnd, UsageSink,
@@ -29,10 +30,10 @@ async fn hyper_transport_err() -> hyper::Error {
             .expect("write partial");
         // Drop: the connection dies with 93 declared bytes undelivered.
     });
-    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+    let client = crate::engine::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
         1, 1, false, false,
     ));
-    let req = crate::proxy::egress_request(
+    let req = crate::engine::egress_request(
         format!("http://{addr}/").parse().expect("err fixture uri"),
         axum::http::HeaderMap::new(),
         bytes::Bytes::new(),
@@ -387,7 +388,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 /// response is served with the INGRESS Content-Type (`application/json`).
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend response with a foreign `chatcmpl-` id + created + fingerprint.
     state.push(MockResponse::Ok {
@@ -407,7 +408,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
@@ -419,7 +420,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -430,7 +431,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -480,8 +481,8 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 /// response is the ingress-native 500 AND that the gov budget recorded ZERO spend.
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
     // `choices` array — the OpenAI reader rejects this in `read_response`, so it is untranslatable.
@@ -503,7 +504,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     // tap WOULD have ledgered 7+3=10 tokens if it wrongly ran).
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -529,7 +530,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
@@ -541,7 +542,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -552,7 +553,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         sink,
     )
     .await;
@@ -586,8 +587,8 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 /// return the unit and flip the cell to Open.
 #[tokio::test]
 async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    crate::metrics::init();
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -604,14 +605,14 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai")
                 .budget(1),
         )
         .pool("pa", &[(0, 1)])
         .pool_runtime(
             "pa",
-            crate::state::PoolRuntime {
+            crate::engine::PoolRuntime {
                 upstream_credentials: None,
                 breaker: Some(BreakerCfg {
                     trip: TripConfig {
@@ -641,7 +642,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -652,7 +653,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -686,16 +687,16 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 #[tokio::test]
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // Gov + virtual key. Spend is DERIVED now, so "the tail usage was counted" is asserted on the
     // token ledger: a 1000-token post-drain ledger proves the reassembled body's `usage` ran.
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -734,7 +735,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "glm-4.5",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -749,12 +750,12 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         inner,
         false, // is_sse: same-protocol NON-STREAM application/json
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
         0,
-        Arc::new(crate::store::BreakerCfg::default()),
+        Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
         None, // translate: same-protocol → no translation
         None, // json_array
@@ -816,24 +817,24 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 #[tokio::test]
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
-    crate::metrics::init();
-    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    busbar_core::metrics::init();
+    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     // A cap small enough that the filler content alone blows well past it, but the RAII guard
     // restores whatever was installed before this test regardless of how it exits.
     const CAP: usize = 4096;
-    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
         request_body_max_bytes: CAP,
-        ..crate::config::LimitsResolved::default()
+        ..busbar_core::config::LimitsResolved::default()
     });
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -870,7 +871,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "glm-4.5",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -887,12 +888,12 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         inner,
         false, // is_sse: same-protocol NON-STREAM application/json
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
         0,
-        Arc::new(crate::store::BreakerCfg::default()),
+        Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
         None, // translate: same-protocol → no translation
         None, // json_array
@@ -938,7 +939,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 /// The non-stream usage-tap reassembly decision at
 /// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
 /// = max_translated_body_bytes() - ... }` reads the live-reloadable
-/// `crate::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
+/// `busbar_core::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
 /// mutates that `RwLock` under a still-running gateway (a config apply/rollback), so a write
 /// landing in the gap between the two reads makes the first read's `if` pass on a HIGH cap while
 /// the second read subtracts against a freshly-LOWERED one — an underflow (`remaining = lo - buf`)
@@ -947,14 +948,14 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 /// This is a genuine two-statement TOCTOU with NO await point between the reads (`poll_next` is
 /// synchronous), so there is no way to deterministically interleave a config apply between them
 /// without instrumenting production code. This test instead applies RACE PRESSURE: a background
-/// thread hammers `crate::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
+/// thread hammers `busbar_core::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
 /// below it, at the highest rate the toggling loop can sustain, while the foreground repeatedly
 /// drives a fresh `FirstByteBody` through the exact vulnerable decision (buffer `CHUNK1_LEN` bytes
 /// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
 /// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
 /// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
 ///
-/// `#[ignore]`: `crate::limits::install` (test-only escape hatch) mutates the SAME process-global
+/// `#[ignore]`: `busbar_core::limits::install` (test-only escape hatch) mutates the SAME process-global
 /// `RwLock` every other test reads through `max_translated_body_bytes()`/`translate_body_max_bytes()`
 /// with no cross-test serialization (see `limits.rs`'s own doc — this is a bare test-only setter,
 /// not scoped). Hammering it from a background thread — required to have any chance of landing the
@@ -966,20 +967,20 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 #[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
 fn nonstream_tap_cap_is_read_once_per_decision() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use futures::StreamExt;
     use std::panic::AssertUnwindSafe;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    crate::metrics::init();
+    busbar_core::metrics::init();
     const CHUNK1_LEN: usize = 4096;
     const ATTEMPTS: usize = 20_000;
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -991,7 +992,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     // background flush task is required.
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -1022,17 +1023,17 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let toggler = std::thread::spawn(move || {
-        let hi = crate::config::LimitsResolved {
+        let hi = busbar_core::config::LimitsResolved {
             request_body_max_bytes: CHUNK1_LEN * 10,
-            ..crate::config::LimitsResolved::default()
+            ..busbar_core::config::LimitsResolved::default()
         };
-        let lo = crate::config::LimitsResolved {
+        let lo = busbar_core::config::LimitsResolved {
             request_body_max_bytes: CHUNK1_LEN / 2,
-            ..crate::config::LimitsResolved::default()
+            ..busbar_core::config::LimitsResolved::default()
         };
         while !stop2.load(Ordering::Relaxed) {
-            crate::limits::install(&hi);
-            crate::limits::install(&lo);
+            busbar_core::limits::install(&hi);
+            busbar_core::limits::install(&lo);
         }
     });
 
@@ -1048,12 +1049,12 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
             inner,
             false, // is_sse: same-protocol NON-STREAM application/json
             "openai",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
             app.clone(),
             0,
-            Arc::new(crate::store::BreakerCfg::default()),
+            Arc::new(busbar_core::store::BreakerCfg::default()),
             "pa",
             None,
             None,
@@ -1105,12 +1106,12 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1137,10 +1138,10 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     // test names no witnessed codec type. `is_sse = true` + ingress != egress reproduces the prior
     // direct translator construction byte-for-byte.
     let translate =
-        crate::proto::new_stream_translator("gemini", "openai", true).expect("translator");
+        busbar_core::proto::new_stream_translator("gemini", "openai", true).expect("translator");
     // Neutral seam: the array-stream framer is built the exact way production builds it
     // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
-    let json_array: Box<dyn crate::proto::ArrayStreamFramer> = crate::proto::decl_for("gemini")
+    let json_array: Box<dyn busbar_core::proto::ArrayStreamFramer> = busbar_core::proto::decl_for("gemini")
         .and_then(|d| d.dialect())
         .and_then(|dc| dc.make_array_stream_framer())
         .expect("gemini dialect builds an array-stream framer");
@@ -1148,12 +1149,12 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         inner,
         true, // is_sse: streaming
         "gemini",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
         0,
-        Arc::new(crate::store::BreakerCfg::default()),
+        Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
         Some(translate),
         Some(json_array),
@@ -1188,12 +1189,12 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1216,17 +1217,17 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
-        crate::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
+        busbar_core::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
         0,
-        Arc::new(crate::store::BreakerCfg::default()),
+        Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
         Some(translate),
         None, // plain SSE — no json-array framer
@@ -1263,15 +1264,15 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 #[tokio::test]
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     // Spend is DERIVED now; the no-bill intent is asserted on the token ledger directly.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let (key, _s) = gov
         .create_key(
             NewKeySpec {
@@ -1297,7 +1298,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -1322,17 +1323,17 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
-        crate::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
+        busbar_core::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
         0,
-        Arc::new(crate::store::BreakerCfg::default()),
+        Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
         Some(translate),
         None,
@@ -1373,7 +1374,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
 /// credential — NOT `Bearer sk-operator-secret` (the old borrow-the-operator-key behavior).
 #[tokio::test]
 async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // Upstream answers 200 so we can inspect the Authorization header it received.
     let state = Arc::new(MockServerState::new());
@@ -1395,9 +1396,9 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .api_key("sk-operator-secret"),
         )
         .pool("pa", &[(0, 1)])
@@ -1410,7 +1411,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     // Caller presents NO credential.
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1421,7 +1422,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
         "pa",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1462,7 +1463,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
 /// This asserts both are now present on the translated Gemini body.
 #[tokio::test]
 async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response_id() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Native AWS Converse (non-stream) 2xx: NO body-level id/created/model — only output,
     // stopReason, and usage. This is exactly the identity-empty shape the Bedrock reader returns.
@@ -1480,7 +1481,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
         .lane(
             LaneSpec::new(
                 "claude-bedrock",
-                crate::proto::PROTO_BEDROCK,
+                crate::proto_codec::PROTO_BEDROCK,
                 &server.base_url(),
             )
             .provider("aws"),
@@ -1493,7 +1494,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
             .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1504,7 +1505,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
         "pg",
         None,
         "gemini",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1549,7 +1550,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
 /// `request_id()`); the error path already synthesizes it, this closes the SUCCESS gap.
 #[tokio::test]
 async fn test_bedrock_ingress_success_carries_amzn_request_id() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend 2xx; ingress is bedrock → cross-protocol translation to Converse.
     state.push(MockResponse::Ok {
@@ -1566,7 +1567,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
@@ -1577,7 +1578,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1588,7 +1589,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
         "pa",
         None,
         "bedrock",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1623,7 +1624,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
 /// no upstream anthropic id to forward, so busbar must SYNTHESIZE a shape-correct `req_…` one.
 #[tokio::test]
 async fn test_anthropic_ingress_success_carries_request_id_header() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -1639,7 +1640,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
@@ -1650,7 +1651,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1661,7 +1662,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1693,7 +1694,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
 /// tell. Same-protocol anthropic stream (no upstream id supplied by the mock) → synthesized `req_`.
 #[tokio::test]
 async fn test_anthropic_ingress_streaming_carries_request_id_header() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A minimal anthropic-shaped SSE stream (the mock serves `text/event-stream`, driving the
     // streaming branch). The header attachment is independent of the event payloads.
@@ -1713,7 +1714,7 @@ data: {"type":"message_stop"}"#
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -1729,7 +1730,7 @@ data: {"type":"message_stop"}"#
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1740,7 +1741,7 @@ data: {"type":"message_stop"}"#
         "ps",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1764,7 +1765,7 @@ data: {"type":"message_stop"}"#
 /// the Anthropic error shape (`{"type":"error","error":{...}}`), with no OpenAI fields leaking.
 #[tokio::test]
 async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 400 client-fault error body from the backend.
     state.push(MockResponse::Ok {
@@ -1781,7 +1782,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pc", &[(0, 1)])
@@ -1793,7 +1794,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1804,7 +1805,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
         "pc",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1842,7 +1843,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 #[tokio::test]
 async fn test_forward_error_path_returns_native_envelope() {
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     // No candidates → "no usable lane" 503, shaped to the ingress (OpenAI) envelope.
     let resp = forward_with_pool(
@@ -1855,7 +1856,7 @@ async fn test_forward_error_path_returns_native_envelope() {
         "missingpool",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1884,8 +1885,8 @@ async fn test_forward_error_path_returns_native_envelope() {
 /// the egress body the backend actually received.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
-    use crate::store::now as store_now;
-    crate::metrics::init();
+    use busbar_core::store::now as store_now;
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Anthropic-shaped 2xx so the degraded path serves a success (it relays the body verbatim;
     // we only care about what the backend RECEIVED, captured below).
@@ -1909,7 +1910,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic")
@@ -1918,7 +1919,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     // `n: 1` (NOT >1) on purpose: this test is about EXTRA-KEY STRIPPING on the degraded path, not
@@ -1939,7 +1940,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1950,7 +1951,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
         "leastbad",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -1989,8 +1990,8 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
 /// broken tool round-trip. Assert the client sees an OpenAI-native `call_…` id, never the raw one.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
-    use crate::store::now as store_now;
-    crate::metrics::init();
+    use busbar_core::store::now as store_now;
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Anthropic backend returns a tool_use response carrying a native anthropic tool id.
     state.push(MockResponse::Ok {
@@ -2018,7 +2019,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic")
@@ -2027,7 +2028,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     let req_body = serde_json::to_vec(&json!({
@@ -2038,7 +2039,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2049,7 +2050,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
         "leastbad",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2087,9 +2088,9 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
 /// would fall back from header-first to body `__type`, both detectable tells.
 #[tokio::test]
 async fn test_forward_once_bedrock_error_relays_amzn_headers() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Bedrock error carries x-amzn-requestid + x-amzn-errortype response headers.
     state.push(MockResponse::ServerErrorWithHeaders {
@@ -2107,7 +2108,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
     // URL. Cooled down so LeastBad serves via the degraded forward_once path.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude-3", crate::proto::PROTO_BEDROCK, &server.base_url())
+            LaneSpec::new("claude-3", crate::proto_codec::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages")
                 .cooldown_until(t0 + 600)
@@ -2115,12 +2116,12 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
                 .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2133,7 +2134,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
         "leastbad",
         None,
         "bedrock",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2171,7 +2172,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
 /// assertion guards the axum `header()`-APPENDS double-attach failure mode.
 #[tokio::test]
 async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 4xx carries a `request-id` response header; the same-proto relay must
     // forward it verbatim.
@@ -2190,7 +2191,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -2200,7 +2201,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
 
     let resp = forward_with_pool(
             &app,
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
@@ -2215,7 +2216,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
             "pa",
             None,
             "anthropic",
-            crate::handlers::CHAT, None,
+            crate::test_support::CHAT, None,
         )
         .await;
 
@@ -2248,7 +2249,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
 /// from a double-attach) is a proxy tell the SDK's `APIError.request_id` would surface.
 #[tokio::test]
 async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 401 carries a `request-id` response header; the same-proto passthrough
     // relay must forward it verbatim.
@@ -2266,11 +2267,11 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
     // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -2280,7 +2281,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
 
     let resp = forward_with_pool(
             &app,
-            vec![crate::state::WeightedLane {
+            vec![crate::engine::WeightedLane {
                 idx: 0,
                 weight: 1,
                 attempt_timeout_ms: None,
@@ -2295,7 +2296,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
             "pa",
             None,
             "anthropic",
-            crate::handlers::CHAT, None,
+            crate::test_support::CHAT, None,
         )
         .await;
 
@@ -2328,7 +2329,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
 #[tokio::test]
 async fn test_forward_layer_errors_carry_no_router_prefix() {
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     for ingress in [
         "openai",
         "anthropic",
@@ -2350,7 +2351,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
             "missingpool",
             None,
             ingress,
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;
@@ -2373,7 +2374,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
 #[tokio::test]
 async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream() {
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // NON-SSE buffered OpenAI 2xx (no SSE) to a cross-protocol bedrock-ingress ConverseStream.
     state.push(MockResponse::Ok {
@@ -2390,7 +2391,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("pb", &[(0, 1)])
@@ -2405,7 +2406,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2416,7 +2417,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
         "pb",
         None,
         "bedrock",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2440,7 +2441,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     // (b) body decodes into the native frame sequence.
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let mut buf = bytes.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(names.first(), Some(&"messageStart"), "frames: {names:?}");
     assert!(names.contains(&"contentBlockDelta"), "frames: {names:?}");
@@ -2460,7 +2461,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
 /// the real, currently-mandatory injection actually happens on the wire.
 #[tokio::test]
 async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: vec![
@@ -2475,7 +2476,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai"),
         )
         .pool("po", &[(0, 1)])
@@ -2490,7 +2491,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2501,7 +2502,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
         "po",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2529,7 +2530,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
 #[tokio::test]
 async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array() {
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -2545,7 +2546,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai"),
         )
         .pool("pg", &[(0, 1)])
@@ -2556,12 +2557,12 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
         "model": "pg",
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "stream": true,
-        (crate::proto::array_stream_shim_key_for(crate::proto::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
+        (busbar_core::proto::array_stream_shim_key_for(crate::proto_codec::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
     }))
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2572,7 +2573,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
         "pg",
         None,
         "gemini",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2612,9 +2613,9 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
 /// backend, and assert the same one-element JSON array under `application/json`.
 #[tokio::test]
 async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
-    use crate::store::now as store_now;
+    use busbar_core::store::now as store_now;
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -2631,25 +2632,25 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai")
                 .cooldown_until(t0 + 600)
                 .streak(3)
                 .err(5),
         )
         .pool("leastbad-g", &[(0, 1)])
-        .on_exhausted("leastbad-g", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("leastbad-g", busbar_core::config::OnExhausted::LeastBad)
         .build();
     let body = serde_json::to_vec(&json!({
         "model": "leastbad-g",
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "stream": true,
-        (crate::proto::array_stream_shim_key_for(crate::proto::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
+        (busbar_core::proto::array_stream_shim_key_for(crate::proto_codec::PROTO_GEMINI).expect("gemini declares an array-stream shim key")): true
     }))
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2660,7 +2661,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
         "leastbad-g",
         None,
         "gemini",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2703,16 +2704,16 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
 /// being translated and delivered (which is what would let its tokens be charged).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Serialize against sibling tests that mutate the process-global `limits::INSTALLED`, and pin a
     // small KNOWN cap under an RAII guard so the body below is deterministically over-cap regardless
     // of a concurrent install (restored on drop). Without the lock this test READS the cap to size
     // `huge`, and a sibling install could move it mid-run.
-    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
         request_body_max_bytes: CAP,
-        ..crate::config::LimitsResolved::default()
+        ..busbar_core::config::LimitsResolved::default()
     });
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
@@ -2733,7 +2734,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai"),
         )
         .pool("pc", &[(0, 1)])
@@ -2747,7 +2748,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2758,7 +2759,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
         "pc",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2779,17 +2780,17 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
 /// (a refund-by-default guard would invert it).
 #[tokio::test]
 async fn test_truncated_body_does_not_refund_budget() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Serialize against the sibling tests that mutate the process-global `limits::INSTALLED`
     // (`InstallGuard::install` / `install`) — this test READS the translate-body cap to build an
     // over-cap body, and a sibling's install landing mid-run would move the cap out from under it.
     // Install a small KNOWN cap under an RAII guard so the body is deterministically over-cap
     // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
-    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
         request_body_max_bytes: CAP,
-        ..crate::config::LimitsResolved::default()
+        ..busbar_core::config::LimitsResolved::default()
     });
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
@@ -2808,7 +2809,7 @@ async fn test_truncated_body_does_not_refund_budget() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai")
                 .budget(1),
         )
@@ -2823,7 +2824,7 @@ async fn test_truncated_body_does_not_refund_budget() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2834,7 +2835,7 @@ async fn test_truncated_body_does_not_refund_budget() {
         "pc",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2857,7 +2858,7 @@ async fn test_truncated_body_does_not_refund_budget() {
 /// reserved capacity rather than `cap`.)
 #[tokio::test]
 async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A 64 KiB raw JSON-string body — far larger than the 1 KiB cap used below.
     let big = "y".repeat(64 * 1024);
@@ -2895,11 +2896,11 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
 /// against any version that interpolates `{e}` into the response body.
 #[tokio::test]
 async fn test_unparseable_json_400_carries_no_serde_internals() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1", // never reached: parse fails before any egress
         ))
         .pool("p", &[(0, 1)])
@@ -2909,7 +2910,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     let bad = br#"{ "model": "p", BUSBAR_SENTINEL_LEAK }"#.to_vec();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -2920,7 +2921,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
         "p",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2957,13 +2958,13 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
 #[tokio::test]
 async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     use super::FirstByteBody;
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     // Lane 0: budget-limited with a single remaining unit.
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
+        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
         .pool("p", &[(0, 1)])
         .build();
 
@@ -3007,7 +3008,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         inner,
         true, // is_sse: streaming path
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (), // permit: a unit placeholder is sufficient for the Stream bounds
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
@@ -3059,14 +3060,14 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
 #[tokio::test]
 async fn test_repeated_pre_first_byte_failures_trip_breaker() {
     use super::FirstByteBody;
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3094,7 +3095,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
             inner,
             true, // is_sse
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
             app.clone(),
@@ -3143,13 +3144,13 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
 #[tokio::test]
 async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
     use super::FirstByteBody;
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     // Lane 0: OpenAI, budget-limited with a single remaining unit (matches the 2xx-headers spend).
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").budget(1))
+        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").budget(1))
         .pool("p", &[(0, 1)])
         .build();
 
@@ -3189,7 +3190,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
         inner,
         false, // is_sse: NON-streaming same-protocol passthrough (application/json)
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (), // permit placeholder
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
@@ -3249,8 +3250,8 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 #[tokio::test]
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3259,7 +3260,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3288,7 +3289,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     // observable token ledger in the key's window (spend derives; tokens are the ledger).
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3315,7 +3316,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     // translated anthropic output for usage.
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate must construct");
 
     // Inner upstream stream:
@@ -3330,7 +3331,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     let usage_chunk =
         b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n"
             .to_vec();
-    let overflow = vec![b'x'; crate::eventstream::MAX_FRAME_BYTES + 16];
+    let overflow = vec![b'x'; busbar_core::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
         Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
         Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
@@ -3340,7 +3341,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         inner,
         true, // is_sse: streaming cross-protocol path
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
         app.clone(),
@@ -3398,15 +3399,15 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 #[tokio::test]
 async fn test_cancel_drop_bills_partial_tokens() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    use crate::store::BreakerCfg;
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3415,7 +3416,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3440,7 +3441,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
 
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // A single OpenAI trailing usage-only chunk → translated anthropic message_delta whose usage
     // the tap reads (1000 billable tokens). NO overflow (no abort), NO error frame.
@@ -3458,7 +3459,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
             inner,
             true,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
             app.clone(),
@@ -3505,15 +3506,15 @@ async fn test_cancel_drop_bills_partial_tokens() {
 #[tokio::test]
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    use crate::store::BreakerCfg;
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("p", &[(0, 1)])
@@ -3522,7 +3523,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3547,7 +3548,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
 
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = crate::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // chunk 1: usage-only OpenAI chunk → translated anthropic usage the tap captures (nonzero).
     // chunk 2: a >MAX_FRAME_BYTES run with NO SSE terminator → translate buffer overflows and
@@ -3555,7 +3556,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     let usage_chunk =
         b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n"
             .to_vec();
-    let overflow = vec![b'x'; crate::eventstream::MAX_FRAME_BYTES + 16];
+    let overflow = vec![b'x'; busbar_core::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
         Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
         Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
@@ -3569,7 +3570,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             inner,
             true,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
             app.clone(),
@@ -3611,13 +3612,13 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
 #[tokio::test]
 async fn test_cancel_drop_mid_stream_refunds_budget() {
     use super::FirstByteBody;
-    use crate::store::BreakerCfg;
+    use busbar_core::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
     // Lane 0: budget-limited with a single remaining unit.
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
+        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
         .pool("p", &[(0, 1)])
         .build();
 
@@ -3638,7 +3639,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
             inner,
             true, // is_sse
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
             app.clone(),
@@ -3673,7 +3674,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 #[tokio::test]
 async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
     use http_body_util::BodyExt as _;
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // NON-SSE buffered anthropic 2xx to a cross-protocol OpenAI-ingress streaming request.
     state.push(MockResponse::Ok {
@@ -3693,7 +3694,7 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
         .lane(
             LaneSpec::new(
                 "claude-3",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -3710,7 +3711,7 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -3721,7 +3722,7 @@ async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not
         "pn",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;

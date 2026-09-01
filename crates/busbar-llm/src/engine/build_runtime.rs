@@ -238,11 +238,12 @@ pub(crate) fn build_runtime(
     }
 
     // The global-default failover config — the fixed fallback for pools that set no `failover:` of
-    // their own (deterministic, not HashMap-iteration-order dependent).
-    let failover_cfg = Some(busbar_core::config::FailoverCfg {
-        timeout_secs: busbar_core::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-        exclusions: None,
-        max_hops: busbar_core::config::DEFAULT_FAILOVER_CAP,
+    // their own. Carried on the input (production fills the `DEFAULT_FAILOVER_*` constants; the test
+    // fixture may override), so this is byte-identical to the pre-pivot inline lowering.
+    let failover_cfg = input.default_failover.as_ref().map(|f| busbar_core::config::FailoverCfg {
+        timeout_secs: f.timeout_secs,
+        exclusions: f.exclusions.clone(),
+        max_hops: f.max_hops,
     });
 
     // The active-probe schedule: CARRY the prior generation's Arc iff the lane set is identical (the

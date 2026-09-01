@@ -47,8 +47,8 @@ static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
 /// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
 /// cascade into every other test that wants the lock. Synchronous tests take it with
 /// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
-#[cfg(test)]
-pub(crate) static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(any(test, feature = "test-support"))]
+pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Install (or RE-install) the resolved limits process-wide: at boot from `main`'s construction
 /// path, and again on every config apply/reload — the newest install wins, so operator limit
@@ -62,8 +62,8 @@ pub(crate) static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 /// SUBJECT is racing the live cap by re-installing it in a hot loop with no rollback between
 /// iterations; `InstallGuard` cannot serve that (a guard restores on drop, but the test wants the
 /// value to keep flipping mid-run).
-#[cfg(test)]
-pub(crate) fn install(resolved: &LimitsResolved) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
     mirror_upstream_error_cap(Some(resolved));
 }
@@ -86,7 +86,7 @@ pub(crate) fn install(resolved: &LimitsResolved) {
 /// the DROP rather than on each `return Err` is what makes it total — a build step added later
 /// cannot forget to unwind, and neither can a `?`.
 #[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
-pub(crate) struct InstallGuard {
+pub struct InstallGuard {
     /// What was installed before — `None` when nothing was (boot, or a test process).
     prior: Option<LimitsResolved>,
     committed: bool,

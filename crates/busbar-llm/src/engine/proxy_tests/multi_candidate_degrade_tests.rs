@@ -9,12 +9,12 @@
 //! relays the backend body verbatim (never through the IR), so an `n>1` request there keeps all N.
 
 use super::translate_request_cross_protocol;
-use crate::operation::Operation;
+use busbar_core::operation::Operation;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> crate::transport::Transport {
-    crate::transport::Transport::Http
+fn http() -> busbar_core::transport::Transport {
+    busbar_core::transport::Transport::Http
 }
 
 // ---- CROSS-PROTOCOL multi-candidate: FORWARDED, first candidate at 200 (v1.5.4 degrade). ----
@@ -27,7 +27,7 @@ fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -37,14 +37,14 @@ fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
         "max_tokens": 16,
         "n": 3
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -71,7 +71,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -79,14 +79,14 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": { "candidateCount": 2 }
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "gemini",
-        crate::handlers::chat("gemini", http()),
+        busbar_core::handlers::chat("gemini", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -109,7 +109,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -118,14 +118,14 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
         "messages": [{"role": "user", "content": "hi"}],
         "n": 3
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -145,7 +145,7 @@ fn single_candidate_cross_protocol_is_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -153,14 +153,14 @@ fn single_candidate_cross_protocol_is_not_rejected() {
         json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"n":1}),
         json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":16}),
     ] {
-        let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+        let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
         let r = translate_request_cross_protocol(
             &app,
             0,
             "openai",
-            crate::handlers::chat("openai", http()),
+            busbar_core::handlers::chat("openai", http()),
             Some(body),
-            crate::proxy::APPLICATION_JSON,
+            crate::engine::APPLICATION_JSON,
             true,
             &hop_bytes,
             "test-key",
@@ -182,24 +182,24 @@ fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "text-embedding-004",
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();
-    let op = crate::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_core::handlers::op_for("openai", Operation::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({
         "model": "text-embedding-3-small",
         "input": ["alpha", "beta", "gamma"]
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
         op,
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",
@@ -221,21 +221,21 @@ fn single_input_embeddings_to_gemini_is_allowed() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "text-embedding-004",
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             "http://unused.local",
         ))
         .build();
-    let op = crate::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_core::handlers::op_for("openai", Operation::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({ "model": "text-embedding-3-small", "input": ["alpha"] });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let r = translate_request_cross_protocol(
         &app,
         0,
         "openai",
         op,
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         "test-key",

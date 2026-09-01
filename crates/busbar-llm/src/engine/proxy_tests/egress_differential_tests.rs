@@ -4,7 +4,7 @@
 //! THE EGRESS DIFFERENTIAL HARNESS — the gate the one-egress-stack migration re-runs at every step.
 //!
 //! Two stacks serve busbar's outbound hops today: stack A, the owned hyper engine
-//! (`crate::proxy::build_egress_client` — the LLM lanes), and stack B, the pinned reqwest client
+//! (`crate::engine::build_egress_client` — the LLM lanes), and stack B, the pinned reqwest client
 //! (`busbar_substrate::egress::build_pinned_client` — the plane hops). The owner ruling folds them
 //! into ONE engine, and "no behavior change on any plane" is provable only by DIFFERENTIAL
 //! observation: drive both stacks against the same recording fixtures and compare what each one
@@ -56,10 +56,10 @@ enum Outcome {
 /// Drive ONE hop through stack A — the owned hyper engine on the LLM posture (webpki trust,
 /// system DNS, no pin). `uri` must therefore be dialable as written (an IP-literal host).
 async fn stack_a(uri: &str, body: &str) -> Outcome {
-    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+    let client = crate::engine::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
         4, 300, false, false,
     ));
-    let req = crate::proxy::egress_request(
+    let req = crate::engine::egress_request(
         uri.parse().expect("fixture uri"),
         http::HeaderMap::new(),
         Bytes::from(body.to_string()),

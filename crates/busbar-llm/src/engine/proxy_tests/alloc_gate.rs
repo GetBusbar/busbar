@@ -35,7 +35,7 @@
 //! prints its measured count. Update the `const` here to the new measured value (+ the documented
 //! headroom for the coarse gate) IN THE SAME COMMIT, so the number is always the reviewed truth.
 
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::CountingJemalloc;
 use serde_json::json;
@@ -103,7 +103,7 @@ fn alloc_gate_translate_write_stable() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1", // never dialed — this path does no I/O
         ))
         .pool("", &[(0, 1)])
@@ -115,11 +115,11 @@ fn alloc_gate_translate_write_stable() {
     // WARM the path once OUTSIDE the measured window: first-touch lazy statics (the protocol
     // registry, etc.) allocate once per process, not per request, and must not be charged to the
     // per-request count.
-    let _ = crate::proxy::translate_request_cross_protocol(
+    let _ = crate::engine::translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         Some(body_value.clone()),
         "application/json",
         false,
@@ -128,11 +128,11 @@ fn alloc_gate_translate_write_stable() {
     );
 
     let before = CountingJemalloc::reset();
-    let out = crate::proxy::translate_request_cross_protocol(
+    let out = crate::engine::translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         Some(body_value),
         "application/json",
         false,
@@ -185,14 +185,14 @@ async fn alloc_gate_openai_passthrough_forward() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])
         .build();
 
-    async fn one_request(app: &Arc<crate::state::App>) {
-        let resp = crate::proxy::forward_with_pool(
+    async fn one_request(app: &Arc<busbar_core::state::App>) {
+        let resp = crate::engine::forward_with_pool(
             app,
             vec![member(0)],
             openai_chat_body(),
@@ -200,7 +200,7 @@ async fn alloc_gate_openai_passthrough_forward() {
             "",
             None,
             "openai",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;

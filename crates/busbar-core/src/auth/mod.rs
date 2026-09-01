@@ -119,7 +119,7 @@ pub(crate) enum ChainVerdict {
 // holds only the `AuthModule` contract (re-exported above from `busbar-api`).
 
 /// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
-pub(crate) struct AuthMiddleware {
+pub struct AuthMiddleware {
     // 1.5.3: `upstream_creds` is NO LONGER a field here. The mode moved off `auth:` onto the `pools:`
     // section (an all-pools default plus a per-pool override), because whose credential
     // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on

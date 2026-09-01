@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub mod overlay;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
-pub(crate) mod groups;
+pub mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub(crate) mod migrate_export;
@@ -627,7 +627,7 @@ pub(crate) type IdentityProviders = indexmap::IndexMap<String, IdentityProviderC
 /// definition). This is an INTERNAL type built by [`resolve_auth`] — it is never deserialized, because
 /// 1.5.3 removed the inline chain-entry form entirely (a chain is now a list of bare NAMES).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AuthChainEntry {
+pub struct AuthChainEntry {
     /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
     /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
     pub(crate) name: String,
@@ -2374,7 +2374,7 @@ pub fn caller_in_hook_groups(
 /// The default hard wall-clock deadline for a gate decision, in milliseconds. Used by serde's
 /// `default = "default_policy_timeout_ms"`. Also the single source of truth consumed at the
 /// resolution sites in [`crate::limits`] and [`crate::hooks`].
-pub(crate) const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
+pub const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
 
 fn default_policy_timeout_ms() -> u64 {
     DEFAULT_POLICY_TIMEOUT_MS
@@ -2646,7 +2646,7 @@ fn default_max_hops() -> usize {
 /// on_exhausted: { queue: { max_ms: 250 } }   # bounded wait for a freed permit, then reject
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OnExhaustedCfg {
+pub enum OnExhaustedCfg {
     Reject,
     LeastBad,
     FallbackPool(String),

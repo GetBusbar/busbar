@@ -21,7 +21,7 @@
 //! `model == <lane model>` assertion fails. The second test guards the other direction: it stays
 //! green ONLY because the fill is fill-ONLY (it must never overwrite an upstream-provided model).
 
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -86,13 +86,13 @@ async fn cross_protocol_response_reports_routed_lane_model_when_upstream_omits_i
     let app = TestApp::new()
         .lane(LaneSpec::new(
             LANE_MODEL,
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])
         .build();
 
-    let response = crate::proxy::forward_with_pool(
+    let response = crate::engine::forward_with_pool(
         &app,
         vec![member(0)],
         anthropic_chat_body(),
@@ -100,7 +100,7 @@ async fn cross_protocol_response_reports_routed_lane_model_when_upstream_omits_i
         "",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -148,13 +148,13 @@ async fn cross_protocol_response_never_overrides_an_upstream_provided_model() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             LANE_MODEL,
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])
         .build();
 
-    let response = crate::proxy::forward_with_pool(
+    let response = crate::engine::forward_with_pool(
         &app,
         vec![member(0)],
         anthropic_chat_body(),
@@ -162,7 +162,7 @@ async fn cross_protocol_response_never_overrides_an_upstream_provided_model() {
         "",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;

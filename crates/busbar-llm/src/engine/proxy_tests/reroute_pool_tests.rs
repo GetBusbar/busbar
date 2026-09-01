@@ -24,7 +24,8 @@
 //! loop, one mutation. That simultaneity is the cell's real evidence; a per-plane test that survives
 //! a mutation of the shared loop would be proving a plane-local copy instead.
 
-use crate::state::WeightedLane;
+use busbar_core::store::LaneRuntime as _;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -91,12 +92,12 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "primary",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &primary.base_url(),
         ))
         .lane(LaneSpec::new(
             "twin",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &twin.base_url(),
         ))
         // The test `forward` helper dispatches against the default (`""`) pool cell.
@@ -106,9 +107,9 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
     // Trip the PRIMARY's cell Open with a cooldown far past the real wall clock the selection reads,
     // so it is genuinely inadmissible rather than merely unlucky in the weighted draw.
     app.store
-        .force_open_in("", 0, crate::state::now() + 1_000_000);
+        .force_open_in("", 0, busbar_core::state::now() + 1_000_000);
 
-    let response = crate::proxy::forward_with_pool(
+    let response = crate::engine::forward_with_pool(
         &app,
         vec![member(0), member(1)],
         chat_body(),
@@ -116,7 +117,7 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
         "",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -202,7 +203,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &primary.base_url(),
             )
             // One slot, which the test then holds for the whole request.
@@ -210,7 +211,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         )
         .lane(LaneSpec::new(
             "twin",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &twin.base_url(),
         ))
         .pool("", &[(0, 1), (1, 1)])
@@ -223,7 +224,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         .try_acquire(0)
         .expect("the primary's only permit is available before the request");
 
-    let response = crate::proxy::forward_with_pool(
+    let response = crate::engine::forward_with_pool(
         &app,
         vec![member(0), member(1)],
         chat_body(),
@@ -231,7 +232,7 @@ async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_ser
         "",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;

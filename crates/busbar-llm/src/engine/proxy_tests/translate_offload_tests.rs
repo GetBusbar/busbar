@@ -8,7 +8,7 @@
 //! current_thread runtime (the data plane's flavor), and the small-body path must not regress
 //! (the alloc gate elsewhere pins it).
 
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &server.base_url(),
         ))
         .pool("", &[(0, 1)])
@@ -60,7 +60,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     .into();
     assert!(huge.len() >= 128 * 1024);
 
-    let resp = crate::proxy::forward_with_pool(
+    let resp = crate::engine::forward_with_pool(
         &app,
         vec![member(0)],
         huge,
@@ -68,7 +68,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
         "",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -86,7 +86,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
     }))
     .unwrap()
     .into();
-    let resp = crate::proxy::forward_with_pool(
+    let resp = crate::engine::forward_with_pool(
         &app,
         vec![member(0)],
         small,
@@ -94,7 +94,7 @@ async fn huge_body_translates_via_offload_and_forwards() {
         "",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;

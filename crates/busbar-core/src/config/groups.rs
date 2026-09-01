@@ -93,7 +93,7 @@ fn default_true() -> bool {
 
 /// The metric a limit caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LimitMetric {
+pub enum LimitMetric {
     /// Request count per window.
     Requests,
     /// Total tokens (all tiers) per window.
@@ -132,7 +132,7 @@ impl LimitMetric {
 /// A limit's accounting window (nouns only).
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum LimitWindow {
+pub enum LimitWindow {
     Minute,
     Hour,
     Day,
@@ -169,7 +169,7 @@ impl LimitWindow {
 /// The `{ <metric>: amount, per: window }` shape is enforced at DESERIALIZE time (not a later
 /// validation pass), so a malformed limit fails with a precise error at parse.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LimitCfg {
+pub struct LimitCfg {
     pub(crate) metric: LimitMetric,
     pub(crate) amount: u64,
     /// `Some` for `requests`/`tokens`/`budget` (required); ALWAYS `None` for `concurrent`.

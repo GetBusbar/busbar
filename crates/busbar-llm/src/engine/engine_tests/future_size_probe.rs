@@ -20,12 +20,12 @@ fn forward_future_size_is_pinned() {
     let app = crate::test_support::TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .pool("", &[(0, 1)])
         .build();
-    let fut = crate::proxy::forward_with_pool(
+    let fut = crate::engine::forward_with_pool(
         &app,
         vec![],
         bytes::Bytes::new(),
@@ -33,7 +33,7 @@ fn forward_future_size_is_pinned() {
         "",
         None,
         "openai",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     );
     let size = std::mem::size_of_val(&fut);

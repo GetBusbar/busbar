@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(crate) use crate::store::now;
+pub use crate::store::now;
 pub(crate) use crate::store::LaneRuntime;
 
 use crate::proxy::EgressClient as Client;

@@ -3072,18 +3072,20 @@ pub(crate) fn resolve_breaker_cfg(
     }
 }
 
+// The engine-level tests relocated with the engine ride `engine_tests/` (the money-path Phase 3-4 C
+// relocation), not the `proxy/tests/` path core declared them at; `#[path]` is relative to `engine/`.
 #[cfg(test)]
-#[path = "tests/inject_include_usage_tests.rs"]
+#[path = "engine_tests/inject_include_usage_tests.rs"]
 mod inject_include_usage_tests;
 
 #[cfg(test)]
-#[path = "tests/crossproto_delivery_billing_tests.rs"]
+#[path = "engine_tests/crossproto_delivery_billing_tests.rs"]
 mod crossproto_delivery_billing_tests;
 
 #[cfg(test)]
-#[path = "tests/send_envelope_tests.rs"]
+#[path = "engine_tests/send_envelope_tests.rs"]
 mod send_envelope_tests;
 
 #[cfg(test)]
-#[path = "tests/future_size_probe.rs"]
+#[path = "engine_tests/future_size_probe.rs"]
 mod future_size_probe;

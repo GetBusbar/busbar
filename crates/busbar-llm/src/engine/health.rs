@@ -510,5 +510,5 @@ async fn read_capped_error_body(
 }
 
 #[cfg(test)]
-#[path = "tests/health_tests.rs"]
+#[path = "proxy_tests/health_tests.rs"]
 mod tests;

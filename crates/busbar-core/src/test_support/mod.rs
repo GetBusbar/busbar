@@ -660,52 +660,57 @@ impl LaneSpec {
         self
     }
 
-    fn to_lane(&self) -> crate::state::Lane {
-        let auth = self.auth.as_deref().map(|a| match a {
-            "api-key" => crate::config::ProviderAuth::ApiKey,
-            "bearer" => crate::config::ProviderAuth::Bearer,
-            other => panic!("unexpected test auth style in LaneSpec: {other}"),
-        });
-        let credential = crate::egress_auth::resolve(self.protocol, auth);
-        crate::state::Lane {
-            // The REAL boot prebuild (same as production appbuild), so the engine's prebuilt-vs-live
-            // header paths are both exercised by the fixture protocols' real credentials.
-            prebuilt_auth: crate::egress_auth::prebuild_auth(
-                &credential,
-                &self.api_key,
-                &crate::proxy::host_from_base(&self.base_url),
-            ),
-            // The REAL boot precompute, so tests exercise the same egress-target table production
-            // reads (and the probe/forward byte-identity proofs cover it). Test base URLs always
-            // parse; a fixture that breaks that should fail loudly here.
-            egress_targets: crate::proxy::build_egress_targets(
-                self.protocol,
-                self.path.as_deref(),
-                self.path_base.as_deref(),
-                self.upstream_model.as_deref().unwrap_or(&self.model),
-                &self.base_url,
-            )
-            .expect("test lane egress URLs parse"),
-            reasoning: false,
-            prompt_caching: false,
-            credential,
+    /// Emit this lane's NEUTRAL [`LlmLaneInput`] — the carrier field the LLM plane's `build_runtime`
+    /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `LlmBuildInput` to the
+    /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
+    /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
+    fn to_lane_input(&self) -> busbar_substrate::plane_host::LlmLaneInput {
+        let auth_style = match self.auth.as_deref() {
+            None => busbar_substrate::plane_host::LlmAuthStyle::Default,
+            Some("api-key") => busbar_substrate::plane_host::LlmAuthStyle::ApiKey,
+            Some("bearer") => busbar_substrate::plane_host::LlmAuthStyle::Bearer,
+            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+        };
+        busbar_substrate::plane_host::LlmLaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
-            signing_host: crate::proxy::host_from_base(&self.base_url),
-            base_url: self.base_url.clone(),
-            api_key: busbar_api::Redacted::new(self.api_key.clone()),
-            // G6 A4b Lane inversion: `Lane.protocol` is the interned protocol NAME now, not an
-            // `Arc<Protocol>`. The builder holds that interned name directly (Phase 1.5 neutral fixture).
-            protocol: self.protocol,
-            max: self.max,
-            error_map: std::sync::Arc::new(self.error_map.clone()),
-            context_max: self.context_max,
+            protocol: self.protocol.to_string(),
+            base_url: self.base_url.trim_end_matches('/').to_string(),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
-            health: self.health.clone(),
-            default_max_tokens: self.default_max_tokens,
             upstream_model: self.upstream_model.clone(),
+            api_key_plaintext: self.api_key.clone(),
+            auth_style,
+            scope: None,
+            token_url: None,
+            subject: None,
+            error_map: self.error_map.clone(),
+            health: self.health.as_ref().map(|h| {
+                busbar_substrate::plane_host::LlmHealthInput {
+                    mode: match h.mode {
+                        crate::config::HealthMode::None => {
+                            busbar_substrate::plane_host::LlmHealthMode::None
+                        }
+                        crate::config::HealthMode::Dead => {
+                            busbar_substrate::plane_host::LlmHealthMode::Dead
+                        }
+                        crate::config::HealthMode::Active => {
+                            busbar_substrate::plane_host::LlmHealthMode::Active
+                        }
+                    },
+                    interval_secs: h.interval_secs,
+                    timeout_secs: h.timeout_secs,
+                }
+            }),
+            allow_metadata_hosts: Vec::new(),
+            context_max: self.context_max,
+            default_max_tokens: self.default_max_tokens,
             attempt_timeout_ms: None,
+            reasoning: false,
+            prompt_caching: false,
+            max_concurrent: self.max,
+            limited: self.limited,
+            budget: self.budget,
         }
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
@@ -763,7 +768,11 @@ type PlaneContainerHooks =
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
-    pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
+    /// Pool member lists as NEUTRAL `(lane_idx, weight)` pairs (money-path Phase 3-4 C — the fixture is
+    /// plane-agnostic: it hands `LlmBuildInput` to the registered `build_runtime`, naming no
+    /// `WeightedLane`). The per-pool `failover:`/`affinity:`/`breaker:`/`upstream_credentials:` overrides
+    /// and member metadata ride the sibling maps below.
+    pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
     /// `admin_auth:` chain module names for the built App. `None` = the production default
     /// (`[admin-tokens]`); `Some(vec![])` selects the explicit OPEN admin posture (dev).
@@ -789,10 +798,35 @@ pub struct TestApp {
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
-    pool_runtime: std::collections::HashMap<String, crate::state::PoolRuntime>,
+    /// Per-pool NEUTRAL overrides the `LlmPoolInput` carrier fields the fixture assembles: the pool's
+    /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
+    /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
+    /// carrier default (`None` / no metadata). The former `.pool_runtime(PoolRuntime{…})` fixture method
+    /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
+    pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
+    pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
+    pool_breaker: std::collections::HashMap<String, busbar_substrate::plane_host::LlmBreakerInput>,
+    pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
+    #[allow(clippy::type_complexity)]
+    pool_member_meta: std::collections::HashMap<
+        String,
+        std::collections::HashMap<usize, (Option<String>, Option<f64>, Vec<String>)>,
+    >,
+    /// The pool-hook facade maps (money-path Phase 3-4 C) the built `App` carries — the resolved
+    /// per-pool routing policy / decision gates / rewrite chains the engine reads via `App::pool_*`.
+    /// Set by the routing-policy fixtures (`.pool_policy_resolved`/`.pool_gates_resolved`/
+    /// `.pool_rewrites_resolved`); empty for every test with no pool-level hook.
+    pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
+    pool_decision_gates:
+        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    #[allow(clippy::type_complexity)]
+    pool_rewrite_chains: std::collections::HashMap<
+        String,
+        Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+    >,
     /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
     upstream_credentials: crate::auth::UpstreamCreds,
-    fallback_pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
+    fallback_pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: Vec<String>,
@@ -889,7 +923,14 @@ impl TestApp {
             governance: None,
             cost: None,
             failover_cfg: None,
-            pool_runtime: std::collections::HashMap::new(),
+            pool_failover: std::collections::HashMap::new(),
+            pool_affinity: std::collections::HashMap::new(),
+            pool_breaker: std::collections::HashMap::new(),
+            pool_upstream_creds: std::collections::HashMap::new(),
+            pool_member_meta: std::collections::HashMap::new(),
+            pool_orderings: std::collections::HashMap::new(),
+            pool_decision_gates: std::collections::HashMap::new(),
+            pool_rewrite_chains: std::collections::HashMap::new(),
             fallback_pools: std::collections::HashMap::new(),
             on_exhausted_cfgs: std::collections::HashMap::new(),
             hook_registry: std::collections::HashMap::new(),
@@ -1150,7 +1191,7 @@ impl TestApp {
     }
     /// Define a pool over lane indices: `members` is `(lane_index, weight)` pairs.
     pub fn pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
-        self.pools.insert(name.into(), weighted(members));
+        self.pools.insert(name.into(), members.to_vec());
         self
     }
     /// Set the ALL-POOLS upstream-credential mode (1.5.3: the reserved `pools.upstream_credentials:`
@@ -1322,12 +1363,78 @@ impl TestApp {
         self.failover_cfg = Some(f);
         self
     }
-    pub fn pool_runtime(mut self, name: &str, rt: crate::state::PoolRuntime) -> Self {
-        self.pool_runtime.insert(name.into(), rt);
+    /// Set a pool's own `failover:` override (deadline / exclusions / hop cap) — the granular successor
+    /// to the former `.pool_runtime(PoolRuntime{ failover: … })` (the fixture is plane-agnostic now, so
+    /// it fills the neutral `LlmPoolInput.failover` the registered `build_runtime` reconstructs from).
+    pub fn pool_failover(mut self, name: &str, f: crate::config::FailoverCfg) -> Self {
+        self.pool_failover.insert(name.into(), f);
+        self
+    }
+    /// Set a pool's own `affinity:` block (session-stickiness header).
+    pub fn pool_affinity(mut self, name: &str, a: crate::config::AffinityCfg) -> Self {
+        self.pool_affinity.insert(name.into(), a);
+        self
+    }
+    /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
+    /// neutral carrier the plane reconstructs it from).
+    pub fn pool_breaker(mut self, name: &str, b: &crate::store::BreakerCfg) -> Self {
+        self.pool_breaker.insert(name.into(), b.to_llm());
+        self
+    }
+    /// Set a pool's own `upstream_credentials:` override (the 1.5.3 per-pool egress-credential mode).
+    pub fn pool_upstream_creds(mut self, name: &str, uc: crate::auth::UpstreamCreds) -> Self {
+        self.pool_upstream_creds.insert(name.into(), uc);
+        self
+    }
+    /// Set a pool member's routing metadata `(tier, cost_per_mtok, tags)` keyed by lane index — the
+    /// projection the routing `Candidate` reads inside the policy arm.
+    pub fn pool_member_meta(
+        mut self,
+        name: &str,
+        lane_idx: usize,
+        tier: Option<&str>,
+        cost_per_mtok: Option<f64>,
+        tags: &[&str],
+    ) -> Self {
+        self.pool_member_meta.entry(name.into()).or_default().insert(
+            lane_idx,
+            (
+                tier.map(str::to_string),
+                cost_per_mtok,
+                tags.iter().map(|t| (*t).to_string()).collect(),
+            ),
+        );
+        self
+    }
+    /// Install a pre-resolved pool ROUTING POLICY (the `route:`/base-hook order) read by the engine
+    /// through the `App::pool_policy` facade — the successor to the former `.pool_runtime(PoolRuntime{
+    /// policy: … })`. The plane's tests build the `ResolvedPolicy` (a core-owned type they name at
+    /// `busbar_core::hooks::ResolvedPolicy`) and hand it here.
+    pub fn pool_policy_resolved(mut self, name: &str, policy: crate::hooks::ResolvedPolicy) -> Self {
+        self.pool_orderings.insert(name.into(), policy);
+        self
+    }
+    /// Install a pool's pre-resolved DECISION GATES `(priority, policy)`, read via `App::pool_gates`.
+    pub fn pool_gates_resolved(
+        mut self,
+        name: &str,
+        gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    ) -> Self {
+        self.pool_decision_gates.insert(name.into(), gates);
+        self
+    }
+    /// Install a pool's pre-resolved REWRITE chain `(timeout, policy)`, read via `App::pool_rewrites`.
+    #[allow(clippy::type_complexity)]
+    pub fn pool_rewrites_resolved(
+        mut self,
+        name: &str,
+        rewrites: Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+    ) -> Self {
+        self.pool_rewrite_chains.insert(name.into(), rewrites);
         self
     }
     pub fn fallback_pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
-        self.fallback_pools.insert(name.into(), weighted(members));
+        self.fallback_pools.insert(name.into(), members.to_vec());
         self
     }
     pub fn on_exhausted(mut self, name: &str, oe: crate::config::OnExhausted) -> Self {
@@ -1364,11 +1471,14 @@ impl TestApp {
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
         let mcp_durable_store = self.mcp_durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
-        let mut lanes = Vec::with_capacity(self.lanes.len());
+        // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LlmLaneInput`, not `Lane`,
+        // and hands `LlmBuildInput` to the registered `build_runtime` fn-pointer (production parity).
+        // `lane_data` (the breaker/permit view) stays core — it seeds the `HealthState` store.
+        let mut lane_inputs = Vec::with_capacity(self.lanes.len());
         let mut lane_data = Vec::with_capacity(self.lanes.len());
         for (i, spec) in self.lanes.iter().enumerate() {
             by_model.insert(spec.model.clone(), i);
-            lanes.push(spec.to_lane());
+            lane_inputs.push(spec.to_lane_input());
             lane_data.push(spec.to_lane_data());
         }
         // THE PLANE SLOTS, filled from OUTSIDE core: each plane's test-kit already built its runtime
@@ -1414,7 +1524,7 @@ impl TestApp {
         let ts_pools: Vec<(&str, Vec<usize>)> = self
             .pools
             .iter()
-            .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+            .map(|(name, members)| (name.as_str(), members.iter().map(|(idx, _)| *idx).collect()))
             .collect();
         let ts_by_model: Vec<(&str, usize)> = by_model
             .iter()
@@ -1423,7 +1533,7 @@ impl TestApp {
         let tslots = std::sync::Arc::new(crate::telemetry::AppSlots::build(
             &ts_pools,
             &ts_by_model,
-            |idx| lanes.get(idx).map(|lane| lane.model.as_str()),
+            |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
             crate::plane::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
@@ -1443,37 +1553,100 @@ impl TestApp {
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
         if crate::plane::is_fallback(crate::plane::fallback_key()) {
-            let llm_runtime = crate::state::NativeRuntime {
-                probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
-                // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
-                // installs an override, so a test that sets one via `.pool_runtime(...)` still exercises
-                // the full lookup.
-                any_pool_upstream_creds_override: self
-                    .pool_runtime
-                    .values()
-                    .any(|rt| rt.upstream_credentials.is_some()),
-                lanes,
-                by_model,
-                pools: self.pools,
-                pool_runtime: self.pool_runtime,
-                fallback_pools: self.fallback_pools,
-                on_exhausted_cfgs: self.on_exhausted_cfgs,
-                failover_cfg: self.failover_cfg,
-                queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-                upstream_credentials: self.upstream_credentials,
-                client: crate::state::UpstreamClients::build(1, || {
-                    // The REAL owned egress client at default spec — tests drive the same hyper stack
-                    // production runs (the in-process MockServer is plain http, which the connector's
-                    // `https_or_http` posture serves).
-                    crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                        4, 300, false, false,
-                    ))
-                }),
+            // Assemble the NEUTRAL `LlmBuildInput` (money-path Phase 3-4 C) exactly as production
+            // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
+            // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
+            // lowering production runs (egress targets, credentials, upstream client, probe schedule).
+            let member_input = |pool: &str, idx: usize, weight: u32| {
+                let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
+                busbar_substrate::plane_host::LlmPoolMemberInput {
+                    model: lane_inputs.get(idx).map(|l| l.model.clone()).unwrap_or_default(),
+                    lane_idx: idx,
+                    weight,
+                    reasoning: None,
+                    attempt_timeout_ms: None,
+                    tier: meta.and_then(|m| m.0.clone()),
+                    cost_per_mtok: meta.and_then(|m| m.1),
+                    tags: meta.map(|m| m.2.clone()).unwrap_or_default(),
+                }
             };
-            plane_slots.insert(
-                llm_runtime_key,
-                std::sync::Arc::new(llm_runtime) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
-            );
+            // Primary pools ∪ fallback-only pools: production's `fallback_pools` IS `pools.clone()`, so a
+            // fallback target is itself a pool. Dedup by name (a primary definition wins), stable order.
+            let mut pool_map: std::collections::BTreeMap<String, Vec<(usize, u32)>> =
+                std::collections::BTreeMap::new();
+            for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
+                pool_map.insert(name.clone(), members.clone());
+            }
+            let pool_inputs: Vec<busbar_substrate::plane_host::LlmPoolInput> = pool_map
+                .into_iter()
+                .map(|(name, members)| busbar_substrate::plane_host::LlmPoolInput {
+                    members: members
+                        .iter()
+                        .map(|(idx, w)| member_input(&name, *idx, *w))
+                        .collect(),
+                    failover: self.pool_failover.get(&name).map(|f| {
+                        busbar_substrate::plane_host::LlmFailoverInput {
+                            timeout_secs: f.timeout_secs,
+                            exclusions: f.exclusions.clone(),
+                            max_hops: f.max_hops,
+                        }
+                    }),
+                    affinity: self.pool_affinity.get(&name).map(|a| {
+                        busbar_substrate::plane_host::LlmAffinityInput {
+                            header_name: a.header_name.clone(),
+                        }
+                    }),
+                    on_exhausted: match self.on_exhausted_cfgs.get(&name) {
+                        Some(crate::config::OnExhausted::FallbackPool(p)) => {
+                            busbar_substrate::plane_host::LlmOnExhausted::FallbackPool(p.clone())
+                        }
+                        Some(crate::config::OnExhausted::LeastBad) => {
+                            busbar_substrate::plane_host::LlmOnExhausted::LeastBad
+                        }
+                        Some(crate::config::OnExhausted::Queue { max_ms }) => {
+                            busbar_substrate::plane_host::LlmOnExhausted::Queue { max_ms: *max_ms }
+                        }
+                        _ => busbar_substrate::plane_host::LlmOnExhausted::Status503,
+                    },
+                    upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
+                    breaker: self.pool_breaker.get(&name).cloned(),
+                    name,
+                })
+                .collect();
+            let default_failover = self
+                .failover_cfg
+                .as_ref()
+                .map(|f| busbar_substrate::plane_host::LlmFailoverInput {
+                    timeout_secs: f.timeout_secs,
+                    exclusions: f.exclusions.clone(),
+                    max_hops: f.max_hops,
+                })
+                .unwrap_or(busbar_substrate::plane_host::LlmFailoverInput {
+                    timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
+                    exclusions: None,
+                    max_hops: crate::config::DEFAULT_FAILOVER_CAP,
+                });
+            let build_input = busbar_substrate::plane_host::LlmBuildInput {
+                lanes: lane_inputs,
+                pools: pool_inputs,
+                upstream_credentials: self.upstream_credentials,
+                allow_metadata_hosts: Vec::new(),
+                allow_all_metadata: false,
+                blocked_metadata_hosts: Vec::new(),
+                client_settings: busbar_substrate::plane_host::LlmClientSettings {
+                    pool_max_idle_per_host: 4,
+                    pool_idle_timeout_secs: 300,
+                    http1_only: false,
+                    h2_prior_knowledge: false,
+                },
+                default_failover: Some(default_failover),
+            };
+            if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+                .and_then(|d| d.build_runtime)
+            {
+                let slot = f(&build_input as &dyn std::any::Any, None);
+                plane_slots.insert(llm_runtime_key, slot);
+            }
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
@@ -1576,6 +1749,12 @@ impl TestApp {
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
+            // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
+            // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
+            // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
+            pool_orderings: self.pool_orderings,
+            pool_decision_gates: self.pool_decision_gates,
+            pool_rewrite_chains: self.pool_rewrite_chains,
             plane_gates: plane_gates_map,
             hook_env,
             hook_registry: self.hook_registry,
@@ -1928,18 +2107,6 @@ pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
         .filter_map(|l| l.rsplit(' ').next())
         .filter_map(|v| v.trim().parse::<f64>().ok())
         .sum()
-}
-
-fn weighted(members: &[(usize, u32)]) -> Vec<crate::state::WeightedLane> {
-    members
-        .iter()
-        .map(|&(idx, weight)| crate::state::WeightedLane {
-            reasoning: None,
-            idx,
-            weight,
-            attempt_timeout_ms: None,
-        })
-        .collect()
 }
 
 /// Create (and return) a PRIVATE scratch directory for one test, under the process temp dir.

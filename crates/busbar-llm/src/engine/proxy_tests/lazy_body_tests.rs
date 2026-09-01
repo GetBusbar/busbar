@@ -32,7 +32,7 @@ fn head_matches_dom_for_captured_keys() {
     for raw in bodies {
         let bytes = Bytes::from(raw.as_bytes().to_vec());
         let lazy = LazyBody::parse(&bytes).expect("valid JSON must head-parse");
-        let dom: Value = crate::json::parse(&bytes).unwrap();
+        let dom: Value = busbar_core::json::parse(&bytes).unwrap();
         for key in captured_head_keys() {
             assert_eq!(
                 lazy.probe().get(key),
@@ -63,7 +63,7 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
     ];
     for raw in inputs {
         let bytes = Bytes::copy_from_slice(raw);
-        let dom_ok = crate::json::parse::<Value>(&bytes).is_ok();
+        let dom_ok = busbar_core::json::parse::<Value>(&bytes).is_ok();
         let head_ok = LazyBody::parse(&bytes).is_ok();
         assert_eq!(
             head_ok,
@@ -85,34 +85,34 @@ fn head_pristine_matches_translate_output() {
     let cases: &[(&'static str, &'static str, &'static str, Value)] = &[
         // (proto, name, lane_model, body) — pristine expected
         (
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "openai",
             "gpt-4o",
             json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}),
         ),
         (
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "anthropic",
             "claude-3",
             json!({"model":"claude-3","max_tokens":7,"messages":[]}),
         ),
         // model differs → not head-pristine (translate rewrites)
         (
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "openai",
             "gpt-4o-real",
             json!({"model":"alias","messages":[]}),
         ),
         // shim key present → not head-pristine
         (
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "openai",
             "gpt-4o",
             json!({"model":"gpt-4o","__busbar_gemini_json_array":true}),
         ),
         // gemini: no body model → not head-pristine (conservative), translate still byte-identical
         (
-            crate::proto::PROTO_GEMINI,
+            crate::proto_codec::PROTO_GEMINI,
             "gemini",
             "url-model-x",
             json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}]}),
@@ -122,14 +122,14 @@ fn head_pristine_matches_translate_output() {
         let app = TestApp::new()
             .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
             .build();
-        let hop_bytes = Bytes::from(crate::json::to_vec(body).unwrap());
+        let hop_bytes = Bytes::from(busbar_core::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
         let head_says = head_provably_pristine(&app, 0, lazy.probe());
         let out = translate_request_cross_protocol(
             &app,
             0,
             name,
-            crate::handlers::chat(name, crate::transport::Transport::Http),
+            busbar_core::handlers::chat(name, busbar_core::transport::Transport::Http),
             Some(body.clone()),
             APPLICATION_JSON,
             true,
@@ -155,7 +155,7 @@ fn non_object_body_is_head_pristine() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://unused.local",
         ))
         .build();
@@ -180,7 +180,7 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
         Some("a")
     );
     let dom = lazy.ensure_dom().expect("validated bytes must re-parse");
-    assert_eq!(*dom, crate::json::parse::<Value>(&bytes).unwrap());
+    assert_eq!(*dom, busbar_core::json::parse::<Value>(&bytes).unwrap());
     dom.as_object_mut()
         .unwrap()
         .insert("model".into(), json!("b"));
@@ -196,9 +196,9 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
 }
 
 /// The first user-turn text projected from a request's facts — the read these tests use to tell one
-/// parse of a body from another. Reads through the neutral [`crate::ir::facts::IrFacts`] projection
+/// parse of a body from another. Reads through the neutral [`busbar_substrate::ir::facts::IrFacts`] projection
 /// (turn 0's content items) rather than the concrete IR, mirroring `ensure_ir`'s facts return.
-fn first_user_text(ir: &(dyn crate::ir::facts::IrFacts + Send + Sync)) -> String {
+fn first_user_text(ir: &(dyn busbar_substrate::ir::facts::IrFacts + Send + Sync)) -> String {
     ir.content()
         .into_iter()
         .filter(|it| it.slot().turn_index() == Some(0))
@@ -216,7 +216,7 @@ fn ensure_ir_reads_the_body_through_the_ingress_reader() {
     );
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     let ir = lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .expect("a well-formed openai chat body must read into the IR");
     let shape = ir.shape();
     assert_eq!(
@@ -238,7 +238,7 @@ fn ensure_ir_is_memoized_within_one_request() {
     let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     assert!(lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .is_some());
     // Reach past `ensure_dom` (which would legitimately drop the memo) straight to the tree.
     match &mut lazy.body {
@@ -248,7 +248,7 @@ fn ensure_ir_is_memoized_within_one_request() {
         Body::Head { .. } => panic!("ensure_ir must have materialized the DOM"),
     }
     let ir = lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .expect("the memo must still be present");
     assert_eq!(
         first_user_text(ir),
@@ -265,11 +265,11 @@ fn ensure_dom_invalidates_the_memoized_ir() {
     let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     assert!(lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .is_some());
     lazy.ensure_dom().unwrap()["messages"][0]["content"] = json!("rewritten");
     let ir = lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .expect("the IR must be re-readable after a rewrite");
     assert_eq!(
         first_user_text(ir),
@@ -285,12 +285,12 @@ fn ensure_ir_is_none_when_the_body_or_the_protocol_has_no_reading() {
     let unreadable = Bytes::from(r#"{"model":"gpt-4o","messages":"not an array"}"#);
     let mut lazy = LazyBody::parse(&unreadable).unwrap();
     assert!(lazy
-        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .ensure_ir(crate::proto_codec::PROTO_OPENAI, crate::test_support::CHAT)
         .is_none());
 
     let ok = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&ok).unwrap();
     assert!(lazy
-        .ensure_ir("no-such-protocol", crate::handlers::CHAT)
+        .ensure_ir("no-such-protocol", crate::test_support::CHAT)
         .is_none());
 }

@@ -3,9 +3,11 @@
 
 //! Tests for `crates/busbar-core/src/health.rs`.
 
+use busbar_core::store::LaneRuntime as _;
+use crate::engine::AppEngineExt as _;
 use super::*;
-use crate::config::{HealthCfg, HealthMode};
-use crate::store::BreakerState;
+use busbar_core::config::{HealthCfg, HealthMode};
+use busbar_core::store::BreakerState;
 use crate::test_support::{
     build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
@@ -22,13 +24,13 @@ fn health_active() -> HealthCfg {
 
 /// Stand up a mock upstream that returns `resp`, build a one-lane App (anthropic, in pool `p`)
 /// pointed at it, run a single probe, and hand back the App so the test can inspect the breaker.
-async fn probe_once(resp: MockResponse) -> (Arc<crate::state::App>, MockServer) {
+async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockServer) {
     let state = Arc::new(MockServerState::new());
     state.push(resp);
     let server = MockServer::new(state).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -52,7 +54,7 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -63,12 +65,12 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
     // as the organic forward path does (egress_user_agent / egress_accept).
     assert_eq!(
         state.get_last_request_header("user-agent").as_deref(),
-        Some(crate::proxy::egress_user_agent("anthropic")),
+        Some(crate::engine::egress_user_agent("anthropic")),
         "probe must send the native User-Agent organic traffic sends"
     );
     assert_eq!(
         state.get_last_request_header("accept").as_deref(),
-        Some(crate::proxy::egress_accept("anthropic", false)),
+        Some(crate::engine::egress_accept("anthropic", false)),
         "probe must send the native Accept organic traffic sends"
     );
     server.shutdown().await;
@@ -148,7 +150,7 @@ async fn test_probe_skips_lane_without_key() {
         .lane(
             LaneSpec::new(
                 "claude",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .api_key("")
@@ -175,7 +177,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -229,7 +231,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -278,7 +280,7 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(health_active()),
         )
@@ -322,7 +324,7 @@ async fn test_probe_uses_upstream_model_override() {
         .lane(
             LaneSpec::new(
                 "config-key",
-                crate::proto::PROTO_BEDROCK,
+                crate::proto_codec::PROTO_BEDROCK,
                 &server.base_url(),
             )
             .api_key("sk-test")
@@ -357,7 +359,7 @@ async fn test_spawn_probers_retains_no_strong_app_ref() {
         .lane(
             LaneSpec::new(
                 "claude",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .api_key("k")
@@ -376,7 +378,7 @@ async fn test_spawn_probers_retains_no_strong_app_ref() {
 
 /// The active probe MUST sign the canonical URI from
 /// the SAME path encoding it transmits on the wire. `probe_lane` derives both the SigV4
-/// `canonical_uri` and the wire URL from `crate::proxy::sign_and_wire_path(&url_path)` (the
+/// `canonical_uri` and the wire URL from `crate::engine::sign_and_wire_path(&url_path)` (the
 /// identical primitive the organic forward path uses), so for a Bedrock-style path whose modelId
 /// carries a reserved `:` the signed/sent path is byte-identical and `%3A`-encoded — eliminating
 /// the `SignatureDoesNotMatch` 403 that would otherwise park every Bedrock lane dead. This guards
@@ -385,7 +387,7 @@ async fn test_spawn_probers_retains_no_strong_app_ref() {
 #[test]
 fn test_probe_signs_and_sends_same_encoded_path_for_reserved_chars() {
     let url_path = "/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse";
-    let wire_path = crate::proxy::sign_and_wire_path(url_path);
+    let wire_path = crate::engine::sign_and_wire_path(url_path);
     let canonical_uri = wire_path
         .split('?')
         .next()
@@ -422,7 +424,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("l", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("l", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .api_key("sk-test")
                 .health(HealthCfg {
                     mode: HealthMode::Active,
@@ -485,12 +487,12 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
 /// interval diverges — instead of the synthetic clone, testing exactly what a reload does.
 #[tokio::test]
 async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
     // mock's base URL and an active health block at `interval`, and one model routes to it.
     let make_cfg = |interval: u64| {
-        let mut c = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(
+        let mut c = crate::test_support::cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT",
         ));
         let p = c.providers.get_mut("acme").expect("the sole provider");
@@ -502,7 +504,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         });
         c.models.insert(
             "m0".to_string(),
-            crate::config::ModelCfg {
+            busbar_core::config::ModelCfg {
                 reasoning: None,
                 prompt_caching: None,
                 max_requests: -1,

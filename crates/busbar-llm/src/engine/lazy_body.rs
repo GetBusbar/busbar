@@ -319,5 +319,5 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
 }
 
 #[cfg(test)]
-#[path = "tests/lazy_body_tests.rs"]
+#[path = "proxy_tests/lazy_body_tests.rs"]
 mod lazy_body_tests;

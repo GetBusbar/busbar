@@ -32,9 +32,11 @@
 //! is dominated by [`assert_served_by_fallback_not_primary`], whose TEETH are proven by
 //! [`invariant_rejects_park_then_serve_primary_witness`].
 
-use crate::config::{FailoverCfg, OnExhausted};
-use crate::proxy::forward_with_pool;
-use crate::state::{now, WeightedLane};
+use busbar_core::store::LaneRuntime as _;
+use busbar_core::config::{FailoverCfg, OnExhausted};
+use crate::engine::forward_with_pool;
+use busbar_core::state::now;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 use proptest::prelude::*;
 use serde_json::json;
@@ -257,7 +259,7 @@ enum Disposition {
 /// invariant. Panics on violation (proptest treats the panic as a failing case and shrinks). Returns
 /// the [`Disposition`] branch taken so a targeted test can assert the harness reached it.
 async fn run_world(world: World) -> Disposition {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // One mock provider that answers every request with a default 200 (an empty queue pops nothing and
     // falls back to the default OK), so any number of healthy lanes / retries are served.
@@ -280,7 +282,7 @@ async fn run_world(world: World) -> Disposition {
         .collect();
     for (i, m) in all.iter().enumerate() {
         let model = format!("m{i}");
-        let mut spec = LaneSpec::new(&model, crate::proto::PROTO_ANTHROPIC, &url).provider("p");
+        let mut spec = LaneSpec::new(&model, crate::proto_codec::PROTO_ANTHROPIC, &url).provider("p");
         match m.cap {
             Cap::Unbounded => spec = spec.max(tokio::sync::Semaphore::MAX_PERMITS),
             Cap::BoundedFree(c) => spec = spec.max(c),
@@ -387,7 +389,7 @@ async fn run_world(world: World) -> Disposition {
             "primary",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -594,20 +596,20 @@ async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
 /// fallback (served by the fallback, primary serves zero) — never park-then-serve the primary.
 #[tokio::test]
 async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let _held = sem.clone().try_acquire_owned().unwrap(); // primary permanently at capacity
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("p")
                 .max(1)
                 .sem(sem.clone()),
         ) // idx 0 — breaker-healthy but saturated
         .lane(
-            LaneSpec::new("spare", crate::proto::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
+            LaneSpec::new("spare", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
         ) // idx 1 — eligible fallback
         .pool("primary", &[(0, 1)])
         .failover(FailoverCfg {
@@ -627,7 +629,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -647,7 +649,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
 /// this test).
 #[tokio::test]
 async fn budget_contract_holds_under_full_saturation_for_every_policy() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     for policy in [
         OnExhausted::Status503,
@@ -664,7 +666,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
         let is_fallback = matches!(policy, OnExhausted::FallbackPool(_));
         let mut builder = TestApp::new()
             .lane(
-                LaneSpec::new("busy", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+                LaneSpec::new("busy", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                     .provider("p")
                     .max(1)
                     .sem(sem_a.clone()),
@@ -672,7 +674,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
             .lane(
                 LaneSpec::new(
                     "overflow",
-                    crate::proto::PROTO_ANTHROPIC,
+                    crate::proto_codec::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .provider("p")
@@ -703,7 +705,7 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
                 "primary",
                 None,
                 "anthropic",
-                crate::handlers::CHAT,
+                crate::test_support::CHAT,
                 None,
             ),
         )

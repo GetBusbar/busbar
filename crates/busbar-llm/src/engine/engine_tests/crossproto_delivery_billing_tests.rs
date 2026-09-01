@@ -14,30 +14,32 @@
 //! (`GovState::usage_for`) and the lane request budget (`LaneRuntime::lane_budget_remaining`, refunded
 //! on `BudgetSpendGuard::drop` when the guard is left armed).
 
+use busbar_core::store::LaneRuntime as _;
+use crate::engine::AppEngineExt as _;
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
-use crate::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
 /// 5, plus the governance ledger + a virtual key bound to a loose day-budget group (so
 /// `usage_for(key)` materialises the key's token bucket exactly as the usage-tap tests rely on).
 fn fixture() -> (
-    Arc<crate::state::App>,
+    Arc<busbar_core::state::App>,
     Arc<GovState>,
-    Arc<crate::cost::CostModel>,
-    crate::governance::VirtualKey,
+    Arc<busbar_core::cost::CostModel>,
+    busbar_core::governance::VirtualKey,
 ) {
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 1_000_000_000,
-                per: Some(crate::config::groups::LimitWindow::Day),
+                per: Some(busbar_core::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -45,7 +47,7 @@ fn fixture() -> (
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &groups));
+    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -62,7 +64,7 @@ fn fixture() -> (
         .lane(
             crate::test_support::LaneSpec::new(
                 "gpt-4o",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 "http://127.0.0.1:1",
             )
             .provider("openai")
@@ -86,9 +88,9 @@ struct Outcome {
 /// governed fixture. Before the call we consume ONE unit of the lane budget — the headers-time spend
 /// the guard is responsible for refunding — then arm a `BudgetSpendGuard` exactly as the live caller
 /// does. The guard is dropped (its refund seam) before we read the budget back.
-async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
+async fn drive(op: busbar_core::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
     let (app, gov, cost, key) = fixture();
-    let sink = Some(crate::proxy::UsageSink {
+    let sink = Some(crate::engine::UsageSink {
         gov: gov.clone(),
         cost: cost.clone(),
         key: Arc::new(key.clone()),
@@ -96,7 +98,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
         charged_at: 1_700_000_000,
         admit: None,
     });
-    let breaker = crate::store::BreakerCfg::default();
+    let breaker = busbar_core::store::BreakerCfg::default();
 
     // The headers-time budget unit the buffered path spends before it buffers the body (the unit the
     // guard refunds on a non-delivery return). 5 -> 4.
@@ -134,7 +136,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
                 sock.write_all(&body).await.expect("write body");
             });
             let uri: axum::http::Uri = format!("http://{addr}/").parse().expect("fixture uri");
-            let req = crate::proxy::egress_request(
+            let req = crate::engine::egress_request(
                 uri,
                 axum::http::HeaderMap::new(),
                 bytes::Bytes::new(),
@@ -155,7 +157,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
             &breaker,
             upstream,
             tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-            crate::store::Permit::Unbounded,
+            busbar_core::store::Permit::Unbounded,
             &mut guard,
             sink,
             axum::http::StatusCode::OK,
@@ -171,7 +173,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
     };
 
     let ledger_tokens = gov
-        .usage_for(&cost, &key.id, crate::store::now())
+        .usage_for(&cost, &key.id, busbar_core::store::now())
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -193,7 +195,7 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
 async fn delivered_cross_protocol_response_bills_once() {
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        crate::handlers::chat("openai", crate::transport::Transport::Http),
+        busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http),
         "anthropic",
         body,
     )
@@ -221,10 +223,10 @@ async fn delivered_cross_protocol_response_bills_once() {
 async fn ingress_unsupported_404_does_not_charge() {
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#.to_vec();
     let out = drive(
-        crate::handlers::op_for(
+        busbar_core::handlers::op_for(
             "openai",
-            crate::operation::Operation::EMBEDDINGS,
-            crate::transport::Transport::Http,
+            busbar_core::operation::Operation::EMBEDDINGS,
+            busbar_core::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
         "anthropic",
@@ -258,10 +260,10 @@ async fn untranslatable_500_does_not_charge() {
         0x00u8, 0x01, 0x02, 0xFF, b'n', b'o', b't', b'-', b'j', b's', b'o', b'n',
     ];
     let out = drive(
-        crate::handlers::op_for(
+        busbar_core::handlers::op_for(
             "openai",
-            crate::operation::Operation::SPEECH,
-            crate::transport::Transport::Http,
+            busbar_core::operation::Operation::SPEECH,
+            busbar_core::transport::Transport::Http,
         )
         .expect("openai serves speech"),
         "anthropic",

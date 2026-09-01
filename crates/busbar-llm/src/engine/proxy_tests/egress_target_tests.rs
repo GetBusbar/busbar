@@ -10,13 +10,14 @@
 //! drift — a `Url` re-encoding, a changed override precedence — this test is the tripwire, not a
 //! production signature mismatch.
 
+use crate::engine::AppEngineExt as _;
 use crate::test_support::{LaneSpec, TestApp};
 
 /// For one built lane, prove every table entry equals the reference composition, and that the
 /// table covers chat for both stream intents (the hot path's keys).
-fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
+fn assert_table_matches_reference(app: &busbar_core::state::App, lane_idx: usize) {
     let lane = &app.engine_tables().lanes()[lane_idx];
-    let op = crate::handlers::chat(lane.protocol, crate::transport::Transport::Http);
+    let op = busbar_core::handlers::chat(lane.protocol, busbar_core::transport::Transport::Http);
     for wants_stream in [false, true] {
         let target = lane
             .egress_target(op.operation, wants_stream)
@@ -25,7 +26,7 @@ fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
         let url_path = op
             .upstream_path(lane, wants_stream)
             .expect("reference upstream_path resolves for a registered protocol");
-        let (wire_path, canonical_uri) = crate::proxy::sign_and_wire_path_parts(&url_path);
+        let (wire_path, canonical_uri) = crate::engine::sign_and_wire_path_parts(&url_path);
         let composed = format!("{}{}", lane.base_url, wire_path);
         assert_eq!(
             target.url.as_str(),
@@ -50,12 +51,12 @@ fn assert_table_matches_reference(app: &crate::state::App, lane_idx: usize) {
 #[test]
 fn egress_targets_match_reference_composition_all_protocols() {
     for proto in [
-        crate::proto::PROTO_OPENAI,
-        crate::proto::PROTO_ANTHROPIC,
-        crate::proto::PROTO_GEMINI,
-        crate::proto::PROTO_COHERE,
-        crate::proto::PROTO_BEDROCK,
-        crate::proto::PROTO_RESPONSES,
+        crate::proto_codec::PROTO_OPENAI,
+        crate::proto_codec::PROTO_ANTHROPIC,
+        crate::proto_codec::PROTO_GEMINI,
+        crate::proto_codec::PROTO_COHERE,
+        crate::proto_codec::PROTO_BEDROCK,
+        crate::proto_codec::PROTO_RESPONSES,
     ] {
         let app = TestApp::new()
             .lane(LaneSpec::new("m-1", proto, "http://127.0.0.1:1"))
@@ -71,13 +72,13 @@ fn egress_targets_honor_azure_path_override_with_query() {
     // the query verbatim (the boot parse never re-encodes it; `Url::join`/`set_path` would).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1")
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1")
                 .path("/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"),
         )
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op = crate::handlers::chat("openai", crate::transport::Transport::Http);
+    let op = busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http);
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();
@@ -98,13 +99,13 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
     // boot-time `Url::parse` must pass those `%XX` bytes through unchanged.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto::PROTO_BEDROCK, "http://127.0.0.1:1")
+            LaneSpec::new("claude", crate::proto_codec::PROTO_BEDROCK, "http://127.0.0.1:1")
                 .upstream_model("anthropic.claude-3-sonnet-20240229-v1:0"),
         )
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op = crate::handlers::chat("bedrock", crate::transport::Transport::Http);
+    let op = busbar_core::handlers::chat("bedrock", busbar_core::transport::Transport::Http);
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();

@@ -1,4 +1,6 @@
-use crate::config;
+use busbar_core::store::LaneRuntime as _;
+use crate::engine::AppEngineExt as _;
+use busbar_core::config;
 
 #[test]
 fn test_config_parsing_status_503() {
@@ -76,9 +78,10 @@ fn test_config_parsing_bare_fallback_pool_fails() {
 // observed failures. It is not licensed to override operator declarations — a `failover.exclusions`
 // blocklist, a `dead` mark, or an exhausted `max_requests` budget. These assert that boundary.
 
-use crate::proxy::forward_with_pool;
-use crate::state::{now, WeightedLane};
-use crate::store::BreakerState;
+use crate::engine::forward_with_pool;
+use busbar_core::state::now;
+use crate::engine::WeightedLane;
+use busbar_core::store::BreakerState;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -116,11 +119,11 @@ fn chat_body(pool: &str) -> Vec<u8> {
     .unwrap()
 }
 
-fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> crate::state::PoolRuntime {
-    crate::state::PoolRuntime {
+fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> crate::engine::PoolRuntime {
+    crate::engine::PoolRuntime {
         upstream_credentials: None,
         members: Default::default(),
-        failover: Some(crate::config::FailoverCfg {
+        failover: Some(busbar_core::config::FailoverCfg {
             timeout_secs: 120,
             exclusions: excl,
             max_hops: 3,
@@ -139,17 +142,17 @@ fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> crate::state::Pool
 /// for it precisely when everything else is on fire inverts that.
 #[tokio::test]
 async fn least_bad_never_reaches_an_excluded_member() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server_a = ok_server_for("alpha").await;
     let server_b = ok_server_for("beta").await;
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("alpha", crate::proto::PROTO_ANTHROPIC, &server_a.base_url())
+            LaneSpec::new("alpha", crate::proto_codec::PROTO_ANTHROPIC, &server_a.base_url())
                 .provider("p"),
         )
         .lane(
-            LaneSpec::new("beta", crate::proto::PROTO_ANTHROPIC, &server_b.base_url())
+            LaneSpec::new("beta", crate::proto_codec::PROTO_ANTHROPIC, &server_b.base_url())
                 .provider("p"),
         )
         .pool("pe", &[(0, 1), (1, 1)])
@@ -157,7 +160,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
             "pe",
             pool_runtime_with_exclusions(Some(vec!["beta".into()])),
         )
-        .on_exhausted("pe", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("pe", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     // alpha is the only eligible member and its breaker is Open → the pool is exhausted.
@@ -171,7 +174,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
         "pe",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -196,7 +199,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
 /// lanes that could actually serve.
 #[tokio::test]
 async fn least_bad_ranks_only_admissible_lanes() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server_dead = ok_server_for("gone").await;
     let server_soon = ok_server_for("soon").await;
 
@@ -204,7 +207,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         .lane(
             LaneSpec::new(
                 "gone",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server_dead.base_url(),
             )
             .provider("p")
@@ -213,14 +216,14 @@ async fn least_bad_ranks_only_admissible_lanes() {
         .lane(
             LaneSpec::new(
                 "soon",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server_soon.base_url(),
             )
             .provider("p"),
         )
         .pool("pl", &[(0, 1), (1, 1)])
         .pool_runtime("pl", pool_runtime_with_exclusions(None))
-        .on_exhausted("pl", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("pl", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     app.store.force_open_in("pl", 1, now() + 5);
@@ -233,7 +236,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         "pl",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -257,16 +260,16 @@ async fn least_bad_ranks_only_admissible_lanes() {
 /// dominant exhaustion case it holds every member and `least_bad` silently degenerates to `reject`.
 #[tokio::test]
 async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server = ok_server_for("solo").await;
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("solo", crate::proto::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
+            LaneSpec::new("solo", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
         )
         .pool("ps", &[(0, 1)])
         .pool_runtime("ps", pool_runtime_with_exclusions(None))
-        .on_exhausted("ps", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("ps", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     app.store.force_open_in("ps", 0, now() + 30);
@@ -279,7 +282,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
         "ps",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -297,7 +300,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
 /// could still be reached by spilling into the pool — the one path exclusions exist to prevent.
 #[tokio::test]
 async fn a_fallback_pool_applies_its_own_exclusions() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let server_primary = ok_server_for("primary").await;
     let server_ok = ok_server_for("spare").await;
     let server_blocked = ok_server_for("blocked").await;
@@ -306,7 +309,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server_primary.base_url(),
             )
             .provider("p"),
@@ -314,7 +317,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "spare",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server_ok.base_url(),
             )
             .provider("p"),
@@ -322,7 +325,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .lane(
             LaneSpec::new(
                 "blocked",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server_blocked.base_url(),
             )
             .provider("p"),
@@ -331,7 +334,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .pool_runtime("pf", pool_runtime_with_exclusions(None))
         .on_exhausted(
             "pf",
-            crate::config::OnExhausted::FallbackPool("spill".into()),
+            busbar_core::config::OnExhausted::FallbackPool("spill".into()),
         )
         .fallback_pool("spill", &[(1, 1), (2, 1)])
         .pool_runtime(
@@ -352,7 +355,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
             "pf",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await;
@@ -396,8 +399,8 @@ use std::time::Duration;
 
 /// A failover budget long enough that an at-capacity park cannot masquerade as a fast shed: a park
 /// runs to this deadline (300s), well past [`SHED_BUDGET`].
-fn long_failover() -> crate::config::FailoverCfg {
-    crate::config::FailoverCfg {
+fn long_failover() -> busbar_core::config::FailoverCfg {
+    busbar_core::config::FailoverCfg {
         timeout_secs: 300,
         exclusions: None,
         max_hops: 3,
@@ -428,7 +431,7 @@ fn saturated() -> (
 /// semaphore, so the lane is permanently at-capacity. The `base_url` is never dialed (no request is
 /// ever dispatched to a saturated lane), so a dead address is fine.
 fn saturated_lane(model: &str, sem: &std::sync::Arc<tokio::sync::Semaphore>) -> LaneSpec {
-    LaneSpec::new(model, crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
+    LaneSpec::new(model, crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1")
         .provider("p")
         .max(1)
         .sem(sem.clone())
@@ -446,7 +449,7 @@ fn retry_after(resp: &axum::response::Response) -> Option<String> {
 /// immediately; a queue-instead-of-shed regression parks the inner future to the failover deadline
 /// and this `.expect` panics — the shed-not-queued assertion.
 async fn drive_shed(
-    app: std::sync::Arc<crate::state::App>,
+    app: std::sync::Arc<busbar_core::state::App>,
     cands: Vec<WeightedLane>,
     pool: &str,
 ) -> axum::response::Response {
@@ -460,7 +463,7 @@ async fn drive_shed(
             pool,
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -475,13 +478,13 @@ async fn drive_shed(
 /// not queue behind the busy member to the deadline (which would park to 300s).
 #[tokio::test]
 async fn at_capacity_reject_sheds_503_not_queued() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
@@ -501,7 +504,7 @@ async fn at_capacity_reject_sheds_503_not_queued() {
 /// saturated pool sheds 503 + Retry-After, not queue.
 #[tokio::test]
 async fn at_capacity_default_no_on_exhausted_sheds_503() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
@@ -528,17 +531,17 @@ async fn at_capacity_default_no_on_exhausted_sheds_503() {
 /// at-capacity); parking on the primary would never reach the spill.
 #[tokio::test]
 async fn at_capacity_fallback_spills_to_fast_member() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("slow", &sem)) // idx 0 — saturated primary
-        .lane(LaneSpec::new("fast", crate::proto::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 1 — fast overflow
+        .lane(LaneSpec::new("fast", crate::proto_codec::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 1 — fast overflow
         .pool("primary", &[(0, 1)])
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -568,13 +571,13 @@ async fn at_capacity_fallback_spills_to_fast_member() {
 /// concurrency limit; parking in `pick_among` would never reach `least_bad`.
 #[tokio::test]
 async fn at_capacity_least_bad_sheds_when_saturated() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
@@ -593,13 +596,13 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
 /// scenario turned into a permanent guard; otherwise all N park behind the one busy slot.
 #[tokio::test]
 async fn at_capacity_bounded_burst_all_spill_not_serialized() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let fast = ok_server_for("fast").await; // pushes 4 canned OKs
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("slow", &sem)) // idx 0 — one bounded, saturated slot
         .lane(
-            LaneSpec::new("fast", crate::proto::PROTO_ANTHROPIC, &fast.base_url())
+            LaneSpec::new("fast", crate::proto_codec::PROTO_ANTHROPIC, &fast.base_url())
                 .provider("p")
                 .max(20),
         ) // idx 1 — roomy overflow
@@ -607,7 +610,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -641,19 +644,19 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
 /// defect to the pool-exhaustion check, not per-member capacity accounting.
 #[tokio::test]
 async fn at_capacity_all_members_busy_two_member_pool_spills() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("slowA", &sem_a)) // idx 0
         .lane(saturated_lane("slowB", &sem_b)) // idx 1
-        .lane(LaneSpec::new("fast", crate::proto::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 2
+        .lane(LaneSpec::new("fast", crate::proto_codec::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 2
         .pool("primary", &[(0, 1), (1, 1)])
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(2, 1)])
         .build();
@@ -676,21 +679,21 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
 /// member). Also proves the fix composes with the existing breaker-Open exclusion path.
 #[tokio::test]
 async fn at_capacity_plus_tripped_member_rejects_503() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem)) // idx 0 — at capacity
         .lane(
             LaneSpec::new(
                 "tripped",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
         ) // idx 1 — will be forced Open
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
 
     // Trip member 1's breaker (Open, not yet expired) so it is never admissible.
@@ -711,19 +714,19 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
 /// than parking on A.
 #[tokio::test]
 async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("a", &sem_a)) // idx 0 — pool A
         .lane(saturated_lane("b", &sem_b)) // idx 1 — pool B
-        .lane(LaneSpec::new("c", crate::proto::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 2 — pool C (fast)
+        .lane(LaneSpec::new("c", crate::proto_codec::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 2 — pool C (fast)
         .pool("pa", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("pa", crate::config::OnExhausted::FallbackPool("pb".into()))
+        .on_exhausted("pa", busbar_core::config::OnExhausted::FallbackPool("pb".into()))
         .fallback_pool("pb", &[(1, 1)])
-        .on_exhausted("pb", crate::config::OnExhausted::FallbackPool("pc".into()))
+        .on_exhausted("pb", busbar_core::config::OnExhausted::FallbackPool("pc".into()))
         .fallback_pool("pc", &[(2, 1)])
         .build();
 
@@ -744,7 +747,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
 /// terminate at the visited-pool loop guard with 503 — never recurse or park.
 #[tokio::test]
 async fn at_capacity_self_referential_fallback_stays_503() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
@@ -752,7 +755,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
         .failover(long_failover())
         .on_exhausted(
             "loop",
-            crate::config::OnExhausted::FallbackPool("loop".into()),
+            busbar_core::config::OnExhausted::FallbackPool("loop".into()),
         )
         .fallback_pool("loop", &[(0, 1)])
         .build();
@@ -770,7 +773,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
 /// target being exhausted too must still terminate in a shed, not a queue.
 #[tokio::test]
 async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
     let app = TestApp::new()
@@ -780,7 +783,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         // No on_exhausted for "overflow" → default Status503 when it too is exhausted.
@@ -804,23 +807,23 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
 /// already-working tripped/unreachable exhaustion → fallback path.
 #[tokio::test]
 async fn tripped_member_still_falls_back_to_overflow() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
         ) // idx 0
-        .lane(LaneSpec::new("fast", crate::proto::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 1
+        .lane(LaneSpec::new("fast", crate::proto_codec::PROTO_ANTHROPIC, &fast.base_url()).provider("p")) // idx 1
         .pool("primary", &[(0, 1)])
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -849,7 +852,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
 /// soonest member and 503'd on failure, so this returned 503; after, it falls to the free sibling.
 #[tokio::test]
 async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let sibling = ok_server_for("sibling").await;
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -857,7 +860,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .lane(
             LaneSpec::new(
                 "sibling",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &sibling.base_url(),
             )
             .provider("p"),
@@ -865,7 +868,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .pool("p", &[(0, 1), (1, 1)])
         .pool_runtime("p", pool_runtime_with_exclusions(None))
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     // Both Open → pool exhausted → least_bad. idx 0 has the SOONER cooldown (it would be picked
@@ -909,21 +912,21 @@ fn retry_after_secs(resp: &axum::response::Response) -> u64 {
 /// under-serving backoff; the fix ignores at-capacity-Closed members' 0 when a real cooldown exists.
 #[tokio::test]
 async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem)) // idx 0 — at capacity, Closed (cooldown reads 0)
         .lane(
             LaneSpec::new(
                 "tripped",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("p"),
         ) // idx 1 — tripped
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
 
     app.store.force_open_in("p", 1, now() + 40);
@@ -944,13 +947,13 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
 /// than the misleading `Retry-After: 1` the old code always produced under load.
 #[tokio::test]
 async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
@@ -968,14 +971,14 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
 /// ("retry immediately, just re-collide"), which is why the `None` arm floors instead of returning 1.
 #[test]
 fn retry_after_empty_candidate_set_uses_floor_not_one() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("p"))
+        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("p"))
         .pool("p", &[(0, 1)])
         .build();
     // Directly exercise the shed with an EMPTY candidate slice (the fallback-loop / unconfigured-target
     // shape) — no genuine cooldown, nothing at-capacity in `&[]`.
-    let resp = crate::proxy::engine::handle_status_503(&app, &[], now(), "p", "anthropic");
+    let resp = crate::engine::handle_status_503(&app, &[], now(), "p", "anthropic");
     assert_eq!(resp.status().as_u16(), 503);
     let ra = retry_after_secs(&resp);
     assert!(
@@ -992,7 +995,7 @@ fn retry_after_empty_candidate_set_uses_floor_not_one() {
 /// A lane wired to a REAL mock server AND a shared 1-permit semaphore: at-capacity while the test
 /// holds the permit, dispatchable once the test frees it (so the queue can actually serve on it).
 fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>) -> LaneSpec {
-    LaneSpec::new(model, crate::proto::PROTO_ANTHROPIC, base_url)
+    LaneSpec::new(model, crate::proto_codec::PROTO_ANTHROPIC, base_url)
         .provider("p")
         .max(1)
         .sem(sem.clone())
@@ -1001,7 +1004,7 @@ fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>
 /// Spawn one request through the real dispatch path with `'static` literals so it can run detached
 /// while the test frees a permit / trips a breaker underneath it.
 fn spawn_request(
-    app: std::sync::Arc<crate::state::App>,
+    app: std::sync::Arc<busbar_core::state::App>,
 ) -> tokio::task::JoinHandle<axum::response::Response> {
     tokio::spawn(async move {
         forward_with_pool(
@@ -1012,7 +1015,7 @@ fn spawn_request(
             "p",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await
@@ -1023,7 +1026,7 @@ fn spawn_request(
 /// a tight interval rather than sleeping a fixed wall-clock time. Replaces flaky fixed-sleep syncs
 /// under CI scheduler pressure — it only proceeds once the spawned request(s) have actually reached
 /// the queue park point. Panics if the depth is not reached within the bound.
-async fn wait_until_queued(app: &std::sync::Arc<crate::state::App>, pool: &str, min_depth: u64) {
+async fn wait_until_queued(app: &std::sync::Arc<busbar_core::state::App>, pool: &str, min_depth: u64) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while app.engine_tables().queued_depth().depth(pool) < min_depth {
         assert!(
@@ -1041,7 +1044,7 @@ async fn wait_until_queued(app: &std::sync::Arc<crate::state::App>, pool: &str, 
 /// immediate 503.
 #[tokio::test]
 async fn queue_dispatches_when_permit_frees_before_deadline() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1049,7 +1052,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         .lane(busy_real_lane("svc", &svc.base_url(), &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 5000 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 5000 })
         .build();
 
     let req = spawn_request(app.clone());
@@ -1092,7 +1095,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
 /// dropped await, so none run on drop and the cell stays HalfOpen.
 #[tokio::test]
 async fn queue_dropped_dispatch_future_releases_probe() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -1113,7 +1116,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
         .lane(busy_real_lane("svc", &server.base_url(), &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 30_000 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 30_000 })
         .build();
     // Make the member EXPIRED-OPEN so that when the freed permit is won the queue's `try_admit_breaker`
     // WINS a single-flight recovery probe (cell → HalfOpen) — the state that wedges without a guard.
@@ -1174,7 +1177,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
 /// the cell goes Open and a fresh `try_admit` wins a NEW probe. With `None` the cell is untouched.
 #[tokio::test]
 async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // A gated non-2xx body: least_bad's `forward_once` parks reading it (BEFORE recording any breaker
     // outcome) — the exact mid-dispatch await a dropped future must not turn into a peer-probe revert.
     let state = Arc::new(MockServerState::new());
@@ -1191,13 +1194,13 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     // One lane, capacity 2: peer A holds one permit + the probe, least_bad's request B needs the other.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("svc", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("svc", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .provider("p")
                 .max(2),
         )
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
     // Make lane 0 EXPIRED-Open so a single-flight recovery probe can be won on its pool cell.
@@ -1248,7 +1251,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     assert!(
         matches!(
             app.store.try_admit("p", 0, now()),
-            Err(crate::store::Unavailable::ProbeInFlight)
+            Err(busbar_core::store::Unavailable::ProbeInFlight)
         ),
         "a third caller must NOT win a second concurrent probe — peer A's probe is still in flight"
     );
@@ -1265,7 +1268,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
 /// loser is provably still parked; releasing the winner then lets the loser dispatch and serve 200.
 #[tokio::test]
 async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -1296,7 +1299,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
         .lane(busy_real_lane("svc", &server.base_url(), &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 30_000 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 30_000 })
         .build();
 
     // TWO concurrent waiters on the single-permit saturated lane.
@@ -1362,13 +1365,13 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
 /// immediately) and shed well before the budget, rather than shedding immediately with no wait.
 #[tokio::test]
 async fn queue_times_out_to_503_when_capacity_never_frees() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (sem, _held) = saturated(); // permit held for the whole test → never frees
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 300 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 300 })
         .build();
 
     let start = std::time::Instant::now();
@@ -1382,7 +1385,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
             "p",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -1419,15 +1422,15 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
 /// pointless. Proven by the reject completing far inside `max_ms`.
 #[tokio::test]
 async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("down", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1")
+            LaneSpec::new("down", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1")
                 .provider("p"),
         )
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 3000 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 3000 })
         .build();
     // Breaker Open (not expired) → the sole exclusion reason is BreakerOpen, never AtCapacity.
     app.store.force_open_in("p", 0, now() + 300);
@@ -1443,7 +1446,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
             "p",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         ),
     )
@@ -1469,7 +1472,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
 /// design makes it pass.
 #[tokio::test]
 async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1478,7 +1481,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
         .pool("p", &[(0, 1)])
         .failover(long_failover())
         // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 400 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 400 })
         .build();
 
     let req = spawn_request(app.clone());
@@ -1509,7 +1512,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
 /// composition on the won lane.
 #[tokio::test]
 async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let svc = ok_server_for("svc").await; // wired, but must NEVER be dispatched to
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1517,7 +1520,7 @@ async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         .lane(busy_real_lane("svc", &svc.base_url(), &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 2000 })
+        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 2000 })
         .build();
 
     let req = spawn_request(app.clone());

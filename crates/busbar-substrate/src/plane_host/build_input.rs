@@ -286,4 +286,10 @@ pub struct LlmBuildInput {
     pub blocked_metadata_hosts: Vec<String>,
     /// The client-affecting resolved limits (warm-pool reuse key + client build inputs).
     pub client_settings: LlmClientSettings,
+    /// The GLOBAL-DEFAULT failover config — the fallback for pools that set no `failover:` of their
+    /// own. Production `appbuild` always fills this with the fixed `DEFAULT_FAILOVER_*` constants (there
+    /// is no operator knob for a custom global), so carrying it changes nothing there; it exists so the
+    /// test fixture can drive the whole-App failover deadline the way it always could. `None` ⇒ the
+    /// plane's own fixed default.
+    pub default_failover: Option<LlmFailoverInput>,
 }

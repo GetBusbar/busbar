@@ -2,13 +2,13 @@ use super::{
     client_fault_kind, extract_error_message, is_streaming_content_type, mid_stream_error_bytes,
     strip_router_shim_keys, strip_same_protocol_model_shim, MID_STREAM_GENERIC_DETAIL,
 };
-use crate::proto::StatusClass;
+use busbar_core::proto::StatusClass;
 use serde_json::{json, Value};
 
 /// The gemini-declared never-native array shim key, reached through the NEUTRAL registry accessor
 /// (it is a Gemini-declared marker; core names no dialect module to obtain it).
 fn gemini_shim_key() -> &'static str {
-    crate::proto::array_stream_shim_key_for("gemini")
+    busbar_core::proto::array_stream_shim_key_for("gemini")
         .expect("gemini declares a json-array shim key")
 }
 
@@ -63,7 +63,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
     // (`decl_for(name).dialect().make_array_stream_framer()`); `finish_with_server_error` emits the
     // same `google.rpc.Status` HTTP-500/`INTERNAL` element the concrete `finish_with_error(500,
     // "INTERNAL", …)` did — core names no gemini type here.
-    let mut framer = crate::proto::decl_for("gemini")
+    let mut framer = busbar_core::proto::decl_for("gemini")
         .and_then(|d| d.dialect())
         .and_then(|dc| dc.make_array_stream_framer())
         .expect("gemini declares an array-stream framer");
@@ -361,7 +361,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     // (`decl_for(name).dialect()`, as production does), so this core strip/rewrite-ordering test
     // names no witnessed codec. `DialectCodec::rewrite_model_if_needed` delegates to
     // `writer().rewrite_model_if_needed` — byte-identical.
-    crate::proto::decl_for(crate::proto::PROTO_OPENAI)
+    busbar_core::proto::decl_for(crate::proto_codec::PROTO_OPENAI)
         .and_then(|d| d.dialect())
         .expect("openai codec registered")
         .rewrite_model_if_needed(&mut v, "gpt-4o");
@@ -388,7 +388,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     let ingress = "gemini";
     let egress = "gemini";
     strip_router_shim_keys(&mut v, egress);
-    crate::proto::decl_for(crate::proto::PROTO_GEMINI)
+    busbar_core::proto::decl_for(crate::proto_codec::PROTO_GEMINI)
         .and_then(|d| d.dialect())
         .expect("gemini codec registered")
         .rewrite_model_if_needed(&mut v, "gemini-1.5-pro");

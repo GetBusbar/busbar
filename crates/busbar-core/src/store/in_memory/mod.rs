@@ -123,7 +123,7 @@ pub fn fnv1a_u64(s: &str) -> u64 {
 pub(crate) const SWRR_SHARDS: usize = 64;
 
 /// Wraps the per-lane atomics/semaphores with per-(pool, lane) FSM breaker logic, populated lazily.
-pub(crate) struct HealthState {
+pub struct HealthState {
     pub(crate) lanes: Vec<Arc<LaneState>>,
     /// Per-(pool, lane) breaker cells, created lazily on first access. The lane-global fields
     /// (sem/budget/dead/ok) always live on `lanes[lane]`; only the breaker FSM is isolated per pool.
@@ -490,7 +490,7 @@ impl HealthState {
 }
 
 #[derive(Clone)]
-pub(crate) struct LaneData {
+pub struct LaneData {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) max: usize,
@@ -543,10 +543,10 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 /// Breaker configuration per pool.
 #[derive(Debug, Clone)]
 pub struct BreakerCfg {
-    pub(crate) base_cooldown_secs: u64,
-    pub(crate) max_cooldown_secs: u64,
-    pub(crate) honor_retry_after: bool,
-    pub(crate) trip: TripConfig,
+    pub base_cooldown_secs: u64,
+    pub max_cooldown_secs: u64,
+    pub honor_retry_after: bool,
+    pub trip: TripConfig,
     /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
     /// for a cooldown.
     ///
@@ -563,7 +563,7 @@ pub struct BreakerCfg {
     /// out after ONE blip and announced as "open after repeated failures" — a sentence the cell's
     /// own `should_trip` had just refused to make true. So those cells set this `false` and refuse
     /// only on a real trip, on the thresholds ADR-0002 and `docs/circuit-breaker.md` publish.
-    pub(crate) bench_below_trip_threshold: bool,
+    pub bench_below_trip_threshold: bool,
 }
 
 impl Default for BreakerCfg {
@@ -661,19 +661,19 @@ impl BreakerCfg {
 
 /// Trip configuration mode.
 #[derive(Debug, Clone)]
-pub(crate) enum TripMode {
+pub enum TripMode {
     ErrorRate,
     Consecutive,
 }
 
 /// Trip configuration parameters (ADR-0002 defaults).
 #[derive(Debug, Clone)]
-pub(crate) struct TripConfig {
-    pub(crate) mode: TripMode,
-    pub(crate) window_s: u64,
-    pub(crate) threshold: f64,
-    pub(crate) min_requests: usize,
-    pub(crate) consecutive_n: u32, // For consecutive mode
+pub struct TripConfig {
+    pub mode: TripMode,
+    pub window_s: u64,
+    pub threshold: f64,
+    pub min_requests: usize,
+    pub consecutive_n: u32, // For consecutive mode
 }
 
 /// The window (seconds) the `Signal::CandidateErrorRate` catalog entry reads the

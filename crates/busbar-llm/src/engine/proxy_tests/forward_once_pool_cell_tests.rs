@@ -1,5 +1,6 @@
+use busbar_core::store::LaneRuntime as _;
 use super::{forward_with_pool, KIND_INVALID_REQUEST};
-use crate::store::{now as store_now, BreakerState};
+use busbar_core::store::{now as store_now, BreakerState};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use reqwest::StatusCode;
 use serde_json::json;
@@ -27,19 +28,19 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     // Lane 1 = the fallback-pool member that actually serves.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
 
@@ -58,7 +59,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -69,7 +70,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -108,21 +109,21 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1", // connect-refused → forward_once Err(transport) arm
         ))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
 
@@ -131,7 +132,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -142,7 +143,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -192,19 +193,19 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
 
@@ -215,7 +216,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -226,7 +227,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -297,19 +298,19 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, &server.base_url())
+            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
                 .dead("administratively down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
 
@@ -321,7 +322,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -332,7 +333,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -396,7 +397,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         .lane(
             LaneSpec::new(
                 "a-origin",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
@@ -405,7 +406,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         .lane(
             LaneSpec::new(
                 "b-member",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .dead("administratively down for test"),
@@ -413,7 +414,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         // Lane 2: pool A's FALLBACK member — LIVE. Only reached if the cycle re-enters A (bug).
         .lane(LaneSpec::new(
             "a-fallback",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("A", &[(0, 1)])
@@ -421,15 +422,15 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         .fallback_pool("A", &[(2, 1)])
         .fallback_pool("B", &[(1, 1)])
         // A -> B -> A cycle.
-        .on_exhausted("A", crate::config::OnExhausted::FallbackPool("B".into()))
-        .on_exhausted("B", crate::config::OnExhausted::FallbackPool("A".into()))
+        .on_exhausted("A", busbar_core::config::OnExhausted::FallbackPool("B".into()))
+        .on_exhausted("B", busbar_core::config::OnExhausted::FallbackPool("A".into()))
         .build();
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
         // Originating candidate set for pool A = its dead member (lane 0) → A exhausts.
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -440,7 +441,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         "A",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -467,7 +468,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
 /// and fails only to translate.
 #[tokio::test]
 async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -487,17 +488,17 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .lane(
             LaneSpec::new(
                 "primary",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .dead("administratively down for test"),
         )
-        .lane(LaneSpec::new("fbmember", crate::proto::PROTO_OPENAI, &server.base_url()).budget(1))
+        .lane(LaneSpec::new("fbmember", crate::proto_codec::PROTO_OPENAI, &server.base_url()).budget(1))
         .pool("primary", &[(0, 1)])
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            crate::config::OnExhausted::FallbackPool("fb".into()),
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         // The 2xx headers optimistically record a SUCCESS before the untranslatable check runs,
         // which closes the probe-won HalfOpen cell immediately — so the default ErrorRate config
@@ -506,7 +507,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         // discriminator (a transient IS recorded) from unrelated volume thresholds.
         .pool_runtime(
             "fb",
-            crate::state::PoolRuntime {
+            crate::engine::PoolRuntime {
                 upstream_credentials: None,
                 breaker: Some(BreakerCfg {
                     trip: TripConfig {
@@ -527,7 +528,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -538,7 +539,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         "primary",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -578,12 +579,12 @@ fn test_metric_pool_label_resolves_model_for_default_cell() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-sonnet",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .lane(LaneSpec::new(
             "gpt-4o",
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             "http://127.0.0.1:1",
         ))
         .build();

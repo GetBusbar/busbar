@@ -12,8 +12,8 @@ use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> crate::transport::Transport {
-    crate::transport::Transport::Http
+fn http() -> busbar_core::transport::Transport {
+    busbar_core::transport::Transport::Http
 }
 
 /// Cross-protocol OpenAI → Anthropic request carrying `response_format` STILL forwards (Ok, body
@@ -24,7 +24,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://unused.local",
         ))
         .build();
@@ -33,7 +33,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_object"}
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
@@ -41,9 +41,9 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         caller,
@@ -54,7 +54,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         !bytes.is_empty(),
         "the request body must still be rebuilt and forwarded"
     );
-    let entries = crate::admin::audit::AUDIT.export();
+    let entries = busbar_core::admin::audit::AUDIT.export();
     let hit = entries.iter().find(|e| {
         e.principal == caller
             && e.action == "egress.control_unrepresentable"
@@ -74,7 +74,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "anthropic.claude-3-5-sonnet",
-            crate::proto::PROTO_BEDROCK,
+            crate::proto_codec::PROTO_BEDROCK,
             "http://unused.local",
         ))
         .build();
@@ -87,15 +87,15 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         }],
         "tool_choice": "none"
     });
-    let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
     let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
-        crate::handlers::chat("openai", http()),
+        busbar_core::handlers::chat("openai", http()),
         Some(body),
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         true,
         &hop_bytes,
         caller,
@@ -106,7 +106,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         !bytes.is_empty(),
         "the request body must still be forwarded"
     );
-    let entries = crate::admin::audit::AUDIT.export();
+    let entries = busbar_core::admin::audit::AUDIT.export();
     let hit = entries
         .iter()
         .find(|e| {
@@ -123,7 +123,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 /// Bedrock egress drops BOTH `response_format` and `tool_choice=none`.
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
-    let ingress = crate::handlers::chat("openai", http());
+    let ingress = busbar_core::handlers::chat("openai", http());
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],

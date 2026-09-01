@@ -105,8 +105,18 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sy
 reqwest = { workspace = true, features = ["http2"] }
 proptest = { workspace = true }
 hyper-util = { workspace = true }
+# The relocated money-path tests drive these directly (config round-trips + the audit-chain crc).
+serde_yaml = { workspace = true }
+crc32fast = { workspace = true }
+rcgen = { workspace = true }
 http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 metrics = { workspace = true }
 http = { workspace = true }
+
+# The allocation-count PERF gate (`engine/proxy_tests/alloc_gate.rs`) reads a per-thread counter off a
+# jemalloc-wrapping `#[global_allocator]` this crate's TEST binary installs (see `lib.rs`), mirroring
+# busbar-core. Target-gated exactly as core's is.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }

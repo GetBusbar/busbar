@@ -12,8 +12,9 @@
 //! `stalled_guard_does_not_release_a_newer_probe` already uses to prove the primitive, applied here
 //! at the engine call-site level instead of directly against `ProbeGuard`.
 
+use busbar_core::store::LaneRuntime as _;
 use super::forward_with_pool;
-use crate::store::BreakerState;
+use busbar_core::store::BreakerState;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use std::sync::Arc;
 /// survives untouched.
 #[tokio::test]
 async fn a_stale_resume_does_not_revert_a_newer_probe() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -44,7 +45,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("pa", &[(0, 1)])
@@ -56,7 +57,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     .unwrap();
 
     let app_a = app.clone();
-    let cands = vec![crate::state::WeightedLane {
+    let cands = vec![crate::engine::WeightedLane {
         reasoning: None,
         idx: 0,
         weight: 1,
@@ -71,7 +72,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
             "pa",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await
@@ -97,7 +98,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     app.store.force_open_in("pa", 0, 0);
     assert!(
         app.store
-            .acquire_for_dispatch_in("pa", 0, crate::store::now().saturating_add(86_400)),
+            .acquire_for_dispatch_in("pa", 0, busbar_core::store::now().saturating_add(86_400)),
         "a NEW probe must be won on the re-opened cell"
     );
     let epoch_after = app.store.probe_epoch_in("pa", 0);
@@ -138,7 +139,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
 /// probe, owner-checked.
 #[tokio::test]
 async fn a_dropped_main_path_future_releases_its_won_probe() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -157,7 +158,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("pa", &[(0, 1)])
@@ -172,7 +173,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
     )
     .unwrap();
     let app_r = app.clone();
-    let cands = vec![crate::state::WeightedLane {
+    let cands = vec![crate::engine::WeightedLane {
         reasoning: None,
         idx: 0,
         weight: 1,
@@ -187,7 +188,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
             "pa",
             None,
             "anthropic",
-            crate::handlers::CHAT,
+            crate::test_support::CHAT,
             None,
         )
         .await
@@ -224,7 +225,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
     // Concretely re-probeable: a later dispatch can win the probe again.
     assert!(
         app.store
-            .acquire_for_dispatch_in("pa", 0, crate::store::now().saturating_add(86_400)),
+            .acquire_for_dispatch_in("pa", 0, busbar_core::store::now().saturating_add(86_400)),
         "after the guard's release a later request must be able to win the probe again"
     );
 

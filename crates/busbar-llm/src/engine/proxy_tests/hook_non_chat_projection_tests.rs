@@ -11,7 +11,7 @@
 //! empty.
 
 use super::*;
-use crate::operation::Operation;
+use busbar_core::operation::Operation;
 
 /// The exact strings a `prompt: ro` gate is shown for this body, flattened across turns.
 fn gate_view(facts: &HookFacts) -> String {
@@ -78,7 +78,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
     let view = gate_view(&f);
     assert!(view.contains("SCREEN-THIS-TEXT"));
     // MAJOR-5: the ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
-    assert!(view.contains(crate::ir::facts::OPAQUE_CONTENT_MARKER));
+    assert!(view.contains(busbar_substrate::ir::facts::OPAQUE_CONTENT_MARKER));
     assert!(!view.contains("x.test"));
 }
 

@@ -98,3 +98,101 @@ pub(crate) use busbar_core::proxy::{
     APPLICATION_JSON, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
     TEXT_EVENT_STREAM,
 };
+// The NEUTRAL hook-content ceiling knob + the egress-client builder that STAY in core — re-exported
+// into the flattened engine namespace so the relocated tests (which named them at `proxy::…`) keep
+// resolving at `crate::engine::…`.
+pub(crate) use busbar_core::proxy::{
+    build_egress_client, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
+};
+
+// ── THE MONEY-PATH ENGINE TESTS ──────────────────────────────────────────────────────────────────
+// Relocated from core `proxy/mod.rs` WITH the engine they drive (money-path Phase 3-4 C). Declared
+// here under `engine/` (`#[path]` relative to this dir → `proxy_tests/…`); `super::*` in each file
+// resolves against the flattened engine namespace globbed above, exactly as `proxy::*` used to. The
+// per-submodule tests (`lazy_body_tests`, `wire_tests`) stay declared in their own modules; the four
+// engine-level tests (`inject_include_usage_tests`, `crossproto_delivery_billing_tests`,
+// `send_envelope_tests`, `future_size_probe`) are declared in `pipeline.rs` under `engine_tests/`.
+#[cfg(test)]
+#[path = "proxy_tests/attempt_timeout_precedence_tests.rs"]
+mod attempt_timeout_precedence_tests;
+#[cfg(test)]
+#[path = "proxy_tests/auth_style_tests.rs"]
+mod auth_style_tests;
+#[cfg(test)]
+#[path = "proxy_tests/egress_differential_tests.rs"]
+mod egress_differential_tests;
+#[cfg(test)]
+#[path = "proxy_tests/egress_dropped_controls_audit_tests.rs"]
+mod egress_dropped_controls_audit_tests;
+#[cfg(test)]
+#[path = "proxy_tests/egress_target_tests.rs"]
+mod egress_target_tests;
+#[cfg(test)]
+#[path = "proxy_tests/forward_once_pool_cell_tests.rs"]
+mod forward_once_pool_cell_tests;
+#[cfg(test)]
+#[path = "proxy_tests/hook_non_chat_projection_tests.rs"]
+mod hook_non_chat_projection_tests;
+#[cfg(test)]
+#[path = "proxy_tests/hook_opt_in_projection_tests.rs"]
+mod hook_opt_in_projection_tests;
+#[cfg(test)]
+#[path = "proxy_tests/hook_seam_tests.rs"]
+mod hook_seam_tests;
+#[cfg(test)]
+#[path = "proxy_tests/ingress_indistinguishability_tests.rs"]
+mod ingress_indistinguishability_tests;
+#[cfg(test)]
+#[path = "proxy_tests/ingress_reject_response_tests.rs"]
+mod ingress_reject_response_tests;
+#[cfg(test)]
+#[path = "proxy_tests/lane_availability_proptest.rs"]
+mod lane_availability_proptest;
+#[cfg(test)]
+#[path = "proxy_tests/mid_stream_error_tests.rs"]
+mod mid_stream_error_tests;
+#[cfg(test)]
+#[path = "proxy_tests/multi_candidate_degrade_tests.rs"]
+mod multi_candidate_degrade_tests;
+#[cfg(test)]
+#[path = "proxy_tests/on_exhausted_tests.rs"]
+mod on_exhausted_tests;
+#[cfg(test)]
+#[path = "proxy_tests/ordered_walk_tests.rs"]
+mod ordered_walk_tests;
+#[cfg(test)]
+#[path = "proxy_tests/pool_upstream_creds_tests.rs"]
+mod pool_upstream_creds_tests;
+#[cfg(test)]
+#[path = "proxy_tests/probe_guard_tests.rs"]
+mod probe_guard_tests;
+#[cfg(test)]
+#[path = "proxy_tests/probe_release_owner_tests.rs"]
+mod probe_release_owner_tests;
+#[cfg(test)]
+#[path = "proxy_tests/request_short_circuit_tests.rs"]
+mod request_short_circuit_tests;
+#[cfg(test)]
+#[path = "proxy_tests/reroute_pool_tests.rs"]
+mod reroute_pool_tests;
+#[cfg(test)]
+#[path = "proxy_tests/response_model_fill_tests.rs"]
+mod response_model_fill_tests;
+#[cfg(test)]
+#[path = "proxy_tests/signal_catalog_tests.rs"]
+mod signal_catalog_tests;
+#[cfg(test)]
+#[path = "proxy_tests/stop_sequence_cap_degrade_tests.rs"]
+mod stop_sequence_cap_degrade_tests;
+#[cfg(test)]
+#[path = "proxy_tests/translate_offload_tests.rs"]
+mod translate_offload_tests;
+#[cfg(test)]
+#[path = "proxy_tests/usage_tap_tests.rs"]
+mod usage_tap_tests;
+// `alloc_gate` (the per-request allocation-count PERF gate) needs THIS crate's test binary to install
+// the counting `#[global_allocator]` its instrument reads (`crate::CountingJemalloc`), ported below in
+// `lib.rs` under the same target gate.
+#[cfg(all(test, not(target_env = "msvc")))]
+#[path = "proxy_tests/alloc_gate.rs"]
+mod alloc_gate;

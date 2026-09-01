@@ -12,7 +12,7 @@
 //! moved, the contract did not.
 
 use super::*;
-use crate::ir::facts::OPAQUE_CONTENT_MARKER;
+use busbar_substrate::ir::facts::OPAQUE_CONTENT_MARKER;
 
 /// Read the fixture body into the hook seam's facts, asserting the reader accepts it.
 fn facts(v: &Value, proto: &str) -> HookFacts {
@@ -24,7 +24,7 @@ fn facts(v: &Value, proto: &str) -> HookFacts {
         &[],
         APPLICATION_JSON,
         proto,
-        Some(crate::operation::Operation::CHAT),
+        Some(busbar_core::operation::Operation::CHAT),
     ) {
         Ok(f) => f,
         Err(HookIrRejected) => {
@@ -141,7 +141,7 @@ fn prompt_projection_keeps_empty_entries_aligned() {
         &[],
         APPLICATION_JSON,
         "openai",
-        Some(crate::operation::Operation::CHAT)
+        Some(busbar_core::operation::Operation::CHAT)
     )
     .is_err());
 }
@@ -722,7 +722,7 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     }
 
     // A hook that echoes exactly what it was projected (the common "pass through" rewrite shape).
-    let rewrite = crate::hooks::wire::RewriteReply {
+    let rewrite = busbar_core::hooks::wire::RewriteReply {
         messages: vec![serde_json::json!({
             "role": "assistant",
             "content": OPAQUE_CONTENT_MARKER,
@@ -766,9 +766,9 @@ fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     let f = facts(&v, "openai");
 
     // 1. DEFAULT (unlimited): the over-64KiB body is projected in FULL — not blanked (v1.5.4 parity).
-    crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::engine::set_hook_content_max_bytes(crate::engine::DEFAULT_HOOK_CONTENT_MAX_BYTES);
     assert_eq!(
-        crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+        crate::engine::DEFAULT_HOOK_CONTENT_MAX_BYTES,
         0,
         "the LLM prompt projection default is UNLIMITED (0); anything else is fail-open regression"
     );
@@ -786,7 +786,7 @@ fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     assert_eq!(prompt.messages[0].1.len(), 200_000, "content sent uncapped");
 
     // 2. OPT-IN ceiling: over-cap content is omitted WHOLE, grant stays visible (present-but-empty).
-    crate::proxy::set_hook_content_max_bytes(64 * 1024);
+    crate::engine::set_hook_content_max_bytes(64 * 1024);
     let req = build_rewrite_request(&f, None, "p", "openai", false, true, 1);
     let prompt = req.prompt.as_ref().expect(
         "the grant is honoured: an over-cap projection is EMPTY, never absent — absence is what an \
@@ -800,5 +800,5 @@ fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     );
 
     // Restore the unlimited default for other tests sharing the process-global ceiling.
-    crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::engine::set_hook_content_max_bytes(crate::engine::DEFAULT_HOOK_CONTENT_MAX_BYTES);
 }

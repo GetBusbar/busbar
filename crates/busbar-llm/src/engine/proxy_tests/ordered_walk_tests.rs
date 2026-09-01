@@ -2,25 +2,26 @@
 //! must dispatch in the policy's ranked order while honoring EXACTLY the same health filter SWRR
 //! honors (a tripped / dead / at-capacity preferred lane is skipped to the next), and fall through
 //! to SWRR when no ranked lane qualifies — never stranding an unranked-but-healthy lane.
+use busbar_core::store::LaneRuntime as _;
 use super::{pick_among, RequestCtx};
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 
-fn three_lane_app() -> std::sync::Arc<crate::state::App> {
+fn three_lane_app() -> std::sync::Arc<busbar_core::state::App> {
     TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m2",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1), (1, 1), (2, 1)])
@@ -73,7 +74,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
         &app,
         &drained_only,
         &mut rc,
-        Some(crate::proxy::stable_hash("session-abc")),
+        Some(crate::engine::stable_hash("session-abc")),
         "p",
         None,
     )
@@ -107,7 +108,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
             &app,
             &drained_and_healthy,
             &mut rc,
-            Some(crate::proxy::stable_hash(key)),
+            Some(crate::engine::stable_hash(key)),
             "p",
             None,
         )
@@ -140,7 +141,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
     // `pick_among` reads (it passes `state::now()` to `ready_in`/SWRR), so the lane is not
     // breaker-ready. No test clock here — everything uses the real clock consistently.
     app.store
-        .force_open_in("p", 2, crate::state::now() + 1_000_000);
+        .force_open_in("p", 2, busbar_core::state::now() + 1_000_000);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
@@ -171,7 +172,7 @@ async fn ordered_walk_skips_excluded_preferred() {
 async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
     let app = three_lane_app();
     app.store
-        .force_open_in("p", 2, crate::state::now() + 1_000_000); // the only ranked lane is tripped
+        .force_open_in("p", 2, busbar_core::state::now() + 1_000_000); // the only ranked lane is tripped
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize]; // ranked subset of one, now unhealthy
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
@@ -212,7 +213,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     // (b) Health filter: trip lane 0 Open — SWRR must never dispatch to it, always picking a healthy
     // sibling (1 or 2). A broken filter that ignores health would eventually return the tripped lane.
     app.store
-        .force_open_in("p", 0, crate::state::now() + 1_000_000);
+        .force_open_in("p", 0, busbar_core::state::now() + 1_000_000);
     for _ in 0..9 {
         let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
@@ -327,9 +328,9 @@ async fn ordered_walk_all_weight_zero_selects_none() {
 /// one-lane pool at capacity yields no pick, with an `AtCapacity` reason recorded.
 #[tokio::test]
 async fn excluded_reasons_records_at_capacity() {
-    use crate::store::Unavailable;
+    use busbar_core::store::Unavailable;
     let app = TestApp::new()
-        .lane(LaneSpec::new("m0", crate::proto::PROTO_ANTHROPIC, "http://localhost").max(1))
+        .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))
         .pool("p", &[(0, 1)])
         .build();
     // Occupy the lane's only permit so admission fails at capacity.
@@ -357,9 +358,9 @@ async fn excluded_reasons_records_at_capacity() {
 /// records `AtCapacity` (rather than falling through with no trace).
 #[tokio::test]
 async fn sticky_fall_through_records_reason() {
-    use crate::store::Unavailable;
+    use busbar_core::store::Unavailable;
     let app = TestApp::new()
-        .lane(LaneSpec::new("m0", crate::proto::PROTO_ANTHROPIC, "http://localhost").max(1))
+        .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))
         .pool("p", &[(0, 1)])
         .build();
     let _held = app.store.try_acquire(0).expect("occupy the only permit");
@@ -375,7 +376,7 @@ async fn sticky_fall_through_records_reason() {
         &app,
         &one,
         &mut rc,
-        Some(crate::proxy::stable_hash("session-k")),
+        Some(crate::engine::stable_hash("session-k")),
         "p",
         None,
     )

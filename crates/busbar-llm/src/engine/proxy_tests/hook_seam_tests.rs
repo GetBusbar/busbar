@@ -3,11 +3,11 @@
 //! the `RoutingDecision::Reject` → `PolicyOutcome::RejectRequest` mapping — plus the reject
 //! status → error-kind mapping and its dialect-native envelope.
 use super::*;
-use crate::hooks::{
+use busbar_core::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
-use crate::state::WeightedLane;
+use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Mutex as StdMutex;
 
@@ -80,7 +80,7 @@ async fn run(
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -91,12 +91,12 @@ async fn run(
             seen: seen.clone(),
             reject,
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt,
         send_user,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -112,10 +112,10 @@ async fn run(
         &rc,
         &v,
         &[],
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         false,
         None,
         None,
@@ -159,7 +159,7 @@ async fn global_gate_reject_short_circuits_the_request() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead — a dispatch would fail; the reject must prevent it
         ))
         .pool("p", &[(0, 1)])
@@ -169,12 +169,12 @@ async fn global_gate_reject_short_circuits_the_request() {
             seen: Arc::new(StdMutex::new(None)),
             reject: Some((451, "blocked by global policy".to_string())),
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     // Inject the global gate (Arc refcount is 1 right after build()).
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
@@ -195,7 +195,7 @@ async fn global_gate_reject_short_circuits_the_request() {
         "p",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -214,7 +214,7 @@ async fn global_gate_abstain_does_not_reject() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -224,12 +224,12 @@ async fn global_gate_abstain_does_not_reject() {
             seen: Arc::new(StdMutex::new(None)),
             reject: None, // abstain
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
 
@@ -249,7 +249,7 @@ async fn global_gate_abstain_does_not_reject() {
         "p",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -302,12 +302,12 @@ impl RoutingPolicy for CannedGate {
 fn canned_gate(canned: Canned, name: &'static str) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy: Arc::new(CannedGate { canned, name }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     }
 }
 
@@ -315,19 +315,19 @@ fn canned_gate(canned: Canned, name: &'static str) -> ResolvedPolicy {
 fn pool_runtime_with(
     tags_by_idx: &[(usize, &[&str])],
     gates: Vec<(u16, ResolvedPolicy)>,
-) -> crate::state::PoolRuntime {
+) -> crate::engine::PoolRuntime {
     let mut members = std::collections::HashMap::new();
     for (idx, tags) in tags_by_idx {
         members.insert(
             *idx,
-            crate::state::MemberMeta {
+            crate::engine::MemberMeta {
                 tier: None,
                 cost_per_mtok: None,
                 tags: tags.iter().map(|t| t.to_string()).collect(),
             },
         );
     }
-    crate::state::PoolRuntime {
+    crate::engine::PoolRuntime {
         upstream_credentials: None,
         members,
         failover: None,
@@ -349,12 +349,12 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .lane(LaneSpec::new(
             "m1",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("fb", &[(0, 1), (1, 1)])
@@ -383,7 +383,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc = RequestCtx::new(60, 1);
     rc.active_restricts.push(RestrictConstraint {
         tags_any: vec!["baa".to_string()],
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
         name: "baa-gate",
     });
     let out = rc.enforce_restricts(&app, "fb", cands.clone()).unwrap();
@@ -397,7 +397,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_reject = RequestCtx::new(60, 1);
     rc_reject.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
         name: "hipaa-gate",
     });
     assert!(
@@ -411,7 +411,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_weighted = RequestCtx::new(60, 1);
     rc_weighted.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: crate::config::PolicyOnError::Weighted,
+        on_empty: busbar_core::config::PolicyOnError::Weighted,
         name: "hipaa-advisory",
     });
     let out = rc_weighted
@@ -439,12 +439,12 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
 async fn base_policy_restrict_persists_across_fallback_pool_hop() {
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto::PROTO_ANTHROPIC, "http://localhost")
+            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost")
                 .dead("down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -458,7 +458,7 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         })
         .fallback_pool("fb", &[(1, 1)])
         .pool_runtime("fb", pool_runtime_with(&[(1, &[])], Vec::new()))
-        .on_exhausted("p", crate::config::OnExhausted::FallbackPool("fb".into()))
+        .on_exhausted("p", busbar_core::config::OnExhausted::FallbackPool("fb".into()))
         .build();
 
     let resp = forward_with_pool(
@@ -474,7 +474,7 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         "p",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -523,7 +523,7 @@ async fn fire(app: Arc<App>, n_lanes: usize) -> Response {
         "p",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await
@@ -567,15 +567,15 @@ struct CaptureTap {
 }
 
 #[async_trait::async_trait]
-impl crate::hooks::RoutingPolicy for CaptureTap {
+impl busbar_core::hooks::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
-        _req: &crate::hooks::RoutingRequest<'_>,
-        _cands: &[crate::hooks::Candidate<'_>],
-        _ctx: &crate::hooks::RoutingContext<'_>,
+        _req: &busbar_core::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_core::hooks::Candidate<'_>],
+        _ctx: &busbar_core::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> crate::hooks::PolicyResult {
-        Ok(crate::hooks::RoutingDecision::Abstain)
+    ) -> busbar_core::hooks::PolicyResult {
+        Ok(busbar_core::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "capture-tap"
@@ -586,11 +586,11 @@ impl crate::hooks::RoutingPolicy for CaptureTap {
 }
 
 /// Build an in-process TAP capture as the App stage-tap triple.
-async fn webhook_tap() -> (Arc<CaptureTap>, crate::hooks::TapEntry) {
+async fn webhook_tap() -> (Arc<CaptureTap>, busbar_core::hooks::TapEntry) {
     let cap = Arc::new(CaptureTap {
         last: std::sync::Mutex::new(None),
     });
-    let policy: Arc<dyn crate::hooks::RoutingPolicy> = cap.clone();
+    let policy: Arc<dyn busbar_core::hooks::RoutingPolicy> = cap.clone();
     (
         cap,
         (
@@ -618,26 +618,26 @@ async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
 /// data-plane module (a non-empty chain with no matching credential denies fail-closed).
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
-        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &crate::config::AuthCfg {
-                chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
-                ..crate::config::AuthCfg::default_none()
+        .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
+            &busbar_core::config::AuthCfg {
+                chain: vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")],
+                ..busbar_core::config::AuthCfg::default_none()
             },
         )))
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -662,20 +662,20 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
-        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &crate::config::AuthCfg {
-                chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
-                ..crate::config::AuthCfg::default_none()
+        .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
+            &busbar_core::config::AuthCfg {
+                chain: vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")],
+                ..busbar_core::config::AuthCfg::default_none()
             },
         )))
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -708,7 +708,7 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -734,7 +734,7 @@ async fn completion_tap_reports_ok_outcome() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -759,7 +759,7 @@ async fn attempt_tap_carries_attempt_story() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -790,7 +790,7 @@ async fn route_tap_reports_surviving_candidates() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -818,7 +818,7 @@ impl RoutingPolicy for RewritingGate {
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        Ok(crate::hooks::RoutingDecision::Abstain)
+        Ok(busbar_core::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "rewriter"
@@ -828,7 +828,7 @@ impl RoutingPolicy for RewritingGate {
         _req: &RoutingRequest<'_>,
         _budget: std::time::Duration,
     ) -> busbar_api::TransformOutcome {
-        busbar_api::TransformOutcome::Rewrite(crate::hooks::wire::RewriteReply {
+        busbar_api::TransformOutcome::Rewrite(busbar_core::hooks::wire::RewriteReply {
             messages: vec![serde_json::json!({"role": "user", "content": self.0})],
             tools: vec![],
         })
@@ -856,7 +856,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC, // anthropic ingress → anthropic lane: same-protocol
+            crate::proto_codec::PROTO_ANTHROPIC, // anthropic ingress → anthropic lane: same-protocol
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -903,7 +903,7 @@ async fn pool_scoped_rw_gate_rewrites_the_body() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -947,15 +947,15 @@ async fn on_error_fallback_hook_fires_and_decides() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: crate::config::PolicyOnError::Weighted,
-        on_error_chain: vec![crate::hooks::FallbackHook {
+        on_error: busbar_core::config::PolicyOnError::Weighted,
+        on_error_chain: vec![busbar_core::hooks::FallbackHook {
             policy: Arc::new(CannedGate {
                 canned: Canned::Reject(451, "fallback says no"),
                 name: "backup",
@@ -963,12 +963,12 @@ async fn on_error_fallback_hook_fires_and_decides() {
             timeout: std::time::Duration::from_millis(500),
             send_prompt: false,
             send_user: false,
-            on_empty: crate::config::PolicyOnError::Reject,
+            on_empty: busbar_core::config::PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -986,25 +986,25 @@ async fn on_error_chain_exhausted_applies_terminal() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: crate::config::PolicyOnError::Reject,
-        on_error_chain: vec![crate::hooks::FallbackHook {
+        on_error: busbar_core::config::PolicyOnError::Reject,
+        on_error_chain: vec![busbar_core::hooks::FallbackHook {
             policy: Arc::new(ErroringPolicy), // the fallback fails too
             timeout: std::time::Duration::from_millis(50),
             send_prompt: false,
             send_user: false,
-            on_empty: crate::config::PolicyOnError::Reject,
+            on_empty: busbar_core::config::PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1029,19 +1029,19 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: crate::config::PolicyOnError::Reject,
+        on_error: busbar_core::config::PolicyOnError::Reject,
         on_error_chain: vec![],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1066,7 +1066,7 @@ async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &server.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -1092,7 +1092,7 @@ async fn pool_gate_reject_fires_from_pool_runtime_gates() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead — the reject must prevent dispatch
         ))
         .pool("p", &[(0, 1)])
@@ -1122,7 +1122,7 @@ async fn reject_priority_tie_break_surfaces_lowest_priority() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1153,12 +1153,12 @@ async fn multi_restrict_disjoint_intersection_fails_closed() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "eu-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .lane(LaneSpec::new(
             "baa-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1193,12 +1193,12 @@ async fn multi_restrict_intersection_dispatches_only_the_survivor() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "eu-only",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: dispatching here would error, not 200
         ))
         .lane(LaneSpec::new(
             "eu-baa",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &survivor.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1236,12 +1236,12 @@ async fn stale_order_filtered_against_post_restrict_set() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "excluded",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: the stale order names ONLY this lane
         ))
         .lane(LaneSpec::new(
             "kept-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &survivor.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1276,12 +1276,12 @@ async fn order_last_in_chain_wins() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "lane-a",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &alpha.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane-b",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &beta.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1316,17 +1316,17 @@ async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate(
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "base-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &base.base_url(),
         ))
         .lane(LaneSpec::new(
             "low-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &low.base_url(),
         ))
         .lane(LaneSpec::new(
             "excluded-lane",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/", // dead: never actually reachable, only named by the stale order
         ))
         .pool("p", &[(0, 1), (1, 1), (2, 1)])
@@ -1364,12 +1364,12 @@ async fn global_gate_order_arm_is_honored() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "lane-a",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &alpha.base_url(),
         ))
         .lane(LaneSpec::new(
             "lane-b",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &beta.base_url(),
         ))
         .pool("p", &[(0, 1), (1, 1)])
@@ -1473,11 +1473,11 @@ async fn max_tokens_saturates_not_wraps() {
 /// the projection.
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = std::sync::Arc::new(
         GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
@@ -1499,7 +1499,7 @@ async fn send_user_projects_governance_key_identity() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1511,12 +1511,12 @@ async fn send_user_projects_governance_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1533,10 +1533,10 @@ async fn send_user_projects_governance_key_identity() {
         &rc,
         &v,
         &[],
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         false,
         Some(&secret),
         None,
@@ -1561,7 +1561,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1572,12 +1572,12 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1587,7 +1587,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
     // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
@@ -1611,10 +1611,10 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         &rc,
         &v,
         &[],
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         false,
         Some("sso-jwt-not-a-vkey-secret"),
         Some(&synth),
@@ -1642,7 +1642,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 /// resolved identity is the synthesized key's, matching what auth actually authorized.
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
     let (disabled_key, secret) = gov
@@ -1664,7 +1664,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -1676,12 +1676,12 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1692,7 +1692,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
     // different synthesized principal key (exactly what a fallthrough from `Some(key) if
     // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
         id: "synthesized-principal".to_string(),
         generation_hash: "principal:synthesized-principal".to_string(),
         name: "synthesized-principal".to_string(),
@@ -1715,10 +1715,10 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         &rc,
         &v,
         &[],
-        crate::proxy::APPLICATION_JSON,
+        crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         false,
         Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
         Some(&synth),
@@ -1747,25 +1747,25 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: crate::config::PolicyOnError::default(),
+        on_error: busbar_core::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: crate::config::PolicyOnError::Reject,
+        on_empty: busbar_core::config::PolicyOnError::Reject,
     };
     let mut rt = pool_runtime_with(&[(0, &[])], Vec::new());
     rt.policy = Some(policy);
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
@@ -1797,7 +1797,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "p",
         None,
         "anthropic",
-        crate::handlers::chat("anthropic", crate::transport::Transport::Http),
+        busbar_core::handlers::chat("anthropic", busbar_core::transport::Transport::Http),
         None,
     )
     .await;
@@ -1868,13 +1868,13 @@ async fn reject_rides_the_full_forward_path() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://unused.invalid",
         ))
         .pool("pa", &[(0, 1)])
         .pool_runtime(
             "pa",
-            crate::state::PoolRuntime {
+            crate::engine::PoolRuntime {
                 upstream_credentials: None,
                 members: Default::default(),
                 failover: None,
@@ -1885,12 +1885,12 @@ async fn reject_rides_the_full_forward_path() {
                         seen: seen.clone(),
                         reject: Some((451, "PII detected".to_string())),
                     }),
-                    on_error: crate::config::PolicyOnError::default(),
+                    on_error: busbar_core::config::PolicyOnError::default(),
                     on_error_chain: Vec::new(),
                     timeout: std::time::Duration::from_millis(500),
                     send_prompt: false,
                     send_user: false,
-                    on_empty: crate::config::PolicyOnError::Reject,
+                    on_empty: busbar_core::config::PolicyOnError::Reject,
                 }),
                 gates: Vec::new(),
                 rewrite_hooks: Vec::new(),
@@ -1905,7 +1905,7 @@ async fn reject_rides_the_full_forward_path() {
     .unwrap();
     let resp = forward_with_pool(
         &app,
-        vec![crate::state::WeightedLane {
+        vec![crate::engine::WeightedLane {
             reasoning: None,
             idx: 0,
             weight: 1,
@@ -1916,7 +1916,7 @@ async fn reject_rides_the_full_forward_path() {
         "pa",
         None,
         "anthropic",
-        crate::handlers::CHAT,
+        crate::test_support::CHAT,
         None,
     )
     .await;
@@ -2007,7 +2007,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -2026,7 +2026,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
     let app2 = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
@@ -2052,7 +2052,7 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
@@ -2067,12 +2067,12 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
                     seen: seen.clone(),
                     reject: None,
                 }),
-                on_error: crate::config::PolicyOnError::default(),
+                on_error: busbar_core::config::PolicyOnError::default(),
                 on_error_chain: Vec::new(),
                 timeout: std::time::Duration::from_millis(500),
                 send_prompt: false,
                 send_user: false,
-                on_empty: crate::config::PolicyOnError::Reject,
+                on_empty: busbar_core::config::PolicyOnError::Reject,
             },
         )];
     }
@@ -2144,7 +2144,7 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
-            crate::proto::PROTO_ANTHROPIC,
+            crate::proto_codec::PROTO_ANTHROPIC,
             &lane.base_url(),
         ))
         .pool("p", &[(0, 1)])
