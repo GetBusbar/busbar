@@ -431,10 +431,16 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    /// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App`
-    /// fields, bundled here (R3/R4 sub-phase A). Read through [`App::engine_tables`]. `cost` stays
-    /// OUTSIDE it (neutral — MCP/A2A meter through it too).
-    pub(crate) llm_runtime: NativeRuntime,
+    /// THE LLM DATA-PLANE RUNTIME'S SLOT KEY — the interned `runtime_slot_key(<llm plane key>)` under
+    /// which THIS config generation's [`NativeRuntime`] rides in [`App::plane_slots`], the same opaque
+    /// slot MCP/A2A already carry their runtimes in (R3/R4 sub-phase B — the LLM runtime moved off the
+    /// flat `llm_runtime` field it was bundled into by sub-phase A). Resolved ONCE at build
+    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables`] →
+    /// [`App::llm_runtime`]) is a single cheap `plane_slots` lookup + ONE downcast, never the interning
+    /// `runtime_slot_key` call. An ABSENT slot — the featureless binary boots with no LLM plane, so
+    /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
+    /// flat field encoded), never a panic. Neutral: names no dialect.
+    pub(crate) llm_runtime_key: &'static str,
     pub(crate) store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
@@ -841,15 +847,15 @@ pub struct App {
 }
 
 /// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App` fields,
-/// now ONE bundle built once per config apply ([`crate::appbuild`]) and held on the snapshot as
-/// [`App::llm_runtime`]. Grouping them is R3/R4 sub-phase A's payoff: core carries no LLM-shaped FLAT
-/// state — one named bundle instead. `cost` deliberately stays OUTSIDE this (it is NEUTRAL — MCP/A2A
-/// meter through it too). An OWNED nested struct (not `Arc`), so [`App`]'s `Clone` deep-copies it
-/// exactly as it deep-copied the 12 fields — byte-identical clone/snapshot semantics. Sub-phase B
-/// relocates this type to `busbar-llm` and reaches it through the opaque `plane_slot` (a downcast the
-/// extracted plane does off the host seam); it stays a typed field HERE so the money-path read is a
-/// plain field access, never a per-read slot lookup. Neutral: names no dialect, adds no LLM type to
-/// core (the freeze witness stays 0).
+/// now ONE bundle built once per config apply ([`crate::appbuild`]) and carried on the snapshot in the
+/// opaque plane slot ([`App::plane_slots`]) under `runtime_slot_key(<llm plane key>)`, reached through
+/// the [`App::llm_runtime`] downcast (R3/R4 sub-phase B). Grouping them was sub-phase A's payoff (core
+/// carries no LLM-shaped FLAT state); sub-phase B then moved the bundle off its typed field into the
+/// SAME type-erased slot every other plane's runtime already rides, so `App` names one `&'static str`
+/// key ([`App::llm_runtime_key`]) instead of this type. `cost` deliberately stays OUTSIDE this (it is
+/// NEUTRAL — MCP/A2A meter through it too). Still `Clone` (Phase 3 relocates the type to `busbar-llm`;
+/// today the apply-path `build_runtime` seam clones the freshly-lowered bundle into the shared slot).
+/// Neutral: names no dialect, adds no LLM type to core (the freeze witness stays 0).
 #[derive(Clone)]
 pub(crate) struct NativeRuntime {
     pub(crate) lanes: Vec<Lane>,
@@ -887,12 +893,55 @@ impl NativeRuntime {
     }
 }
 
+/// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
+/// every plane's runtime rides — the constructor `appbuild` calls to seed
+/// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
+/// flat `App::llm_runtime` field). The `PlaneDecl::build_runtime` fn pointer the sibling planes carry
+/// stays `None` for THIS plane this phase — the plane crate that owns the decl (`busbar-llm`) may not
+/// name a `busbar_core::` item, and [`NativeRuntime`] is still a core type — so `appbuild` calls this
+/// core-local constructor by name instead. Phase 3 relocates `NativeRuntime` to `busbar-llm`, at which
+/// point this becomes the plane's own `build_runtime` and the decl carries the pointer like MCP.
+pub(crate) fn compose_native_runtime_slot(
+    rt: NativeRuntime,
+) -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(rt)
+}
+
+/// THE PROCESS-LIFETIME EMPTY LLM RUNTIME the money-path read ([`App::llm_runtime`]) falls back to when
+/// no LLM plane contributed a slot — the featureless zero-plane binary, whose `appbuild` inserted none.
+/// Zero lanes, zero pools, a single default egress shard that is never dialled (nothing routes without a
+/// lane). Built once, lazily, and ONLY if such a build actually reads `engine_tables()` (a boot
+/// health/metrics/telemetry probe); a normal LLM-planed boot always finds its slot and never touches
+/// this. Replicates the emptiness the always-present-but-empty flat `llm_runtime` field used to carry,
+/// so the field→slot move stays byte-identical for the zero-plane case — an empty read, never a panic.
+fn empty_native_runtime() -> &'static NativeRuntime {
+    static EMPTY: std::sync::OnceLock<NativeRuntime> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| NativeRuntime {
+        lanes: Vec::new(),
+        by_model: HashMap::new(),
+        pools: HashMap::new(),
+        pool_runtime: HashMap::new(),
+        fallback_pools: HashMap::new(),
+        on_exhausted_cfgs: std::collections::HashMap::new(),
+        failover_cfg: None,
+        queued_depth: Arc::new(QueuedDepth::default()),
+        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
+        upstream_credentials: crate::auth::UpstreamCreds::default(),
+        any_pool_upstream_creds_override: false,
+        client: UpstreamClients::build(1, || {
+            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                4, 300, false, false,
+            ))
+        }),
+    })
+}
+
 /// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface (R3/R4 sub-phase A, LOCKED §7
-/// "wire the seam in place"). Borrows the tables off [`App::llm_runtime`] (a zero-cost newtype over
-/// `&App`), so every read through it is byte-identical to reading the bundle field directly. It
-/// exists so the engine and the model-plane readers reach the pool/lane/failover tables through ONE
-/// named seam — the seam whose SOURCE sub-phase B flips from `App::llm_runtime` to the LLM plane's
-/// `plane_slot`, WITHOUT touching a single reader.
+/// "wire the seam in place"). A zero-cost newtype over `&NativeRuntime`, so every read through it is
+/// byte-identical to reading the bundle directly. It exists so the engine and the model-plane readers
+/// reach the pool/lane/failover tables through ONE named seam — the seam whose SOURCE sub-phase B
+/// flipped from the flat `App::llm_runtime` field to the LLM plane's opaque `plane_slot` (downcast ONCE
+/// per [`App::engine_tables`] call), WITHOUT touching a single reader.
 #[derive(Clone, Copy)]
 pub(crate) struct EngineTables<'a> {
     rt: &'a NativeRuntime,
@@ -966,12 +1015,52 @@ impl<'a> EngineTables<'a> {
 
 impl App {
     /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam. A
-    /// zero-cost newtype over `&self.llm_runtime`; the seam sub-phase B re-sources from the LLM
-    /// plane's runtime slot.
+    /// zero-cost newtype over [`App::llm_runtime`] — sub-phase B re-sourced it from the flat
+    /// `llm_runtime` field to the LLM plane's opaque runtime slot, so this is ONE `plane_slots` lookup +
+    /// ONE downcast per call, then plain field reads through the returned borrow.
     pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
         EngineTables {
-            rt: &self.llm_runtime,
+            rt: self.llm_runtime(),
         }
+    }
+
+    /// THIS SNAPSHOT'S LLM DATA-PLANE RUNTIME, read through the opaque plane slot (R3/R4 sub-phase B).
+    /// ONE `plane_slots` lookup by the pre-interned [`llm_runtime_key`](Self::llm_runtime_key) + ONE
+    /// downcast; the returned borrow is then plain-field-read (by [`EngineTables`] and the peripheral
+    /// LLM readers). When the slot is ABSENT — the featureless binary boots with no LLM plane, so
+    /// `appbuild` inserted none — this yields the process-lifetime EMPTY default (zero lanes/pools), the
+    /// byte-identical successor to the always-present-but-empty flat field the zero-plane build carried.
+    /// Never panics on absence: a boot health/metrics/telemetry probe sees empty tables and does nothing.
+    pub(crate) fn llm_runtime(&self) -> &NativeRuntime {
+        match self
+            .plane_slot(self.llm_runtime_key)
+            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+        {
+            Some(rt) => rt,
+            None => empty_native_runtime(),
+        }
+    }
+
+    /// TEST-ONLY in-place mutable access to this snapshot's LLM runtime — the successor to the deleted
+    /// flat `llm_runtime` field's `&mut` for the fixtures that build an `App`, take sole `Arc` ownership
+    /// and then poke a lane/pool into its tables before asserting. Downcasts the UNIQUELY-OWNED plane
+    /// slot back to `NativeRuntime`; panics if the slot is absent or shared (a mutating fixture always
+    /// holds it alone). Production never mutates the runtime in place post-build — `appbuild` rebuilds a
+    /// fresh bundle every apply — so this stays test-gated. Read only by core's own `cfg(test)`
+    /// fixtures; a `test-support`-only lib build (the plane suites' dependency-copy) links it unused,
+    /// so it is allowed dead there exactly as the MCP plane's `&App`-typed test reads are.
+    #[cfg(any(test, feature = "test-support"))]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
+        let key = self.llm_runtime_key;
+        Arc::get_mut(
+            self.plane_slots
+                .get_mut(key)
+                .expect("fallback-plane runtime slot present for in-place test mutation"),
+        )
+        .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
+        .downcast_mut::<NativeRuntime>()
+        .expect("fallback-plane runtime slot is a NativeRuntime")
     }
 }
 
@@ -985,7 +1074,7 @@ impl App {
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.llm_runtime.upstream_creds()
+        self.llm_runtime().upstream_creds()
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no

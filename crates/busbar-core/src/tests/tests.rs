@@ -1385,8 +1385,8 @@ fn a_rebuild_carries_the_probe_schedule() {
     let next = build_once(no_lane_cfg(), Some(&prior)).expect("rebuild, unchanged config");
     assert!(
         std::sync::Arc::ptr_eq(
-            &prior.llm_runtime.probe_schedule,
-            &next.llm_runtime.probe_schedule
+            &prior.llm_runtime().probe_schedule,
+            &next.llm_runtime().probe_schedule
         ),
         "an unchanged lane set must carry the probe schedule across a rebuild"
     );
@@ -1396,8 +1396,8 @@ fn a_rebuild_carries_the_probe_schedule() {
     let next2 = build_once(no_lane_cfg(), Some(&prior2)).expect("rebuild with the lane removed");
     assert!(
         !std::sync::Arc::ptr_eq(
-            &prior2.llm_runtime.probe_schedule,
-            &next2.llm_runtime.probe_schedule
+            &prior2.llm_runtime().probe_schedule,
+            &next2.llm_runtime().probe_schedule
         ),
         "a lane-set change must NOT carry the probe schedule"
     );
@@ -1450,9 +1450,9 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
         build_once(cfg(), Some(&prior)).expect("apply, nothing client-relevant changed");
     assert!(
         unchanged
-            .llm_runtime
+            .llm_runtime()
             .client
-            .shares_pool_with(&prior.llm_runtime.client),
+            .shares_pool_with(&prior.llm_runtime().client),
         "an apply that changes no client-affecting setting must REUSE the prior client's warm pool"
     );
 
@@ -1465,9 +1465,9 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     let rebuilt = build_once(changed_cfg, Some(&prior2)).expect("apply with a changed timeout");
     assert!(
         !rebuilt
-            .llm_runtime
+            .llm_runtime()
             .client
-            .shares_pool_with(&prior2.llm_runtime.client),
+            .shares_pool_with(&prior2.llm_runtime().client),
         "an apply that changes upstream_request_timeout_secs must REBUILD the client so the new \
          timeout takes effect"
     );

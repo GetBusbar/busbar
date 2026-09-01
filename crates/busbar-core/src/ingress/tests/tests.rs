@@ -33,6 +33,29 @@ fn minimal_app() -> Arc<App> {
                 crate::state::runtime_slot_key("mcp"),
                 busbar_mcp::testkit::default_mcp_runtime(),
             );
+            // The LLM data-plane runtime bundle (R3/R4 sub-phase B) — carried in the slot under its
+            // companion key, downcast by `App::llm_runtime` / `App::engine_tables` on the money path.
+            m.insert(
+                crate::state::runtime_slot_key(crate::plane::fallback_key()),
+                Arc::new(crate::state::NativeRuntime {
+                    lanes: vec![],
+                    by_model: std::collections::HashMap::new(),
+                    pools: std::collections::HashMap::new(),
+                    pool_runtime: std::collections::HashMap::new(),
+                    fallback_pools: std::collections::HashMap::new(),
+                    on_exhausted_cfgs: std::collections::HashMap::new(),
+                    failover_cfg: None,
+                    queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+                    probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
+                    upstream_credentials: crate::auth::UpstreamCreds::Own,
+                    any_pool_upstream_creds_override: false,
+                    client: crate::state::UpstreamClients::build(1, || {
+                        crate::proxy::build_egress_client(
+                            &crate::proxy::EgressClientSpec::llm_lane(4, 300, false, false),
+                        )
+                    }),
+                }) as Arc<dyn std::any::Any + Send + Sync>,
+            );
             m
         },
         agent_defs: std::sync::Arc::new(busbar_a2a::a2a::config::AgentsCfg::default()),
@@ -42,24 +65,7 @@ fn minimal_app() -> Arc<App> {
             &std::collections::HashMap::new(),
             crate::plane::fallback_key(),
         )),
-        llm_runtime: crate::state::NativeRuntime {
-            lanes: vec![],
-            by_model: std::collections::HashMap::new(),
-            pools: std::collections::HashMap::new(),
-            pool_runtime: std::collections::HashMap::new(),
-            fallback_pools: std::collections::HashMap::new(),
-            on_exhausted_cfgs: std::collections::HashMap::new(),
-            failover_cfg: None,
-            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-            probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
-            upstream_credentials: crate::auth::UpstreamCreds::Own,
-            any_pool_upstream_creds_override: false,
-            client: crate::state::UpstreamClients::build(1, || {
-                crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                    4, 300, false, false,
-                ))
-            }),
-        },
+        llm_runtime_key: crate::state::runtime_slot_key(crate::plane::fallback_key()),
         store: Arc::new(crate::store::HealthState::new(vec![])),
         client_settings: crate::state::UpstreamClientSettings::from_limits(
             &crate::config::LimitsResolved::default(),
@@ -181,7 +187,7 @@ fn test_affinity_header_honors_configured_name() {
     );
     // App is behind Arc; rebuild with the populated map.
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.llm_runtime.pool_runtime = pr;
+    inner.llm_runtime_mut().pool_runtime = pr;
     assert_eq!(affinity_header_for(&app, "tenant-pool"), "x-user-id");
     // A pool without an entry still falls back to the default.
     assert_eq!(affinity_header_for(&app, "other"), "x-session-id");
@@ -208,7 +214,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
         },
     );
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.llm_runtime.pool_runtime = pr;
+    inner.llm_runtime_mut().pool_runtime = pr;
     assert_eq!(affinity_header_for(&app, "p"), "x-session-id");
 }
 
@@ -2346,7 +2352,7 @@ fn test_pool_label_bounds_cardinality() {
     let mut app = minimal_app();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.llm_runtime.pools.insert(
+        inner.llm_runtime_mut().pools.insert(
             "mypool".to_string(),
             vec![WeightedLane {
                 reasoning: None,
@@ -2355,7 +2361,10 @@ fn test_pool_label_bounds_cardinality() {
                 attempt_timeout_ms: None,
             }],
         );
-        inner.llm_runtime.by_model.insert("mymodel".to_string(), 0);
+        inner
+            .llm_runtime_mut()
+            .by_model
+            .insert("mymodel".to_string(), 0);
     }
     // Configured pool name → verbatim.
     assert_eq!(pool_label(&app, "mypool"), "mypool");
@@ -6201,10 +6210,13 @@ fn governed_app_downgrade(
     inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
     inner
-        .llm_runtime
+        .llm_runtime_mut()
         .pools
         .insert("frontier".to_string(), vec![]);
-    inner.llm_runtime.pools.insert("value".to_string(), vec![]);
+    inner
+        .llm_runtime_mut()
+        .pools
+        .insert("value".to_string(), vec![]);
     (app, key)
 }
 
@@ -6303,9 +6315,18 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     inner.governance = Some(gov);
     inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
-    inner.llm_runtime.pools.insert("a".to_string(), vec![]);
-    inner.llm_runtime.pools.insert("b".to_string(), vec![]);
-    inner.llm_runtime.pools.insert("c".to_string(), vec![]);
+    inner
+        .llm_runtime_mut()
+        .pools
+        .insert("a".to_string(), vec![]);
+    inner
+        .llm_runtime_mut()
+        .pools
+        .insert("b".to_string(), vec![]);
+    inner
+        .llm_runtime_mut()
+        .pools
+        .insert("c".to_string(), vec![]);
 
     let gov = crate::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),

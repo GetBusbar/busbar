@@ -6,7 +6,9 @@
 use super::*;
 use crate::config::{HealthCfg, HealthMode};
 use crate::store::BreakerState;
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use crate::test_support::{
+    build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
+};
 use axum::http::StatusCode;
 use std::sync::Arc;
 
@@ -467,27 +469,57 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
     server.shutdown().await;
 }
 
-/// A SHORTENED `interval_secs` takes effect on an inherited schedule within one new
-/// interval, rather than waiting out the old (far longer) one. Targets the `fetch_min` clamp
-/// specifically — deadlines are offsets from each schedule's OWN `origin`, so a numeric
-/// comparison only discriminates when both spawns share one `Arc` (the state `App::clone`
-/// produces), which this test establishes by construction rather than assuming.
+/// A SHORTENED `interval_secs` takes effect on an inherited schedule within one new interval, rather
+/// than waiting out the old (far longer) one. Targets the `fetch_min` clamp specifically — deadlines
+/// are offsets from each schedule's OWN `origin`, so a numeric comparison only discriminates when both
+/// spawns share one `Arc`.
+///
+/// R3/R4 sub-phase B REWRITE: the LLM runtime (and its `probe_schedule` `Arc`) moved off the flat
+/// `App::llm_runtime` field into the opaque plane runtime slot, so `App::clone` now Arc-SHARES the whole
+/// runtime rather than deep-copying its lanes — the old "clone, then mutate one cloned lane in place"
+/// setup can no longer produce a second generation with a divergent lane over a shared schedule.
+/// Production never mutates the runtime in place post-clone anyway: a config apply rebuilds a fresh
+/// bundle through `build_app_from_config`, whose lane-set-equality check CARRIES the prior
+/// `probe_schedule` `Arc` forward. So this test now drives that REAL apply path — two
+/// `build_app_from_config` generations, the second inheriting the first's schedule while its health
+/// interval diverges — instead of the synthetic clone, testing exactly what a reload does.
 #[tokio::test]
 async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
+    crate::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("l", crate::proto::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(HealthCfg {
-                    mode: HealthMode::Active,
-                    interval_secs: Some(3600),
-                    timeout_secs: Some(5),
-                }),
-        )
-        .pool("p", &[(0, 1)])
-        .build();
+    // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
+    // mock's base URL and an active health block at `interval`, and one model routes to it.
+    let make_cfg = |interval: u64| {
+        let mut c = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT",
+        ));
+        let p = c.providers.get_mut("acme").expect("the sole provider");
+        p.base_url = server.base_url();
+        p.health = Some(HealthCfg {
+            mode: HealthMode::Active,
+            interval_secs: Some(interval),
+            timeout_secs: Some(5),
+        });
+        c.models.insert(
+            "m0".to_string(),
+            crate::config::ModelCfg {
+                reasoning: None,
+                prompt_caching: None,
+                max_requests: -1,
+                provider: "acme".into(),
+                max_concurrent: Some(1),
+                default_max_tokens: None,
+                upstream_model: None,
+                attempt_timeout_ms: None,
+            },
+        );
+        c
+    };
 
+    // Generation 1, built through the REAL apply path (`build_app_from_config`), not a synthetic
+    // `App::clone`: the probe schedule rides the opaque plane runtime slot now, and it is the apply's
+    // carry-over — not a field clone — that shares it across generations.
+    let app = Arc::new(build_once(make_cfg(3600), None).expect("boot"));
     spawn_probers(&app);
     let far = app.engine_tables().probe_schedule().deadlines[0]
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -496,16 +528,19 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         "first spawn schedules a ~3600s-out deadline, got {far}"
     );
 
-    // Build the second generation as `App::clone` would (config apply / reload) — the `Arc`,
-    // and therefore `origin`, is SHARED, which is the precondition the numeric assertion below
-    // depends on.
-    let mut a2 = (*app).clone();
-    a2.llm_runtime.lanes[0].health = Some(HealthCfg {
-        mode: HealthMode::Active,
-        interval_secs: Some(10),
-        timeout_secs: Some(5),
-    });
-    let app2 = Arc::new(a2);
+    // Generation 2: a hot apply that SHORTENS the interval to 10s. The lane set is unchanged (same
+    // model + provider), so `build_app_from_config` CARRIES the prior probe schedule `Arc` forward —
+    // the shared-`origin` precondition the numeric clamp assertion depends on — while the lane's health
+    // config DIVERGES. This is exactly the mutate-then-share the old clone faked, now real.
+    let app2 = Arc::new(build_once(make_cfg(10), Some(&app)).expect("apply"));
+    assert!(
+        std::sync::Arc::ptr_eq(
+            app.engine_tables().probe_schedule(),
+            app2.engine_tables().probe_schedule()
+        ),
+        "an unchanged lane set must carry the probe schedule across the apply — the Arc-sharing the \
+         inherited-schedule clamp depends on"
+    );
     spawn_probers(&app2);
 
     assert!(

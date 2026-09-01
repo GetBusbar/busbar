@@ -836,7 +836,7 @@ pub fn build_app_from_config(
     let reuse_prior_client = prior.is_some_and(|p| p.client_settings == new_client_settings);
     let upstream_client = if let (true, Some(p)) = (reuse_prior_client, prior) {
         // REUSED across applies: the pooled connections + their kept-alive upstream sockets.
-        p.llm_runtime.client.clone()
+        p.llm_runtime().client.clone()
     } else {
         // Opt-in HTTP/2 PRIOR-KNOWLEDGE for CLEARTEXT upstreams (no TLS/ALPN to negotiate over):
         // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE=1` makes the shared client assume h2 without ALPN. This
@@ -1312,14 +1312,14 @@ pub fn build_app_from_config(
     // set: there the zip would start accepting a shifted-index pairing.
     let probe_schedule = match prior {
         Some(p)
-            if p.llm_runtime.lanes.len() == lanes.len()
-                && p.llm_runtime
+            if p.llm_runtime().lanes.len() == lanes.len()
+                && p.llm_runtime()
                     .lanes
                     .iter()
                     .zip(lanes.iter())
                     .all(|(a, b)| a.model == b.model && a.provider == b.provider) =>
         {
-            p.llm_runtime.probe_schedule.clone()
+            p.llm_runtime().probe_schedule.clone()
         }
         _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
     };
@@ -1425,6 +1425,59 @@ pub fn build_app_from_config(
         plane_slots.insert(slot_key, runtime_slot);
     }
 
+    // THE LLM DATA-PLANE RUNTIME for this config generation — the pool/lane/failover/egress bundle,
+    // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<llm plane
+    // key>)`), the SAME opaque slot MCP/A2A ride, composed through the LLM plane's own type-erasing
+    // `build_runtime` seam (R3/R4 sub-phase B — the bundle moved off the flat `App::llm_runtime` field).
+    // Built ONCE here (`queued_depth` fresh per generation; every other field the value the flat field
+    // carried). `tslots` is built FIRST so its `&lanes`/`&pools`/`&by_model` borrows run before those
+    // locals move into the bundle. With the LLM plane compiled out (the featureless binary) there is no
+    // decl and no slot is inserted; `App::llm_runtime` then reads the empty default — byte-identical to
+    // the always-present-but-empty flat field that build carried.
+    let tslots = Arc::new(telemetry::AppSlots::build(
+        &lanes,
+        &pools,
+        &by_model,
+        crate::plane::fallback_key(),
+    ));
+    let llm_runtime = crate::state::NativeRuntime {
+        lanes,
+        by_model,
+        pools,
+        pool_runtime,
+        fallback_pools,
+        on_exhausted_cfgs,
+        failover_cfg,
+        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+        probe_schedule,
+        upstream_credentials: cfg.upstream_credentials,
+        any_pool_upstream_creds_override,
+        client: upstream_client.clone(),
+    };
+    let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+    // Compose the slot through the CORE-LOCAL constructor, NOT the decl's `build_runtime` fn pointer the
+    // way MCP composes its runtime: `NativeRuntime` is still a busbar-core type THIS phase, and the
+    // plane crate that owns the fallback decl (`busbar-llm`) may not name a `busbar_core::` item, so the
+    // decl's `build_runtime` stays `None` and `appbuild` names the constructor directly. (This also
+    // sidesteps the dual-compile hazard the fn pointer would carry — core's test binary links the plane
+    // decl against a SECOND core copy, across which a `NativeRuntime` downcast fails.) Phase 3 relocates
+    // `NativeRuntime` to `busbar-llm`, at which point this becomes the plane's own `build_runtime` and
+    // the decl carries the pointer like MCP.
+    //
+    // GATED on a genuine fallback (LLM) plane existing — NOT merely on `fallback_key()` resolving —
+    // because `fallback_key()` degrades to the FIRST registered plane's key when no plane flags itself
+    // fallback (the plane suites' dependency-copy of core, which registers only MCP/A2A). Composing the
+    // runtime slot then would key it under that sibling's `runtime_slot_key` and clobber the sibling's
+    // own runtime. `is_fallback` answers "is this key a real fallback plane", so the slot is written
+    // only where the fallback plane actually owns it; elsewhere `App::llm_runtime` reads the empty
+    // default (no LLM money path runs in such a build anyway).
+    if crate::plane::is_fallback(crate::plane::fallback_key()) {
+        plane_slots.insert(
+            llm_runtime_key,
+            crate::state::compose_native_runtime_slot(llm_runtime),
+        );
+    }
+
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
     // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
@@ -1493,34 +1546,16 @@ pub fn build_app_from_config(
     crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
 
     let app = App {
-        // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
-        // collections move into the snapshot. Identical label sets across applies re-intern to the
-        // same slots, so hot-path counters accumulate monotonically across config generations.
-        tslots: Arc::new(telemetry::AppSlots::build(
-            &lanes,
-            &pools,
-            &by_model,
-            crate::plane::fallback_key(),
-        )),
-        // THE LLM DATA-PLANE RUNTIME bundle (R3/R4 sub-phase A): the pool/lane/failover/egress tables
-        // that were 12 flat `App` fields, built here in ONE place. Placed AFTER `tslots` so the
-        // `AppSlots::build(&lanes, &pools, &by_model, …)` borrow above runs BEFORE these locals move
-        // in. `queued_depth` starts fresh per generation (an in-flight parked request and a scrape
-        // share the Arc); every other field is the same value that was assigned to the flat field.
-        llm_runtime: crate::state::NativeRuntime {
-            lanes,
-            by_model,
-            pools,
-            pool_runtime,
-            fallback_pools,
-            on_exhausted_cfgs,
-            failover_cfg,
-            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-            probe_schedule,
-            upstream_credentials: cfg.upstream_credentials,
-            any_pool_upstream_creds_override,
-            client: upstream_client.clone(),
-        },
+        // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
+        // config-derived collections moved into the LLM runtime bundle so its `&lanes`/`&pools`/
+        // `&by_model` borrows ran first). Identical label sets across applies re-intern to the same
+        // slots, so hot-path counters accumulate monotonically across config generations.
+        tslots,
+        // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
+        // above into `plane_slots` under this interned key through the LLM plane's `build_runtime`
+        // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
+        // slot on the money path. Absent slot (featureless build) reads the empty default.
+        llm_runtime_key,
         store,
         // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a

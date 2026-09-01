@@ -1414,6 +1414,54 @@ impl TestApp {
             crate::plane::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
+        // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
+        // field every fixture used to set. Built here (AFTER `tslots`' `&lanes`/`&self.pools`/
+        // `&by_model` borrows above, and preserving the field order whose earlier fields BORROW
+        // `lanes`/`self.pool_runtime` before the later fields MOVE them) and inserted into `plane_slots`
+        // UNCONDITIONALLY under the interned `runtime_slot_key(<llm plane key>)`: a fixture always
+        // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
+        // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
+        // process actually has an LLM (fallback) plane. GATED on `is_fallback` because `fallback_key()`
+        // degrades to the FIRST registered plane's key when no plane flags itself fallback (the plane
+        // suites' dependency-copy of core, which registers only MCP/A2A) — inserting there would key the
+        // LLM runtime under a sibling's `runtime_slot_key` and clobber that sibling's own runtime slot.
+        let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+        // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
+        // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
+        // default (a surface with no LLM plane never routes through `engine_tables` anyway).
+        if crate::plane::is_fallback(crate::plane::fallback_key()) {
+            let llm_runtime = crate::state::NativeRuntime {
+                probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
+                // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
+                // installs an override, so a test that sets one via `.pool_runtime(...)` still exercises
+                // the full lookup.
+                any_pool_upstream_creds_override: self
+                    .pool_runtime
+                    .values()
+                    .any(|rt| rt.upstream_credentials.is_some()),
+                lanes,
+                by_model,
+                pools: self.pools,
+                pool_runtime: self.pool_runtime,
+                fallback_pools: self.fallback_pools,
+                on_exhausted_cfgs: self.on_exhausted_cfgs,
+                failover_cfg: self.failover_cfg,
+                queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
+                upstream_credentials: self.upstream_credentials,
+                client: crate::state::UpstreamClients::build(1, || {
+                    // The REAL owned egress client at default spec — tests drive the same hyper stack
+                    // production runs (the in-process MockServer is plain http, which the connector's
+                    // `https_or_http` posture serves).
+                    crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                        4, 300, false, false,
+                    ))
+                }),
+            };
+            plane_slots.insert(
+                llm_runtime_key,
+                std::sync::Arc::new(llm_runtime) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+            );
+        }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
         let plugin_routes = std::sync::Arc::new(if self.no_plugin_routes {
@@ -1483,37 +1531,10 @@ impl TestApp {
             .and_then(|decl| self.plane_defs_any.remove(decl.key))
             .unwrap_or_else(|| std::sync::Arc::new(())),
             tslots,
-            // THE LLM DATA-PLANE RUNTIME bundle (R3/R4 sub-phase A) — the same fields the fixture used
-            // to set flat on `App`, grouped. Field order is load-bearing: `probe_schedule` and
-            // `any_pool_upstream_creds_override` BORROW `lanes`/`self.pool_runtime` and so precede the
-            // moves of those values.
-            llm_runtime: crate::state::NativeRuntime {
-                probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
-                // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
-                // installs an override, so a test that sets one via `.pool_runtime(...)` still
-                // exercises the full lookup.
-                any_pool_upstream_creds_override: self
-                    .pool_runtime
-                    .values()
-                    .any(|rt| rt.upstream_credentials.is_some()),
-                lanes,
-                by_model,
-                pools: self.pools,
-                pool_runtime: self.pool_runtime,
-                fallback_pools: self.fallback_pools,
-                on_exhausted_cfgs: self.on_exhausted_cfgs,
-                failover_cfg: self.failover_cfg,
-                queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-                upstream_credentials: self.upstream_credentials,
-                client: crate::state::UpstreamClients::build(1, || {
-                    // The REAL owned egress client at default spec — tests drive the same hyper stack
-                    // production runs (the in-process MockServer is plain http, which the connector's
-                    // `https_or_http` posture serves).
-                    crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                        4, 300, false, false,
-                    ))
-                }),
-            },
+            // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
+            // above into `plane_slots` under this interned key; the snapshot names only the key, and
+            // `App::llm_runtime` downcasts the slot on the money path.
+            llm_runtime_key,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),

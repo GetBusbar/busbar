@@ -24,7 +24,7 @@ fn no_override_fast_path_returns_all_pools_default() {
             .build();
 
         assert!(
-            !app.llm_runtime.any_pool_upstream_creds_override,
+            !app.llm_runtime().any_pool_upstream_creds_override,
             "no pool overrides ⇒ fast path enabled"
         );
         // Known pool, unknown pool, and the empty (direct/ad-hoc) pool all resolve to the default.
@@ -67,7 +67,7 @@ fn override_present_runs_full_lookup() {
         .build();
 
     assert!(
-        app.llm_runtime.any_pool_upstream_creds_override,
+        app.llm_runtime().any_pool_upstream_creds_override,
         "a pool sets an override ⇒ full lookup enabled"
     );
     // The overriding pool gets its own value.

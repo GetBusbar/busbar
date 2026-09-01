@@ -139,9 +139,12 @@ pub(crate) fn ensure_test_protocols_registered() {
 ///
 /// `wire_format_names` is [`busbar_core::proto::known_protocols`] itself — the model plane's dialects
 /// ARE the registered protocols, so a seventh dialect moves that list with nothing edited here. Every
-/// other field is `None`/trivial: the LLM plane's runtime state is the many `App` fields the data plane
-/// reads directly (lanes, pools, cost, …), not one object this seam can erase — see the original field
-/// docs in git history for the per-field rationale, unchanged by the relocation.
+/// other field is `None`/trivial (the fallback plane claims no path, mounts nothing and reconciles
+/// nothing). R3/R4 sub-phase B DID move the LLM data-plane runtime (lanes/pools/failover/egress) off its
+/// flat `App` field into the opaque `plane_slots` runtime slot every plane's runtime rides — but its
+/// type still lives in `busbar-core`, which a plane crate may not name, so `busbar-core`'s `appbuild`
+/// composes that slot through a core-local constructor rather than through this decl's `build_runtime`
+/// pointer (which stays `None`); Phase 3 relocates the type here and flips the pointer on, like MCP's.
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "llm",
@@ -160,8 +163,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // claims no path and binds no audience.
         claims: |_| Vec::new(),
         admission: |_| None,
-        // NO SLOT / NO SURFACE / NO DURABLE STATE — the LLM plane rides the `App` fields the data plane
-        // reads directly; there is no single object this seam builds, restores or reconciles.
+        // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
+        // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
         build: |_| None,
         routes: None,
         admin_routes: None,
@@ -181,6 +184,13 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         parse_section: None,
         parse_endpoint: None,
         lower_endpoint: None,
+        // THE PER-GENERATION RUNTIME SEAM stays `None` for the fallback plane THIS phase (R3/R4 sub-phase
+        // B). The pool/lane/failover/egress runtime IS now carried in the opaque `plane_slots` runtime
+        // slot every plane's runtime rides, and the money-path read (`App::engine_tables`) downcasts that
+        // slot once per call — but its type (`busbar_core::state::NativeRuntime`) still lives in core,
+        // and a plane crate may not name a `busbar_core::` item, so `busbar-core`'s `appbuild` composes
+        // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
+        // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
         build_runtime: None,
         retain_verify_gates: None,
         default_section: None,
