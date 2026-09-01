@@ -1299,7 +1299,7 @@ fn default_protocol() -> String {
 /// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
 /// unknown spelling is now a deserialize error instead of a hand-checked validation error.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderAuth {
+pub enum ProviderAuth {
     #[serde(rename = "bearer")]
     Bearer,
     #[serde(rename = "api-key")]
@@ -1336,7 +1336,7 @@ pub(crate) enum HealthMode {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct HealthCfg {
+pub struct HealthCfg {
     /// Probing strategy (see `HealthMode`). Defaults to `none` — a `health:` block with only an
     /// interval does nothing until a mode is chosen.
     #[serde(default)]
@@ -2497,7 +2497,7 @@ fn default_weight() -> u32 {
 /// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
 /// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
 /// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
-pub(crate) fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
+pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
     (r.input_utok + r.output_utok) / 2.0
 }
 
@@ -2604,7 +2604,7 @@ fn default_max_cooldown() -> u64 {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct FailoverCfg {
+pub struct FailoverCfg {
     /// Failover wall-clock budget in seconds (one canonical name; the pre-1.0 `deadline_secs`
     /// alias is GONE).
     #[serde(default = "default_failover_timeout")]
@@ -2619,7 +2619,7 @@ pub(crate) struct FailoverCfg {
 }
 
 /// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
-pub(crate) const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
+pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 /// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
 /// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
 /// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
@@ -2627,7 +2627,7 @@ pub(crate) const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 /// monotonic-clock `Instant` math (see `RequestCtx::new`).
 pub(crate) const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
 /// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
-pub(crate) const DEFAULT_FAILOVER_CAP: usize = 3;
+pub const DEFAULT_FAILOVER_CAP: usize = 3;
 
 fn default_failover_timeout() -> u64 {
     DEFAULT_FAILOVER_DEADLINE_SECS
@@ -2747,7 +2747,7 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
 
 /// Pool exhaustion mode - the executable behavior when all members are tripped/excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OnExhausted {
+pub enum OnExhausted {
     /// Status503: return 503 Service Unavailable with Retry-After header
     /// set to the soonest member's cooldown expiry.
     Status503,
@@ -2776,7 +2776,7 @@ pub(crate) enum AffinityMode {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AffinityCfg {
+pub struct AffinityCfg {
     /// Affinity mode. `session` (the default and only supported mode) pins a session to a lane
     /// using the header named by `header_name`.
     #[serde(default)]
@@ -3694,7 +3694,7 @@ fn default_per_request_fee() -> i64 {
 /// resolve time to integer nano-units per token, and the hot path does pure integer math.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RateEntryCfg {
+pub struct RateEntryCfg {
     #[serde(default)]
     pub(crate) input_utok: f64,
     #[serde(default)]

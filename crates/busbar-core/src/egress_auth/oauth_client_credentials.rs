@@ -30,7 +30,7 @@ struct ClientCreds {
 /// `build_app_from_config` path). `credential` is `client_id:client_secret` (the first `:` splits
 /// them, so a secret may itself contain `:`). `token_url` and `scope` come from the provider config.
 /// Fails loud on a malformed credential; the token itself mints in the background.
-pub(crate) fn build(
+pub fn build(
     credential: &str,
     token_url: &str,
     scope: &str,

@@ -50,7 +50,7 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 /// Carrying the deadline here makes the schedule phase-stable across swaps: at each deadline the
 /// live generation probes, and the stale ones exit. A full rebuild from disk mints a new schedule,
 /// which is correct — a reload genuinely re-establishes probing.
-pub(crate) struct ProbeSchedule {
+pub struct ProbeSchedule {
     /// Bumped by every `spawn_probers`. A prober whose captured generation is no longer current
     /// exits at its next tick, so generations never double-probe during the window where the old
     /// snapshot is still alive on an in-flight request.
@@ -90,7 +90,7 @@ fn advance_owned_deadline(slot: &std::sync::atomic::AtomicU64, owned: u64, next:
 }
 
 impl ProbeSchedule {
-    pub(crate) fn new(lane_count: usize) -> Self {
+    pub fn new(lane_count: usize) -> Self {
         Self {
             generation: std::sync::atomic::AtomicU64::new(0),
             origin: tokio::time::Instant::now(),

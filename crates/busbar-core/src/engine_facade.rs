@@ -49,3 +49,20 @@ pub use crate::proxy::{
     egress_request, install_proxy_tunnel_if_configured, EgressClient, EgressClientSpec,
     EgressConnector, EgressError,
 };
+
+// ── the money-path lowering primitives the LLM plane drives DOWN (1.6.0 money-path Phase 3-4 A) ────
+// The lane/pool lowering that relocates into `busbar-llm` in Commit C builds the egress leg from these
+// neutral primitives. Each keeps its declared visibility (`pub`, lifted from `pub(crate)` in Commit A)
+// and is surfaced here so the plane→core edge names ONE facade path. None carries dialect vocabulary,
+// so the plane-grep meter is unmoved. NOTHING in core consumes this section — the engine has not moved
+// (wire the seam in place, THEN relocate).
+//
+// ── the boot egress-client + target-table build (proxy) ──────────────────────────────────────────
+pub use crate::proxy::{build_egress_client, build_egress_targets, host_from_base, EgressTarget};
+// ── the outbound credential resolve + boot prebuild + SSRF posture (egress_auth) ─────────────────
+pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, MetadataSsrfPolicy};
+// ── the per-shard upstream client fan-out + the active-probe schedule (state / health) ───────────
+pub use crate::health::ProbeSchedule;
+pub use crate::state::UpstreamClients;
+// ── the neutral lane-protocol-name resolver the lowering keys egress targets on (proto) ──────────
+pub use crate::proto::lane_protocol_name;

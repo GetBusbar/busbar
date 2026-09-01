@@ -127,6 +127,13 @@ mod wire;
 // `EGRESS_UA_*` consts it once surfaced at `busbar_core::proxy::*` relocated to the LLM plugin's
 // decls — so every remaining egress name is crate-internal and this re-export is too.
 pub(crate) use egress::*;
+// The boot-time egress-target precompute + host/target primitives the LLM plane's lowering drives
+// DOWN across the crate boundary once the engine lives in `busbar-llm` (1.6.0 money-path Phase 3-4 A).
+// `egress` is a private module re-exported `pub(crate)` above; these three are surfaced explicitly at
+// `pub` (they carry no dialect vocabulary) so `engine_facade` can name the plane→core edge. Behavior
+// and the `crate::proxy::*` in-core call sites are unchanged (the explicit re-export wins over the
+// weaker glob for the same names).
+pub use egress::{build_egress_targets, host_from_base, EgressTarget};
 // THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
 // one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
 // re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
@@ -143,7 +150,7 @@ pub use busbar_substrate::egress::engine::{
 /// fallible builder (`busbar_substrate::egress::engine::build_client`, where the parity ledger
 /// now lives): the LLM posture carries no extra trust root and no client identity — the only
 /// arms a build can fail on — so the panic path here is unreachable by construction.
-pub(crate) fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
+pub fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
     busbar_substrate::egress::engine::build_client(spec)
         .expect("the base egress engine posture has no failing build arm")
 }

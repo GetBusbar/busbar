@@ -15,7 +15,7 @@ use super::*;
 /// included a path (e.g. a misconfigured `https://bedrock.../prefix`) would be signed but never sent,
 /// yielding a silent `SignatureDoesNotMatch` on every request. Stripping the path here makes the
 /// signed `host` equal to the transmitted `Host` byte-for-byte even if config validation is bypassed.
-pub(crate) fn host_from_base(base: &str) -> String {
+pub fn host_from_base(base: &str) -> String {
     let no_scheme = base
         .strip_prefix("https://")
         .or_else(|| base.strip_prefix("http://"))
@@ -87,7 +87,7 @@ fn path_is_sigv4_unreserved(path: &str) -> bool {
 /// via `Url::join`/`set_path`, whose re-encoding can drift from the signed bytes (a Bedrock
 /// modelId's `%3A` must survive verbatim; see `sign_and_wire_path_parts`).
 #[derive(Clone)]
-pub(crate) struct EgressTarget {
+pub struct EgressTarget {
     /// The absolute URL as the WHATWG-parsed `url::Url` — TEST-ONLY since the stage-B hyper
     /// cutover: it anchors the byte-differential proof (`egress_target_tests` pins `uri` == `url`
     /// == the reference composition), keeping the old parser in the tree AS the reference the
@@ -98,12 +98,12 @@ pub(crate) struct EgressTarget {
     /// but the parsed value is dropped rather than stored per `(operation, stream)` entry per
     /// lane — a reference only tests read has no business occupying idle RSS.
     #[cfg(test)]
-    pub(crate) url: url::Url,
+    pub url: url::Url,
     /// The SAME absolute URL as a pre-parsed `http::Uri` (wave-7 stage A): the hyper-owned egress
     /// client sends this directly, so the per-request WHATWG re-parse reqwest performed at send
     /// time is gone. Clone is refcounted `Bytes` parts — no parse, no copy of the string.
-    pub(crate) uri: axum::http::Uri,
-    pub(crate) canonical_uri: String,
+    pub uri: axum::http::Uri,
+    pub canonical_uri: String,
 }
 
 /// Build a lane's egress-target table at boot: every operation the closed vocabulary can dispatch
@@ -113,7 +113,7 @@ pub(crate) struct EgressTarget {
 /// same `sign_and_wire_path_parts` split. A protocol with no registered handler yields an EMPTY
 /// table — the request-path lookup miss then takes exactly the old `upstream_path` `None` arm (500,
 /// probe released). A URL that does not parse is a boot error (fail loud at apply, not per request).
-pub(crate) fn build_egress_targets(
+pub fn build_egress_targets(
     protocol: &'static str,
     path_override: Option<&str>,
     path_base: Option<&str>,
