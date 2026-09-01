@@ -267,28 +267,10 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
     }
 }
 
-/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection.
-///
-/// `0` = UNLIMITED (the default): the LLM prompt projection is sent UNCAPPED, byte-for-byte as
-/// v1.5.4 did. A non-zero ceiling is an OPT-IN an operator sets via `limits.hook_content_max_bytes`;
-/// when set, it is paired with a counter (`busbar_hook_content_truncated_total`) so the number can be
-/// chosen by a metric rather than by a guess. It matters most for the largest untrusted blob in a
-/// modern agent request — a tool result — which is bounded by neither a context window nor a token
-/// count. It stays OFF by default because blanking the projection out from under a `prompt: rw`
-/// redaction gate is fail-OPEN: the gate no-ops and the ORIGINAL unredacted body is forwarded.
-pub(crate) const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
-
-/// The effective content ceiling for this config generation, resolved once at config apply
-/// (`limits.hook_content_max_bytes`) and read here with a single relaxed load — never recomputed per
-/// request, and never consulted at all on a deployment with no content-granted hook, because no
-/// content projection is built there.
-static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
-
-/// Install the generation's content ceiling. Called at boot and on every config apply.
-pub(crate) fn set_hook_content_max_bytes(bytes: usize) {
-    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
-}
+// The DEFAULT/effective content-ceiling knob (`DEFAULT_HOOK_CONTENT_MAX_BYTES`, the process-wide
+// `HOOK_CONTENT_MAX_BYTES` cell, `set_hook_content_max_bytes`/`hook_content_max_bytes`) is NEUTRAL
+// vocabulary that STAYS in core (`busbar_core::proxy::proxy_vocab`); the enforcer below reads the
+// installed ceiling across the crate boundary via `busbar_core::proxy::hook_content_max_bytes()`.
 
 /// Enforce the content ceiling on a built projection, on SERIALIZED BYTES and BEFORE the call.
 ///
@@ -309,7 +291,7 @@ pub(crate) fn enforce_content_cap(
     prompt: Option<busbar_core::hooks::PromptProjection<'_>>,
 ) -> Option<busbar_core::hooks::PromptProjection<'_>> {
     let p = prompt?;
-    let cap = HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let cap = busbar_core::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly unlimited — the operator turned the ceiling off.
         return Some(p);
@@ -990,25 +972,14 @@ pub(crate) fn coerce_on_error(
     }
 }
 
-/// Shape scalars captured ONCE per request for the STAGE tap payloads (candidate/routing/response).
-/// All owned/`'static`-free scalars except the pool/protocol names (which outlive the request), so
-/// the capture survives `v` being consumed by the first dispatch hop. Stage taps are SHAPE-ONLY in
-/// this increment: the default signal bucket plus the stage object — never prompt content or caller
-/// identity, regardless of grant (never over-shares; a granted tap still gets content at the
-/// `request` stage).
-pub(crate) struct StageShape<'a> {
-    /// The request correlation id (`RequestCtx::request_id`) — carried on the shape so every stage
-    /// tap (candidate/routing/response) notification for this request stamps the SAME join-key value
-    /// a `decide`/`transform` payload for the same request carries.
-    request_id: u64,
-    pool: &'a str,
-    ingress_protocol: &'a str,
-    message_count: usize,
-    has_tools: bool,
-    total_chars: usize,
-    max_tokens: Option<u32>,
-    stream: bool,
-}
+// The STAGE-tap primitives are NEUTRAL vocabulary that STAYS in core
+// (`busbar_core::proxy::proxy_vocab`): the shape struct, the fire-and-forget tap fan-out, the bounded
+// spawn guard, and the gate-rejection marker. Only `capture_stage_shape` below (which reads the LLM
+// IR to fill the shape) stays here, and it fills core's `StageShape` (its fields are `pub`) across
+// the crate boundary.
+pub(crate) use busbar_core::proxy::{
+    fire_stage_taps, gate_rejected, spawn_bounded_tap, GateRejected, StageShape,
+};
 
 /// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
 /// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader
@@ -1054,103 +1025,6 @@ pub(crate) fn capture_stage_shape<'a>(
     }
 }
 
-/// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: serialize the shape-only
-/// projection + stage object ONCE, then spawn one detached task per tap. A tap can never delay,
-/// reorder, or fail the request; a serialization failure silently skips the fire (observation is
-/// best-effort). ZERO COST when the stage has no taps (first-line empty check).
-pub(crate) fn fire_stage_taps(
-    taps: &[busbar_core::hooks::TapEntry],
-    shape: &StageShape<'_>,
-    stage: busbar_core::hooks::wire::HookStageProjection<'_>,
-    // The caller's `groups:` binding + the groups tree (1.5.3 SELECTION): a stage tap fires only for
-    // a caller in its `groups:` scope (empty = every caller). Walked self + ancestors.
-    caller_group: Option<&str>,
-    groups_tree: &std::collections::BTreeMap<String, busbar_core::config::GroupCfg>,
-) {
-    if taps.is_empty() {
-        return;
-    }
-    let hook_req = busbar_core::hooks::wire::HookRequest {
-        op: busbar_core::hooks::wire::OP_NOTIFY,
-        request: busbar_core::hooks::wire::HookReqProjection {
-            request_id: shape.request_id,
-            pool: shape.pool,
-            ingress_protocol: shape.ingress_protocol,
-            message_count: shape.message_count,
-            has_tools: shape.has_tools,
-            total_chars: shape.total_chars,
-            max_tokens: shape.max_tokens,
-            stream: shape.stream,
-            system: None,
-            messages: None,
-            user: None,
-            // Stage taps (candidate/routing/response) project no catalog signals in this
-            // pass (the response-phase outcome seam those signals need is a separate,
-            // not-yet-built increment — see `Signal::ResponseTokensOut`'s doc comment). Empty
-            // (never allocated), so the wire is byte-identical to before this change.
-            signals: Default::default(),
-        },
-        candidates: Vec::new(),
-        context: busbar_core::hooks::wire::HookContext {
-            budget: &[],
-            budget_remaining: None,
-        },
-        stage: Some(stage),
-    };
-    let Ok(bytes) = busbar_core::json::to_vec(&hook_req) else {
-        return;
-    };
-    let bytes = std::sync::Arc::new(bytes);
-    for (timeout, _send_prompt, hook, groups) in taps {
-        // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller.
-        if !busbar_core::config::caller_in_hook_groups(caller_group, groups, groups_tree) {
-            continue;
-        }
-        let policy = hook.clone();
-        let budget = *timeout;
-        let proj = bytes.clone();
-        spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
-    }
-}
-
-/// Hard cap on concurrently in-flight fire-and-forget tap notifications. Taps fan out per stage x per
-/// tap hook x per request, so a slow/unreachable tap endpoint could otherwise accumulate unbounded
-/// Tokio tasks under load (OOM/DoS). Mirrors the bounded webhook-delivery guard in `observability`.
-const MAX_INFLIGHT_TAP_NOTIFICATIONS: usize = 1024;
-static TAP_INFLIGHT: std::sync::OnceLock<busbar_core::limits::admission::AdmissionGate> =
-    std::sync::OnceLock::new();
-fn tap_inflight() -> &'static busbar_core::limits::admission::AdmissionGate {
-    TAP_INFLIGHT.get_or_init(|| {
-        busbar_core::limits::admission::AdmissionGate::new(MAX_INFLIGHT_TAP_NOTIFICATIONS, "tap")
-    })
-}
-
-/// Spawn a bounded fire-and-forget tap notification: at most MAX_INFLIGHT_TAP_NOTIFICATIONS run
-/// concurrently; when saturated the notification is dropped (metric) instead of accumulating tasks.
-/// The owned permit rides straight into the spawned task, so the slot is returned (by the permit's
-/// own `Drop`) even on a task panic.
-pub(crate) fn spawn_bounded_tap<F>(fut: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    let Some(permit) = tap_inflight().try_enter() else {
-        metrics::counter!(busbar_core::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
-        return;
-    };
-    busbar_core::state::spawn_detached(async move {
-        let _permit = permit;
-        fut.await;
-    });
-}
-
-/// Response-extension marker set by every GATE-produced rejection return, so the response-stage
-/// taps can report the SYNTHETIC `rejected_by_gate` outcome (audit taps see denials) instead of a
-/// generic `failed`.
-#[derive(Clone)]
-pub(crate) struct GateRejected;
-
-/// Tag a gate-produced rejection response with the [`GateRejected`] marker.
-pub(crate) fn gate_rejected(mut resp: Response) -> Response {
-    resp.extensions_mut().insert(GateRejected);
-    resp
-}
+// `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), and the `GateRejected`
+// marker + `gate_rejected` tagger are NEUTRAL and now live in `busbar_core::proxy::proxy_vocab`
+// (imported above); the engine names them at their historical short paths through that re-export.

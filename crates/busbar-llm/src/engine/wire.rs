@@ -113,76 +113,12 @@ fn maybe_attach_route_policy_gated(
     }
 }
 
-/// The CANONICAL per-protocol error-response builder. Every forward-layer error returned to the
-/// caller goes through here so the body is the INGRESS protocol's native error envelope
-/// (`application/json`) rather than `text/plain`, which an official SDK cannot decode (it raises a
-/// generic JSON-decode error — a deterministic proxy tell). The status code is
-/// preserved exactly; only the body shape changes. `kind` is the protocol-agnostic error category
-/// (e.g. `"invalid_request_error"`, `"overloaded"`, `"authentication_error"`); `msg` is the
-/// human-readable detail. When `ingress` does not resolve to a known protocol the body is
-/// [`agnostic_error_envelope`] — core's own shape, named after no dialect (`protocol_for` only
-/// fails for an unknown literal, which is itself a 400 the caller still needs shaped).
-///
-/// `pub(crate)` and the single source of truth for native error shaping: it attaches the
-/// protocol-appropriate headers (Bedrock `x-amzn-RequestId` / `x-amzn-errortype` via the
-/// `ProtocolWriter::attach_error_response_headers` vtable method (BedrockWriter delegates to its
-/// private helper); Gemini code/status ride the body envelope the writer builds). `ingress::ingress_error` and `auth.rs::unauthorized_response` now both DELEGATE to THIS
-/// function (the migration is complete — they hold no private copies), so the degraded path, the main
-/// path, and the auth/route paths cannot diverge on error shape or headers.
-pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: &str) -> Response {
-    // Resolve the ingress protocol's vtable ONCE. All provider-specific error shape (the body
-    // envelope AND any response headers) flows through trait methods on that writer, so the agnostic
-    // error path carries no `if ingress == "<name>"` branch.
-    //
-    // THE UNRESOLVED-INGRESS ARM NAMES NO DIALECT, and that is the point. It used to construct one
-    // — `Protocol::openai`, then `Protocol::gemini`, then `Protocol::responses` — moving each time
-    // to whichever dialect was still guaranteed compiled into core, and each move was forced by the
-    // extraction line deleting the previous answer. Now EVERY LLM dialect lives in the `busbar-llm`
-    // plugin and none is guaranteed resident, so there is no writer left to borrow an envelope from.
-    // A fallback that names a droppable crate is not a fallback, so core states its OWN shape
-    // ([`agnostic_error_envelope`]) and attaches no protocol headers, because it has no protocol to
-    // attach them for. Unreachable for the validated ingress protocols (config validation refuses an
-    // unknown `protocol:` before a lane exists); what it must be is HONEST and always available.
-    let dialect = busbar_core::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
-    let body = busbar_core::json::to_string(&envelope).unwrap_or_else(|_| {
-        // Envelope is built from serde_json::json! values and always serializes; this fallback only
-        // exists to avoid an unwrap on the request path. Build it with `json!` (correct JSON string
-        // escaping) rather than interpolating Rust `{:?}` Debug formatting, which is NOT guaranteed
-        // valid JSON escaping for all inputs (e.g. it differs on `/` and some control sequences).
-        agnostic_error_envelope(kind, msg).to_string()
-    });
-    let mut resp = Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, APPLICATION_JSON)
-        .body(Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    // Provider-specific error RESPONSE HEADERS (Bedrock `x-amzn-RequestId`/`x-amzn-errortype`;
-    // Anthropic `request-id` mirrored from the body) — dispatched via the writer vtable so the main,
-    // degraded, auth, and route error paths cannot drift on header shape. An unresolved ingress has
-    // no vtable and therefore no headers to attach.
-    if let Some(di) = &dialect {
-        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
-    }
-    resp
-}
-
-/// CORE'S OWN ERROR ENVELOPE — the body for an ingress name that resolves to no protocol.
-///
-/// Every dialect owns its native error shape and answers for it through
-/// [`busbar_core::proto::ProtocolWriter::write_error`]. This is the shape for the case where there IS no
-/// dialect: an ingress literal that resolved to nothing. It is the plainest
-/// `{"error": {"message", "type"}}` object — the same two fields the serialization-failure guard
-/// inside [`ingress_error`] emits, stated ONCE here so those spellings cannot drift — and it is
-/// core's, so it survives every LLM dialect being dropped from the build with the `busbar-llm`
-/// plugin. It is NOT "the OpenAI envelope": the resemblance is only that this is the minimum an HTTP
-/// JSON error can say, and an SDK that could not decode it could not decode any error body.
-fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
-    serde_json::json!({ "error": { "message": msg, "type": kind } })
-}
+// The canonical per-protocol error-response builder (`ingress_error`) and core's own dialect-free
+// envelope (`agnostic_error_envelope`) are NEUTRAL vocabulary that STAYS in core
+// (`busbar_core::proxy::proxy_vocab`); the engine names them at their historical short paths through
+// this re-export. `ingress_reject_response` (LLM-specific — it maps an `IngressReject`) delegates to
+// the re-exported `ingress_error`.
+pub(crate) use busbar_core::proxy::{agnostic_error_envelope, ingress_error};
 
 /// Project an [`busbar_core::handlers::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
@@ -656,18 +592,11 @@ pub(crate) fn translate_request_cross_protocol(
     }
 }
 
-/// Upper bound on a buffered UPSTREAM ERROR body (4xx/5xx envelopes). Any error envelope is far
-/// smaller than this; the cap stops a hostile or misconfigured upstream from forcing an unbounded
-/// heap allocation per in-flight non-2xx response (the inbound request body is already capped
-/// separately). This is the TIGHT cap — it is deliberately NOT reused for buffering a legitimate
-/// cross-protocol 2xx completion (see [`max_translated_body_bytes`]).
-///
-/// Operator-tunable via `limits.upstream_error_body_max_bytes` (defaults to 256 KiB). A function (not
-/// a `const`) so the process-wide installed value is read at each use site; falls back to the
-/// historical default when the limits aren't installed (e.g. unit tests).
-pub fn max_upstream_buffered_bytes() -> usize {
-    busbar_core::limits::upstream_error_body_max_bytes()
-}
+// The TIGHT upstream-error-body buffer cap (`max_upstream_buffered_bytes`) is NEUTRAL vocabulary that
+// STAYS in core (`busbar_core::proxy::proxy_vocab`); the engine names it at its historical short path
+// through this re-export. (`max_translated_body_bytes` below is the SEPARATE, wider translate cap and
+// stays here.)
+pub(crate) use busbar_core::proxy::max_upstream_buffered_bytes;
 
 /// Upper bound on a buffered cross-protocol non-stream SUCCESS (2xx) body that must be parsed and
 /// translated egress→IR→ingress. A real completion (large `max_tokens` output, big tool-call

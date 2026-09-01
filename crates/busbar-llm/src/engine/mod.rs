@@ -33,9 +33,19 @@ pub(crate) use lazy_body::*;
 pub(crate) use pipeline::*;
 pub(crate) use response_body::*;
 pub(crate) use select::*;
+pub(crate) use tables::*;
 pub(crate) use usage::*;
 pub(crate) use walk::*;
 pub(crate) use wire::*;
+
+// NEUTRAL route-policy vocabulary that STAYS in core: the `x-busbar-route-*` response-header names,
+// the operator opt-in gate, and the per-request upstream-RTT task-local the router reads. Re-exported
+// into the flattened engine namespace so the relocated wire/pipeline call sites keep naming them at
+// their historical short paths (`crate::engine::{route_policy_headers_enabled, HDR_ROUTE_POLICY,
+// HDR_ROUTE_TARGET, UPSTREAM_RTT_US}`).
+pub(crate) use busbar_core::proxy::{
+    route_policy_headers_enabled, UPSTREAM_RTT_US, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET,
+};
 
 // NEUTRAL egress-engine primitives the pipeline drives, re-exported from core (which itself re-exports
 // them from `busbar_substrate::egress::engine`) at their historical short paths so the moved call sites
