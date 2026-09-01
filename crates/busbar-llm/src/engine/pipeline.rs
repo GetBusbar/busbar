@@ -919,15 +919,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // ZERO COST when no rewrite hook is configured — the common case is a single always-false branch.
     // The pool's own rewrite chain (rw gates in its `hooks: [...]` list) fires AFTER the globals —
     // each chain internally priority-ordered, globals always first.
+    // The pool's resolved rewrite chain, read through the core-side pool-hook facade (money-path
+    // Phase 3-4 C): the resolved `Arc<dyn RoutingPolicy>` objects live core-side keyed by pool, not on
+    // this plane's `PoolRuntime` (they cannot cross the `build_runtime` downcast). Byte-identical.
     let pool_rewrites: &[(
         std::time::Duration,
         std::sync::Arc<dyn busbar_core::hooks::RoutingPolicy>,
-    )] = app
-        .engine_tables()
-        .pool_runtime()
-        .get(pool_name)
-        .map(|r| r.rewrite_hooks.as_slice())
-        .unwrap_or(&[]);
+    )] = app.pool_rewrites(pool_name);
     if !app.rewrite_hooks.is_empty() || !pool_rewrites.is_empty() {
         if let Some(lazy) = v.as_mut() {
             // A rewrite hook's REJECT stops the request here — the same client shaping a decide-
@@ -1168,12 +1166,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     //      below applies).
     // The restriction persists across failover (hops select from the shrunk `cands`). ZERO COST
     // when no gate is configured (both sources empty ⇒ the pass is skipped).
-    let pool_gates: &[(u16, busbar_core::hooks::ResolvedPolicy)] = app
-        .engine_tables()
-        .pool_runtime()
-        .get(pool_name)
-        .map(|r| r.gates.as_slice())
-        .unwrap_or(&[]);
+    // The pool's resolved decision gates, read through the core-side pool-hook facade (see the rewrite
+    // chain above for why these live core-side rather than on the plane's `PoolRuntime`).
+    let pool_gates: &[(u16, busbar_core::hooks::ResolvedPolicy)] = app.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
     if !app.global_gates.is_empty() || !pool_gates.is_empty() {
         // The chain: globals (pre-sorted ascending by priority) then pool gates (config order),
@@ -1372,12 +1367,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         chosen_policy_name = Some(name);
         Some(order)
     } else {
-        match app
-            .engine_tables()
-            .pool_runtime()
-            .get(pool_name)
-            .and_then(|r| r.policy.as_ref())
-        {
+        // The pool's resolved routing policy, read through the core-side pool-hook facade.
+        match app.pool_policy(pool_name) {
             // Default fast path: no policy ⇒ SWRR, byte-identical to pre-feature behavior. NOTHING below
             // this arm runs — no projection, no async, one predictable branch.
             None => None,

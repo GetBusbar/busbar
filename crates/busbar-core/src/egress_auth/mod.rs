@@ -27,8 +27,8 @@ pub(crate) mod bearer_token;
 /// busbar present", this answers "may busbar spend its own authority here on this caller's behalf" —
 /// and it is core because it was written once per plane and the copies had already diverged.
 pub mod gate;
-pub(crate) mod jwt_bearer;
-pub(crate) mod oauth_client_credentials;
+pub mod jwt_bearer;
+pub mod oauth_client_credentials;
 
 /// HTTP client used by the self-minting OAuth credentials (`jwt-bearer`, `oauth-client-credentials`)
 /// to POST to a token endpoint — the ENGINE, on the cold open-web posture. Hardened like the

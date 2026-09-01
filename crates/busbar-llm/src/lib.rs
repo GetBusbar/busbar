@@ -202,8 +202,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // and a plane crate may not name a `busbar_core::` item, so `busbar-core`'s `appbuild` composes
         // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
         // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
-        build_runtime: None,
-        viewer: None,
+        build_runtime: Some(crate::engine::build_runtime::build_runtime),
+        viewer: Some(crate::engine::build_runtime::viewer),
         retain_verify_gates: None,
         default_section: None,
     };

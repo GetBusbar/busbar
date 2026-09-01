@@ -43,8 +43,9 @@ use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
 pub use crate::plane_host::build_input::{
-    LlmAffinityInput, LlmAuthStyle, LlmBuildInput, LlmClientSettings, LlmFailoverInput,
-    LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput, LlmPoolMemberInput,
+    LlmAffinityInput, LlmAuthStyle, LlmBreakerInput, LlmBuildInput, LlmClientSettings,
+    LlmFailoverInput, LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput,
+    LlmPoolMemberInput, LlmTripInput, LlmTripMode,
 };
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,

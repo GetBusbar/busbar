@@ -610,6 +610,55 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
     }
 }
 
+impl BreakerCfg {
+    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
+    /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
+    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path (see
+    /// `From<&config::BreakerCfg>`), carried anyway so a future divergence cannot silently drop.
+    pub fn to_llm(&self) -> busbar_substrate::plane_host::LlmBreakerInput {
+        busbar_substrate::plane_host::LlmBreakerInput {
+            base_cooldown_secs: self.base_cooldown_secs,
+            max_cooldown_secs: self.max_cooldown_secs,
+            honor_retry_after: self.honor_retry_after,
+            bench_below_trip_threshold: self.bench_below_trip_threshold,
+            trip: busbar_substrate::plane_host::LlmTripInput {
+                mode: match self.trip.mode {
+                    TripMode::ErrorRate => busbar_substrate::plane_host::LlmTripMode::ErrorRate,
+                    TripMode::Consecutive => busbar_substrate::plane_host::LlmTripMode::Consecutive,
+                },
+                window_s: self.trip.window_s,
+                threshold: self.trip.threshold,
+                min_requests: self.trip.min_requests,
+                consecutive_n: self.trip.consecutive_n,
+            },
+        }
+    }
+
+    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_llm`], called
+    /// IN-PLANE by the LLM plane's `build_runtime` (the allowed plane→core edge; the plane names only
+    /// this pub constructor and the neutral input type, never a private `BreakerCfg`/`TripConfig` field).
+    ///
+    /// [`to_llm`]: Self::to_llm
+    pub fn from_llm(i: &busbar_substrate::plane_host::LlmBreakerInput) -> Self {
+        Self {
+            base_cooldown_secs: i.base_cooldown_secs,
+            max_cooldown_secs: i.max_cooldown_secs,
+            honor_retry_after: i.honor_retry_after,
+            bench_below_trip_threshold: i.bench_below_trip_threshold,
+            trip: TripConfig {
+                mode: match i.trip.mode {
+                    busbar_substrate::plane_host::LlmTripMode::ErrorRate => TripMode::ErrorRate,
+                    busbar_substrate::plane_host::LlmTripMode::Consecutive => TripMode::Consecutive,
+                },
+                window_s: i.trip.window_s,
+                threshold: i.trip.threshold,
+                min_requests: i.trip.min_requests,
+                consecutive_n: i.trip.consecutive_n,
+            },
+        }
+    }
+}
+
 /// Trip configuration mode.
 #[derive(Debug, Clone)]
 pub(crate) enum TripMode {

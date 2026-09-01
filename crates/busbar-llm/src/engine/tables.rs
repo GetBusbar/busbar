@@ -147,23 +147,14 @@ pub(crate) struct PoolRuntime {
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
     /// runtime `store::BreakerCfg` the FSM evaluates. `None` falls back to ADR-0002 defaults.
     pub(crate) breaker: Option<busbar_core::store::BreakerCfg>,
-    /// Per-pool routing policy, resolved ONCE at config load. `None` is the ZERO-COST default
-    /// (`route: weighted` / absent / explicit-native-weighted): no policy object, no projection, the
-    /// unchanged inline SWRR hot path. `Some(_)` is a non-default policy whose ranked order feeds the
-    /// failover loop: `proxy::decide_policy_order` invokes it per request and `pick_among` walks the
-    /// resulting order.
-    pub(crate) policy: Option<busbar_core::hooks::ResolvedPolicy>,
-    /// This pool's DECISION GATES (`hook:` / the non-strategy names in `hooks: [...]`), resolved once
-    /// at config load, each with its `priority`, in config order. Fired in the phase-2 decision
-    /// reconcile alongside the global gates (one priority-sorted chain; stable sort keeps
-    /// globals-before-pool on ties, then config order). Empty (the default) = no pool gates — the
-    /// phase-2 pass is skipped entirely when this and `global_gates` are both empty.
-    pub(crate) gates: Vec<(u16, busbar_core::hooks::ResolvedPolicy)>,
-    /// This pool's REWRITE chain — the `prompt: rw` gates in its `hooks: [...]` list, resolved once
-    /// at config load, ascending-priority order. Fired in the phase-1 transform pass AFTER the
-    /// global rewrite chain, only for requests routed to this pool. Empty (the default) = no pool
-    /// rewrites, zero cost.
-    pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn busbar_core::hooks::RoutingPolicy>)>,
+    // NOTE (1.6.0 money-path Phase 3-4 C — the RATIFIED pool-hook facade): the per-pool routing
+    // `policy` / decision `gates` / `rewrite_hooks` USED to live here, resolved at config load from
+    // `hooks::resolve_pool_*`. They carry the core-owned `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
+    // (an Arc over a dlopen plugin), which cannot be resolved inside the plane's `build_runtime` (no
+    // `hook_env`, no usable current-`&App`). So they STAY resolved-and-read CORE-SIDE, keyed by pool,
+    // reached from the engine through the `busbar_core::state::App::pool_{policy,gates,rewrites}`
+    // down-facades (mirroring `App::resolve_container_gates`) — byte-identical objects, read via the
+    // facade instead of stored here.
 }
 /// Live per-pool depth of requests currently PARKED in an `on_exhausted: queue` wait — the real
 /// source behind the `busbar_pool_queued{pool}` gauge, which reads this at scrape time.
@@ -236,6 +227,11 @@ pub(crate) struct NativeRuntime {
     pub(crate) upstream_credentials: busbar_core::auth::UpstreamCreds,
     pub(crate) any_pool_upstream_creds_override: bool,
     pub(crate) client: UpstreamClients,
+    /// The client-affecting resolved limits this generation's `client` was built on — the key the
+    /// warm-pool-reuse compare in [`build_runtime`](crate::engine::build_runtime) reads: the next
+    /// generation reuses this generation's warm `client` (its kept-alive upstream sockets) iff these
+    /// are unchanged. Moved IN-PLANE from core's `App::client_settings` with the client build itself.
+    pub(crate) client_settings: busbar_substrate::plane_host::LlmClientSettings,
 }
 
 impl NativeRuntime {
@@ -393,6 +389,14 @@ fn empty_native_runtime() -> &'static NativeRuntime {
                 4, 300, false, false,
             ))
         }),
+        // The empty runtime's client is the never-dialled default shard; its settings key exists only
+        // so the warm-reuse compare has a value to read (it never matches a real generation's).
+        client_settings: busbar_substrate::plane_host::LlmClientSettings {
+            pool_max_idle_per_host: 4,
+            pool_idle_timeout_secs: 300,
+            http1_only: false,
+            h2_prior_knowledge: false,
+        },
     })
 }
 

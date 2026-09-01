@@ -745,6 +745,14 @@ pub fn build_app_from_config(
                 .map(|o| on_exhausted_input_of(&o.to_runtime()))
                 .unwrap_or_default(),
             upstream_credentials: pool.upstream_credentials,
+            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg (`BreakerCfg::from`
+            // does the config→runtime lowering + ADR-0002 trip defaults) then flattened to the neutral
+            // carrier; the plane's `build_runtime` reconstructs it via `BreakerCfg::from_llm`.
+            breaker: pool
+                .breaker
+                .as_ref()
+                .map(store::BreakerCfg::from)
+                .map(|b| b.to_llm()),
         });
     }
 
@@ -1119,6 +1127,37 @@ pub fn build_app_from_config(
     let global_gates =
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
 
+    // THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS — resolved HERE, core-side, keyed
+    // by pool (money-path Phase 3-4 C — the RATIFIED pool-hook facade). They USED to be built into the
+    // LLM plane's `PoolRuntime`, but their resolved values (`ResolvedPolicy` / `Arc<dyn RoutingPolicy>`,
+    // an Arc over a dlopen plugin) cannot cross the `build_runtime` downcast, so they stay here and the
+    // engine reads them through `App::pool_{policy,gates,rewrites}`. Byte-identical to the old inline
+    // `PoolRuntime` resolution: the SAME `hooks::resolve_pool_*` calls, same inputs, same order.
+    let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
+    let mut pool_orderings = std::collections::HashMap::new();
+    let mut pool_decision_gates = std::collections::HashMap::new();
+    let mut pool_rewrite_chains = std::collections::HashMap::new();
+    for (pool_name, pool_cfg) in &cfg.pools {
+        if let Some(policy) = hooks::resolve_pool_ordering(
+            pool_cfg,
+            &cfg.hooks,
+            &hook_env,
+            default_hook.as_deref(),
+            app_config_version,
+        ) {
+            pool_orderings.insert(pool_name.clone(), policy);
+        }
+        let gates = hooks::resolve_pool_gates(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
+        if !gates.is_empty() {
+            pool_decision_gates.insert(pool_name.clone(), gates);
+        }
+        let rewrites =
+            hooks::resolve_pool_rewrites(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
+        if !rewrites.is_empty() {
+            pool_rewrite_chains.insert(pool_name.clone(), rewrites);
+        }
+    }
+
     // THE OTHER TWO PLANES' GATES, resolved by the SAME function, from the SAME registry, on the
     // same generation — which is the point. `tools.hooks:` / `agents.hooks:` and the per-entry
     // lists have parsed and validated since 1.5.3 and fired nothing, because nothing resolved them
@@ -1488,6 +1527,11 @@ pub fn build_app_from_config(
         tap_hooks_routing,
         tap_hooks_response,
         global_gates,
+        // The per-pool routing policy / decision gates / rewrite chains, read by the relocated LLM
+        // engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
+        pool_orderings,
+        pool_decision_gates,
+        pool_rewrite_chains,
         // The GENERIC per-plane per-container submission-gate map, keyed by each plane's stable decl
         // key — in place of the former per-plane `mcp_server_gates`/`a2a_agent_gates` fields. Each
         // plane's resolved gate map (built above, empty when its feature is off) goes under its key.

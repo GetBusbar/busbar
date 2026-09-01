@@ -320,6 +320,23 @@ pub struct App {
     /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
     /// priority so the merge's stable sort keeps globals-first on ties.
     pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
+    /// (money-path Phase 3-4 C — the RATIFIED pool-hook facade). These USED to live on the LLM plane's
+    /// `PoolRuntime`, but their resolved values are the core-owned `ResolvedPolicy` / `Arc<dyn
+    /// RoutingPolicy>` (an Arc over a dlopen plugin), which the plane's `build_runtime` cannot resolve
+    /// (no `hook_env`, no usable current-`&App`). So they stay resolved-and-read CORE-SIDE, keyed by
+    /// pool, and the relocated engine reaches them through the [`App::pool_policy`] / [`App::pool_gates`]
+    /// / [`App::pool_rewrites`] down-facades — byte-identical objects (the SAME resolution
+    /// `hooks::resolve_pool_*` produced), read via the facade instead of stored across the plane seam.
+    /// Absent pool ⇒ the zero-cost default (no policy / empty chain).
+    pub(crate) pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
+    pub(crate) pool_decision_gates:
+        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) pool_rewrite_chains: std::collections::HashMap<
+        String,
+        Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+    >,
     /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
     /// resolved to their transports ONCE per config generation and keyed by server name.
     ///
@@ -724,6 +741,38 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
         self.plane_gates.get(plane_key)
+    }
+
+    /// THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
+    /// resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
+    /// `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
+    /// cannot cross the `build_runtime` downcast). Byte-identical: the SAME objects `appbuild` resolved
+    /// via `hooks::resolve_pool_*`, read by pool name. `pub` — the plane names them; the allowed
+    /// plane→core edge (no core type crosses a downcast, the plane just calls these directly).
+
+    /// This pool's resolved routing policy, or `None` for the zero-cost SWRR default (no `route:`/hook).
+    pub fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy> {
+        self.pool_orderings.get(pool)
+    }
+
+    /// This pool's resolved DECISION GATES `(priority, policy)` in config order (empty ⇒ no pool gates).
+    pub fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)] {
+        self.pool_decision_gates
+            .get(pool)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// This pool's resolved REWRITE chain `(timeout, policy)` (empty ⇒ no pool rewrites, zero cost).
+    #[allow(clippy::type_complexity)]
+    pub fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)] {
+        self.pool_rewrite_chains
+            .get(pool)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`

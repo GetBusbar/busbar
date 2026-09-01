@@ -38,6 +38,7 @@ use busbar_core::proto::{convert_headers, openai_family, StatusClass};
 use busbar_core::state::App;
 use busbar_core::store::{now, Permit};
 
+pub(crate) mod build_runtime;
 pub(crate) mod tables;
 
 pub(crate) mod egress;
