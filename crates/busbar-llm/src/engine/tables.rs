@@ -305,6 +305,45 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     }
 }
 
+/// EXTENSION TRAIT giving `&App` the money-path table accessors that USED to be inherent `App` methods
+/// in core (`App::engine_tables` / `App::llm_runtime`), relocated here WITH the tables they read (1.6.0
+/// money-path Phase 3-4 C — THE PIVOT). Core no longer names [`NativeRuntime`], so these can no longer
+/// be inherent on `App`; the relocated engine reaches them through this trait (in scope wherever an
+/// engine submodule does `use super::*`). Byte-identical to the deleted inherent methods: ONE
+/// `plane_slots` lookup by the interned fallback-plane runtime-slot key + ONE downcast, then plain field
+/// reads through the returned borrow. An ABSENT slot — the featureless zero-plane boot — yields the
+/// process-lifetime EMPTY default (zero lanes/pools), the byte-identical successor to the deleted
+/// always-present-but-empty flat field, never a panic.
+pub(crate) trait AppEngineExt {
+    /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam.
+    fn engine_tables(&self) -> EngineTables<'_>;
+    /// This snapshot's LLM data-plane runtime, read through the opaque plane slot; EMPTY on absence.
+    fn llm_runtime(&self) -> &NativeRuntime;
+}
+
+impl AppEngineExt for busbar_core::state::App {
+    fn engine_tables(&self) -> EngineTables<'_> {
+        EngineTables {
+            rt: self.llm_runtime(),
+        }
+    }
+    fn llm_runtime(&self) -> &NativeRuntime {
+        // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored in
+        // `App::llm_runtime_key` at build (`runtime_slot_key(fallback_key())`, which resolves to THIS
+        // plane's `"llm"` key in every production and core-`cfg(test)` build), so this reads the same
+        // slot the deleted inherent `App::llm_runtime` did.
+        match self
+            .plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+                crate::PLANE_DECL.key,
+            ))
+            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+        {
+            Some(rt) => rt,
+            None => empty_native_runtime(),
+        }
+    }
+}
+
 /// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
 /// every plane's runtime rides — the constructor `appbuild` calls to seed
 /// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
