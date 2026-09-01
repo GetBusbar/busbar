@@ -110,8 +110,6 @@ pub use busbar_substrate::wire::TranslatedResponse;
 #[path = "tests/contract_tests.rs"]
 mod contract_tests;
 
-use crate::state::Lane;
-
 /// A `(operation, transport, OperationHandler)` dispatch handle — ONE CELL of the matrix, framed —
 /// threaded through the forward engine by value (`Copy`). The engine reads operation behavior off it
 /// without ever naming an operation, and now carries the transport the request arrived on without
@@ -219,28 +217,11 @@ impl OpDispatch {
         self.op_handler
             .egress_accept(egress_stream_accept, wants_stream)
     }
-    /// The (protocol × operation) upstream path: lane override, else the lane's protocol
-    /// `RequestHandler` renders it from resolved primitives (never the `Lane`). `None` only if the
-    /// protocol has no registered handler — impossible for chat (all six are registered).
-    ///
-    /// NO LONGER on the request path: the forward/degraded paths read the lane's boot-precomputed
-    /// `egress_targets` table instead (`proxy::build_egress_targets`). This stays as the REFERENCE
-    /// composition the differential test (`egress_target_tests`) proves the table byte-identical
-    /// to — if the two ever drift, that test is the tripwire.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
-        if let Some(p) = &lane.path {
-            return Some(p.clone());
-        }
-        crate::handlers::request_handler(lane.protocol).map(|rh| {
-            rh.upstream_path(&EgressCtx {
-                operation: self.operation,
-                model: lane.wire_model(),
-                stream: wants_stream,
-                path_base: lane.path_base.as_deref(),
-            })
-        })
-    }
+    // `upstream_path(&self, lane: &Lane, wants_stream)` — the REFERENCE `(protocol × operation)` path
+    // composition the egress-target differential test proves the boot-precomputed table byte-identical
+    // to — RELOCATED into `busbar-llm` with the engine (money-path Phase 3-4 C): it named the plane's
+    // `Lane`, which core no longer holds. It now lives as `busbar_llm`'s `OpEgressExt::upstream_path`
+    // extension over this `Op`, reading `self.operation` (a `pub` field) — byte-identical composition.
 }
 
 /// Chat — operation #1. A const handle to the shared chat `OperationHandler`, for core's own tests.

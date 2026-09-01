@@ -684,7 +684,11 @@ impl App {
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.llm_runtime().upstream_creds()
+        // The plane runtime relocated out of core (money-path Phase 3-4 C), so this pool-less default
+        // is read through the NEUTRAL view seam rather than by downcasting the plane's `NativeRuntime`.
+        // Byte-identical: the view projects the same `upstream_credentials` field, and the zero-plane
+        // EMPTY_VIEW returns the type default the always-present-but-empty runtime carried.
+        self.engine_tables_view().upstream_creds()
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no

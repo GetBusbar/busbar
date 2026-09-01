@@ -80,6 +80,13 @@ pub trait EngineTablesView {
     /// seam must not name), used by the staying ingress ACL walk (`fallback_pools_authorized`) to
     /// re-enforce a key's `allowed_pools` against every reachable fallback pool.
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
+
+    /// The ALL-POOLS upstream-credential DEFAULT (`Own` vs `Passthrough`) — a NEUTRAL scalar the
+    /// staying pool-less core readers (`auth::open_door` keys-in-chain guard, the admin
+    /// upstream-credentials render) consult after the plane's runtime relocated out of core. A pure
+    /// projection of the plane runtime's `upstream_credentials` field; the empty view returns the
+    /// type's default, byte-identical to the always-present-but-empty zero-plane runtime.
+    fn upstream_creds(&self) -> busbar_api::UpstreamCreds;
 }
 
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
@@ -114,5 +121,8 @@ impl EngineTablesView for EmptyEngineTablesView {
     }
     fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
         None
+    }
+    fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
+        busbar_api::UpstreamCreds::default()
     }
 }

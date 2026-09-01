@@ -303,6 +303,9 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
             _ => None,
         }
     }
+    fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
+        self.upstream_credentials
+    }
 }
 
 /// EXTENSION TRAIT giving `&App` the money-path table accessors that USED to be inherent `App` methods

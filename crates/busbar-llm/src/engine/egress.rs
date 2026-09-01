@@ -298,3 +298,32 @@ pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'stat
         APPLICATION_JSON
     }
 }
+
+/// THE REFERENCE `(protocol × operation)` UPSTREAM-PATH COMPOSITION — relocated from core's inherent
+/// `Op::upstream_path(&Lane, …)` with the engine (money-path Phase 3-4 C): it names the plane's
+/// [`Lane`], which core no longer holds, so it now rides an extension over the core [`Op`] handle
+/// instead. NO LONGER on the request path (the forward/degraded paths read the boot-precomputed
+/// `egress_targets` table); it stays as the REFERENCE the egress-target differential test
+/// (`egress_target_tests`) proves the table byte-identical to — lane override verbatim, else the lane's
+/// protocol `RequestHandler` renders from the same resolved primitives. `self.operation` is a `pub`
+/// field on the core `OpDispatch`, so this reads it without core widening anything.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait OpEgressExt {
+    fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String>;
+}
+
+impl OpEgressExt for busbar_core::handlers::OpDispatch {
+    fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
+        if let Some(p) = &lane.path {
+            return Some(p.clone());
+        }
+        busbar_core::handlers::request_handler(lane.protocol).map(|rh| {
+            rh.upstream_path(&busbar_core::handlers::EgressCtx {
+                operation: self.operation,
+                model: lane.wire_model(),
+                stream: wants_stream,
+                path_base: lane.path_base.as_deref(),
+            })
+        })
+    }
+}
