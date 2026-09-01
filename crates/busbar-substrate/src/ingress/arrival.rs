@@ -27,7 +27,6 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
-use busbar_api::operation::Operation;
 
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
@@ -57,37 +56,6 @@ impl ArrivalCtx {
 /// The `kind_*`/`err_type_*` accessors hand the dialect the core-owned neutral error-category vocabulary
 /// (`KIND_NOT_FOUND`, …) by value, so the dialect names none of core's `proxy`/`admin` const modules.
 pub trait ArrivalHost: Send + Sync {
-    /// THE SHARED PATH-MODEL CORE (`crate::ingress::ingress_path_model`): inject the URL-derived
-    /// `model` + route `stream` intent into the body and run the universal resolution + forward.
-    /// `model_not_found_message` is the dialect's PRE-SHAPED model-not-found body in its own native
-    /// vocabulary, used verbatim by core on a model miss — the dialect that owns the request builds it
-    /// (so core names no dialect); `None` shares the neutral OpenAI-style copy.
-    #[allow(clippy::too_many_arguments)]
-    fn ingress_path_model(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        model: String,
-        operation: Operation,
-        stream: bool,
-        gemini_json_array: bool,
-        proto: &'static str,
-        model_not_found_message: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
-
-    /// THE UNIVERSAL BODY-MODEL/RESOLVED-OP INGRESS (`crate::ingress::dispatch::operation_ingress`) —
-    /// the Bedrock `InvokeModel` arrival's tail, where the model is a path hint.
-    fn operation_ingress(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        proto: &'static str,
-        operation: Operation,
-        model_hint: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
-
     /// The NOT-CHARGED observability finish (`crate::ingress::finish_rejected`) a pre-routing rejection
     /// (malformed path, unsupported action, no handler) must flow through so it is counted + logged.
     #[allow(clippy::too_many_arguments)]

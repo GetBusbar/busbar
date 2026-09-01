@@ -12,7 +12,7 @@ use axum::{
 };
 use serde_json::Value;
 
-use crate::state::{App, WeightedLane};
+use crate::state::App;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -82,66 +82,6 @@ fn fallback_pools_authorized(
             return Some(resp);
         }
         current = next;
-    }
-}
-
-/// Build the token-usage sink for a request: when governance is on and a virtual key resolved, the
-/// response stream charges its tapped token usage to that key's budget at completion (token-accurate
-/// accounting). `None` disables it (governance off / no key).
-fn usage_sink(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    pool: &str,
-    charged_at: u64,
-    admit: Option<crate::governance::AdmitGrant>,
-) -> Option<crate::proxy::UsageSink> {
-    match (&app.governance, &gov.key) {
-        (Some(g), Some(key)) => Some(crate::proxy::UsageSink {
-            gov: g.clone(),
-            // The resolved cost model rides along (an Arc bump) so the stream-end accrual can walk
-            // the key's budget-group chain without reaching back into the App snapshot.
-            cost: app.cost.clone(),
-            // Share the resolved key by `Arc`: no per-request `id` String clone; it is read
-            // through `sink.key` at charge time.
-            key: key.clone(),
-            // The admitted pool: the accounting scope for pool-qualified limits (accrual mirrors
-            // the admission charge).
-            pool: std::sync::Arc::from(pool),
-            // The header-arrival epoch this request was admitted at — reused for the token fee so it
-            // shares the flat per-request fee's window (#29). See `UsageSink::charged_at`.
-            charged_at,
-            // The admission's in-flight HOLDS (the `concurrent` limit gauges) ride the sink so
-            // they release when the response stream completes / the request context unwinds - the
-            // sink is the one per-request object that provably lives to stream end. Arc'd because
-            // the sink clones per failover attempt; the LAST clone dropping releases the gauges.
-            admit: admit.map(std::sync::Arc::new),
-        }),
-        // No governance/key = nothing was admitted through the limit engine; a grant cannot exist.
-        _ => None,
-    }
-}
-
-/// The default affinity header name used when a pool's `affinity` config does not specify a custom
-/// header. Both the `Some`-arm fallback and the `None`-arm of `affinity_header_for` must agree on
-/// this spelling; a single const prevents them from silently diverging.
-const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
-
-/// The request header that pins a session to a lane for a pool. Defaults to `x-session-id`; a
-/// pool's `affinity` config (mode `session`) may name a different header (e.g. `x-user-id`).
-fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str {
-    match app
-        .engine_tables()
-        .pool_runtime()
-        .get(pool)
-        .and_then(|r| r.affinity.as_ref())
-    {
-        // `mode` is `AffinityMode::Session` (the only variant); honour the configured header name.
-        Some(a) => match a.mode {
-            crate::config::AffinityMode::Session => {
-                a.header_name.as_deref().unwrap_or(DEFAULT_AFFINITY_HEADER)
-            }
-        },
-        None => DEFAULT_AFFINITY_HEADER,
     }
 }
 
@@ -375,7 +315,13 @@ fn admit_check(
 /// and — when `effective_pool` is `Some` — DISPATCHES through that pool instead of the requested
 /// one (a budget `on_exhaust: downgrade` fired; the charge already landed on the effective pool's
 /// buckets, so routing must follow the accounting).
-fn governance_guard(
+// `pub` (was module-private): the relocated LLM convenience handlers (`named`/`adhoc`, now in
+// `busbar-llm`) reach the stage-2 (destination) + stage-4 (budget door) pair through this wrapper —
+// the allowed plane→core edge. Its `gov`/return name the still-crate-private `GovCtx`/`AdmitGrant`
+// carriers, so the same narrow `private_interfaces` allow the other stay-stages carry keeps them
+// `pub(crate)`.
+#[allow(private_interfaces)]
+pub fn governance_guard(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &'static str,
@@ -736,179 +682,6 @@ fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> 
     crate::proxy::ingress_error(proto, status, kind, message)
 }
 
-/// Shared ingress core for the PATH-MODEL protocols (`gemini`, `bedrock`): the model lives in the
-/// URL path and stream intent in the path/route suffix, NOT the body. A native client body carries
-/// neither, so this parses the body to a `Value`, INJECTS `"model"` (from the path) and `"stream"`
-/// (from the route) into it, re-serializes to `Bytes`, then runs the same resolution + forward as
-/// `ingress_body_model`. Both injected fields are consumed downstream: `forward_with_pool` reads
-/// `"stream"` for the egress endpoint/translation and the per-protocol reader reads `"model"` for
-/// the IR. This is the only piece of "new code" the path-model protocols need.
-/// `gemini_json_array`: when `true` the route layer injects the gemini JSON-array streaming shim key
-/// (`__busbar_gemini_json_array`) so the streaming response builder emits the JSON-array framing a
-/// native non-`alt=sse` `:streamGenerateContent` request expects (instead of SSE). Always `false`
-/// for bedrock and for non-streaming / `?alt=sse` gemini requests.
-#[allow(clippy::too_many_arguments)]
-async fn ingress_path_model(
-    app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
-    caller: &crate::auth::CallerToken,
-    headers: &HeaderMap,
-    body: Bytes,
-    model: &str,
-    operation: crate::operation::Operation,
-    stream: bool,
-    gemini_json_array: bool,
-    proto: &'static str,
-    model_not_found_message: Option<&str>,
-) -> Response {
-    let caller_token = caller.0.as_deref();
-    let started = Instant::now();
-    // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
-    let charged_at = crate::store::now();
-    let mut v: Value = match crate::json::parse(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
-            // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
-            // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
-            // Pre-routing failure (model never resolved): route through `finish_rejected` with the
-            // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
-            // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
-            // path. A raw early-return made it invisible to Prometheus and the webhook.
-            return finish_rejected(
-                app,
-                gov,
-                proto,
-                crate::proxy::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
-                    "We could not parse the JSON body of your request.",
-                ),
-            );
-        }
-    };
-
-    // Inject model+stream so the shared resolution/forward plumbing (which reads both from the
-    // body) works for protocols whose native wire carries them in the URL instead. A native client
-    // body is always a JSON object; if it is not, return a protocol-shaped 400 rather than panic.
-    match v.as_object_mut() {
-        Some(obj) => {
-            obj.insert("model".to_string(), Value::String(model.to_string()));
-            obj.insert("stream".to_string(), Value::Bool(stream));
-            // Signal a non-`alt=sse` streaming request so the response is framed as a JSON array
-            // rather than SSE (only Gemini's writer carries such a key today). The marker key is
-            // resolved through the writer vtable by protocol NAME — ingress names no protocol
-            // submodule, so "delete proto/gemini → app is gemini-free" holds. The shim is stripped
-            // before the upstream call (`proxy::strip_router_shim_keys`); cross-protocol egress
-            // drops it via the IR.
-            if gemini_json_array {
-                if let Some(shim_key) = crate::proto::array_stream_shim_key_for(proto) {
-                    obj.insert(shim_key.to_string(), Value::Bool(true));
-                }
-            }
-        }
-        None => {
-            // Pre-routing failure (body is not a JSON object → model never resolved): route through
-            // `finish_rejected` with the bounded `"unresolved"` label so it is observable in metrics +
-            // the webhook, not a silent early-return — and never charged, so nothing to refund.
-            return finish_rejected(
-                app,
-                gov,
-                proto,
-                crate::proxy::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
-                    "Request body must be a JSON object.",
-                ),
-            );
-        }
-    }
-
-    // Re-serializing a `serde_json::Value` we just parsed (with only `String`/`Bool` keys spliced
-    // in) cannot fail in practice — `to_vec` on an in-memory `Value` has no fallible component. The
-    // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
-    // path stays panic-free even if a future change introduces a non-serializable injected value;
-    // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match crate::json::to_vec(&v) {
-        Ok(b) => b.into(),
-        Err(_e) => {
-            // Same leak class as the parse arms above: the JSON library's error Display is a
-            // busbar-internal tell (on the parse side it embeds raw body fragments), so we never echo
-            // it — a bare operator breadcrumb only, consistent with the `parse_err_log` policy used at
-            // every deserialize site. (Serialization errors don't carry body bytes today, but aligning
-            // here closes the latent leak class if that ever changes.)
-            tracing::debug!("injected request body re-serialization failed");
-            // Pre-routing failure (model never reached resolution): route through `finish_rejected`
-            // with the bounded `"unresolved"` label so it is observable in metrics + the webhook. This
-            // arm is effectively unreachable today (see the comment above), but keeping it on
-            // `finish_rejected` preserves the observability invariant for every pre-routing exit.
-            return finish_rejected(
-                app,
-                gov,
-                proto,
-                crate::proxy::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
-                    "The request body could not be processed.",
-                ),
-            );
-        }
-    };
-
-    // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
-    // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
-    // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) =
-        crate::handlers::request_handler(proto).and_then(|rh| rh.operation_handler(operation))
-    else {
-        return finish_rejected(
-            app,
-            gov,
-            proto,
-            crate::proxy::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::proxy::KIND_NOT_FOUND,
-                "This endpoint does not support that operation.",
-            ),
-        );
-    };
-    operation_resolved(
-        app,
-        gov,
-        proto,
-        operation,
-        op_handler,
-        model,
-        headers,
-        injected,
-        // Path-model ingress already parsed (and shim-injected into) the body — carry the DOM
-        // eagerly; the engine's pristine head check reads it directly and behaves as before.
-        Some(crate::proxy::LazyBody::from_value(v)),
-        caller_token,
-        started,
-        charged_at,
-        model_not_found_message,
-    )
-    .await
-}
-
 // THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by the MCP server plane and the A2A receiving
 // plane. It lives under `ingress/` because that is the shared owner `structure-lint`'s plane
 // ledger already names for the ingress concern: "one plane-neutral admission in ingress/, with the
@@ -926,10 +699,10 @@ pub(crate) mod native;
 
 /// The protocol catch-all.
 pub mod dispatch;
-// `operation_resolved` is public surface (the MCP plane's ingress reaches it); `protocol_dispatch` is
-// the axum catch-all fallback the core router mounts and nothing outside core names, so it stays
-// crate-private — keeping the confidential `CallerToken` it takes off the public seam.
-pub use dispatch::operation_resolved;
+// `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
+// names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
+// seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`
+// — RELOCATED into the LLM plane; core reaches it only through the neutral body-arrival seam.)
 pub(crate) use dispatch::protocol_dispatch;
 /// CORE'S IMPL of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the request-pipeline
 /// seam a path-model dialect (gemini/bedrock, now in `busbar-llm`) calls back through. Core owns the
@@ -943,9 +716,6 @@ pub mod path_ingress;
 // The registration-pair fn-pointer type, re-exported at `busbar_core::ingress::PathIngress` so the
 // composition root names it without the `path_ingress::` qualifier.
 pub use path_ingress::PathIngress;
-// The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
-#[cfg(test)]
-pub(crate) use dispatch::operation_ingress;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
@@ -990,7 +760,11 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// POST /<name>/v1/messages   — name resolves to a pool (weighted) or a single model
+// POST /<name>/v1/messages — name resolves to a pool (weighted) or a single model. The pool/model
+// routing + chat forward reads the LLM routing tables and RELOCATED into the LLM plane; this core
+// shell mints the neutral arrival (reconstructing the URL the convenience route pinned) and hands it
+// to the plane's universal body-arrival, exactly as `protocol_dispatch` does for a body-model hit.
+// Core names no LLM type; no plane linked → the honest no-handler 404.
 #[tracing::instrument(level = "debug", name = "named", skip_all, fields(pool = %name))]
 pub(crate) async fn named(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
@@ -1000,233 +774,87 @@ pub(crate) async fn named(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // The dialect the `/v1/messages` convenience surface speaks, RESOLVED FROM THE REGISTRY (the
+    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
     // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
-    // no dialect. `""` when no such dialect is registered (every LLM dialect deleted): the handler
-    // consult below then misses and the surface answers the generic no-handler 404, the honest
-    // deletion behaviour.
+    // no dialect. `""` when no such dialect is registered.
     let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
-    // Deletion switch (chat is a standard operation): the named/adhoc conveniences are the
-    // Messages-dialect chat surface, so they consult its chat OperationHandler exactly like the
-    // catch-all does. Absent handler → the standard no-handler 404 in the caller's dialect.
-    if crate::handlers::request_handler(proto)
-        .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
-        .is_none()
-    {
-        return crate::proxy::ingress_error(
-            proto,
-            StatusCode::NOT_FOUND,
-            crate::proxy::KIND_NOT_FOUND,
-            "This endpoint does not support that operation.",
-        );
-    }
-    // Caller's bearer token (for passthrough-mode forwarding); None falls back to the lane's key.
-    let caller_token = caller.0.as_deref();
-    // `started` is taken BEFORE the governance guards so a governance-rejected request still
-    // records a (small) wall-clock duration and is counted via `finish`.
-    let started = Instant::now();
-    // Header-arrival epoch pinned once; reused for both the per-request and token fees (#29).
-    let charged_at = crate::store::now();
-
-    // Governance guards (pool ACL / group limits); a rejection is wrapped in `finish_rejected`
-    // inside `governance_guard` (this handler just returns that response). On admission the grant
-    // reports whether the fee was CHARGED (refund gate) and holds the in-flight gauges.
-    let (admit, downgraded) = match governance_guard(&app, &gov, proto, &name, started, charged_at)
-    {
-        Err(resp) => return *resp,
-        Ok(admitted) => admitted,
-    };
-    let charged = admit.is_some();
-    // A budget downgrade re-pooled the admission: dispatch where the charge landed.
-    let name = downgraded.unwrap_or(name);
-
-    if let Some(cands) = app.engine_tables().pools().get(&name) {
-        let affinity_key = headers
-            .get(affinity_header_for(&app, &name))
-            .and_then(|v| v.to_str().ok());
-        let resp = crate::proxy::forward_with_pool_keyed(
-            &app,
-            cands.clone(),
-            body,
-            caller_token,
-            // Thread the resolved/synthesized key so a group/SSO principal's usage/send_user pool
-            // policy sees rate_headroom/identity here too (not just the universal dispatch path).
-            gov.key.as_ref(),
-            &name,
-            affinity_key,
-            proto,
-            crate::handlers::chat(proto, crate::transport::Transport::Http),
-            usage_sink(&app, &gov, &name, charged_at, admit),
-        )
-        .await;
-        return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
-    }
-    if let Some(&i) = app.engine_tables().by_model().get(&name) {
-        // Model-based routing: anthropic ingress, lane-default breaker OperationHandler (empty pool name → the
-        // op_handler shared by all direct/ad-hoc routes, surfaced by /stats and /healthz), no affinity.
-        let resp = crate::proxy::forward_with_pool_keyed(
-            &app,
-            vec![WeightedLane {
-                reasoning: None,
-                idx: i,
-                weight: 1,
-                attempt_timeout_ms: None,
-            }],
-            body,
-            caller_token,
-            gov.key.as_ref(),
-            "",
-            None,
-            proto,
-            crate::handlers::chat(proto, crate::transport::Transport::Http),
-            usage_sink(&app, &gov, "", charged_at, admit),
-        )
-        .await;
-        return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
-    }
-
-    // Model/pool miss: wrap the 404 in `finish` so it is still counted in REQUESTS_TOTAL /
-    // REQUEST_DURATION_SECONDS and fires the request-log webhook — the same observability invariant
-    // already enforced for governance rejections (a raw early-return made the miss invisible).
-    // Both maps missed, so `name` is an unresolved, client-supplied URL segment — stamp the bounded
-    // sentinel as the `pool` label (metrics.rs), never the raw segment (unbounded-cardinality
-    // DoS). `pool_label` returns `"unresolved"` here by construction.
-    finish_admitted(
-        &app,
-        &gov,
+    delegate_body_arrival(
+        app,
+        gov,
+        caller,
         proto,
-        pool_label(&app, &name),
-        started,
-        charged_at,
-        ingress_error(
-            proto,
-            StatusCode::NOT_FOUND,
-            crate::proxy::KIND_NOT_FOUND,
-            // Anthropic ingress: canonical (non-gemini) model-not-found copy.
-            &not_found_message(&name, None),
-        ),
-        charged,
+        format!("/{name}/v1/messages"),
+        headers,
+        body,
+    )
+    .await
+}
+
+/// Mint the neutral body-model arrival for a convenience surface (`named`/`adhoc`) and hand it to the
+/// LLM plane's relocated universal body-arrival, resolved by protocol name — mirroring
+/// [`dispatch::protocol_dispatch`]'s body-model arm. The pool/model routing + chat forward the
+/// surface used to run inline reads the LLM routing tables and now lives in `busbar-llm`; core
+/// threads its `App`/`GovCtx`/caller-token back opaquely through the
+/// [`arrival_host::ArrivalPayload`]. No plane linked → the honest no-handler 404.
+async fn delegate_body_arrival(
+    app: Arc<App>,
+    gov: crate::governance::GovCtx,
+    caller: crate::auth::CallerToken,
+    proto: &'static str,
+    path: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(body_ingress) = busbar_substrate::ingress::arrival::body_ingress_for(proto) {
+        let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
+        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+            crate::ingress::arrival_host::ArrivalPayload {
+                app,
+                gov,
+                caller_token: caller.0.clone(),
+            },
+        );
+        return body_ingress(busbar_substrate::ingress::arrival::Arrival {
+            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
+            ctx,
+            path,
+            uri,
+            headers,
+            body,
+        })
+        .await;
+    }
+    crate::proxy::ingress_error(
+        proto,
+        StatusCode::NOT_FOUND,
+        crate::proxy::KIND_NOT_FOUND,
+        "This endpoint does not support that operation.",
     )
 }
 
-// POST /<provider>/<model>/v1/messages — ad-hoc direct
+// POST /<provider>/<model>/v1/messages — ad-hoc direct. Same relocation as `named`.
 #[tracing::instrument(level = "debug", name = "adhoc", skip_all, fields(provider = %provider, model = %model))]
 pub(crate) async fn adhoc(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path((provider, model)): Path<(String, String)>,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
     // `named`); `""` when no LLM dialect is registered.
     let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
-    // Deletion switch — same consult as `named` (this is the other Messages-dialect chat surface).
-    if crate::handlers::request_handler(proto)
-        .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
-        .is_none()
-    {
-        return crate::proxy::ingress_error(
-            proto,
-            StatusCode::NOT_FOUND,
-            crate::proxy::KIND_NOT_FOUND,
-            "This endpoint does not support that operation.",
-        );
-    }
-    let caller_token = caller.0.as_deref();
-    let started = Instant::now();
-    // Header-arrival epoch pinned once; reused for both the per-request and token fees (#29).
-    let charged_at = crate::store::now();
-
-    // Governance guards (pool ACL / group limits); a rejection is wrapped in `finish_rejected`
-    // inside `governance_guard` (this handler just returns that response). `charged` gates the
-    // post-admission refund so an un-charged (governance-off) admit never blind-refunds.
-    // Ad-hoc by-model dispatch: the admission "pool" is the model name, which is not a
-    // configured pool, so pool-scoped buckets (and their downgrades) do not participate;
-    // the effective pool is always the requested one.
-    let (admit, _downgraded) =
-        match governance_guard(&app, &gov, proto, &model, started, charged_at) {
-            Err(resp) => return *resp,
-            Ok(admitted) => admitted,
-        };
-    let charged = admit.is_some();
-
-    match app.engine_tables().by_model().get(&model) {
-        Some(&i) if app.engine_tables().lanes()[i].provider == provider => {
-            // Single lane with weight=1 (default for ad-hoc routing): anthropic ingress, lane-default
-            // breaker OperationHandler (empty pool name), no affinity.
-            let resp = crate::proxy::forward_with_pool_keyed(
-                &app,
-                vec![WeightedLane {
-                    reasoning: None,
-                    idx: i,
-                    weight: 1,
-                    attempt_timeout_ms: None,
-                }],
-                body,
-                caller_token,
-                gov.key.as_ref(),
-                "",
-                None,
-                proto,
-                crate::handlers::chat(proto, crate::transport::Transport::Http),
-                usage_sink(&app, &gov, "", charged_at, admit),
-            )
-            .await;
-            finish_admitted(
-                &app, &gov, proto, &model, started, charged_at, resp, charged,
-            )
-        }
-        // Provider mismatch / model miss: wrap the 4xx in `finish` so the client error is counted
-        // in REQUESTS_TOTAL / REQUEST_DURATION_SECONDS and fires the request-log webhook, matching
-        // the success arm and the governance-rejection path (a raw early-return made it invisible).
-        // The client-facing copy is vendor-plausible (an Anthropic 400 never names a busbar
-        // "provider"); the actual provider mismatch is recorded server-side for operator diagnosis.
-        Some(&i) => {
-            tracing::info!(
-                model = %model,
-                requested_provider = %provider,
-                actual_provider = %app.engine_tables().lanes()[i].provider,
-                "adhoc: model is on a different provider than the path requested"
-            );
-            // The model IS a configured by-model lane (bounded), but route the label through
-            // `pool_label` for uniformity with the other ingress paths; it returns `model` here.
-            finish_admitted(
-                &app,
-                &gov,
-                proto,
-                pool_label(&app, &model),
-                started,
-                charged_at,
-                ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
-                    // Anthropic ingress: canonical (non-gemini) model-not-found copy.
-                    &not_found_message(&model, None),
-                ),
-                charged,
-            )
-        }
-        // Model miss: `model` is an unresolved, client-supplied string — stamp the bounded sentinel
-        // as the `pool` label (metrics.rs). `pool_label` returns `"unresolved"` here.
-        None => finish_admitted(
-            &app,
-            &gov,
-            proto,
-            pool_label(&app, &model),
-            started,
-            charged_at,
-            ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::proxy::KIND_NOT_FOUND,
-                // Anthropic ingress: canonical (non-gemini) model-not-found copy.
-                &not_found_message(&model, None),
-            ),
-            charged,
-        ),
-    }
+    delegate_body_arrival(
+        app,
+        gov,
+        caller,
+        proto,
+        format!("/{provider}/{model}/v1/messages"),
+        headers,
+        body,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -12,27 +12,28 @@
 //! owns the moved `HeaderMap`/`Bytes`, so the future it hands back over the `fn`-pointer arrival
 //! boundary borrows nothing.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Instant;
 
-use axum::body::Bytes;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_api::operation::Operation;
 use busbar_substrate::ingress::arrival::{ArrivalCtx, ArrivalHost};
 
-use crate::auth::CallerToken;
 use crate::governance::GovCtx;
 use crate::state::App;
 
-/// The core payload core boxes into the opaque [`ArrivalCtx`] at the catch-all: the three
-/// `busbar-core` handles a dialect must NOT name, threaded back into every host method opaquely.
-pub(crate) struct ArrivalPayload {
-    pub(crate) app: Arc<App>,
-    pub(crate) gov: GovCtx,
-    pub(crate) caller: CallerToken,
+/// The core payload core boxes into the opaque [`ArrivalCtx`] at the catch-all: the `busbar-core`
+/// handles a dialect must NOT name, threaded back into every host method opaquely. `pub` (with the
+/// caller's bearer token flattened to a NEUTRAL `Option<String>` scalar rather than the core
+/// `CallerToken`) so the relocated LLM-plane universal ingress (in `busbar-llm`) downcasts it out of
+/// the opaque [`ArrivalCtx`] and reads `app`/`gov`/`caller_token` without naming a private core type
+/// (`gov`'s type alias `GovCtx` is `pub(crate)` but its underlying `busbar_api::PlaneRequestCtx` is
+/// public, so the plane reads the field as that public type).
+#[allow(private_interfaces)]
+pub struct ArrivalPayload {
+    pub app: Arc<App>,
+    pub gov: GovCtx,
+    /// The caller's resolved bearer token (for passthrough forwarding), flattened to a neutral scalar.
+    pub caller_token: Option<String>,
 }
 
 fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
@@ -45,61 +46,6 @@ fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
 pub(crate) struct CoreArrivalHost;
 
 impl ArrivalHost for CoreArrivalHost {
-    fn ingress_path_model(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        model: String,
-        operation: Operation,
-        stream: bool,
-        gemini_json_array: bool,
-        proto: &'static str,
-        model_not_found_message: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
-        let p = payload(ctx);
-        let app = p.app.clone();
-        let gov = p.gov.clone();
-        let caller = p.caller.clone();
-        Box::pin(async move {
-            super::ingress_path_model(
-                &app,
-                &gov,
-                &caller,
-                &headers,
-                body,
-                &model,
-                operation,
-                stream,
-                gemini_json_array,
-                proto,
-                model_not_found_message.as_deref(),
-            )
-            .await
-        })
-    }
-
-    fn operation_ingress(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        proto: &'static str,
-        operation: Operation,
-        model_hint: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
-        let p = payload(ctx);
-        let app = p.app.clone();
-        let gov = p.gov.clone();
-        let caller = p.caller.clone();
-        Box::pin(async move {
-            super::dispatch::operation_ingress(
-                &app, &gov, &caller, &headers, body, proto, operation, model_hint,
-            )
-            .await
-        })
-    }
-
     fn finish_rejected(
         &self,
         ctx: &ArrivalCtx,
