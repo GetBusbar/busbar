@@ -258,7 +258,7 @@ impl BudgetCell {
 /// NAMES the exact blocking bucket (group + metric + window). Built only on the rejection path
 /// (cold), so the owned Strings are off the admit hot path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LimitBlocked {
+pub enum LimitBlocked {
     /// A specific limit bucket blocked: the owning group, the metric (`requests` | `tokens` |
     /// `budget` | `concurrent`), the window word (`None` for the instantaneous `concurrent`
     /// gauge), the pool scope (`Some` when a pool-qualified limit blocked - only that pool's
@@ -323,7 +323,7 @@ impl std::fmt::Debug for AdmitGrant {
 pub struct DerivedUsage {
     pub spend_cents: i64,
     pub tokens: u64,
-    pub(crate) requests: u64,
+    pub requests: u64,
 }
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable

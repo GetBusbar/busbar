@@ -1750,7 +1750,7 @@ impl GovState {
     /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
     /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
     /// round-trip and no `await` anywhere on this path.
-    pub(crate) fn try_admit(
+    pub fn try_admit(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,

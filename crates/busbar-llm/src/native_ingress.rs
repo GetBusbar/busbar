@@ -466,7 +466,7 @@ const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
 
 /// The request header that pins a session to a lane for a pool. Defaults to `x-session-id`; a
 /// pool's `affinity` config (mode `session`) may name a different header (e.g. `x-user-id`).
-fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str {
+pub(crate) fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str {
     match app
         .engine_tables()
         .pool_runtime()

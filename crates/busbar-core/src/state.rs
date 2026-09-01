@@ -287,7 +287,7 @@ pub struct App {
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
     /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
     pub client_settings: UpstreamClientSettings,
-    pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
+    pub auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
     /// dispatch to mutate the request body (compression/redaction). Empty (the default) = no rewrite
@@ -555,7 +555,7 @@ pub struct App {
     /// `auth.role_bindings:` - module -> role -> operator policy (nested by module). Read by
     /// the admin authorization resolution and the governance re-key; an unbound role grants
     /// nothing (fail closed).
-    pub(crate) role_bindings: crate::config::RoleBindings,
+    pub role_bindings: crate::config::RoleBindings,
     /// The config.yaml path busbar booted from — `POST /api/v1/admin/config/reload` re-runs the boot
     /// disk-load pipeline against it. `None` (tests / ephemeral) ⇒ reload is `invalid_request`.
     pub(crate) config_path: Option<std::path::PathBuf>,

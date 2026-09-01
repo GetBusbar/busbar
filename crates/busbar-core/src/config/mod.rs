@@ -665,19 +665,19 @@ impl AuthChainEntry {
 /// An unbound role grants NOTHING (fail closed). Limits live on the bound `group`, never here.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RoleBindingCfg {
+pub struct RoleBindingCfg {
     /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools;
     /// an explicit `[]` = NO pools (empty list is the empty set).
     #[serde(default)]
-    pub(crate) allowed_pools: Option<Vec<String>>,
+    pub allowed_pools: Option<Vec<String>>,
     /// The `groups:` bucket this role's principals charge through. Absent = no group (unlimited).
     #[serde(default)]
-    pub(crate) group: Option<String>,
+    pub group: Option<String>,
     /// The ADMIN scope this role grants: `read-only` | `full`. Absent = no admin access from this
     /// role. A principal holds the UNION of what its bound roles grant (see `Grants` in the contract
     /// module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
-    pub(crate) admin_scope: Option<String>,
+    pub admin_scope: Option<String>,
 }
 
 /// `role_bindings:` - module name -> role name -> grant.

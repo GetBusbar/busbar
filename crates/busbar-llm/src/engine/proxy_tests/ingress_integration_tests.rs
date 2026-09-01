@@ -1,4 +1,22 @@
-use super::*;
+// Relocated from core `ingress/tests/tests.rs` (money-path Phase 3-4 C). The former `use super::*`
+// (core's `ingress` module) is replaced by explicit imports now that this suite lives in the plane
+// crate: the engine namespace via the trait/fns it needs, the plane test_support harness, and the
+// common vocabulary core's `ingress` module re-exported into it.
+use crate::engine::AppEngineExt as _;
+use crate::engine::{forward_with_pool, WeightedLane};
+use crate::test_support::*;
+use busbar_core::ingress::{
+    admit_check, fallback_pools_authorized, finish, finish_admitted, finish_rejected,
+    governance_guard, ingress_error, not_found_message, percent_decode, pool_authorized, pool_label,
+};
+use busbar_core::state::App;
+use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
+use std::sync::Arc;
+use std::time::Instant;
+use axum::body::Bytes;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
+use serde_json::Value;
 // `IntoResponse` is no longer used by the (now-delegating) production code, but the in-module
 // tests build responses via `(StatusCode, body).into_response()`, which needs the trait in scope.
 use axum::response::IntoResponse;
@@ -6,146 +24,35 @@ use axum::response::IntoResponse;
 // `test_query_has_alt_sse` and `test_gemini_api_version_prefix_mapping` moved to
 // `busbar-llm/src/arrival.rs` with the gemini URL-model arrival helpers they exercise.
 
-/// Minimal governance-off App for exercising `finish` in isolation.
+/// Minimal governance-off App for exercising `finish` in isolation. Post-relocation (money-path
+/// Phase 3-4 C) this rides the plane-agnostic `TestApp` builder rather than a raw `App { … }` literal
+/// (core's `App` fields are `pub(crate)` and cannot be named from the plane crate): `TestApp::new()`
+/// yields the same empty-lane, governance-off App with an EMPTY `NativeRuntime` slot installed and the
+/// MCP companion runtime present — byte-identical to the hand-rolled fixture for these `finish`/
+/// affinity assertions (no lanes, no pool_runtime ⇒ the default `x-session-id` affinity header).
 fn minimal_app() -> Arc<App> {
-    Arc::new(App {
-        spent_token_ledger: Default::default(),
-        demotion_record: Default::default(),
-        plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),
-        session_store: Arc::new(crate::session::SessionStore::new(1024, None)),
-        incremental_scan: false,
-        tool_pools: Default::default(),
-        plane_pools: Default::default(),
-        // Not an MCP server: the plane is absent (no `"mcp"` slot in `plane_slots` below) and the
-        // dispatch table empty, which is what every path in this fixture is asserted against.
-        oauth_as: None,
-        planes: Arc::new(crate::plane::PlaneDispatch::default()),
-        // No `mcp:`/`agents:` configured — no dispatch slot for either (`busbar_mcp::mcp::resource` /
-        // `busbar_a2a::a2a::runtime` read their absence straight off this map). The MCP plane's
-        // always-present runtime bundle still rides here under its companion key
-        // (`runtime_slot_key(<mcp decl key>)`), which `busbar_mcp::mcp::runtime` reads on the `finish` path.
-        plane_slots: {
-            let mut m: std::collections::BTreeMap<
-                &'static str,
-                Arc<dyn std::any::Any + Send + Sync>,
-            > = Default::default();
-            m.insert(
-                crate::state::runtime_slot_key("mcp"),
-                busbar_mcp::testkit::default_mcp_runtime(),
-            );
-            // The LLM data-plane runtime bundle (R3/R4 sub-phase B) — carried in the slot under its
-            // companion key, downcast by `App::llm_runtime` / `App::engine_tables` on the money path.
-            m.insert(
-                crate::state::runtime_slot_key(crate::plane::fallback_key()),
-                Arc::new(crate::state::NativeRuntime {
-                    lanes: vec![],
-                    by_model: std::collections::HashMap::new(),
-                    pools: std::collections::HashMap::new(),
-                    pool_runtime: std::collections::HashMap::new(),
-                    fallback_pools: std::collections::HashMap::new(),
-                    on_exhausted_cfgs: std::collections::HashMap::new(),
-                    failover_cfg: None,
-                    queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
-                    probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
-                    upstream_credentials: crate::auth::UpstreamCreds::Own,
-                    any_pool_upstream_creds_override: false,
-                    client: crate::state::UpstreamClients::build(1, || {
-                        crate::proxy::build_egress_client(
-                            &crate::proxy::EgressClientSpec::llm_lane(4, 300, false, false),
-                        )
-                    }),
-                }) as Arc<dyn std::any::Any + Send + Sync>,
-            );
-            m
-        },
-        agent_defs: std::sync::Arc::new(busbar_a2a::a2a::config::AgentsCfg::default()),
-        tslots: Arc::new(crate::telemetry::AppSlots::build(
-            &[],
-            &[],
-            |_idx| -> Option<&str> { None },
-            crate::plane::fallback_key(),
-        )),
-        llm_runtime_key: crate::state::runtime_slot_key(crate::plane::fallback_key()),
-        store: Arc::new(crate::store::HealthState::new(vec![])),
-        client_settings: crate::state::UpstreamClientSettings::from_limits(
-            &crate::config::LimitsResolved::default(),
-        ),
-        auth: Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &crate::config::AuthCfg::default_none(),
-        )),
-        rewrite_hooks: Vec::new(),
-        tap_hooks: Vec::new(),
-        tap_hooks_candidate: Vec::new(),
-        tap_hooks_routing: Vec::new(),
-        tap_hooks_response: Vec::new(),
-        global_gates: Vec::new(),
-        plane_gates: Default::default(),
-        hook_env: crate::hooks::HookEnv::new(
-            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        ),
-        hook_registry: std::collections::HashMap::new(),
-        requested_signals: Default::default(),
-        any_content_hook: false,
-        export_projections: Default::default(),
-        global_hooks: Vec::new(),
-        groups_registry: std::collections::BTreeMap::new(),
-        base_group_names: std::collections::HashSet::new(),
-        identity_providers: Default::default(),
-        export_defs: Default::default(),
-        versions: Arc::new(crate::admin::versions::VersionLog::new()),
-        mutation_limiter: Arc::new(crate::admin::rate::MutationLimiter::new()),
-        idempotency_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        base_hook_names: std::collections::HashSet::new(),
-        admin_chain: vec!["admin-tokens".to_string()],
-        admin_modules: Arc::new(crate::auth::AdminAuthChain::empty()),
-        login_methods: Arc::new(crate::auth::token::LoginMethods::empty()),
-        public_url: None,
-        credential_cache: StdArc::new(crate::auth_cache::CredentialCache::new()),
-        auth_scope_caps: std::collections::HashMap::new(),
-        role_bindings: crate::config::RoleBindings::new(),
-        config_path: None,
-        providers_path: None,
-        overlay_path: None,
-        config_version: 0,
-        max_keys_per_principal: 0,
-        max_auto_provisioned_groups: 0,
-        governance: None,
-        secret_resolver: std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        cost: std::sync::Arc::new(crate::cost::CostModel::flat(1)),
-        plugins_dir: std::path::PathBuf::from("plugins"),
-        plugins_cfg: crate::config::PluginsCfg::default(),
-        default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
-        reasoning_effort_budgets: [1024, 4096, 8192, 16384],
-        self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
-        mint_policy: std::sync::Arc::new(crate::admin::MintPolicy::default()),
-        request_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(
-            crate::state::seed_request_id_counter(),
-        )),
-        plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
-        boot_route_paths: Default::default(),
-    })
+    TestApp::new().build()
 }
 
 #[test]
 fn test_finish_emits_request_metrics() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
         &minimal_app(),
-        &crate::governance::GovCtx::default(),
+        &busbar_core::governance::GovCtx::default(),
         "openai",
         "mypool",
         Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
         resp,
     );
     // finish must pass the response through unchanged.
     assert_eq!(out.status(), StatusCode::OK);
 
-    let scrape = crate::metrics::render();
+    let scrape = busbar_core::metrics::render();
     assert!(
-        scrape.contains(crate::metrics::REQUESTS_TOTAL),
+        scrape.contains(busbar_core::metrics::REQUESTS_TOTAL),
         "finish should emit requests_total; got:\n{scrape}"
     );
     assert!(
@@ -153,7 +60,7 @@ fn test_finish_emits_request_metrics() {
         "a 2xx response maps to outcome=ok; got:\n{scrape}"
     );
     assert!(
-        scrape.contains(crate::metrics::REQUEST_DURATION_SECONDS),
+        scrape.contains(busbar_core::metrics::REQUEST_DURATION_SECONDS),
         "finish should emit the request-duration histogram; got:\n{scrape}"
     );
 }
@@ -171,18 +78,15 @@ fn test_affinity_header_honors_configured_name() {
     let mut pr = std::collections::HashMap::new();
     pr.insert(
         "tenant-pool".to_string(),
-        crate::state::PoolRuntime {
+        crate::engine::PoolRuntime {
             upstream_credentials: None,
             members: Default::default(),
             failover: None,
-            affinity: Some(crate::config::AffinityCfg {
-                mode: crate::config::AffinityMode::Session,
+            affinity: Some(busbar_core::config::AffinityCfg {
+                mode: busbar_core::config::AffinityMode::Session,
                 header_name: Some("x-user-id".to_string()),
             }),
             breaker: None,
-            policy: None,
-            gates: Vec::new(),
-            rewrite_hooks: Vec::new(),
         },
     );
     // App is behind Arc; rebuild with the populated map.
@@ -199,18 +103,15 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
     let mut pr = std::collections::HashMap::new();
     pr.insert(
         "p".to_string(),
-        crate::state::PoolRuntime {
+        crate::engine::PoolRuntime {
             upstream_credentials: None,
             members: Default::default(),
             failover: None,
-            affinity: Some(crate::config::AffinityCfg {
-                mode: crate::config::AffinityMode::Session,
+            affinity: Some(busbar_core::config::AffinityCfg {
+                mode: busbar_core::config::AffinityMode::Session,
                 header_name: None,
             }),
             breaker: None,
-            policy: None,
-            gates: Vec::new(),
-            rewrite_hooks: Vec::new(),
         },
     );
     let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -220,8 +121,8 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
-fn governed_app_with_key() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+fn governed_app_with_key() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -241,7 +142,7 @@ fn governed_app_with_key() -> (Arc<App>, crate::governance::VirtualKey) {
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
     inner.auth = crate::test_support::keys_chain_auth();
-    inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30));
     (app, key)
 }
 
@@ -266,9 +167,9 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
 // `key_spend` reads.
 #[test]
 fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -338,9 +239,9 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 // internal `charged_at = store::now()`, so the prior charge and any spurious refund hit one row.
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -354,16 +255,16 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     assert_eq!(key_spend(&app, &key.id), 30, "prior charge seeded");
 
     // A malformed-JSON request on the SAME key fails pre-routing (model never resolved) → 400.
-    let caller = crate::auth::CallerToken(None);
+    let caller = busbar_core::auth::CallerToken(None);
     let headers = HeaderMap::new();
-    let resp = futures::executor::block_on(operation_ingress(
+    let resp = futures::executor::block_on(operation_ingress_inner(
         &app,
         &gov,
-        &caller,
+        caller.0.as_deref(),
         &headers,
         Bytes::from_static(b"{ this is not valid json"),
         "openai",
-        crate::operation::Operation::CHAT,
+        busbar_core::operation::Operation::CHAT,
         None,
     ));
     assert_eq!(
@@ -383,19 +284,19 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
 
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
         &minimal_app(),
-        &crate::governance::GovCtx::default(),
+        &busbar_core::governance::GovCtx::default(),
         "anthropic",
         "p2",
         Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
         resp,
     );
     assert!(
-        crate::metrics::render().contains("outcome=\"exhausted\""),
+        busbar_core::metrics::render().contains("outcome=\"exhausted\""),
         "503 maps to outcome=exhausted"
     );
 }
@@ -410,13 +311,13 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 // admission charge is seeded via the real admission charge into the charged_at window.
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    busbar_core::metrics::init();
 
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov =
         std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
-    let cost = std::sync::Arc::new(crate::cost::CostModel::flat(30)); // 30c/request
+    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30)); // 30c/request
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -436,7 +337,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = crate::governance::GovCtx {
+    let govctx = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -444,7 +345,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window,
-        crate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -481,7 +382,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "non-2xx refund must land in the charged_at window (net 0)"
     );
     let in_today = gov
-        .usage_for(&cost, &key.id, crate::store::now())
+        .usage_for(&cost, &key.id, busbar_core::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -505,14 +406,14 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 /// overshot the cap.
 #[tokio::test]
 async fn test_admit_check_uses_charged_at_window_not_clock() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    busbar_core::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
     let past_window = past_day / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         past_window,
-        crate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -526,13 +427,13 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "daycap".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 30,
-                per: Some(crate::config::groups::LimitWindow::Day),
+                per: Some(busbar_core::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -540,7 +441,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
+    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -563,7 +464,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = crate::governance::GovCtx {
+    let govctx = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -589,7 +490,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
 
     // Sanity: today's window is empty, so a gate keyed off the wall clock (the OLD behaviour)
     // would have WRONGLY admitted. This proves the bug was real and the pin fixes it.
-    let admitted_today = admit_check(&app, &govctx, "openai", "", crate::store::now());
+    let admitted_today = admit_check(&app, &govctx, "openai", "", busbar_core::store::now());
     assert!(
         admitted_today.is_ok(),
         "today's window is empty; the old clock-based gate would have admitted here"
@@ -615,7 +516,7 @@ use std::sync::Arc as StdArc;
 
 /// Spin up the real router over a loopback listener; returns (addr, abort-handle).
 async fn serve(app: StdArc<App>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -655,7 +556,7 @@ fn anthropic_ok_body() -> serde_json::Value {
 /// the IR to an OpenAI backend and back, returning a 2xx the Cohere SDK can parse.
 #[tokio::test]
 async fn test_cohere_ingress_to_openai_backend() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -665,7 +566,7 @@ async fn test_cohere_ingress_to_openai_backend() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
         .pool("co", &[(0, 1)])
@@ -702,7 +603,7 @@ async fn test_cohere_ingress_to_openai_backend() {
 /// Anthropic backend and back.
 #[tokio::test]
 async fn test_responses_ingress_to_anthropic_backend() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -714,7 +615,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -759,7 +660,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
 /// proves model+stream injection happened (resolution by path model can't happen otherwise).
 #[tokio::test]
 async fn test_gemini_path_resolves_model_and_stream() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Two backend responses: one for the non-stream call, one we won't reach (stream call uses
     // a fresh state below). Keep them separate for clarity.
     let state = StdArc::new(MockServerState::new());
@@ -771,7 +672,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 
     // The lane MODEL is "foo" so that resolution via the path model proves the path parse.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -846,7 +747,7 @@ fn test_path_model_injects_model_and_stream_into_body() {
 /// Gemini unknown action ⇒ native 404 (not a 200, not a panic).
 #[tokio::test]
 async fn test_gemini_unknown_action_is_404() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -879,7 +780,7 @@ async fn test_gemini_unknown_action_is_404() {
 /// assertion lives in `test_bedrock_converse_stream_returns_binary_eventstream`.
 #[tokio::test]
 async fn test_bedrock_converse_routes_and_returns_json() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -888,7 +789,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -974,7 +875,7 @@ fn openai_stream_events() -> Vec<String> {
 /// cross-protocol to a streaming OpenAI backend so the SSE→binary reframe path runs.
 #[tokio::test]
 async fn test_bedrock_converse_stream_returns_binary_eventstream() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -985,7 +886,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // Bedrock ingress → OpenAI backend (cross-protocol) so the upstream SSE stream is re-encoded
     // into the client's native binary eventstream framing.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1046,7 +947,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // The body must decode as a clean sequence of binary AWS event-stream frames.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame must decode; body len {}",
@@ -1086,7 +987,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
 /// upstream id verbatim (proving it was passed through, not a freshly-minted UUID).
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match it — the only way the assertion passes is verbatim passthrough.
     const UPSTREAM_REQ_ID: &str = "fixed-upstream-amzn-req-id-0001";
@@ -1115,7 +1016,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     // path-independent — it keys off the upstream Content-Type, not the URL).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
+            LaneSpec::new("foo", crate::proto_codec::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1170,7 +1071,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     // drain_frames with the buffer empty, carrying the native ConverseStream event names.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "verbatim-relayed body must be a whole frame sequence (no trailing partial bytes); \
@@ -1214,7 +1115,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
 /// the body carries the native Converse shape (`output`/`usage`).
 #[tokio::test]
 async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match — the assertion passes ONLY on verbatim passthrough.
     const UPSTREAM_REQ_ID: &str = "fixed-upstream-amzn-req-id-nonstream-0001";
@@ -1225,7 +1126,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
     let upstream = axum::Router::new().fallback(axum::routing::any(|| async {
         axum::response::Response::builder()
             .status(StatusCode::OK)
-            .header("content-type", crate::proxy::APPLICATION_JSON)
+            .header("content-type", crate::engine::APPLICATION_JSON)
             .header("x-amzn-requestid", UPSTREAM_REQ_ID)
             .body(axum::body::Body::from(
                 json!({
@@ -1252,7 +1153,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
     // relay under test is path-independent (it keys off the upstream Content-Type).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &upstream_base)
+            LaneSpec::new("foo", crate::proto_codec::PROTO_BEDROCK, &upstream_base)
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1331,7 +1232,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
 /// variants cannot reach.
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_binary_exception() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::EventStreamTransportError {
         ok_frames: vec![("messageStart", br#"{"role":"assistant"}"#.to_vec())],
@@ -1344,7 +1245,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     // point the lane's upstream path at a route the mock answers.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
+            LaneSpec::new("foo", crate::proto_codec::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1385,7 +1286,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     // The body decodes as a whole sequence of CRC-valid binary frames (real frame(s) + the
     // appended exception frame), with no trailing partial bytes.
     let mut buf = body.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -1419,14 +1320,14 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
 /// wiring previously exercised only by the isolated `mid_stream_error_bytes` unit test.
 #[tokio::test]
 async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"role":"assistant"}}]}"#.to_string()],
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1447,7 +1348,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     );
     // The body decodes as a sequence of binary frames, the LAST of which is an exception frame.
     let mut buf = body.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -1476,7 +1377,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
 /// emit one mid-stream) whose `data:` is the native OpenAI error envelope.
 #[tokio::test]
 async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
@@ -1484,7 +1385,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
@@ -1532,7 +1433,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
 /// top-level `model`/`stream`.
 #[tokio::test]
 async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // A minimal native-shaped Bedrock Converse response; same-protocol passthrough relays it
     // verbatim, so any 2xx body suffices for the round-trip.
@@ -1551,7 +1452,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
     // `/model/{model}/converse`, which the mock does not serve.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_BEDROCK, &server.base_url())
+            LaneSpec::new("foo", crate::proto_codec::PROTO_BEDROCK, &server.base_url())
                 .provider("aws")
                 .path("/v1/messages"),
         )
@@ -1601,7 +1502,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
 /// top-level `model`/`stream` off the native generateContent body the backend receives.
 #[tokio::test]
 async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -1621,7 +1522,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
     // model and action, which the mock does not serve.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_GEMINI, &server.base_url())
+            LaneSpec::new("foo", crate::proto_codec::PROTO_GEMINI, &server.base_url())
                 .provider("google")
                 .path("/v1/messages"),
         )
@@ -1666,7 +1567,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
 /// Routes gemini→openai (cross-protocol) so the request reaches the backend and is reframed.
 #[tokio::test]
 async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -1675,7 +1576,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1722,7 +1623,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != crate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1753,14 +1654,14 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
 /// `SseTransportError` so the upstream drops the connection after the first frame.
 #[tokio::test]
 async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1796,7 +1697,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != crate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1833,12 +1734,12 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
 /// 404 (both-maps-miss) path through the real router and scrapes the registry.
 #[tokio::test]
 async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // A lane/pool named "foo" exists, but the client asks for a DISTINCT unknown model so both
     // `app.pools` and `app.by_model` miss and the 404 path runs.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -1861,7 +1762,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 404, "unknown model is a 404");
 
-    let scrape = crate::metrics::render();
+    let scrape = busbar_core::metrics::render();
     // The raw attacker string must NEVER appear as a label value in the exposition.
     assert!(
         !scrape.contains(attacker_model),
@@ -1885,7 +1786,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
     let outcome_frag = format!("outcome=\"{outcome}\"");
     scrape
         .lines()
-        .filter(|l| l.starts_with(crate::metrics::REQUESTS_TOTAL))
+        .filter(|l| l.starts_with(busbar_core::metrics::REQUESTS_TOTAL))
         .filter(|l| l.contains(&pool_frag) && l.contains(&outcome_frag))
         .filter_map(|l| l.rsplit(' ').next())
         .filter_map(|v| v.trim().parse::<u64>().ok())
@@ -1901,17 +1802,17 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
 /// that old behavior.
 #[tokio::test]
 async fn test_body_model_parse_error_is_observable() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     // No backend needed: the request never gets past the body parse.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -1922,7 +1823,7 @@ async fn test_body_model_parse_error_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "malformed body is a 400");
 
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a parse-error pre-routing failure must increment REQUESTS_TOTAL \
@@ -1940,16 +1841,16 @@ async fn test_body_model_parse_error_is_observable() {
 /// unrouted.
 #[tokio::test]
 async fn test_bedrock_invoke_unresolvable_body_is_observable() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!(
@@ -1966,7 +1867,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
         "an InvokeModel body matching no recognized shape is a 400"
     );
 
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "an unresolvable InvokeModel body must increment REQUESTS_TOTAL \
@@ -1993,19 +1894,19 @@ async fn test_served_request_increments_hot_path_metrics() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new(MODEL, crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new(MODEL, crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool(POOL, &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let dur_count = format!("{}_count", crate::metrics::REQUEST_DURATION_SECONDS);
+    let dur_count = format!("{}_count", busbar_core::metrics::REQUEST_DURATION_SECONDS);
     let req_before = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        busbar_core::metrics::REQUESTS_TOTAL,
         &[("pool", POOL), ("outcome", "ok")],
     );
     let dur_before = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_before = metric_sum(
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
 
@@ -2020,12 +1921,12 @@ async fn test_served_request_increments_hot_path_metrics() {
     assert_eq!(resp.status().as_u16(), 200);
 
     let req_after = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        busbar_core::metrics::REQUESTS_TOTAL,
         &[("pool", POOL), ("outcome", "ok")],
     );
     let dur_after = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_after = metric_sum(
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
     assert!(
@@ -2052,8 +1953,8 @@ async fn test_served_request_increments_hot_path_metrics() {
 /// the synthesized key: limits live on `groups:`, keys are pure auth.)
 #[tokio::test]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -2064,34 +1965,33 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let server = MockServer::new(state.clone()).await;
     let store = StdArc::new(MemoryStore::new());
     let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
-        ..crate::config::AuthCfg::default_none()
-    };
+    let auth_cfg = busbar_core::config::AuthCfg::with_chain(vec![
+        busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+    ]);
     let mut app = TestApp::new()
         .lane(
             LaneSpec::new(
                 "rekey-model",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
         )
         .pool("gpool-a", &[(0, 1)])
         .pool("gpool-b", &[(0, 1)])
-        .auth(StdArc::new(crate::auth::AuthMiddleware::new_builtin(
+        .auth(StdArc::new(busbar_core::auth::AuthMiddleware::new_builtin(
             &auth_cfg,
         )))
         .governance(gov)
         // The old GovState carried fee 0; keep the no-charge semantics under the CostModel.
-        .cost(crate::cost::CostModel::flat(0))
+        .cost(busbar_core::cost::CostModel::flat(0))
         .build();
     {
         let inner = StdArc::get_mut(&mut app).expect("sole owner");
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "llm-users".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 allowed_pools: Some(vec!["gpool-a".to_string()]),
                 ..Default::default()
             },
@@ -2099,12 +1999,12 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         // OMITTED allowed_pools = ALL pools.
         table.insert(
             "batch".to_string(),
-            crate::config::RoleBindingCfg::default(),
+            busbar_core::config::RoleBindingCfg::default(),
         );
         // Explicit [] = NO pools (the empty set, fail closed).
         table.insert(
             "locked".to_string(),
-            crate::config::RoleBindingCfg {
+            busbar_core::config::RoleBindingCfg {
                 allowed_pools: Some(vec![]),
                 ..Default::default()
             },
@@ -2179,7 +2079,7 @@ async fn timing_gate_hot_path_p50_p99() {
         .lane(
             LaneSpec::new(
                 "timing-gate-model",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -2236,16 +2136,16 @@ async fn timing_gate_hot_path_p50_p99() {
 /// early-return. Asserts a strict counter increase, so it fails against the old early-return.
 #[tokio::test]
 async fn test_body_model_missing_model_is_observable() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -2257,7 +2157,7 @@ async fn test_body_model_missing_model_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "missing model is a 400");
 
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a missing-model pre-routing failure must increment REQUESTS_TOTAL \
@@ -2272,16 +2172,16 @@ async fn test_body_model_missing_model_is_observable() {
 /// early-return that bypassed `finish`.
 #[tokio::test]
 async fn test_path_model_non_object_body_is_observable() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
 
     // Valid JSON, but a top-level ARRAY (not an object) — `as_object_mut` returns `None`.
     let resp = reqwest::Client::new()
@@ -2293,7 +2193,7 @@ async fn test_path_model_non_object_body_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "non-object body is a 400");
 
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a non-object-body pre-routing failure must increment REQUESTS_TOTAL \
@@ -2309,16 +2209,16 @@ async fn test_path_model_non_object_body_is_observable() {
 /// old early-return.
 #[tokio::test]
 async fn test_gemini_unsupported_action_is_observable() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
 
     // `:countTokens` is a genuine Gemini action suffix (so the path stays gemini-classified) but
     // is NOT one of the two proxied generate actions → unsupported-action 404 in gemini_ingress.
@@ -2335,7 +2235,7 @@ async fn test_gemini_unsupported_action_is_observable() {
         "unsupported gemini action is a 404"
     );
 
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "an unsupported-action pre-routing failure must increment REQUESTS_TOTAL \
@@ -2382,7 +2282,7 @@ fn test_pool_label_bounds_cardinality() {
 /// as a JSON array whose elements are gemini `GenerateContentResponse` objects.
 #[tokio::test]
 async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2391,7 +2291,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2449,14 +2349,14 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
 /// `FirstByteBody`'s `Poll::Ready(Some(Err))` arm while `json_array` is active.
 #[tokio::test]
 async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2519,7 +2419,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
 /// stripped only for path-model (gemini/bedrock) egress where it rides the URL.
 #[tokio::test]
 async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2527,7 +2427,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2573,7 +2473,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
 /// Routes openai→anthropic and inspects the first `message_start` SSE frame.
 #[tokio::test]
 async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -2583,7 +2483,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     // Anthropic ingress → OpenAI backend (cross-protocol): StreamTranslate reframes the upstream
     // OpenAI SSE into Anthropic SSE via the writer's `write_response_event`.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2640,16 +2540,16 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
 /// shape (`{"type":"error","error":{"type":...}}`), not the OpenAI `{"error":{...}}` shape.
 #[tokio::test]
 async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Auth {
         status: StatusCode::UNAUTHORIZED,
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
     let (addr, handle) = serve(app).await;
 
@@ -2687,7 +2587,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
 /// malformed-path branch and must return a Gemini-shaped 404 (not a 200, not a panic).
 #[tokio::test]
 async fn test_gemini_malformed_path_no_colon_is_404() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -2719,7 +2619,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
 /// pre-colon segment is empty) and must return a Gemini-shaped 404, not misroute.
 #[tokio::test]
 async fn test_gemini_empty_model_is_404() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -2743,7 +2643,7 @@ async fn test_gemini_empty_model_is_404() {
 /// "v1beta" is a distinguishability tell against a google-generativeai SDK pinned to v1.
 #[tokio::test]
 async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
 
@@ -2804,7 +2704,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
 /// full surface) — the fix is version-faithful, not a blanket rewrite.
 #[tokio::test]
 async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -2839,7 +2739,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
 /// `gemini_ingress` no-colon branch's delegation to `proto::proto_for_path`.
 #[tokio::test]
 async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
 
@@ -2996,7 +2896,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
 /// resolves and 2xx round-trips.
 #[tokio::test]
 async fn test_gemini_model_with_colon_splits_on_last_colon() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -3008,7 +2908,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
         .lane(
             LaneSpec::new(
                 "tunedModels/abc:1",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -3083,7 +2983,7 @@ fn test_percent_decode_trailing_percent_is_safe() {
 /// `not_found`. Drives the real router so the body-model ingress → resolution-miss path runs.
 #[tokio::test]
 async fn test_unknown_model_404_uses_canonical_openai_type() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3109,8 +3009,8 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
-fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+fn governed_app_pool_restricted() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -3130,7 +3030,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
     inner.governance = Some(gov);
     inner.auth = crate::test_support::keys_chain_auth();
     // The 30c flat fee lives on the CostModel now.
-    inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30));
     (app, key)
 }
 
@@ -3140,9 +3040,9 @@ fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
 /// `finish` and were invisible to Prometheus / the request-log webhook.
 #[tokio::test]
 async fn test_governance_rejection_is_counted_via_finish() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3153,7 +3053,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
         "openai",
         "denied-pool",
         Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
     )
     .expect_err("a disallowed pool must be rejected by the governance guard");
     assert_eq!(
@@ -3163,9 +3063,9 @@ async fn test_governance_rejection_is_counted_via_finish() {
     );
 
     // The rejection went through `finish`: a client_error outcome is now in the scrape.
-    let scrape = crate::metrics::render();
+    let scrape = busbar_core::metrics::render();
     assert!(
-        scrape.contains(crate::metrics::REQUESTS_TOTAL),
+        scrape.contains(busbar_core::metrics::REQUESTS_TOTAL),
         "governance rejection still emits requests_total; got:\n{scrape}"
     );
     assert!(
@@ -3173,7 +3073,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
         "a 403 governance rejection maps to outcome=client_error; got:\n{scrape}"
     );
     assert!(
-        scrape.contains(crate::metrics::REQUEST_DURATION_SECONDS),
+        scrape.contains(busbar_core::metrics::REQUEST_DURATION_SECONDS),
         "governance rejection still emits the duration histogram; got:\n{scrape}"
     );
 
@@ -3189,9 +3089,9 @@ async fn test_governance_rejection_is_counted_via_finish() {
 /// `None` so the caller proceeds to resolve+forward.
 #[tokio::test]
 async fn test_governance_guard_passes_when_allowed() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let passed = governance_guard(
@@ -3200,7 +3100,7 @@ async fn test_governance_guard_passes_when_allowed() {
         "openai",
         "allowed-only",
         Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
     );
     assert!(
         matches!(passed, Ok((Some(_), _))),
@@ -3214,9 +3114,9 @@ async fn test_governance_guard_passes_when_allowed() {
 /// gates the refund on the `charged` flag from `governance_guard`.
 #[tokio::test]
 async fn finish_admitted_does_not_refund_an_uncharged_admit() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = 1_700_000_000;
@@ -3263,11 +3163,11 @@ async fn body_string(resp: Response) -> String {
 /// these envelopes; leaking the key id / pool topology is both a proxy tell and an info leak.
 #[tokio::test]
 async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let resp =
@@ -3280,10 +3180,10 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // body-model protocols surface this as 429 (native OpenAI/Gemini quota semantics); no
     // vendor returns 402 here. ---
     let (app2, key2) = governed_app_over_budget();
-    let gov2 = crate::governance::GovCtx {
+    let gov2 = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
-    let resp = admit_check(&app2, &gov2, "openai", "", crate::store::now())
+    let resp = admit_check(&app2, &gov2, "openai", "", busbar_core::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -3292,10 +3192,10 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // Bedrock ingress maps the same over-budget condition to a 400-class
     // ServiceQuotaExceededException (the native AWS shape), NOT 429.
     let (app2b, key2b) = governed_app_over_budget();
-    let gov2b = crate::governance::GovCtx {
+    let gov2b = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
-    let resp = admit_check(&app2b, &gov2b, "bedrock", "", crate::store::now())
+    let resp = admit_check(&app2b, &gov2b, "bedrock", "", busbar_core::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_string(*resp).await;
@@ -3308,10 +3208,10 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 429: rate limited. A group with `requests: 0, per: minute` blocks the first request. ---
     let (app3, key3) = governed_app_rate_limited();
-    let gov3 = crate::governance::GovCtx {
+    let gov3 = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
-    let resp = admit_check(&app3, &gov3, "openai", "", crate::store::now())
+    let resp = admit_check(&app3, &gov3, "openai", "", busbar_core::store::now())
         .expect_err("requests=0 group ⇒ 429 response");
     let resp = *resp;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -3351,8 +3251,8 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 }
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
-fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+fn governed_app_over_budget() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -3374,13 +3274,13 @@ fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
     // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
     let groups = std::collections::BTreeMap::from([(
         "empty".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(crate::config::groups::LimitWindow::Total),
+                per: Some(busbar_core::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -3388,14 +3288,14 @@ fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
     (app, key)
 }
 
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
-fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+fn governed_app_rate_limited() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -3416,13 +3316,13 @@ fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
     inner.auth = crate::test_support::keys_chain_auth();
     let groups = std::collections::BTreeMap::from([(
         "closed".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(crate::config::groups::LimitWindow::Minute),
+                per: Some(busbar_core::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -3430,7 +3330,7 @@ fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
     (app, key)
 }
 
@@ -3445,7 +3345,7 @@ fn test_bedrock_ingress_error_has_amzn_headers() {
     let resp = ingress_error(
         "bedrock",
         StatusCode::NOT_FOUND,
-        crate::proxy::KIND_NOT_FOUND,
+        crate::engine::KIND_NOT_FOUND,
         "The model 'x' does not exist or you do not have access to it.",
     );
     let req_id = resp
@@ -3485,22 +3385,22 @@ fn test_bedrock_ingress_error_has_amzn_headers() {
 fn test_bedrock_errortype_header_matches_body_and_others_omit() {
     for (kind, status, expected) in [
         (
-            crate::proxy::KIND_INVALID_REQUEST,
+            crate::engine::KIND_INVALID_REQUEST,
             StatusCode::BAD_REQUEST,
             "ValidationException",
         ),
         (
-            crate::proxy::KIND_RATE_LIMIT,
+            crate::engine::KIND_RATE_LIMIT,
             StatusCode::TOO_MANY_REQUESTS,
             "ThrottlingException",
         ),
         (
-            crate::proxy::KIND_PERMISSION,
+            crate::engine::KIND_PERMISSION,
             StatusCode::FORBIDDEN,
             "AccessDeniedException",
         ),
         (
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            crate::engine::KIND_INSUFFICIENT_QUOTA,
             StatusCode::BAD_REQUEST,
             "ServiceQuotaExceededException",
         ),
@@ -3521,7 +3421,7 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
     let openai = ingress_error(
         "openai",
         StatusCode::NOT_FOUND,
-        crate::proxy::KIND_NOT_FOUND,
+        crate::engine::KIND_NOT_FOUND,
         "m",
     );
     assert!(
@@ -3540,7 +3440,7 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
 /// (`{"message": ...}`), served as application/json — not a plain-text 400 or a foreign shape.
 #[tokio::test]
 async fn test_cohere_bad_json_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3573,7 +3473,7 @@ async fn test_cohere_bad_json_is_400_native_envelope() {
 /// error envelope (`{"error":{"type":...}}`).
 #[tokio::test]
 async fn test_responses_bad_json_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3596,7 +3496,7 @@ async fn test_responses_bad_json_is_400_native_envelope() {
 /// envelope (`{"error":{"type":"invalid_request_error",...}}`).
 #[tokio::test]
 async fn test_openai_missing_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3626,7 +3526,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
 /// and 404 on a pool/by_model miss; these three tests (openai/cohere/responses) lock the 400.
 #[tokio::test]
 async fn test_openai_empty_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3652,7 +3552,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
 /// (a BARE top-level `message`, NO `error`/`type` wrapper).
 #[tokio::test]
 async fn test_cohere_empty_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3679,7 +3579,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
 /// envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_empty_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3713,7 +3613,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
 /// 400 envelope shape so the guard cannot be weakened to coerce a numeric model.
 #[tokio::test]
 async fn test_openai_numeric_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3745,7 +3645,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
 /// not a string), so it must still 400 rather than fall through to a 404.
 #[tokio::test]
 async fn test_cohere_numeric_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3776,7 +3676,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
 /// bool) ⇒ native Responses 400 envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_numeric_model_is_400_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3807,7 +3707,7 @@ async fn test_responses_numeric_model_is_400_native_envelope() {
 /// envelope is `{"error":{"code":...,"status":...}}`.
 #[tokio::test]
 async fn test_gemini_non_object_body_is_400() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3845,7 +3745,7 @@ async fn test_gemini_non_object_body_is_400() {
 /// headers — not a panic or a 500.
 #[tokio::test]
 async fn test_bedrock_non_object_body_is_400() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3879,7 +3779,7 @@ async fn test_bedrock_non_object_body_is_400() {
 /// (`error.status == "NOT_FOUND"`), produced by `forward_resolved`'s resolution-miss path.
 #[tokio::test]
 async fn test_gemini_unknown_model_404_native_shape() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3907,7 +3807,7 @@ async fn test_gemini_unknown_model_404_native_shape() {
 /// the x-amzn-* headers.
 #[tokio::test]
 async fn test_bedrock_unknown_model_404_native_shape() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3937,7 +3837,7 @@ async fn test_bedrock_unknown_model_404_native_shape() {
 /// Cohere unknown-model 404 must carry the Cohere-native envelope (`{"message": ...}`).
 #[tokio::test]
 async fn test_cohere_unknown_model_404_native_shape() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -3960,7 +3860,7 @@ async fn test_cohere_unknown_model_404_native_shape() {
 /// (`{"error":{"type":"not_found_error",...}}`).
 #[tokio::test]
 async fn test_responses_unknown_model_404_native_shape() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
@@ -4002,7 +3902,7 @@ fn sse_frames(body: &str) -> Vec<(String, String)> {
             }
         }
         if let Some(d) = data {
-            if d == crate::proto::SSE_DONE_SENTINEL {
+            if d == busbar_core::proto::SSE_DONE_SENTINEL {
                 continue;
             }
             out.push((event_name, d));
@@ -4036,7 +3936,7 @@ fn openai_native_stream_events() -> Vec<String> {
 /// typed-`event:` frame is caught.
 #[tokio::test]
 async fn test_openai_ingress_stream_emits_native_openai_frames() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_native_stream_events(),
@@ -4045,7 +3945,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto::PROTO_OPENAI, &server.base_url())
+            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
@@ -4124,7 +4024,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
 /// caught here.
 #[tokio::test]
 async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4132,7 +4032,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4209,7 +4109,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
 /// `chat.completion.chunk` objects. Routes responses→openai (cross-protocol).
 #[tokio::test]
 async fn test_responses_ingress_stream_emits_native_responses_events() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4217,7 +4117,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4287,7 +4187,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
 /// (the unit `percent_decode` tests bypass axum's own first decode).
 #[tokio::test]
 async fn test_bedrock_percent_encoded_model_id_converse_stream() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -4300,7 +4200,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
         .lane(
             LaneSpec::new(
                 "anthropic.claude-3:haiku",
-                crate::proto::PROTO_OPENAI,
+                crate::proto_codec::PROTO_OPENAI,
                 &server.base_url(),
             )
             .provider("zai"),
@@ -4335,7 +4235,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     );
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = crate::eventstream::drain_frames(&mut buf);
+    let frames = busbar_core::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame decodes for the percent-encoded model"
@@ -4359,14 +4259,14 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
 /// `error` only (the leak guarded against here would be an `event:` line or a foreign shape).
 #[tokio::test]
 async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("co", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4430,14 +4330,14 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
 /// `event.response`).
 #[tokio::test]
 async fn test_responses_ingress_mid_stream_transport_error_appends_response_failed() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
         ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("re", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4509,7 +4409,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
 /// dispatch).
 #[tokio::test]
 async fn test_real_failover_serves_second_member_after_first_5xx() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     const POOL: &str = "failover-e2e-pool";
     const MODEL_BAD: &str = "failover-e2e-bad";
     const MODEL_GOOD: &str = "failover-e2e-good";
@@ -4543,12 +4443,12 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL_BAD,
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &bad_server.base_url(),
         ))
         .lane(LaneSpec::new(
             MODEL_GOOD,
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &good_server.base_url(),
         ))
         // Weight 100 vs 1: the failing member is guaranteed to be tried FIRST (see determinism
@@ -4557,7 +4457,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
         .build();
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, crate::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4580,7 +4480,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
          dispatched by the real retry loop, not a mock/short-circuit); got {body}"
     );
 
-    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_core::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -4603,7 +4503,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
 /// breaker must have recorded the mid-stream failure.
 #[tokio::test]
 async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     const POOL: &str = "mid-stream-e2e-pool";
     const MODEL_BAD: &str = "mid-stream-e2e-primary";
     const MODEL_GOOD: &str = "mid-stream-e2e-secondary";
@@ -4629,12 +4529,12 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL_BAD,
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &bad_server.base_url(),
         ))
         .lane(LaneSpec::new(
             MODEL_GOOD,
-            crate::proto::PROTO_OPENAI,
+            crate::proto_codec::PROTO_OPENAI,
             &good_server.base_url(),
         ))
         // Same determinism trick: member 1 (the one that fails mid-stream) is guaranteed first.
@@ -4642,7 +4542,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
         .build();
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, crate::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4690,7 +4590,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
         "the in-band terminal frame must be OpenAI's native error envelope; got {v}"
     );
 
-    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_core::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -4713,7 +4613,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
 /// deterministic proxy tell on any of the six surfaces.
 #[tokio::test]
 async fn test_no_client_error_message_carries_router_prefix() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
     let client = reqwest::Client::new();
@@ -4820,20 +4720,20 @@ async fn governed_pool_acl_router(
     protocol: &'static str,
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::governance::{GovState, MemoryStore};
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
     let store = StdArc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "acl".to_string(),
                 // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
                 allowed_pools: Some(vec!["other-pool".to_string()]),
@@ -4859,9 +4759,9 @@ async fn governed_pool_acl_router(
 /// (`{"message": ...}`), served as application/json.
 #[tokio::test]
 async fn test_governance_pool_acl_403_cohere_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("co", crate::proto::PROTO_OPENAI, "zai").await;
+        governed_pool_acl_router("co", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
         .bearer_auth(secret)
@@ -4892,9 +4792,9 @@ async fn test_governance_pool_acl_403_cohere_native_envelope() {
 /// envelope (`{"error":{"type":"permission_error"}}`).
 #[tokio::test]
 async fn test_governance_pool_acl_403_responses_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("re", crate::proto::PROTO_OPENAI, "zai").await;
+        governed_pool_acl_router("re", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
         .bearer_auth(secret)
@@ -4932,9 +4832,9 @@ async fn test_governance_pool_acl_403_responses_native_envelope() {
 /// caught here exactly as the symmetric four tests catch it for their protocols.
 #[tokio::test]
 async fn test_governance_pool_acl_403_openai_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("gpt-4o", crate::proto::PROTO_OPENAI, "openai").await;
+        governed_pool_acl_router("gpt-4o", crate::proto_codec::PROTO_OPENAI, "openai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
         .bearer_auth(secret)
@@ -4970,9 +4870,9 @@ async fn test_governance_pool_acl_403_openai_native_envelope() {
 /// Gemini-native error envelope (`{"error":{"code":403,"status":"PERMISSION_DENIED"}}`).
 #[tokio::test]
 async fn test_governance_pool_acl_403_gemini_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("foo", crate::proto::PROTO_OPENAI, "zai").await;
+        governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
         .bearer_auth(secret)
@@ -5014,9 +4914,9 @@ async fn test_governance_pool_acl_403_gemini_native_envelope() {
 /// header (plus `x-amzn-RequestId`), exactly as a real AWS Bedrock 403 does.
 #[tokio::test]
 async fn test_governance_pool_acl_403_bedrock_native_envelope() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (addr, handle, secret) =
-        governed_pool_acl_router("foo", crate::proto::PROTO_OPENAI, "zai").await;
+        governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
         .bearer_auth(secret)
@@ -5073,8 +4973,8 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 /// is reachable from A on exhaustion and the key may not use B.
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
     // due ONLY to the fallback-pool ACL, not to A being unreachable.
@@ -5087,16 +4987,16 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "fb".to_string(),
                 // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
                 allowed_pools: Some(vec!["A".to_string()]),
@@ -5113,9 +5013,9 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
@@ -5123,7 +5023,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            crate::config::OnExhausted::FallbackPool("B".to_string()),
+            busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (addr, handle) = serve(app).await;
@@ -5161,8 +5061,8 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 /// fix over-rejecting legitimate fallback configurations.
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -5173,16 +5073,16 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "fb2".to_string(),
                 // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
                 allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
@@ -5198,16 +5098,16 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            crate::config::OnExhausted::FallbackPool("B".to_string()),
+            busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (addr, handle) = serve(app).await;
@@ -5243,7 +5143,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 /// CallerToken extension wiring, and `finish` — none of which the handler-direct unit test runs.
 #[tokio::test]
 async fn test_adhoc_success_round_trip_via_router() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -5254,7 +5154,7 @@ async fn test_adhoc_success_round_trip_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -5283,12 +5183,12 @@ async fn test_adhoc_success_round_trip_via_router() {
 /// not a foreign shape or a plain-text body.
 #[tokio::test]
 async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("anthropic"),
@@ -5341,19 +5241,19 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 /// which passes a default no-key GovCtx).
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
-    use crate::governance::{GovState, MemoryStore};
-    crate::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore};
+    busbar_core::metrics::init();
     let store = StdArc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "adhoc-acl".to_string(),
                 allowed_pools: Some(vec!["other-pool".to_string()]),
                 group: None,
@@ -5370,7 +5270,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 "http://127.0.0.1:1",
             )
             .provider("anthropic"),
@@ -5438,7 +5338,7 @@ fn test_not_found_message_is_protocol_native() {
 /// `error.message`). Drives the real router with an empty app so resolution misses on both maps.
 #[tokio::test]
 async fn test_gemini_model_not_found_uses_native_message() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
 
@@ -5488,7 +5388,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
 /// framing and that the frames carry native gemini `candidates[]` (never OpenAI `choices`).
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -5497,7 +5397,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5536,7 +5436,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != crate::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -5562,7 +5462,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
 /// on the v1 path so a regression isolating the stable-v1 alias is caught.
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: openai_stream_events(),
@@ -5571,7 +5471,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5648,19 +5548,19 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use crate::governance::{GovState, MemoryStore};
+    use busbar_core::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_core::governance::{GovState, MemoryStore};
     let store = StdArc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "limit".to_string(),
                 allowed_pools: None, // all pools; ACL never short-circuits
                 group: Some("tripped".to_string()),
@@ -5692,7 +5592,7 @@ async fn governed_limit_router(
     };
     let groups = std::collections::BTreeMap::from([(
         "tripped".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![tripping],
@@ -5702,7 +5602,7 @@ async fn governed_limit_router(
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
     let (addr, handle) = serve(app).await;
     (addr, handle, secret)
@@ -5714,7 +5614,7 @@ async fn governed_limit_router(
 /// for gemini/bedrock) that the 403-only set above does not reach.
 #[tokio::test]
 async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // openai / responses / cohere: body-model routes, native error envelope is JSON.
     for (path, payload) in [
@@ -5793,7 +5693,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 /// the `budget_check` guard.
 #[tokio::test]
 async fn test_governance_over_budget_native_envelope_all_ingress() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
     // 429-mapping protocols: openai / responses / cohere / gemini.
     for (path, payload) in [
@@ -5844,7 +5744,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
 // back to `app.by_model` (the by_model arm). The pool path is covered by
 // `test_adhoc_success_round_trip_via_router` and the governance pool-ACL set; the by_model
 // fallback — where `name` is a configured single-model lane with NO pool entry, routed via
-// `crate::proxy::forward_with_pool` — had no test. A refactor that dropped the fallback, or fed the
+// `crate::engine::forward_with_pool` — had no test. A refactor that dropped the fallback, or fed the
 // wrong model string, would go undetected. This wires ONLY a by_model lane (no `.pool(...)`),
 // POSTs an Anthropic body to `/<model>/v1/messages`, and asserts the 2xx plus that the upstream
 // received the (translated) forwarded request.
@@ -5853,7 +5753,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
 /// round-trips through `forward_with_pool` to its backend and returns 2xx; the upstream sees the request.
 #[tokio::test]
 async fn test_named_by_model_fallback_round_trip_via_router() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -5867,7 +5767,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
         .lane(
             LaneSpec::new(
                 "claude-x",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::proto_codec::PROTO_ANTHROPIC,
                 &server.base_url(),
             )
             .provider("anthropic"),
@@ -5905,7 +5805,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 // `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
 // cross-protocol backend is translated both ways; and
 // 2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
-// (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
+// (`adhoc`) routes → `crate::engine::forward_with_pool`, which passes `""` (the lane-default breaker
 // CELL shared by every direct/single-model route — proxy engine design intent).
 //
 // proxy engine records every breaker outcome against the CELL keyed by the `pool_name` argument
@@ -5938,7 +5838,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 /// cooldown alone cleanly separates fixed from broken.
 #[tokio::test]
 async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // One upstream 5xx is enough: a single transient failure sets a pending cooldown on the
     // routed breaker OperationHandler (the trip-to-Open threshold is irrelevant — the cooldown is recorded
@@ -5953,7 +5853,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     // Lane registered in by_model ONLY (no `.pool(...)`), so the universal ingress resolves it
     // through `forward_resolved`'s by_model arm — the site under test.
     let app = TestApp::new()
-        .lane(LaneSpec::new(model, crate::proto::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(LaneSpec::new(model, crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
         .build();
     // Hold a handle to the same App the router serves so the breaker op_handler can be inspected after
     // the request (`serve` only needs a clone of the Arc).
@@ -5981,7 +5881,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     assert!(
             app_for_inspect
                 .store
-                .cooldown_remaining_in("", 0, crate::store::now())
+                .cooldown_remaining_in("", 0, busbar_core::store::now())
                 > 0,
             "by_model forwards must record breaker state on the lane-default \"\" OperationHandler (the OperationHandler \
              /<model>/v1/messages selects against); a 0 cooldown means the failure was tracked under \
@@ -5997,19 +5897,19 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// Governance-enabled App whose key binds to a ZERO-cap budget group ("finance") while the key
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
-fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+fn governed_app_group_blocked() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "finance".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(crate::config::groups::LimitWindow::Total),
+                per: Some(busbar_core::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -6017,7 +5917,7 @@ fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
             ..Default::default()
         },
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(None, 30, &groups);
+    let cost = busbar_core::cost::CostModel::resolve_parts(None, 30, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6043,12 +5943,12 @@ fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
 /// id or the internal governance vocabulary. Nothing is charged on the rejected attempt.
 #[tokio::test]
 async fn test_group_blocked_429_names_the_budget_group() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = crate::store::now();
+    let at = busbar_core::store::now();
     let resp = admit_check(&app, &gov, "openai", "", at)
         .expect_err("a zero-cap group blocks the whole chain");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -6077,14 +5977,14 @@ async fn test_group_blocked_429_names_the_budget_group() {
 /// bucket named as unconfigured) - never a silent uncapped admit.
 #[tokio::test]
 async fn test_missing_group_fails_closed_at_ingress() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
     orphan.group = Some("ghost".to_string());
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
-    let resp = admit_check(&app, &gov, "openai", "", crate::store::now())
+    let resp = admit_check(&app, &gov, "openai", "", busbar_core::store::now())
         .expect_err("a missing group must fail closed");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -6100,8 +6000,8 @@ async fn test_missing_group_fails_closed_at_ingress() {
 #[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
-    crate::metrics::init();
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    busbar_core::metrics::init();
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -6118,9 +6018,9 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         .unwrap();
     let rate_card = std::collections::BTreeMap::from([(
         "m".to_string(),
-        crate::config::RateEntryCfg::default(),
+        busbar_core::config::RateEntryCfg::default(),
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(
+    let cost = busbar_core::cost::CostModel::resolve_parts(
         Some(&rate_card),
         0,
         &std::collections::BTreeMap::new(),
@@ -6132,7 +6032,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = std::sync::Arc::new(cost);
     }
-    let gov_ctx = crate::governance::GovCtx {
+    let gov_ctx = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     // An arbitrary passthrough model string (not a pool, not a by-model lane, not priced).
@@ -6142,7 +6042,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "mystery-model",
         std::time::Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
     )
     .expect_err("an unpriced passthrough model must be rejected pre-forward");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -6159,7 +6059,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "m",
         std::time::Instant::now(),
-        crate::store::now(),
+        busbar_core::store::now(),
     );
     assert!(ok.is_ok(), "a priced configured lane admits");
 }
@@ -6171,27 +6071,27 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
-) -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+) -> (Arc<App>, busbar_core::governance::VirtualKey) {
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_core::config::groups::LimitCfg {
+                metric: busbar_core::config::groups::LimitMetric::Budget,
                 amount: 25,
-                per: Some(crate::config::groups::LimitWindow::Day),
+                per: Some(busbar_core::config::groups::LimitWindow::Day),
                 scope: Some(busbar_api::ScopeRef::pool("frontier")),
-                on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
                 downgrade_to: Some(busbar_api::ScopeRef::pool("value")),
             }],
             ..Default::default()
         },
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(None, 10, &groups);
+    let cost = busbar_core::cost::CostModel::resolve_parts(None, 10, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6226,10 +6126,10 @@ fn governed_app_downgrade(
 #[tokio::test]
 async fn test_budget_exhaustion_downgrades_pool() {
     let (app, key) = governed_app_downgrade(None);
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = crate::store::now();
+    let at = busbar_core::store::now();
     // fee=10, cap=25: two frontier admissions spend 20; the 3rd would reach 30 > 25.
     for i in 0..2 {
         let (grant, effective) = admit_check(&app, &gov, "openai", "frontier", at)
@@ -6257,47 +6157,47 @@ async fn test_budget_exhaustion_downgrades_pool() {
 /// distinguish `==` from `!=` at all; this test is the one that actually needs 2+ hops.
 #[tokio::test]
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        crate::config::GroupCfg {
+        busbar_core::config::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![
                 // a: 1 request budget (10c cap, 10c fee) -> downgrades to b on exhaustion.
-                crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
+                busbar_core::config::groups::LimitCfg {
+                    metric: busbar_core::config::groups::LimitMetric::Budget,
                     amount: 10,
-                    per: Some(crate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_core::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("a")),
-                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
                 // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
-                crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
+                busbar_core::config::groups::LimitCfg {
+                    metric: busbar_core::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(crate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_core::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("b")),
-                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
                 },
                 // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
-                crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
+                busbar_core::config::groups::LimitCfg {
+                    metric: busbar_core::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(crate::config::groups::LimitWindow::Day),
+                    per: Some(busbar_core::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("c")),
-                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
             ],
             ..Default::default()
         },
     )]);
-    let cost = crate::cost::CostModel::resolve_parts(None, 10, &groups);
+    let cost = busbar_core::cost::CostModel::resolve_parts(None, 10, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6328,10 +6228,10 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
         .pools
         .insert("c".to_string(), vec![]);
 
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = crate::store::now();
+    let at = busbar_core::store::now();
     // a's single-request budget admits once (no downgrade needed yet).
     let (grant, effective) =
         admit_check(&app, &gov, "openai", "a", at).expect("first admission under a's cap");
@@ -6372,10 +6272,10 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
 #[tokio::test]
 async fn test_downgrade_never_bypasses_pool_acl() {
     let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
-    let gov = crate::governance::GovCtx {
+    let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = crate::store::now();
+    let at = busbar_core::store::now();
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     let resp = admit_check(&app, &gov, "openai", "frontier", at)

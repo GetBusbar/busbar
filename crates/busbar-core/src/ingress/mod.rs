@@ -16,7 +16,7 @@ use crate::state::App;
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
 /// to short-circuit when the key may not use this pool.
-fn pool_authorized(gov: &crate::governance::GovCtx, pool: &str, proto: &str) -> Option<Response> {
+pub fn pool_authorized(gov: &crate::governance::GovCtx, pool: &str, proto: &str) -> Option<Response> {
     if let Some(key) = &gov.key {
         if !crate::governance::pool_allowed(key, pool) {
             // The client-facing body carries only vendor-plausible copy — never the internal key id
@@ -48,7 +48,7 @@ fn pool_authorized(gov: &crate::governance::GovCtx, pool: &str, proto: &str) -> 
 /// the denial is vendor-indistinguishable whether it trips on the initial or a fallback pool).
 ///
 /// No-op when governance is off (`gov.key` is None) or the key allows all pools.
-fn fallback_pools_authorized(
+pub fn fallback_pools_authorized(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     pool: &str,
@@ -103,7 +103,7 @@ fn pool_scope_suffix(pool: &Option<String>) -> String {
 /// The admission window is keyed off `charged_at` (the pinned header-arrival epoch), NOT a fresh
 /// `store::now()`: the token fee (`UsageSink::charged_at` -> `record_usage`) bills into the SAME
 /// window, so a request straddling a window boundary can never split its charges (#29).
-fn admit_check(
+pub fn admit_check(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &str,
@@ -464,8 +464,8 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 /// Test-only now: every production admission threads the `charged` flag through
 /// [`finish_admitted`] (a store-error fail-open admit must not refund); this unconditional-refund
 /// form survives only for the in-module tests that always charge.
-#[cfg(test)]
-fn finish(
+#[cfg(any(test, feature = "test-support"))]
+pub fn finish(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
@@ -674,7 +674,7 @@ fn finish_inner(
 /// fallback envelope, etc.). Keeping ingress on this one function rather than a private copy means
 /// route/forward error shaping cannot drift. The route call sites (and the in-module tests) keep
 /// the short `proto`/`message` parameter names; the canonical fn names them `ingress`/`msg`.
-fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
+pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
     crate::proxy::ingress_error(proto, status, kind, message)
 }
 
@@ -735,8 +735,8 @@ pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> 
 /// `bedrock_ingress` uses the already-decoded segment directly (decoding twice corrupts ids whose
 /// first decode yields a literal `%XX`). Retained as a `#[cfg(test)]` helper documenting the
 /// decode semantics and guarding against accidental reintroduction of a double-decode.
-#[cfg(test)]
-fn percent_decode(s: &str) -> String {
+#[cfg(any(test, feature = "test-support"))]
+pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -853,6 +853,3 @@ pub async fn adhoc(
     .await
 }
 
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;

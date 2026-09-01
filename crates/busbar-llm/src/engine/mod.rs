@@ -146,6 +146,9 @@ mod hook_seam_tests;
 #[path = "proxy_tests/ingress_indistinguishability_tests.rs"]
 mod ingress_indistinguishability_tests;
 #[cfg(test)]
+#[path = "proxy_tests/ingress_integration_tests.rs"]
+mod ingress_integration_tests;
+#[cfg(test)]
 #[path = "proxy_tests/ingress_reject_response_tests.rs"]
 mod ingress_reject_response_tests;
 #[cfg(test)]
