@@ -1,5 +1,5 @@
 use super::*;
-use crate::handlers::TranslateCodec;
+use busbar_core::handlers::TranslateCodec;
 
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
@@ -28,7 +28,7 @@ pub(crate) fn maybe_attach_response_request_id(
     ingress_protocol: &str,
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
-    match crate::proto::decl_for(ingress_protocol)
+    match busbar_core::proto::decl_for(ingress_protocol)
         .and_then(|d| d.dialect())
         .and_then(|di| di.ingress_response_request_id(upstream_request_id))
     {
@@ -43,7 +43,7 @@ pub(crate) fn maybe_attach_response_request_id(
 /// `"bedrock"`, so the agnostic forward path never contains a hard-coded protocol string for this
 /// decision. Unknown protocols fall back to `false` (no `x-amzn-*` headers emitted).
 pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
-    crate::proto::decl_for(ingress_protocol)
+    busbar_core::proto::decl_for(ingress_protocol)
         .map(|d| d.ingress_relays_amzn_headers)
         .unwrap_or(false)
 }
@@ -56,7 +56,7 @@ pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
 pub(crate) fn ingress_relayed_response_header_names(
     ingress_protocol: &str,
 ) -> &'static [&'static str] {
-    crate::proto::decl_for(ingress_protocol)
+    busbar_core::proto::decl_for(ingress_protocol)
         .map(|d| d.ingress_relayed_response_header_names)
         .unwrap_or(&[])
 }
@@ -66,7 +66,7 @@ pub(crate) fn ingress_relayed_response_header_names(
 /// `x-busbar-route-policy: <policy name>` and `x-busbar-route-target: <chosen lane model>`. Emitted
 /// ONLY when BOTH gates pass:
 ///   1. OUTER: the operator opted in via `advanced.response_headers.route_policy`
-///      (default `false`) — [`crate::proxy::route_policy_headers_enabled`]. Before this gate existed
+///      (default `false`) — [`crate::engine::route_policy_headers_enabled`]. Before this gate existed
 ///      the header fired unconditionally whenever a non-default policy chose the lane, with no config
 ///      toggle at all; it is a fingerprintable observable (same class as `Server-Timing: busbar`), so
 ///      it now defaults off.
@@ -83,7 +83,7 @@ pub(crate) fn maybe_attach_route_policy(
 ) -> axum::http::response::Builder {
     maybe_attach_route_policy_gated(
         rb,
-        crate::proxy::route_policy_headers_enabled(),
+        crate::engine::route_policy_headers_enabled(),
         policy_name,
         target_model,
     )
@@ -92,7 +92,7 @@ pub(crate) fn maybe_attach_route_policy(
 /// The pure, DETERMINISTICALLY-testable core of [`maybe_attach_route_policy`], with the outer gate
 /// passed in as a plain `bool` instead of read from the process-wide `OnceLock`. Split out so unit
 /// tests can drive all four (`enabled` × `policy_name`) combinations directly, without mutating
-/// [`crate::proxy::ROUTE_POLICY_HEADERS_ENABLED`] — a global `OnceLock` can be set at most ONCE for
+/// [`crate::engine::ROUTE_POLICY_HEADERS_ENABLED`] — a global `OnceLock` can be set at most ONCE for
 /// the life of the test binary, so exercising both the `true` and `false` outer-gate outcomes through
 /// the real accessor within one process is inherently order-dependent (see the `OnceLock` handling in
 /// `observability.rs`'s own tests, which uses the same "test the pure core, not the global" split).
@@ -143,12 +143,12 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
     // ([`agnostic_error_envelope`]) and attaches no protocol headers, because it has no protocol to
     // attach them for. Unreachable for the validated ingress protocols (config validation refuses an
     // unknown `protocol:` before a lane exists); what it must be is HONEST and always available.
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
+    let dialect = busbar_core::proto::decl_for(ingress).and_then(|d| d.dialect());
     let envelope = match &dialect {
         Some(di) => di.write_error(status.as_u16(), kind, msg),
         None => agnostic_error_envelope(kind, msg),
     };
-    let body = crate::json::to_string(&envelope).unwrap_or_else(|_| {
+    let body = busbar_core::json::to_string(&envelope).unwrap_or_else(|_| {
         // Envelope is built from serde_json::json! values and always serializes; this fallback only
         // exists to avoid an unwrap on the request path. Build it with `json!` (correct JSON string
         // escaping) rather than interpolating Rust `{:?}` Debug formatting, which is NOT guaranteed
@@ -173,7 +173,7 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
 /// CORE'S OWN ERROR ENVELOPE — the body for an ingress name that resolves to no protocol.
 ///
 /// Every dialect owns its native error shape and answers for it through
-/// [`crate::proto::ProtocolWriter::write_error`]. This is the shape for the case where there IS no
+/// [`busbar_core::proto::ProtocolWriter::write_error`]. This is the shape for the case where there IS no
 /// dialect: an ingress literal that resolved to nothing. It is the plainest
 /// `{"error": {"message", "type"}}` object — the same two fields the serialization-failure guard
 /// inside [`ingress_error`] emits, stated ONCE here so those spellings cannot drift — and it is
@@ -184,7 +184,7 @@ fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
 
-/// Project an [`crate::handlers::IngressReject`] into the caller-dialect error response
+/// Project an [`busbar_core::handlers::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
 /// `read_request`/`read_request_value` call sites (the opaque-body branch and the JSON branch)
 /// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the second
@@ -192,10 +192,10 @@ fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
 /// operation and the model so the caller knows what to stop asking for.
 pub(crate) fn ingress_reject_response(
     ingress_protocol: &str,
-    reject: &crate::handlers::IngressReject,
+    reject: &busbar_core::handlers::IngressReject,
 ) -> Response {
     match reject {
-        crate::handlers::IngressReject::BadRequest(_) => ingress_error(
+        busbar_core::handlers::IngressReject::BadRequest(_) => ingress_error(
             ingress_protocol,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -207,7 +207,7 @@ pub(crate) fn ingress_reject_response(
         // process, and the moment the axis grew a field it would have read
         // `Verb { op: Invoke, name: "image" }`. `name()` is the identifier this project publishes
         // and pins — the same word the metric label and the `paths:` key use.
-        crate::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
+        busbar_core::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
@@ -301,7 +301,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // smuggles a key in its own controlled body). Iterating the cached registry set keeps this
         // strip from naming any shim-key literal (and from re-sweeping `protocol_for` per request).
         // `remove` returns the previous value iff the key was present → a real mutation (#1).
-        for &key in crate::proto::array_stream_shim_keys() {
+        for &key in busbar_core::proto::array_stream_shim_keys() {
             if obj.remove(key).is_some() {
                 changed = true;
             }
@@ -310,7 +310,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
         // `stream` is the writer-authored field the backend needs to start streaming, so it must be
         // PRESERVED. Gate on egress, never ingress.
-        if crate::proto::decl_for(egress_protocol)
+        if busbar_core::proto::decl_for(egress_protocol)
             .map(|d| d.has_model_in_url)
             .unwrap_or(false)
             && obj.remove("stream").is_some()
@@ -339,7 +339,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
 /// original carries a `model` the native backend must not see). A same-proto path-model request that
 /// arrived without a body `model` is left untouched and stays pristine.
 pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &str) -> bool {
-    let model_in_url = crate::proto::decl_for(ingress_protocol)
+    let model_in_url = busbar_core::proto::decl_for(ingress_protocol)
         .map(|d| d.has_model_in_url)
         .unwrap_or(false);
     if model_in_url {
@@ -376,26 +376,26 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 /// shaping failures (unknown ingress protocol, request translation error) and on the effectively
 /// infallible re-serialization, so neither caller can panic on the request path.
 ///
-/// Project a [`crate::handlers::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
+/// Project a [`busbar_core::handlers::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
 /// the caller-dialect error response. The ONE place that maps each reject arm to an HTTP shape, so the
 /// opaque and JSON request branches cannot drift: a refused body renders `ingress_reject_response`
 /// (its own 400/404 split); an egress that does not serve the operation is the 404
 /// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`); an unrepresentable request is a 400 carrying the reason.
 fn map_translate_req_reject(
     ingress_protocol: &str,
-    reject: crate::handlers::TranslateReqReject,
+    reject: busbar_core::handlers::TranslateReqReject,
 ) -> Response {
     match reject {
-        crate::handlers::TranslateReqReject::Ingress(reject) => {
+        busbar_core::handlers::TranslateReqReject::Ingress(reject) => {
             ingress_reject_response(ingress_protocol, &reject)
         }
-        crate::handlers::TranslateReqReject::EgressUnsupported => ingress_error(
+        busbar_core::handlers::TranslateReqReject::EgressUnsupported => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
             DETAIL_MODEL_UNSUPPORTED_OPERATION,
         ),
-        crate::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
+        busbar_core::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
             ingress_protocol,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -409,7 +409,7 @@ pub(crate) fn translate_request_cross_protocol(
     app: &Arc<App>,
     i: usize,
     ingress_protocol: &str,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     body: Option<Value>,
     req_content_type: &str,
     // The EFFECTIVE per-lane reasoning capability for this attempt (pool-member override wins over
@@ -431,14 +431,14 @@ pub(crate) fn translate_request_cross_protocol(
     let egress_name = app.engine_tables().lanes()[i].protocol;
     // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
     // four separate registry scans of the same name).
-    let egress_decl = crate::proto::decl_for(egress_name);
+    let egress_decl = busbar_core::proto::decl_for(egress_name);
     // The neutral cross-protocol egress-preparation param bag, built ONCE from RESOLVED lane
     // primitives and ONLY on a cross-protocol hop (`.then` is lazy, so a same-protocol passthrough
     // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
     // which lane facts gate `prepare_for_egress`, and the SINGLE site outside `ir/` that names
     // `EgressPrep` — `egress_prep.is_some()` is exactly "this hop is cross-protocol".
     let egress_prep =
-        (ingress_protocol != egress_name).then(|| crate::ir::egress_prep::EgressPrep {
+        (ingress_protocol != egress_name).then(|| busbar_core::ir::egress_prep::EgressPrep {
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
             lane_default_max_tokens: app.engine_tables().lanes()[i].default_max_tokens,
@@ -462,9 +462,9 @@ pub(crate) fn translate_request_cross_protocol(
     // exactly the contract the JSON branch below implements at the Value level.
     let Some(mut body) = body else {
         if let Some(prep) = &egress_prep {
-            let ingress_handler = crate::handlers::request_handler(ingress_protocol)
+            let ingress_handler = busbar_core::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation));
-            let egress_handler = crate::handlers::request_handler(egress_name)
+            let egress_handler = busbar_core::handlers::request_handler(egress_name)
                 .and_then(|rh| rh.operation_handler(op.operation));
             let (Some(ih), Some(_eh)) = (ingress_handler, egress_handler) else {
                 return Err(Box::new(ingress_error(
@@ -479,7 +479,7 @@ pub(crate) fn translate_request_cross_protocol(
             // never surfaces `EgressUnsupported` here; a refused body still renders as its reject.
             let translated = ih
                 .translate_request(
-                    crate::handlers::TranslateReqInput::Opaque {
+                    busbar_core::handlers::TranslateReqInput::Opaque {
                         bytes: hop_bytes,
                         content_type: req_content_type,
                     },
@@ -489,11 +489,11 @@ pub(crate) fn translate_request_cross_protocol(
                 )
                 .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
             return match translated.wire {
-                crate::handlers::EgressWire::Bytes(b) => Ok(b),
+                busbar_core::handlers::EgressWire::Bytes(b) => Ok(b),
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
                 // serialize it rather than panic on the request path.
-                crate::handlers::EgressWire::Json(v) => {
-                    Ok(Bytes::from(crate::json::to_vec(&v).unwrap_or_default()))
+                busbar_core::handlers::EgressWire::Json(v) => {
+                    Ok(Bytes::from(busbar_core::json::to_vec(&v).unwrap_or_default()))
                 }
             };
         }
@@ -511,10 +511,10 @@ pub(crate) fn translate_request_cross_protocol(
         // one cross-protocol translation hop for this request (telemetry bank: per-thread cell,
         // fixed protocol×protocol slot table — no label allocation on the hop). `egress_prep.is_some()`
         // is exactly `ingress_protocol != egress_name`.
-        crate::telemetry::translation(ingress_protocol, egress_name);
+        busbar_core::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
         let Some(ingress_dialect) =
-            crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+            busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
         else {
             return Err(Box::new(ingress_error(
                 ingress_protocol,
@@ -541,9 +541,9 @@ pub(crate) fn translate_request_cross_protocol(
         // dialect is (ingress_protocol, operation)'s handler; the egress dialect is the lane's.
         // (`op` supplies the operation tag + capabilities; its instance is registry-identical to
         // this lookup on every production path.)
-        let ingress_handler = crate::handlers::request_handler(ingress_protocol)
+        let ingress_handler = busbar_core::handlers::request_handler(ingress_protocol)
             .and_then(|rh| rh.operation_handler(op.operation));
-        let egress_handler = crate::handlers::request_handler(egress_name)
+        let egress_handler = busbar_core::handlers::request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation));
         let Some(ingress_handler) = ingress_handler else {
             return Err(Box::new(ingress_error(
@@ -559,7 +559,7 @@ pub(crate) fn translate_request_cross_protocol(
         // BEHIND the entrypoint; the seam keeps telemetry (above), the audit-and-allow emission, and
         // the error shaping (`map_translate_req_reject`) — none of which are the codec's business.
         let translated = match ingress_handler.translate_request(
-            crate::handlers::TranslateReqInput::Json(&body),
+            busbar_core::handlers::TranslateReqInput::Json(&body),
             egress_handler.map(|_| egress_name),
             prep,
             app.engine_tables().lanes()[i].wire_model(),
@@ -572,19 +572,19 @@ pub(crate) fn translate_request_cross_protocol(
         // audit event — not just the writer's `warn!` — so the degradation is visible in the audit
         // trail. Emitted before the body is consumed; forwarding proceeds.
         for control in translated.dropped_controls {
-            crate::admin::audit::AUDIT.record_by(
+            busbar_core::admin::audit::AUDIT.record_by(
                 "egress.control_unrepresentable",
                 &format!("{control} on {egress_name}"),
-                crate::admin::audit::OUTCOME_DEGRADED,
+                busbar_core::admin::audit::OUTCOME_DEGRADED,
                 caller_key_id,
             );
         }
         match translated.wire {
-            crate::handlers::EgressWire::Json(written) => body = written,
+            busbar_core::handlers::EgressWire::Json(written) => body = written,
             // The EGRESS wire is not JSON (multipart transcription): the IR carried the resolved model
             // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
             // apply — emit the handler's bytes directly.
-            crate::handlers::EgressWire::Bytes(b) => return Ok(b),
+            busbar_core::handlers::EgressWire::Bytes(b) => return Ok(b),
         }
         // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
         // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the
@@ -608,7 +608,7 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
                                                                  // are identical: same dialect, same two mutations, same order.
     let lane_dialect =
-        crate::proto::decl_for(app.engine_tables().lanes()[i].protocol).and_then(|d| d.dialect());
+        busbar_core::proto::decl_for(app.engine_tables().lanes()[i].protocol).and_then(|d| d.dialect());
     pristine &= !lane_dialect
         .as_ref()
         .map(|dc| {
@@ -642,7 +642,7 @@ pub(crate) fn translate_request_cross_protocol(
         return Ok(hop_bytes.clone());
     }
     // sonic-rs: SIMD serialize of the (large, string-heavy) upstream body — the request-path hot spot.
-    match crate::json::to_vec(&body) {
+    match busbar_core::json::to_vec(&body) {
         Ok(p) => Ok(Bytes::from(p)),
         // Re-serializing a Value parsed from valid JSON and rewritten only with serde_json values is
         // effectively infallible; return a shaped 500 rather than panic a worker on the request path
@@ -666,7 +666,7 @@ pub(crate) fn translate_request_cross_protocol(
 /// a `const`) so the process-wide installed value is read at each use site; falls back to the
 /// historical default when the limits aren't installed (e.g. unit tests).
 pub fn max_upstream_buffered_bytes() -> usize {
-    crate::limits::upstream_error_body_max_bytes()
+    busbar_core::limits::upstream_error_body_max_bytes()
 }
 
 /// Upper bound on a buffered cross-protocol non-stream SUCCESS (2xx) body that must be parsed and
@@ -677,17 +677,17 @@ pub fn max_upstream_buffered_bytes() -> usize {
 /// COUPLED with the inbound request-body limit so any completion the gateway would accept inbound
 /// can also be buffered for translation, while still bounding the per-response allocation. ONE knob
 /// (`limits.request_body_max_bytes`) drives BOTH the inbound `DefaultBodyLimit` and this egress cap
-/// (`crate::limits::translate_body_max_bytes` returns the same value), so they can never diverge.
+/// (`busbar_core::limits::translate_body_max_bytes` returns the same value), so they can never diverge.
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
 /// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
 pub(crate) fn max_translated_body_bytes() -> usize {
-    crate::limits::translate_body_max_bytes()
+    busbar_core::limits::translate_body_max_bytes()
 }
 
 // THE CAPPED READ and its `ReadEnd` outcome moved DOWN into the neutral `busbar-substrate` crate in
 // Phase-B B0-b (both core's proxy engine and the egress/auth paths read upstream bodies this way,
 // and a plane crate names them without reaching into core). Re-exported here so every
-// `crate::proxy::{read_capped, ReadEnd}` call site — via `proxy/mod.rs`'s `pub(crate) use wire::*`
+// `crate::engine::{read_capped, ReadEnd}` call site — via `proxy/mod.rs`'s `pub(crate) use wire::*`
 // — resolves unchanged.
 pub use busbar_substrate::proxy::{read_capped, ReadEnd};
 
@@ -738,7 +738,7 @@ pub(crate) fn client_fault_kind(class: StatusClass) -> &'static str {
 /// not JSON or carries no recognizable message field, so the caller substitutes a generic detail
 /// rather than leaking the raw foreign body.
 pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
-    let v: Value = crate::json::parse(bytes).ok()?;
+    let v: Value = busbar_core::json::parse(bytes).ok()?;
     v.get("error")
         .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
@@ -759,7 +759,7 @@ pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
 /// SSE `error` event, or a Gemini `google.rpc.Status` element carries generic service phrasing, never
 /// the word "upstream" — leaking it is a protocol-indistinguishability tell on the most-exercised
 /// cross-protocol error path. Keep this generic and free of any intermediary/translation vocabulary.
-pub(crate) const MID_STREAM_GENERIC_DETAIL: &str = crate::proto::STREAM_ABORT_DETAIL;
+pub(crate) const MID_STREAM_GENERIC_DETAIL: &str = busbar_core::proto::STREAM_ABORT_DETAIL;
 
 /// Vendor-neutral fallback `error.message` for a NON-2xx response whose body carried no extractable
 /// human message. Rendered into the CLIENT's native error envelope via `ingress_error`, so it must
@@ -811,12 +811,12 @@ pub(crate) fn mid_stream_error_bytes(
     // frame at the bottom of this function — the same ruling `ingress_error` makes, for the same
     // reason: every LLM dialect is a droppable plugin now, so there is no resident writer to borrow
     // a shape from, and inventing one would put a foreign dialect's bytes on the wire.
-    let err = crate::proto::IrError {
-        class: crate::breaker::StatusClass::ServerError,
+    let err = busbar_core::proto::IrError {
+        class: busbar_core::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let Some(dialect) = crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
+    let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
         return agnostic_stream_error_frame(message);
     };
     if ingress_eventstream {
@@ -826,7 +826,7 @@ pub(crate) fn mid_stream_error_bytes(
         // `encode_exception_frame` is the generic binary framer. A protocol that reports
         // `ingress_is_eventstream` but declines an exception mapping (a contradiction) falls through.
         if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
-            return crate::eventstream::encode_exception_frame(&exc_name, &msg);
+            return busbar_core::eventstream::encode_exception_frame(&exc_name, &msg);
         }
     }
     // SSE client: build the terminal error frame through the ingress protocol writer's STREAMING
@@ -852,7 +852,7 @@ pub(crate) fn mid_stream_error_bytes(
     // which case we still emit a decodable bare `data:` error.
     match dialect.write_error_frame(&err) {
         Some((event_type, data)) => {
-            let data = crate::json::to_string(&data).unwrap_or_else(|_| {
+            let data = busbar_core::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
                     .to_string()
             });
@@ -879,7 +879,7 @@ fn agnostic_stream_error_frame(message: &str) -> Vec<u8> {
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the
 /// std `DefaultHasher`, whose seed is randomized), so session affinity pins consistently.
 pub(crate) fn stable_hash(s: &str) -> u64 {
-    crate::store::fnv1a_u64(s)
+    busbar_core::store::fnv1a_u64(s)
 }
 
 #[cfg(test)]

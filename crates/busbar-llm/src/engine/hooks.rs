@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::diagnostics::{
+use busbar_core::diagnostics::{
     diag_debug, diag_warn, ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
     ON_ERROR_FALLBACK_HOOK_FAILED, ROUTING_POLICY_DEADLINE_EXCEEDED,
     ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
@@ -38,7 +38,7 @@ pub(crate) enum PolicyOutcome {
         /// Behavior when the intersection is empty: `Reject` (default, fail-closed 503) or `Weighted`
         /// (advisory escape — SWRR over the FULL pool). `First` is treated as `Reject` (a restrict
         /// with no eligible member has no "first" to fall to).
-        on_empty: crate::config::PolicyOnError,
+        on_empty: busbar_core::config::PolicyOnError,
     },
 }
 
@@ -51,7 +51,7 @@ pub(crate) enum PolicyOutcome {
 /// re-framing, leaves the body untouched and returns `false` — never a corrupted request.
 pub(crate) fn apply_rewrite_to_body(
     v: &mut Value,
-    rewrite: &crate::hooks::wire::RewriteReply,
+    rewrite: &busbar_core::hooks::wire::RewriteReply,
     ingress_protocol: &str,
 ) -> bool {
     if rewrite.messages.is_empty() {
@@ -60,7 +60,7 @@ pub(crate) fn apply_rewrite_to_body(
     let Some(obj) = v.as_object_mut() else {
         return false;
     };
-    let Some(dialect) = crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
+    let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
         return false;
     };
     dialect.apply_rewrite_to_ingress_body(obj, &rewrite.messages, &rewrite.tools)
@@ -78,7 +78,7 @@ pub(crate) fn apply_rewrite_to_body(
 
 /// What the hook seam knows about a request, read from the IR.
 //
-// `Chat` holds the request behind the neutral [`crate::ir::facts::IrFacts`] trait, NOT a concrete
+// `Chat` holds the request behind the neutral [`busbar_core::ir::facts::IrFacts`] trait, NOT a concrete
 // `IrRequest`: this seam consumes only the projection (`shape`/`end_user`/`content`), so naming the
 // concrete chat type here would be core reaching into the LLM plane's representation for no gain. The
 // box is the price of the trait object, and it is the RIGHT price now — the concrete IR belongs to
@@ -88,9 +88,9 @@ pub(crate) enum HookFacts {
     /// A request the ingress OPERATION's reader understood, seen through its neutral facts. Named
     /// `Facts` and not `Chat` because the seam is operation-general now: a chat body reaches it as
     /// `IrReq::Chat`, an embeddings/image/audio/rerank/moderation/subscribe body as its own family's
-    /// IR, and every one of them is screened through the SAME [`crate::ir::facts::IrFacts`] projection
+    /// IR, and every one of them is screened through the SAME [`busbar_core::ir::facts::IrFacts`] projection
     /// — closing the hole where a non-chat operation forwarded past a content gate that saw nothing.
-    Facts(Box<dyn crate::ir::facts::IrFacts + Send + Sync>),
+    Facts(Box<dyn busbar_core::ir::facts::IrFacts + Send + Sync>),
     /// The body carries no readable facts for this seam: a JSON body with no resolvable operation
     /// handler, an unregistered protocol, or the engine's absent-body sentinel with no bytes to read.
     /// Projects as the zeroed shape with no content, which is exactly what the seam projected for such
@@ -130,7 +130,7 @@ pub(crate) fn read_hook_facts(
     body: &[u8],
     content_type: &str,
     ingress_protocol: &str,
-    operation: Option<crate::operation::Operation>,
+    operation: Option<busbar_core::operation::Operation>,
 ) -> Result<HookFacts, HookIrRejected> {
     // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
     // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
@@ -142,7 +142,7 @@ pub(crate) fn read_hook_facts(
     // lazy-IR seam use, so the hook sees exactly the IR that will be built from these bytes. No
     // handler (an unregistered protocol, or a protocol that does not serve this operation) is
     // `Absent`: there is no reader to ask, which is not the same as a reader refusing.
-    let Some(handler) = crate::handlers::request_handler(ingress_protocol)
+    let Some(handler) = busbar_core::handlers::request_handler(ingress_protocol)
         .and_then(|rh| rh.operation_handler(operation))
     else {
         return Ok(HookFacts::Absent);
@@ -151,7 +151,7 @@ pub(crate) fn read_hook_facts(
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
     // through the byte reader (FATAL-1), or the engine's absent-body sentinel with no bytes at all.
-    use crate::handlers::TranslateCodec;
+    use busbar_core::handlers::TranslateCodec;
     // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
     // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
     // concrete IR. A JSON OBJECT body takes the value-codec fast path (chat calls its proto reader
@@ -175,10 +175,10 @@ pub(crate) fn read_hook_facts(
 
 impl HookFacts {
     /// The shape/size signal bucket every hook gets, granted or not.
-    pub(crate) fn shape(&self) -> crate::ir::facts::Shape {
+    pub(crate) fn shape(&self) -> busbar_core::ir::facts::Shape {
         match self {
             HookFacts::Facts(ir) => ir.shape(),
-            HookFacts::Absent => crate::ir::facts::Shape::EMPTY,
+            HookFacts::Absent => busbar_core::ir::facts::Shape::EMPTY,
         }
     }
 
@@ -203,11 +203,11 @@ impl HookFacts {
     /// instructions on the dialects that carry the system prompt inside the turns array. A turn that
     /// yields no items still yields an entry with empty text: a screening hook must never see fewer
     /// turns than the provider does.
-    pub(crate) fn prompt(&self) -> crate::hooks::PromptProjection<'_> {
-        use crate::ir::facts::{ContentItem, Slot};
+    pub(crate) fn prompt(&self) -> busbar_core::hooks::PromptProjection<'_> {
+        use busbar_core::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let HookFacts::Facts(ir) = self else {
-            return crate::hooks::PromptProjection {
+            return busbar_core::hooks::PromptProjection {
                 system: None,
                 messages: Vec::new(),
             };
@@ -241,7 +241,7 @@ impl HookFacts {
                 }
             }
         }
-        crate::hooks::PromptProjection {
+        busbar_core::hooks::PromptProjection {
             system: join_pieces(system).filter(|s| !s.is_empty()),
             messages: turns
                 .into_iter()
@@ -306,8 +306,8 @@ pub(crate) fn set_hook_content_max_bytes(bytes: usize) {
 /// allowed to look like an empty request. `busbar_hook_content_truncated_total` counts it, so the
 /// default ceiling can be chosen by a metric rather than by a guess.
 pub(crate) fn enforce_content_cap(
-    prompt: Option<crate::hooks::PromptProjection<'_>>,
-) -> Option<crate::hooks::PromptProjection<'_>> {
+    prompt: Option<busbar_core::hooks::PromptProjection<'_>>,
+) -> Option<busbar_core::hooks::PromptProjection<'_>> {
     let p = prompt?;
     let cap = HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed);
     if cap == 0 {
@@ -322,7 +322,7 @@ pub(crate) fn enforce_content_cap(
     if bytes <= cap {
         return Some(p);
     }
-    metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(busbar_core::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     // Per-request condition on a configured ceiling; the HOOK_CONTENT_TRUNCATED_TOTAL counter above
     // is the operator-facing signal, so log the detail at `debug!` rather than warn-spamming per call.
     tracing::debug!(
@@ -331,7 +331,7 @@ pub(crate) fn enforce_content_cap(
         "hook content projection exceeded limits.hook_content_max_bytes; the content is OMITTED \
          whole (never truncated mid-value) and the hook is sent an empty content projection"
     );
-    Some(crate::hooks::PromptProjection {
+    Some(busbar_core::hooks::PromptProjection {
         system: None,
         messages: Vec::new(),
     })
@@ -348,9 +348,9 @@ pub(crate) fn build_rewrite_request<'a>(
     wants_stream: bool,
     with_prompt: bool,
     request_id: u64,
-) -> crate::hooks::RoutingRequest<'a> {
+) -> busbar_core::hooks::RoutingRequest<'a> {
     let shape = facts.shape();
-    crate::hooks::RoutingRequest {
+    busbar_core::hooks::RoutingRequest {
         request_id,
         pool: pool_name,
         ingress_protocol,
@@ -389,12 +389,12 @@ pub(crate) fn build_rewrite_request<'a>(
 pub(crate) async fn apply_global_rewrites(
     rewrite_hooks: &[(
         std::time::Duration,
-        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_core::hooks::RoutingPolicy>,
     )],
     v: &mut Value,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: crate::operation::Operation,
+    operation: busbar_core::operation::Operation,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<bool, (u16, String)> {
@@ -409,7 +409,7 @@ pub(crate) async fn apply_global_rewrites(
         let facts = match read_hook_facts(
             v,
             &[],
-            crate::proxy::APPLICATION_JSON,
+            crate::engine::APPLICATION_JSON,
             ingress_protocol,
             Some(operation),
         ) {
@@ -505,7 +505,7 @@ fn policy_fault_clear(key: &str) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn decide_policy_order(
     app: &Arc<App>,
-    resolved: &crate::hooks::ResolvedPolicy,
+    resolved: &busbar_core::hooks::ResolvedPolicy,
     cands: &[WeightedLane],
     request_ctx: &RequestCtx,
     v: &Value,
@@ -513,12 +513,12 @@ pub(crate) async fn decide_policy_order(
     content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: crate::operation::Operation,
+    operation: busbar_core::operation::Operation,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_core::governance::VirtualKey>>,
 ) -> PolicyOutcome {
-    use crate::hooks::{
+    use busbar_core::hooks::{
         Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest,
     };
 
@@ -575,7 +575,7 @@ pub(crate) async fn decide_policy_order(
         {
             match (gov, caller_token) {
                 // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience).
-                (Some(g), Some(tok)) => g.verify_token(tok, crate::store::now(), None),
+                (Some(g), Some(tok)) => g.verify_token(tok, busbar_core::store::now(), None),
                 _ => None,
             }
         }
@@ -610,7 +610,7 @@ pub(crate) async fn decide_policy_order(
     // id/name (from the resolved record, NEVER the token) plus the request's end-user field,
     // normalized by the reader from whichever field its dialect spells it in.
     let identity = if send_user {
-        Some(crate::hooks::CallerIdentity {
+        Some(busbar_core::hooks::CallerIdentity {
             key_id: gov_key.as_ref().map(|k| k.id.clone()),
             key_name: gov_key.as_ref().map(|k| k.name.clone()),
             user: facts.end_user(),
@@ -674,21 +674,21 @@ pub(crate) async fn decide_policy_order(
                 // breaker_state_snapshot_in`/`error_rate_in`'s doc comments) — the gate below is
                 // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
-                if requested.wants(crate::hooks::Signal::CandidateBreakerState) {
+                if requested.wants(busbar_core::hooks::Signal::CandidateBreakerState) {
                     let label = match app.store.breaker_state_snapshot_in(pool_name, wl.idx) {
-                        crate::store::BreakerState::Closed => "closed",
-                        crate::store::BreakerState::Open { .. } => "open",
-                        crate::store::BreakerState::HalfOpen => "half_open",
+                        busbar_core::store::BreakerState::Closed => "closed",
+                        busbar_core::store::BreakerState::Open { .. } => "open",
+                        busbar_core::store::BreakerState::HalfOpen => "half_open",
                     };
                     signals.push(
-                        crate::hooks::Signal::CandidateBreakerState,
+                        busbar_core::hooks::Signal::CandidateBreakerState,
                         busbar_api::SignalValue::Str(std::borrow::Cow::Borrowed(label)),
                     );
                 }
-                if requested.wants(crate::hooks::Signal::CandidateErrorRate) {
+                if requested.wants(busbar_core::hooks::Signal::CandidateErrorRate) {
                     if let Some(rate) = app.store.error_rate_in(pool_name, wl.idx, now_ts) {
                         signals.push(
-                            crate::hooks::Signal::CandidateErrorRate,
+                            busbar_core::hooks::Signal::CandidateErrorRate,
                             busbar_api::SignalValue::F64(rate),
                         );
                     }
@@ -823,11 +823,11 @@ pub(crate) async fn decide_policy_order(
 /// Every link failing lands on the chain's reserved TERMINAL (weighted/reject/first). The common
 /// case — `on_error: weighted` etc. — has an EMPTY chain and goes straight to the terminal.
 pub(crate) async fn run_on_error_chain(
-    chain: &[crate::hooks::FallbackHook],
-    terminal: &crate::config::PolicyOnError,
-    req: &crate::hooks::RoutingRequest<'_>,
-    candidates: &[crate::hooks::Candidate<'_>],
-    ctx: &crate::hooks::RoutingContext<'_>,
+    chain: &[busbar_core::hooks::FallbackHook],
+    terminal: &busbar_core::config::PolicyOnError,
+    req: &busbar_core::hooks::RoutingRequest<'_>,
+    candidates: &[busbar_core::hooks::Candidate<'_>],
+    ctx: &busbar_core::hooks::RoutingContext<'_>,
     failed_policy_name: &'static str,
     pool_name: &str,
 ) -> PolicyOutcome {
@@ -835,7 +835,7 @@ pub(crate) async fn run_on_error_chain(
         // Re-project per the FALLBACK's grants: it may see at most what the primary projection
         // built AND its own grants allow (never over-shares; a fallback with a grant the primary
         // lacked gets shape-only — the projection was never built).
-        let fb_req = crate::hooks::RoutingRequest {
+        let fb_req = busbar_core::hooks::RoutingRequest {
             prompt: if fb.send_prompt {
                 req.prompt.clone()
             } else {
@@ -918,12 +918,12 @@ pub(crate) async fn run_on_error_chain(
 /// and every on_error fallback, so a fallback's reject/restrict/order carries the same clamping,
 /// sanitizing, and normalization guarantees as a primary's.
 pub(crate) fn map_decision(
-    decision: crate::hooks::RoutingDecision,
+    decision: busbar_core::hooks::RoutingDecision,
     policy_name: &'static str,
-    candidates: &[crate::hooks::Candidate<'_>],
-    on_empty: &crate::config::PolicyOnError,
+    candidates: &[busbar_core::hooks::Candidate<'_>],
+    on_empty: &busbar_core::config::PolicyOnError,
 ) -> PolicyOutcome {
-    use crate::hooks::RoutingDecision;
+    use busbar_core::hooks::RoutingDecision;
 
     match decision {
         RoutingDecision::Prefer(order) => {
@@ -955,8 +955,8 @@ pub(crate) fn map_decision(
         // defense in depth: no policy, present or future, can mint a success/redirect/5xx or a
         // log/client-injecting message through this path.
         RoutingDecision::Reject { status, message } => PolicyOutcome::RejectRequest {
-            status: crate::hooks::wire::clamp_reject_status(status),
-            message: crate::hooks::wire::sanitize_reject_message(&message),
+            status: busbar_core::hooks::wire::clamp_reject_status(status),
+            message: busbar_core::hooks::wire::sanitize_reject_message(&message),
             name: policy_name,
         },
         // The hook's RESTRICT verb: keep only candidates carrying one of `tags_any` (a compliance
@@ -975,11 +975,11 @@ pub(crate) fn map_decision(
 /// `weighted` ⇒ SWRR, `first` ⇒ the config member order (a deterministic degraded pick), `reject`
 /// ⇒ a 503. `first` advertises the policy name so the degraded pick is still observable.
 pub(crate) fn coerce_on_error(
-    on_error: &crate::config::PolicyOnError,
-    candidates: &[crate::hooks::Candidate<'_>],
+    on_error: &busbar_core::config::PolicyOnError,
+    candidates: &[busbar_core::hooks::Candidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
-    use crate::config::PolicyOnError;
+    use busbar_core::config::PolicyOnError;
     match on_error {
         PolicyOnError::Weighted => PolicyOutcome::Weighted,
         PolicyOnError::Reject => PolicyOutcome::Reject,
@@ -1021,7 +1021,7 @@ pub(crate) fn capture_stage_shape<'a>(
     content_type: &str,
     pool: &'a str,
     ingress_protocol: &'a str,
-    operation: Option<crate::operation::Operation>,
+    operation: Option<busbar_core::operation::Operation>,
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {
@@ -1041,7 +1041,7 @@ pub(crate) fn capture_stage_shape<'a>(
         operation,
     )
     .map(|f| f.shape())
-    .unwrap_or(crate::ir::facts::Shape::EMPTY);
+    .unwrap_or(busbar_core::ir::facts::Shape::EMPTY);
     StageShape {
         request_id,
         pool,
@@ -1059,20 +1059,20 @@ pub(crate) fn capture_stage_shape<'a>(
 /// reorder, or fail the request; a serialization failure silently skips the fire (observation is
 /// best-effort). ZERO COST when the stage has no taps (first-line empty check).
 pub(crate) fn fire_stage_taps(
-    taps: &[crate::hooks::TapEntry],
+    taps: &[busbar_core::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
+    stage: busbar_core::hooks::wire::HookStageProjection<'_>,
     // The caller's `groups:` binding + the groups tree (1.5.3 SELECTION): a stage tap fires only for
     // a caller in its `groups:` scope (empty = every caller). Walked self + ancestors.
     caller_group: Option<&str>,
-    groups_tree: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    groups_tree: &std::collections::BTreeMap<String, busbar_core::config::GroupCfg>,
 ) {
     if taps.is_empty() {
         return;
     }
-    let hook_req = crate::hooks::wire::HookRequest {
-        op: crate::hooks::wire::OP_NOTIFY,
-        request: crate::hooks::wire::HookReqProjection {
+    let hook_req = busbar_core::hooks::wire::HookRequest {
+        op: busbar_core::hooks::wire::OP_NOTIFY,
+        request: busbar_core::hooks::wire::HookReqProjection {
             request_id: shape.request_id,
             pool: shape.pool,
             ingress_protocol: shape.ingress_protocol,
@@ -1091,19 +1091,19 @@ pub(crate) fn fire_stage_taps(
             signals: Default::default(),
         },
         candidates: Vec::new(),
-        context: crate::hooks::wire::HookContext {
+        context: busbar_core::hooks::wire::HookContext {
             budget: &[],
             budget_remaining: None,
         },
         stage: Some(stage),
     };
-    let Ok(bytes) = crate::json::to_vec(&hook_req) else {
+    let Ok(bytes) = busbar_core::json::to_vec(&hook_req) else {
         return;
     };
     let bytes = std::sync::Arc::new(bytes);
     for (timeout, _send_prompt, hook, groups) in taps {
         // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller.
-        if !crate::config::caller_in_hook_groups(caller_group, groups, groups_tree) {
+        if !busbar_core::config::caller_in_hook_groups(caller_group, groups, groups_tree) {
             continue;
         }
         let policy = hook.clone();
@@ -1117,11 +1117,11 @@ pub(crate) fn fire_stage_taps(
 /// tap hook x per request, so a slow/unreachable tap endpoint could otherwise accumulate unbounded
 /// Tokio tasks under load (OOM/DoS). Mirrors the bounded webhook-delivery guard in `observability`.
 const MAX_INFLIGHT_TAP_NOTIFICATIONS: usize = 1024;
-static TAP_INFLIGHT: std::sync::OnceLock<crate::limits::admission::AdmissionGate> =
+static TAP_INFLIGHT: std::sync::OnceLock<busbar_core::limits::admission::AdmissionGate> =
     std::sync::OnceLock::new();
-fn tap_inflight() -> &'static crate::limits::admission::AdmissionGate {
+fn tap_inflight() -> &'static busbar_core::limits::admission::AdmissionGate {
     TAP_INFLIGHT.get_or_init(|| {
-        crate::limits::admission::AdmissionGate::new(MAX_INFLIGHT_TAP_NOTIFICATIONS, "tap")
+        busbar_core::limits::admission::AdmissionGate::new(MAX_INFLIGHT_TAP_NOTIFICATIONS, "tap")
     })
 }
 
@@ -1134,10 +1134,10 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let Some(permit) = tap_inflight().try_enter() else {
-        metrics::counter!(crate::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
+        metrics::counter!(busbar_core::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
         return;
     };
-    crate::state::spawn_detached(async move {
+    busbar_core::state::spawn_detached(async move {
         let _permit = permit;
         fut.await;
     });

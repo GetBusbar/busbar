@@ -39,6 +39,10 @@
 /// module via `#[path]` for its test build so `crate::ir::IrRequest` still resolves there.
 pub mod ir;
 
+/// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
+/// pipeline, health probe loop and native fallback plane — see [`engine`].
+pub mod engine;
+
 /// **G6 A4b dissolve.** The chat `IrHandle` (`ChatReqHandle`/`ChatRespHandle`) + its
 /// `prepare_for_egress`/`_ingress`/`usage` bodies, lifted from the dissolved `IrReq::Chat`/`IrResp::Chat`
 /// arms; the handle writes itself onto the egress dialect by protocol string.

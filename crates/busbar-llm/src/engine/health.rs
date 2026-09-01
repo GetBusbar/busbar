@@ -21,10 +21,10 @@ use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
-use crate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
-use crate::config::HealthMode;
-use crate::state::App;
-use crate::store::{now, BreakerCfg};
+use busbar_core::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
+use busbar_core::config::HealthMode;
+use busbar_core::state::App;
+use busbar_core::store::{now, BreakerCfg};
 
 /// Cap on the bytes read from a non-2xx probe response before breaker classification, mirroring the
 /// request path's size-capped read: a hostile/misconfigured upstream must not force an unbounded
@@ -33,7 +33,7 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 
 // Default probe interval / timeout (the PROCESS-WIDE fallback used when a per-lane `health:` block
 // omits `interval_secs` / `timeout_secs`). Operator-tunable via `health.default_probe_interval_secs`
-// / `health.default_probe_timeout_secs` (defaults 30 / 5), read through `crate::limits`. The per-lane
+// / `health.default_probe_timeout_secs` (defaults 30 / 5), read through `busbar_core::limits`. The per-lane
 // override still wins (see `unwrap_or` below).
 
 /// The probe schedule, shared by every clone-derived snapshot of one `App` lineage.
@@ -133,12 +133,12 @@ pub fn spawn_probers(app: &Arc<App>) {
         }
         let interval = Duration::from_secs(
             h.interval_secs
-                .unwrap_or_else(crate::limits::default_probe_interval_secs)
+                .unwrap_or_else(busbar_core::limits::default_probe_interval_secs)
                 .max(1),
         );
         let timeout = Duration::from_secs(
             h.timeout_secs
-                .unwrap_or_else(crate::limits::default_probe_timeout_secs)
+                .unwrap_or_else(busbar_core::limits::default_probe_timeout_secs)
                 .max(1),
         );
         let mode = h.mode;
@@ -273,12 +273,12 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     }
 
     // Probe body via the neutral dialect seam (the concrete writer relocated to the plugin at A4b).
-    let body = crate::proto::decl_for(lane.protocol)
+    let body = busbar_core::proto::decl_for(lane.protocol)
         .and_then(|d| d.dialect())
         .map(|dc| dc.probe_body(lane.wire_model()))
         .unwrap_or_default();
     let url_path = lane.path.clone().unwrap_or_else(|| {
-        crate::proto::decl_for(lane.protocol)
+        busbar_core::proto::decl_for(lane.protocol)
             .and_then(|d| d.dialect())
             .map(|dc| dc.upstream_path_for_stream(lane.wire_model(), false))
             .unwrap_or_default()
@@ -289,17 +289,17 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // reserved `:` that signs as `%3A` but a raw send transmits `:`). Encode the path ONCE via the
     // shared `sign_and_wire_path` helper — the identical primitive the organic forward path uses —
     // and reuse it for both the signed canonical URI and the wire URL so signed == sent.
-    let wire_path = crate::proxy::sign_and_wire_path(&url_path);
-    let signing_ctx = crate::proto::SigningContext {
+    let wire_path = crate::engine::sign_and_wire_path(&url_path);
+    let signing_ctx = busbar_core::proto::SigningContext {
         host: &lane.signing_host,
         canonical_uri: wire_path.split('?').next().unwrap_or(&wire_path),
         body: &body,
         timestamp_epoch: now(),
         // Active health probes use busbar's own configured lane key (never a forwarded caller
         // token), so the native API-key shape (Token mode) is correct here.
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    let auth = crate::proxy::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
+    let auth = crate::engine::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
 
     // Send the SAME native-SDK fingerprint headers the organic forward path sends, so a probe is
     // indistinguishable from real traffic to the backend: the shared client emits no default
@@ -308,7 +308,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // fingerprint and special-case busbar's health probes — defeating the indistinguishability
     // guarantee.
     //
-    // The probe rides the SAME owned egress client stack (`crate::proxy::egress_request` +
+    // The probe rides the SAME owned egress client stack (`crate::engine::egress_request` +
     // the lane-sharded `EgressClient`) as the forward path, assembling its header map in the
     // engine's exact insertion order — auth headers first, then CT/UA/Accept — so the probe's wire
     // fingerprint (client stack, TLS/ALPN posture, header shape) stays byte-identical to organic
@@ -333,17 +333,17 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
         CONTENT_TYPE,
         // Declaration constants all three: static bytes, no per-probe allocs — and byte-identical
         // to the forward path's headers, which is this probe's indistinguishability contract.
-        axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        axum::http::HeaderValue::from_static(crate::engine::APPLICATION_JSON),
     );
     headers.insert(
         USER_AGENT,
-        axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+        axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(egress_name)),
     );
     headers.insert(
         ACCEPT,
-        axum::http::HeaderValue::from_static(crate::proxy::egress_accept(egress_name, false)),
+        axum::http::HeaderValue::from_static(crate::engine::egress_accept(egress_name, false)),
     );
-    let req = crate::proxy::egress_request(uri, headers, bytes::Bytes::from(body));
+    let req = crate::engine::egress_request(uri, headers, bytes::Bytes::from(body));
     // TIMEOUT RE-PROVISION: reqwest's per-request `.timeout(timeout)` bounded the ENTIRE probe
     // lifecycle — connect, headers, AND the body read. The owned client carries no per-request
     // total timeout, so re-provide the same bound as ONE deadline shared by the send below and the
@@ -388,7 +388,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // vocabulary for all six protocols (chat's codec delegates to that very reader), and an
             // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
-            let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
+            let retry_after_secs = busbar_core::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r.into_body(), deadline).await;
             // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
             // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the
@@ -397,7 +397,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
             // chat IR relocated to the `busbar-llm` plugin).
             let mut raw: RawUpstreamError =
-                crate::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
+                busbar_core::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

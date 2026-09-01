@@ -13,7 +13,7 @@ const BUDGET_ASSERT_EPSILON: std::time::Duration = std::time::Duration::from_sec
 #[derive(Debug, Clone)]
 pub(crate) struct RestrictConstraint {
     pub(crate) tags_any: Vec<String>,
-    pub(crate) on_empty: crate::config::PolicyOnError,
+    pub(crate) on_empty: busbar_core::config::PolicyOnError,
     pub(crate) name: &'static str,
 }
 
@@ -46,7 +46,7 @@ pub(crate) struct RequestCtx {
     // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
     // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) excluded_reasons: Vec<(usize, crate::store::Unavailable)>,
+    pub(crate) excluded_reasons: Vec<(usize, busbar_core::store::Unavailable)>,
     /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]
     /// ONCE at ingress (see `forward_with_pool_parsed`), Copy-threaded everywhere `RequestCtx`
     /// already flows for the lifetime of the request (including every failover hop — it is NOT
@@ -80,7 +80,7 @@ impl RequestCtx {
                 .checked_add(std::time::Duration::from_secs(deadline_secs))
                 .unwrap_or_else(|| {
                     std::time::Instant::now()
-                        + std::time::Duration::from_secs(crate::config::MAX_FAILOVER_DEADLINE_SECS)
+                        + std::time::Duration::from_secs(busbar_core::config::MAX_FAILOVER_DEADLINE_SECS)
                 }),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),
@@ -121,7 +121,7 @@ impl RequestCtx {
                 .cloned()
                 .collect();
             if restricted.is_empty() {
-                if matches!(r.on_empty, crate::config::PolicyOnError::Weighted) {
+                if matches!(r.on_empty, busbar_core::config::PolicyOnError::Weighted) {
                     continue; // advisory escape — skip this restrict on this hop
                 }
                 return Err(r.name); // fail closed — no eligible lane satisfies a required restrict
@@ -218,7 +218,7 @@ impl RequestCtx {
 /// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
 /// internally, with no await between winning the probe and returning.)
 pub(crate) struct ProbeGuard<'a> {
-    pub(crate) store: &'a dyn crate::store::LaneRuntime,
+    pub(crate) store: &'a dyn busbar_core::store::LaneRuntime,
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
@@ -296,7 +296,7 @@ pub(crate) async fn pick_among(
         .map(|(position, _)| position)
         .collect();
 
-    let attempt = crate::failover::Attempt {
+    let attempt = busbar_core::failover::Attempt {
         tried: &tried,
         // THE MODEL PLANE'S REPEAT POSTURE, STATED RATHER THAN ASSUMED. A hop after the first is a
         // genuine `AfterDispatch` retry — the previous lane may already have received the request —
@@ -307,11 +307,11 @@ pub(crate) async fn pick_among(
         // refuses their after-dispatch hop. The rule is one; the answer differs because the operations
         // differ, which is exactly what the rule is for.
         stage: if tried.is_empty() {
-            crate::failover::Stage::BeforeFirstByte
+            busbar_core::failover::Stage::BeforeFirstByte
         } else {
-            crate::failover::Stage::AfterDispatch
+            busbar_core::failover::Stage::AfterDispatch
         },
-        repeatable: crate::failover::Repeatable::Yes,
+        repeatable: busbar_core::failover::Repeatable::Yes,
         operation: "completion",
     };
 
@@ -356,12 +356,12 @@ pub(crate) async fn pick_among(
     // single-flight probe). Everything the loop decides — is there anything here, is this a repeat
     // and is that allowed, do the pins agree, will the breaker have it, and what is the refusal —
     // is decided in core, identically for all three planes.
-    let mut passed_over: Vec<(usize, crate::store::Unavailable)> = Vec::new();
+    let mut passed_over: Vec<(usize, busbar_core::store::Unavailable)> = Vec::new();
     // ONE wall-clock read for every admission this walk tries: the breaker consults it at
     // second granularity and the whole walk (candidates × try_admit) spans microseconds, so a
     // per-candidate `clock_gettime` bought nothing over this shared read.
     let admit_now = now();
-    let admitted = crate::failover::walk_with(
+    let admitted = busbar_core::failover::walk_with(
         pool_name,
         &members,
         &attempt,
@@ -395,14 +395,14 @@ pub(crate) async fn pick_among(
     }
 }
 
-/// THE MODEL PLANE'S [`crate::failover::Candidate`] — a pool member, borrowed for one selection.
+/// THE MODEL PLANE'S [`busbar_core::failover::Candidate`] — a pool member, borrowed for one selection.
 struct LaneCandidate<'a> {
     wl: &'a WeightedLane,
     model: &'a str,
     pool: &'a str,
 }
 
-impl crate::failover::Candidate for LaneCandidate<'_> {
+impl busbar_core::failover::Candidate for LaneCandidate<'_> {
     fn name(&self) -> &str {
         self.model
     }
@@ -427,7 +427,7 @@ impl crate::failover::Candidate for LaneCandidate<'_> {
     }
 }
 
-/// THE MODEL PLANE'S [`crate::failover::Order`]: session affinity first, then SWRR — or the routing
+/// THE MODEL PLANE'S [`busbar_core::failover::Order`]: session affinity first, then SWRR — or the routing
 /// policy's ranked walk — over what is left.
 ///
 /// ORDER ONLY. Nothing here admits anything: `ready_in` and `select_weighted_in` are read-only peeks
@@ -460,7 +460,7 @@ struct SwrrOrder<'a> {
     weights: smallvec::SmallVec<[u32; 8]>,
 }
 
-impl crate::failover::Order for SwrrOrder<'_> {
+impl busbar_core::failover::Order for SwrrOrder<'_> {
     fn next(&mut self, refused: Option<usize>) -> Option<usize> {
         if let Some(position) = refused {
             // A REFUSED STICKY IS NOT LOCALLY EXCLUDED, and that is this plane's long-standing
@@ -587,7 +587,7 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
     // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
     // set is a registry aggregate folded once at boot from the declarations, so naming no
     // protocol/MIME literal here keeps the agnostic core clean.
-    crate::proto::streaming_content_types()
+    busbar_core::proto::streaming_content_types()
         .iter()
         .any(|p| ct.starts_with(p))
 }
@@ -604,5 +604,5 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
 /// a fact the protocol DECLARED, not the name string, and reading a declaration allocates nothing
 /// where building a writer to ask it allocated two boxes.
 pub(crate) fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    crate::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
+    busbar_core::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
 }

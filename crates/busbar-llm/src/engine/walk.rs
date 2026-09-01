@@ -1,7 +1,7 @@
 //! ON_EXHAUSTED DISPOSITION — what the model plane does AFTER the one selection loop finds nowhere
 //! to send a request. This file is NOT a selection loop and, since the one-loop unification (owner
 //! ruling R-I), nothing here selects: `handle_fallback_pool` re-enters `pick_among` — which is the
-//! model plane's [`crate::failover::walk_with`] call site — for the spillover pool, `handle_queue`
+//! model plane's [`busbar_core::failover::walk_with`] call site — for the spillover pool, `handle_queue`
 //! waits for a permit and then re-asks the SAME `try_admit_breaker` every plane asks, and
 //! `handle_least_bad` is the ONE documented breaker bypass in the tree (a last-resort degraded route
 //! that owns no probe and says so). The candidate ordering, the pin check, the repeat-safety rule
@@ -9,13 +9,13 @@
 
 use super::*;
 
-use crate::diagnostics::{
+use busbar_core::diagnostics::{
     diag_debug, ATTEMPT_TIMEOUT_DEGRADED, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
 };
 // See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
-// `crate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
+// `busbar_core::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
 // rejects a leading `crate` keyword segment.
-use crate::observability::HOTPATH_LEVEL;
+use busbar_core::observability::HOTPATH_LEVEL;
 
 /// Saturation Retry-After floor (whole seconds) for a 503 shed whose ONLY exhaustion cause is
 /// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
@@ -28,7 +28,7 @@ use crate::observability::HOTPATH_LEVEL;
 // path floors the whole-second `Retry-After` at that same value rather than a separate — and
 // regressing — literal.
 pub(crate) const AT_CAPACITY_RETRY_AFTER_SECS: u64 =
-    crate::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
+    busbar_core::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
 
 /// Slack ε (milliseconds) for the `handle_queue` deadline-overrun `debug_assert`. Like
 /// `select::BUDGET_ASSERT_EPSILON` this is a dev/CI regression tripwire, not a runtime bound: the
@@ -88,7 +88,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
     caller_token: Option<&str>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -196,11 +196,11 @@ pub(crate) async fn handle_queue(
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    use crate::store::Unavailable;
+    use busbar_core::store::Unavailable;
 
     // Pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
     // drop. If every exclusion is Dead / BudgetExhausted / BreakerOpen / ProbeInFlight, nothing will
@@ -281,7 +281,7 @@ pub(crate) async fn handle_queue(
             // The semaphore was closed (shutdown) — no permit is coming; shed.
             Err(_) => return handle_status_503(app, cands, now(), pool, ingress_protocol),
         };
-        let permit = crate::store::Permit::Bounded(owned);
+        let permit = busbar_core::store::Permit::Bounded(owned);
 
         // We hold capacity but have NOT passed the breaker. Run ONLY the breaker admission step on the
         // won lane — the dispatched request owns the probe it wins (`forward_once` releases it
@@ -388,7 +388,7 @@ pub(crate) fn handle_status_503(
 /// crossed boundary. Same-protocol targets pass through verbatim.
 #[allow(clippy::too_many_arguments)]
 // plumbing: each arg is an independent request input
-// `level = crate::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
+// `level = busbar_core::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
 // degraded-path attempt (fallback-pool routing + least-bad), so it must be filtered off at the
 // default `RUST_LOG=info` the same as the main `forward` span in `engine/mod.rs` — routed through
 // the ONE named constant rather than a second hand-picked `"debug"` literal, so the hot-path level
@@ -422,7 +422,7 @@ pub(crate) async fn forward_once(
     // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
     // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
     probe_epoch: Option<u64>,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
@@ -450,7 +450,7 @@ pub(crate) async fn forward_once(
     // PEER legitimately won on the same cell. Representing "no probe" as `None` — rather than passing the
     // cell's CURRENT epoch to an armed guard — is what makes that safe: an epoch-equality release keyed
     // on a peer's live epoch would otherwise revert the peer's in-flight probe on a dropped future.
-    let mut probe_guard = probe_epoch.map(|epoch| crate::proxy::select::ProbeGuard {
+    let mut probe_guard = probe_epoch.map(|epoch| crate::engine::select::ProbeGuard {
         store: app.store.as_ref(),
         pool,
         lane: i,
@@ -460,14 +460,14 @@ pub(crate) async fn forward_once(
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
-    let v: Option<Value> = match crate::json::parse(body) {
+    let v: Option<Value> = match busbar_core::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // See the main forward path: log a sanitized note for operators; never the parser's raw
             // error (with sonic-rs it embeds a fragment of the input body — secrets/PII) nor leak it
             // into the client 400 body.
-            tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_core::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard` above releases
             // the POOL-cell single-flight probe on drop (owner-checked, idempotent, a no-op on the
             // default `""` / a non-HalfOpen cell), so the cell never wedges HalfOpen on this early exit.
@@ -489,7 +489,7 @@ pub(crate) async fn forward_once(
     // Gemini ingress streaming WITHOUT `?alt=sse` → JSON-array streamed body (see main path). GATED
     // on `uses_array_stream_shim()` (true only for GeminiWriter) so a body-model client cannot
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
-    let ingress_decl = crate::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_core::proto::decl_for(ingress_protocol);
     let gemini_json_array = ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl
             .and_then(|d| d.dialect())
@@ -507,7 +507,7 @@ pub(crate) async fn forward_once(
     // cell against its own thresholds, not a one-size default. Wrapped in an `Arc` so the streaming
     // `FirstByteBody` guard can record mid-stream failures with the SAME thresholds the synchronous
     // path used (mirrors `forward_with_pool`).
-    let forward_once_cfg: std::sync::Arc<crate::store::BreakerCfg> = resolve_breaker_cfg(app, pool);
+    let forward_once_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> = resolve_breaker_cfg(app, pool);
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
     // strip, model rewrite, serialize) — the SAME function the hot `forward_with_pool` path uses, so
@@ -549,8 +549,8 @@ pub(crate) async fn forward_once(
         // lane penalty), matching the documented passthrough contract. No-op in canonical
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
-        crate::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        crate::auth::UpstreamCreds::Own => app.engine_tables().lanes()[i].api_key.expose_secret(),
+        busbar_core::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
+        busbar_core::auth::UpstreamCreds::Own => app.engine_tables().lanes()[i].api_key.expose_secret(),
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
@@ -569,7 +569,7 @@ pub(crate) async fn forward_once(
             DETAIL_INTERNAL_ERROR,
         ));
     };
-    let signing_ctx = crate::proto::SigningContext {
+    let signing_ctx = busbar_core::proto::SigningContext {
         host: &app.engine_tables().lanes()[i].signing_host,
         canonical_uri: &target.canonical_uri,
         body: &payload,
@@ -582,7 +582,7 @@ pub(crate) async fn forward_once(
         &app.engine_tables().lanes()[i].prebuilt_auth,
         app.engine_tables().pool_upstream_creds(pool),
     ) {
-        (Some(pre), crate::auth::UpstreamCreds::Own) => pre.clone(),
+        (Some(pre), busbar_core::auth::UpstreamCreds::Own) => pre.clone(),
         _ => convert_headers(lane_auth_headers(
             &app.engine_tables().lanes()[i],
             key,
@@ -599,7 +599,7 @@ pub(crate) async fn forward_once(
     } else if ingress_protocol == egress_name {
         req_content_type
     } else {
-        crate::handlers::request_handler(egress_name)
+        busbar_core::handlers::request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation))
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
@@ -630,7 +630,7 @@ pub(crate) async fn forward_once(
     // Native-SDK User-Agent for the egress protocol (mirrors the main forward path).
     egress_headers.insert(
         USER_AGENT,
-        axum::http::HeaderValue::from_static(crate::proxy::egress_user_agent(egress_name)),
+        axum::http::HeaderValue::from_static(crate::engine::egress_user_agent(egress_name)),
     );
     // Native-SDK Accept for the egress protocol — a declaration constant, chosen by the operation.
     egress_headers.insert(
@@ -639,7 +639,7 @@ pub(crate) async fn forward_once(
     );
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
-    let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
+    let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     // TIMEOUT RE-PROVISION (mirrors the main forward path EXACTLY — the re-audit caught this
     // path keeping the pre-fix shape, the F1 hole's second home): ONE deadline per attempt.
     // Non-stream: the failover deadline. Stream: the client-level ceiling — bounding a stream
@@ -703,10 +703,10 @@ pub(crate) async fn forward_once(
             // `record_transient_in` above already transitioned the cell; the armed `probe_guard`
             // releases the probe on drop (owner-checked no-op after the transient). Record
             // BEFORE release preserved (the guard drops at return, after this recording).
-            crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
+            busbar_core::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
             // Parity with the organic path: a degraded-path attempt-timeout is a failover
             // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
-            crate::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
+            busbar_core::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
             return Err(());
         }
     };
@@ -759,22 +759,22 @@ pub(crate) async fn forward_once(
                 // ClientFault/ContextLength arms). Body-only classification here (no headers);
                 // `retry_after` only floors the cooldown, not the disposition, so it is omitted.
                 let penalize_breaker = {
-                    let raw = crate::handlers::op_for(
+                    let raw = busbar_core::handlers::op_for(
                         egress_name,
                         op.operation,
-                        crate::transport::Transport::Http,
+                        busbar_core::transport::Transport::Http,
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        crate::breaker::RawUpstreamError::from_status(status.as_u16())
+                        busbar_core::breaker::RawUpstreamError::from_status(status.as_u16())
                     });
-                    let sig = crate::breaker::normalize_raw_error(
+                    let sig = busbar_core::breaker::normalize_raw_error(
                         &raw,
                         &app.engine_tables().lanes()[i].error_map,
                     );
                     matches!(
-                        crate::breaker::classify(&sig),
-                        crate::breaker::Disposition::TransientUpstream
+                        busbar_core::breaker::classify(&sig),
+                        busbar_core::breaker::Disposition::TransientUpstream
                     )
                 };
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
@@ -962,10 +962,10 @@ pub(crate) async fn forward_once(
             // same-protocol SSE the verbatim same-proto translator (byte-exact re-emit + IR usage
             // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough.
             let translate =
-                crate::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
+                busbar_core::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
-                    crate::proto::decl_for(ingress_protocol)
+                    busbar_core::proto::decl_for(ingress_protocol)
                         .and_then(|d| d.dialect())
                         .and_then(|dc| dc.make_array_stream_framer())
                 })
@@ -1067,7 +1067,7 @@ pub(crate) async fn handle_fallback_pool(
     pool_name: &str,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -1230,7 +1230,7 @@ pub(crate) async fn handle_least_bad(
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {

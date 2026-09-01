@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
+use busbar_core::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 
 /// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the
 /// IR. The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered
@@ -8,7 +8,7 @@ use crate::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 /// terminal `IrUsage` is available WITHOUT a separate byte-scan — bill straight from `ir.usage`.
 ///
 /// Billed tokens = the normalized billable total: `uncached_input + cache_read +
-/// cache_creation + output` (see [`crate::ir::IrUsage::billable_tokens`]). Readers normalize
+/// cache_creation + output` (see [`busbar_core::ir::IrUsage::billable_tokens`]). Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so this sum is correct
 /// provider-agnostically. This matches the streaming billing arm.
 /// OPERATION-BLIND usage recording: project the response IR's neutral `Billing` and record token
@@ -16,11 +16,11 @@ use crate::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 /// the additive-cache convention). Non-token meters (duration/characters/images/flat) are carried in
 /// the client-visible body today and priced by the 1.3 engine; nothing to record here yet.
 pub(crate) fn record_resp_usage(
-    usage: Option<crate::billing::Billing>,
+    usage: Option<busbar_core::billing::Billing>,
     usage_sink: &Option<UsageSink>,
-    lane: Option<&crate::state::Lane>,
+    lane: Option<&busbar_core::state::Lane>,
 ) {
-    if let Some(crate::billing::Billing::Tokens(t)) = usage {
+    if let Some(busbar_core::billing::Billing::Tokens(t)) = usage {
         // `usage` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection the response codec
         // captured from the read IR (before `prepare_for_ingress`) and handed back through
         // `TranslateCodec::translate_response` — bill straight from it. This seam never holds the
@@ -46,7 +46,7 @@ pub(crate) fn record_resp_usage(
 /// Project the IR's normalized usage into the LEDGER'S four pricing tiers. Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping is direct:
 /// cache-creation is the rate card's `cache_write` tier.
-pub(crate) fn tier_tokens(u: &crate::billing::TokenUsage) -> busbar_api::TierTokens {
+pub(crate) fn tier_tokens(u: &busbar_core::billing::TokenUsage) -> busbar_api::TierTokens {
     busbar_api::TierTokens {
         input: u.input,
         output: u.output,
@@ -80,8 +80,8 @@ pub(crate) fn tier_tokens(u: &crate::billing::TokenUsage) -> busbar_api::TierTok
 /// response has a serving lane).
 pub(crate) fn ledger_and_meter(
     sink: &UsageSink,
-    lane: &crate::state::Lane,
-    usage: Option<&crate::billing::TokenUsage>,
+    lane: &busbar_core::state::Lane,
+    usage: Option<&busbar_core::billing::TokenUsage>,
     tier: &busbar_api::TierTokens,
 ) {
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
@@ -112,9 +112,9 @@ pub(crate) fn ledger_and_meter(
 /// `None` (an unknown/unresolvable lane) can attribute tokens to no model, so nothing is ledgered
 /// or metered (unreachable in production: every delivered response has a serving lane).
 pub(crate) fn record_token_usage(
-    usage: &crate::billing::TokenUsage,
+    usage: &busbar_core::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
-    lane: Option<&crate::state::Lane>,
+    lane: Option<&busbar_core::state::Lane>,
 ) {
     if let Some(sink) = usage_sink {
         let Some(lane) = lane else { return };
@@ -147,7 +147,7 @@ pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: us
 /// `pool` label is the bounded, operator-controlled canonical pool name, or the routed model name for
 /// the default (`""`) cell (see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
 pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
-    crate::telemetry::breaker_trip(app, metric_pool_label(app, pool_name, i), i);
+    busbar_core::telemetry::breaker_trip(app, metric_pool_label(app, pool_name, i), i);
     diag_warn!(LANE_BREAKER_TRIPPED, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, "lane breaker tripped (Closed→Open)");
 }
 
@@ -157,7 +157,7 @@ pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
 /// `50` in a latency-critical pool, with the model-level value as the fallback for pools (and
 /// the default `""` cell) that don't override it.
 pub(crate) fn effective_attempt_timeout_ms(
-    cands: &[crate::state::WeightedLane],
+    cands: &[busbar_core::state::WeightedLane],
     i: usize,
     lane_default: Option<u64>,
 ) -> Option<u64> {
@@ -172,7 +172,7 @@ pub(crate) fn effective_attempt_timeout_ms(
 /// over the model-level flag (same layering as `effective_attempt_timeout_ms`), default false —
 /// a lane never receives thinking params unless some level of config claimed the capability.
 pub(crate) fn effective_reasoning(
-    cands: &[crate::state::WeightedLane],
+    cands: &[busbar_core::state::WeightedLane],
     i: usize,
     lane_default: bool,
 ) -> bool {

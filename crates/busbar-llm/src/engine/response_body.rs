@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::diagnostics::{
+use busbar_core::diagnostics::{
     diag_debug, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR, UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
 };
@@ -9,14 +9,14 @@ use crate::diagnostics::{
 /// key + its budget period + the governance store). `None` when governance is off or no key resolved.
 #[derive(Clone)]
 pub(crate) struct UsageSink {
-    pub(crate) gov: Arc<crate::governance::GovState>,
+    pub(crate) gov: Arc<busbar_core::governance::GovState>,
     /// The resolved cost model (chain topology; rates are NOT used at accrual - tokens are the
     /// ledger, spend derives at read time). Arc bump per request, rebuilt on config apply.
-    pub(crate) cost: Arc<crate::cost::CostModel>,
+    pub(crate) cost: Arc<busbar_core::cost::CostModel>,
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
     /// charge time, so building the sink (once per request) and cloning it (once per failover
     /// attempt) is a refcount bump, not a per-request `String` clone.
-    pub(crate) key: Arc<crate::governance::VirtualKey>,
+    pub(crate) key: Arc<busbar_core::governance::VirtualKey>,
     /// The pool this request was ADMITTED through (the ingress-requested pool) - the accounting
     /// scope for pool-qualified limits. Stream-end token accrual charges exactly the buckets the
     /// admission charged, so the two can never disagree on a pool-scoped budget. `Arc<str>`: the
@@ -36,7 +36,7 @@ pub(crate) struct UsageSink {
     /// a chain with no concurrent caps or a test sink built off the admission path. Never read:
     /// the field exists purely so its Drop (on the last clone) releases the gauges.
     #[allow(dead_code)]
-    pub(crate) admit: Option<Arc<crate::governance::AdmitGrant>>,
+    pub(crate) admit: Option<Arc<busbar_core::governance::AdmitGrant>>,
 }
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
@@ -64,7 +64,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// The operation this response belongs to. Drives whether the non-stream body is buffered for
     /// usage extraction (`taps_nonstream_usage`) and how usage is read from it (`extract_usage`).
     /// Chat reads the egress reader's IR usage; a flat-fee op taps nothing.
-    op: crate::handlers::Op,
+    op: busbar_core::handlers::Op,
     /// True when the INGRESS client decodes a binary `application/vnd.amazon.eventstream` body (a
     /// native AWS SDK Bedrock client). A mid-stream error must then be a BINARY exception frame, not
     /// an SSE `event: error` text frame — writing SSE text into a binary eventstream body yields an
@@ -76,20 +76,20 @@ pub(crate) struct FirstByteBody<S, P> {
     lane_idx: usize,
     /// Resolved breaker config for the routing pool, so a mid-stream failure trips this lane using
     /// the same thresholds the synchronous path used (defaults on the degraded path).
-    breaker_cfg: Arc<crate::store::BreakerCfg>,
+    breaker_cfg: Arc<busbar_core::store::BreakerCfg>,
     /// Routing pool name, so a mid-stream failure trips this lane's per-pool breaker cell (empty on
     /// the degraded path → the lane-default cell).
     pool: Box<str>,
     /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
     /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
-    /// [`crate::proto::StreamTranslator`] seam so this streaming body never names the concrete
+    /// [`busbar_core::proto::StreamTranslator`] seam so this streaming body never names the concrete
     /// translator.
-    translate: Option<Box<dyn crate::proto::StreamTranslator>>,
+    translate: Option<Box<dyn busbar_core::proto::StreamTranslator>>,
     /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
     /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
     /// `:streamGenerateContent` request expects (`[{...},{...}]`). Runs AFTER `translate`.
-    json_array: Option<Box<dyn crate::proto::ArrayStreamFramer>>,
+    json_array: Option<Box<dyn busbar_core::proto::ArrayStreamFramer>>,
     /// When set, the token usage tapped from this response is charged to a virtual key's budget at
     /// stream end (token-accurate accounting). Taken (fired) exactly once when the stream completes.
     usage_sink: Option<UsageSink>,
@@ -155,15 +155,15 @@ where
         inner: S,
         is_sse: bool,
         ingress_protocol: &str,
-        op: crate::handlers::Op,
+        op: busbar_core::handlers::Op,
         permit: P,
         ceiling_deadline: tokio::time::Instant,
         app: Arc<App>,
         lane_idx: usize,
-        breaker_cfg: Arc<crate::store::BreakerCfg>,
+        breaker_cfg: Arc<busbar_core::store::BreakerCfg>,
         pool: &str,
-        translate: Option<Box<dyn crate::proto::StreamTranslator>>,
-        json_array: Option<Box<dyn crate::proto::ArrayStreamFramer>>,
+        translate: Option<Box<dyn busbar_core::proto::StreamTranslator>>,
+        json_array: Option<Box<dyn busbar_core::proto::ArrayStreamFramer>>,
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
     ) -> Self {
@@ -175,7 +175,7 @@ where
         // behavior-preserving — and core spells no dialect name to state it.
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
-        let ingress_decl = crate::proto::decl_for(ingress_protocol);
+        let ingress_decl = busbar_core::proto::decl_for(ingress_protocol);
         // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
         // docs for the one-envelope exactness argument.
         let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
@@ -189,7 +189,7 @@ where
             ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
             ingress_protocol: ingress_decl
                 .map(|d| d.name)
-                .or_else(crate::proto::residual_default_dialect)
+                .or_else(busbar_core::proto::residual_default_dialect)
                 .unwrap_or_default(),
             op,
             permit: Some(permit),
@@ -332,7 +332,7 @@ where
                                 // unrecognized protocol, or a usage object so large it doesn't fit in
                                 // `cap` itself) is still observable here, not silent.
                                 this.nonstream_buf_truncated = true;
-                                metrics::counter!(crate::metrics::BILLING_TRUNCATED_TOTAL)
+                                metrics::counter!(busbar_core::metrics::BILLING_TRUNCATED_TOTAL)
                                     .increment(1);
                                 diag_debug!(
                                     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
@@ -622,7 +622,7 @@ where
                     // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
-                    let token_usage: Option<crate::billing::TokenUsage> =
+                    let token_usage: Option<busbar_core::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
@@ -641,7 +641,7 @@ where
                                 // the self-contained `usage` sub-object instead (see
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
-                                crate::proto::decl_for(this.ingress_protocol)
+                                busbar_core::proto::decl_for(this.ingress_protocol)
                                     .and_then(|d| d.dialect())
                                     .and_then(|di| di.recover_truncated_usage(&buf))
                             } else {
@@ -682,14 +682,14 @@ where
                             // fields ADDITIVE, so the four tiers are correct provider-agnostically.
                             let tier = token_usage
                                 .as_ref()
-                                .map(crate::proxy::usage::tier_tokens)
+                                .map(crate::engine::usage::tier_tokens)
                                 .unwrap_or_default();
                             if let Some(lane) = this
                                 .app
                                 .as_ref()
                                 .and_then(|a| a.engine_tables().lanes().get(this.lane_idx))
                             {
-                                crate::proxy::usage::ledger_and_meter(
+                                crate::engine::usage::ledger_and_meter(
                                     &sink,
                                     lane,
                                     token_usage.as_ref(),
@@ -753,7 +753,7 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()
-            .map(crate::proxy::usage::tier_tokens)
+            .map(crate::engine::usage::tier_tokens)
             .unwrap_or_default();
         if !tier.is_zero() {
             if let Some(lane) = self
@@ -763,7 +763,7 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             {
                 // Ledger + meter the partial through the one accrual seam (the tokens were
                 // really generated + delivered before the drop).
-                crate::proxy::usage::ledger_and_meter(&sink, lane, usage.as_ref(), &tier);
+                crate::engine::usage::ledger_and_meter(&sink, lane, usage.as_ref(), &tier);
             }
         }
     }

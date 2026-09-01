@@ -119,10 +119,10 @@ pub fn build_egress_targets(
     path_base: Option<&str>,
     wire_model: &str,
     base_url: &str,
-) -> Result<std::collections::HashMap<(crate::operation::Operation, bool), EgressTarget>, String> {
-    use crate::operation::Operation;
+) -> Result<std::collections::HashMap<(busbar_core::operation::Operation, bool), EgressTarget>, String> {
+    use busbar_core::operation::Operation;
     let mut out = std::collections::HashMap::new();
-    let Some(rh) = crate::handlers::request_handler(protocol) else {
+    let Some(rh) = busbar_core::handlers::request_handler(protocol) else {
         return Ok(out);
     };
     // The seven cross-dialect chat/completion-family operations, kept as a local seed set (a neutral
@@ -142,7 +142,7 @@ pub fn build_egress_targets(
     let ops = family_ops
         .iter()
         .chain(Operation::ALL.iter())
-        .chain(crate::proto::registry::declared_verbs().iter());
+        .chain(busbar_core::proto::registry::declared_verbs().iter());
     for &op in ops {
         for stream in [false, true] {
             if out.contains_key(&(op, stream)) {
@@ -150,7 +150,7 @@ pub fn build_egress_targets(
             }
             let path = match path_override {
                 Some(p) => p.to_string(),
-                None => rh.upstream_path(&crate::handlers::EgressCtx {
+                None => rh.upstream_path(&busbar_core::handlers::EgressCtx {
                     operation: op,
                     model: wire_model,
                     stream,
@@ -211,8 +211,8 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
         };
         return (wire, path.to_string());
     }
-    let wire_path = crate::sigv4::uri_encode_path(path);
-    let canonical = crate::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
+    let wire_path = busbar_core::sigv4::uri_encode_path(path);
+    let canonical = busbar_core::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
     let wire = match query {
         Some(q) => format!("{wire_path}?{q}"),
         None => wire_path,
@@ -227,9 +227,9 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 /// `path` override, so no new protocol is needed. An un-encodable key yields no auth header (the
 /// upstream then rejects with 401, classified by the breaker like any other auth failure).
 pub(crate) fn lane_auth_headers(
-    lane: &crate::state::Lane,
+    lane: &busbar_core::state::Lane,
     key: &str,
-    ctx: &crate::proto::SigningContext,
+    ctx: &busbar_core::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     lane.credential.headers_for(key, ctx)
 }
@@ -259,7 +259,7 @@ pub(crate) fn lane_auth_headers(
 // (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // crate (`busbar-mcp`) states it as its `ProtocolDecl::egress_user_agent` default without reaching
-// into core. Re-exported through `crate::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
+// into core. Re-exported through `busbar_core::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
 // call site here resolves unchanged.
 
 /// Plausible native-SDK `User-Agent` for the chosen EGRESS protocol. reqwest sends NO default
@@ -274,9 +274,9 @@ pub(crate) fn lane_auth_headers(
 /// writer (`writer.egress_user_agent()`) bypass this wrapper; it exists for test-code paths that
 /// look up by name.
 pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
-    crate::proto::decl_for(egress_protocol)
+    busbar_core::proto::decl_for(egress_protocol)
         .map(|d| d.egress_user_agent)
-        .unwrap_or(crate::proxy::EGRESS_UA_DEFAULT)
+        .unwrap_or(crate::engine::EGRESS_UA_DEFAULT)
 }
 
 /// The `Accept` header a native SDK for `egress_protocol` sends, given the caller's stream intent.
@@ -291,7 +291,7 @@ pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
 /// `application/json`. The by-name lookup path (probes, forward-header assembly).
 pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'static str {
     if wants_stream {
-        crate::proto::decl_for(egress_protocol)
+        busbar_core::proto::decl_for(egress_protocol)
             .map(|d| d.egress_stream_accept)
             .unwrap_or(TEXT_EVENT_STREAM)
     } else {
