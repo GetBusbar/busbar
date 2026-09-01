@@ -143,6 +143,7 @@ fn body() -> Value {
 /// contract holds at the seam itself, not just at the wire.
 #[tokio::test]
 async fn default_flags_project_nothing() {
+    crate::testkit::install_test_seams();
     let (out, captured) = run(false, false, None, body()).await;
     let captured = captured.expect("policy must have been called");
     assert!(captured.prompt.is_none(), "send_prompt off ⇒ no prompt");
@@ -156,6 +157,7 @@ async fn default_flags_project_nothing() {
 /// before pool routing, not just resolved.
 #[tokio::test]
 async fn global_gate_reject_short_circuits_the_request() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -211,6 +213,7 @@ async fn global_gate_reject_short_circuits_the_request() {
 /// global-gate loop is a no-op on abstain.
 #[tokio::test]
 async fn global_gate_abstain_does_not_reject() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -374,6 +377,7 @@ impl PoolRuntimeExt for TestApp {
 /// restrict is an advisory escape (skip).
 #[test]
 fn enforce_restricts_reapplies_compliance_tags_across_pools() {
+    crate::testkit::install_test_seams();
     // Fallback pool "fb": lane 0 carries `baa`, lane 1 carries nothing.
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -466,6 +470,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
 /// NOT baa-tagged; the compliance restrict must FAIL CLOSED there, not serve the ineligible lane.
 #[tokio::test]
 async fn base_policy_restrict_persists_across_fallback_pool_hop() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(
             LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost")
@@ -647,6 +652,7 @@ async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
 /// data-plane module (a non-empty chain with no matching credential denies fail-closed).
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
@@ -688,6 +694,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
@@ -727,6 +734,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
 /// decision gate rejects — audit taps see denials, not just served requests.
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_gate() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -752,6 +760,7 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
 /// STAGE TAPS: a response tap reports `ok` + the status for a served request.
 #[tokio::test]
 async fn completion_tap_reports_ok_outcome() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
@@ -777,6 +786,7 @@ async fn completion_tap_reports_ok_outcome() {
 /// STAGE TAPS: an routing tap carries the failover story — attempt number + dispatched target.
 #[tokio::test]
 async fn attempt_tap_carries_attempt_story() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
@@ -808,6 +818,7 @@ async fn attempt_tap_carries_attempt_story() {
 /// STAGE TAPS: a candidate tap observes the post-reconcile candidate-set size.
 #[tokio::test]
 async fn route_tap_reports_surviving_candidates() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
@@ -864,6 +875,7 @@ impl RoutingPolicy for RewritingGate {
 /// output was silently discarded exactly on the fast path.
 #[tokio::test]
 async fn same_protocol_passthrough_carries_global_rewrite() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(crate::test_support::MockServerState::new());
     state.push(crate::test_support::MockResponse::Ok {
         status: StatusCode::OK,
@@ -906,6 +918,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
 /// nothing).
 #[tokio::test]
 async fn pool_scoped_rw_gate_rewrites_the_body() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(crate::test_support::MockServerState::new());
     state.push(crate::test_support::MockResponse::Ok {
         status: StatusCode::OK,
@@ -967,6 +980,7 @@ impl RoutingPolicy for ErroringPolicy {
 /// exactly as a primary's would be (here: the fallback rejects with 451).
 #[tokio::test]
 async fn on_error_fallback_hook_fires_and_decides() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -1006,6 +1020,7 @@ async fn on_error_fallback_hook_fires_and_decides() {
 /// ⇒ fail-closed 503) — never a silent proceed.
 #[tokio::test]
 async fn on_error_chain_exhausted_applies_terminal() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -1048,6 +1063,7 @@ async fn on_error_chain_exhausted_applies_terminal() {
 /// unambiguously a 200 where a 503 is required.
 #[tokio::test]
 async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatches() {
+    crate::testkit::install_test_seams();
     let server = mock_lane("live-lane").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1084,6 +1100,7 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
 /// zero test failures elsewhere.
 #[tokio::test]
 async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let server = mock_lane("live-lane").await;
     let mut app = TestApp::new()
@@ -1112,6 +1129,7 @@ async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
 /// short-circuits before dispatch, proving the pool-gate half of the chain is wired.
 #[tokio::test]
 async fn pool_gate_reject_fires_from_pool_runtime_gates() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -1142,6 +1160,7 @@ async fn pool_gate_reject_fires_from_pool_runtime_gates() {
 /// surfaces (the chain sort is the tie-break) — regardless of injection order.
 #[tokio::test]
 async fn reject_priority_tie_break_surfaces_lowest_priority() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -1173,6 +1192,7 @@ async fn reject_priority_tie_break_surfaces_lowest_priority() {
 /// fail closed (the fail-closed default on_empty ⇒ 503) — never allow-all.
 #[tokio::test]
 async fn multi_restrict_disjoint_intersection_fails_closed() {
+    crate::testkit::install_test_seams();
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "eu-lane",
@@ -1212,6 +1232,7 @@ async fn multi_restrict_disjoint_intersection_fails_closed() {
 /// request dispatches to exactly that lane (the restriction bounds dispatch, not just ranking).
 #[tokio::test]
 async fn multi_restrict_intersection_dispatches_only_the_survivor() {
+    crate::testkit::install_test_seams();
     let survivor = mock_lane("both").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1255,6 +1276,7 @@ async fn multi_restrict_intersection_dispatches_only_the_survivor() {
 /// strand, never a resurrected excluded member).
 #[tokio::test]
 async fn stale_order_filtered_against_post_restrict_set() {
+    crate::testkit::install_test_seams();
     let survivor = mock_lane("kept").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1294,6 +1316,7 @@ async fn stale_order_filtered_against_post_restrict_set() {
 /// whichever order wins is dispatched first with no failover — the serving lane is the proof.
 #[tokio::test]
 async fn order_last_in_chain_wins() {
+    crate::testkit::install_test_seams();
     let alpha = mock_lane("alpha").await;
     let beta = mock_lane("beta").await;
     let mut app = TestApp::new()
@@ -1334,6 +1357,7 @@ async fn order_last_in_chain_wins() {
 /// ordering (first healthy candidate, `base`) serves.
 #[tokio::test]
 async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate() {
+    crate::testkit::install_test_seams();
     let base = mock_lane("base").await;
     let low = mock_lane("low").await;
     let mut app = TestApp::new()
@@ -1382,6 +1406,7 @@ async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate(
 /// ordering gate reorders dispatch away from config order.
 #[tokio::test]
 async fn global_gate_order_arm_is_honored() {
+    crate::testkit::install_test_seams();
     let alpha = mock_lane("alpha").await;
     let beta = mock_lane("beta").await;
     let mut app = TestApp::new()
@@ -1413,6 +1438,7 @@ async fn global_gate_order_arm_is_honored() {
 /// `send_prompt: true` alone: the policy sees the flattened content; identity stays absent.
 #[tokio::test]
 async fn send_prompt_projects_content_only() {
+    crate::testkit::install_test_seams();
     let (_, captured) = run(true, false, None, body()).await;
     let captured = captured.expect("policy must have been called");
     let (system, messages) = captured.prompt.expect("send_prompt on ⇒ prompt present");
@@ -1425,6 +1451,7 @@ async fn send_prompt_projects_content_only() {
 /// so the key fields are None); the prompt stays absent.
 #[tokio::test]
 async fn send_user_projects_identity_only() {
+    crate::testkit::install_test_seams();
     let (_, captured) = run(false, true, None, body()).await;
     let captured = captured.expect("policy must have been called");
     assert!(captured.prompt.is_none(), "send_prompt off ⇒ no prompt");
@@ -1439,6 +1466,7 @@ async fn send_user_projects_identity_only() {
 /// a failure).
 #[tokio::test]
 async fn reject_decision_maps_to_reject_request_outcome() {
+    crate::testkit::install_test_seams();
     let (out, _) = run(true, false, Some((451, "PII detected".to_string())), body()).await;
     match out {
         PolicyOutcome::RejectRequest {
@@ -1476,6 +1504,7 @@ fn outcome_kind(o: &PolicyOutcome) -> &'static str {
 /// a cap that was never applied. An operator-visible change; it is in the CHANGELOG.
 #[tokio::test]
 async fn max_tokens_saturates_not_wraps() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({
         "model": "m0",
         "max_tokens": 5_000_000_000u64,
@@ -1496,6 +1525,7 @@ async fn max_tokens_saturates_not_wraps() {
 /// the projection.
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
@@ -1581,6 +1611,7 @@ async fn send_user_projects_governance_key_identity() {
 /// to that synthesized key so `send_user` policies see the caller, instead of silently `None`.
 #[tokio::test]
 async fn send_user_falls_back_to_synthesized_group_key_identity() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -1665,6 +1696,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 /// resolved identity is the synthesized key's, matching what auth actually authorized.
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
@@ -1764,6 +1796,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
 /// `GovCtx.key` down; this exercises that path end-to-end via a pool's `send_user` policy.
 #[tokio::test]
 async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
+    crate::testkit::install_test_seams();
     let seen = Arc::new(StdMutex::new(None));
     let policy = ResolvedPolicy::Policy {
         policy: Arc::new(CapturingPolicy {
@@ -1839,6 +1872,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
 /// a log/client-injecting message through the reject path.
 #[tokio::test]
 async fn reject_status_and_message_resanitized_at_the_seam() {
+    crate::testkit::install_test_seams();
     let (out, _) = run(
         false,
         false,
@@ -1864,6 +1898,7 @@ async fn reject_status_and_message_resanitized_at_the_seam() {
 /// mapped kind not covered by the 451/429 envelope tests.
 #[tokio::test]
 async fn reject_408_maps_to_anthropic_timeout_envelope() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let resp = ingress_error(
         "anthropic",
@@ -1886,6 +1921,7 @@ async fn reject_408_maps_to_anthropic_timeout_envelope() {
 /// `RejectRequest` arm and `ingress_error` runs for real.
 #[tokio::test]
 async fn reject_rides_the_full_forward_path() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let seen = Arc::new(StdMutex::new(None));
     let app = TestApp::new()
@@ -1959,6 +1995,7 @@ async fn reject_rides_the_full_forward_path() {
 /// exception class for the status the hook chose.
 #[test]
 fn reject_kind_mapping_matches_status_semantics() {
+    crate::testkit::install_test_seams();
     assert_eq!(reject_kind_for_status(401), KIND_AUTHENTICATION);
     assert_eq!(reject_kind_for_status(403), KIND_PERMISSION);
     assert_eq!(reject_kind_for_status(404), KIND_NOT_FOUND);
@@ -1974,6 +2011,7 @@ fn reject_kind_mapping_matches_status_semantics() {
 /// here through the Anthropic writer (the ingress the reject tests route with).
 #[tokio::test]
 async fn reject_message_reaches_anthropic_error_body() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let status = 451u16;
     let resp = ingress_error(
@@ -1996,6 +2034,7 @@ async fn reject_message_reaches_anthropic_error_body() {
 /// `x-amzn-errortype` header — the reject path takes whatever dialect the caller spoke.
 #[tokio::test]
 async fn reject_produces_bedrock_native_envelope() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let resp = ingress_error(
         "bedrock",
@@ -2023,6 +2062,7 @@ async fn reject_produces_bedrock_native_envelope() {
 /// same small integer — each is seeded independently from OS entropy.
 #[test]
 fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -2065,6 +2105,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
 /// decide_policy_order -> completion-tap plumbing intact.
 #[tokio::test]
 async fn same_request_id_joins_gate_decision_and_completion_tap() {
+    crate::testkit::install_test_seams();
     let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let seen = Arc::new(StdMutex::new(None));
@@ -2158,6 +2199,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 /// hook payload carries.
 #[tokio::test]
 async fn request_id_is_recorded_as_native_u64_tracing_field() {
+    crate::testkit::install_test_seams();
     let lane = mock_lane("served").await;
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()

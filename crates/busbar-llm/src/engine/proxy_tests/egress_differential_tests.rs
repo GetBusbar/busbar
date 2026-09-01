@@ -133,6 +133,7 @@ async fn stack_b(
 /// request body, same observed (status, body).
 #[tokio::test]
 async fn plaintext_status_and_body_are_identical_across_stacks() {
+    crate::testkit::install_test_seams();
     let fixture = spawn_http(CannedResponse::ok(r#"{"answer":42}"#), 4);
     let a = stack_a(&format!("http://{}/v1/x", fixture.addr), r#"{"q":"hop"}"#).await;
     let (b, spki) = stack_b(
@@ -169,6 +170,7 @@ async fn plaintext_status_and_body_are_identical_across_stacks() {
 /// fixture's request count is the structural proof no second exchange happened.
 #[tokio::test]
 async fn redirects_surface_verbatim_and_are_followed_by_neither_stack() {
+    crate::testkit::install_test_seams();
     let fixture = spawn_http(
         CannedResponse::redirect(302, "http://203.0.113.9/metadata"),
         4,
@@ -205,6 +207,7 @@ async fn redirects_surface_verbatim_and_are_followed_by_neither_stack() {
 /// trust story, and "refused" is the correct differential record for that posture.
 #[tokio::test]
 async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private_ca() {
+    crate::testkit::install_test_seams();
     let material = ca_and_leaf(&["pinned.test"]);
     let fixture = spawn_tls(TlsServerSpec {
         cert_chain_pem: material.leaf_pem.clone(),
@@ -278,6 +281,7 @@ async fn known_leaf_tls_spki_and_sni_are_observed_and_webpki_refuses_the_private
 /// nothing rather than forging something.
 #[tokio::test]
 async fn mtls_fixture_accepts_only_the_carried_identity() {
+    crate::testkit::install_test_seams();
     let server = ca_and_leaf(&["mtls.test"]);
     let client = ca_and_leaf(&["client.busbar.test"]);
     let fixture = spawn_tls(TlsServerSpec {
@@ -340,6 +344,7 @@ async fn mtls_fixture_accepts_only_the_carried_identity() {
 /// step further: [`RefuseSecondLookup`] fails that different name loudly with the doctrine text.
 #[tokio::test]
 async fn the_pin_never_consults_the_resolver_and_the_doctrine_refuses_other_names() {
+    crate::testkit::install_test_seams();
     let fixture = spawn_http(CannedResponse::ok("pinned"), 4);
     let evil: SocketAddr = "203.0.113.9:80".parse().expect("addr");
     let rebinding = Arc::new(RebindingResolver::new(fixture.addr, evil));

@@ -57,6 +57,7 @@ fn chat_body() -> bytes::Bytes {
 /// after the request it has received none.
 #[tokio::test]
 async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untouched() {
+    crate::testkit::install_test_seams();
     let primary_state = Arc::new(MockServerState::new());
     let twin_state = Arc::new(MockServerState::new());
 
@@ -169,6 +170,7 @@ async fn a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untou
 /// above stays green — which is exactly why both are here.
 #[tokio::test]
 async fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves() {
+    crate::testkit::install_test_seams();
     let primary_state = Arc::new(MockServerState::new());
     let twin_state = Arc::new(MockServerState::new());
     primary_state.push(MockResponse::Ok {

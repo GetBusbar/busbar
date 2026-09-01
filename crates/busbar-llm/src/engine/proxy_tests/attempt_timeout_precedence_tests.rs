@@ -23,6 +23,7 @@ fn rmember(idx: usize, reasoning: Option<bool>) -> WeightedLane {
 /// override inherits the model flag; no candidate row falls back to the model flag.
 #[test]
 fn effective_reasoning_member_override_wins() {
+    crate::testkit::install_test_seams();
     use super::effective_reasoning;
     let cands = vec![
         rmember(0, Some(true)),
@@ -55,6 +56,7 @@ fn effective_reasoning_member_override_wins() {
 /// default, so the SAME model can carry a 10000ms cap in one pool and 50ms in another.
 #[test]
 fn test_member_override_wins_over_model_default() {
+    crate::testkit::install_test_seams();
     let cands = vec![member(0, Some(50)), member(1, None)];
     assert_eq!(
         effective_attempt_timeout_ms(&cands, 0, Some(10_000)),
@@ -66,6 +68,7 @@ fn test_member_override_wins_over_model_default() {
 /// A member WITHOUT an override inherits the model-level default.
 #[test]
 fn test_model_default_applies_when_member_has_no_override() {
+    crate::testkit::install_test_seams();
     let cands = vec![member(0, Some(50)), member(1, None)];
     assert_eq!(
         effective_attempt_timeout_ms(&cands, 1, Some(10_000)),
@@ -77,6 +80,7 @@ fn test_model_default_applies_when_member_has_no_override() {
 /// Neither level set → uncapped (None): the attempt runs under the ordinary transport timeout.
 #[test]
 fn test_no_cap_anywhere_is_none() {
+    crate::testkit::install_test_seams();
     let cands = vec![member(0, None)];
     assert_eq!(effective_attempt_timeout_ms(&cands, 0, None), None);
 }
@@ -85,6 +89,7 @@ fn test_no_cap_anywhere_is_none() {
 /// value is the only source.
 #[test]
 fn test_empty_cands_uses_model_default() {
+    crate::testkit::install_test_seams();
     assert_eq!(effective_attempt_timeout_ms(&[], 3, Some(750)), Some(750));
     assert_eq!(effective_attempt_timeout_ms(&[], 3, None), None);
 }
@@ -92,6 +97,7 @@ fn test_empty_cands_uses_model_default() {
 /// The cap is floored by the request's remaining budget, and never zero.
 #[test]
 fn test_attempt_cap_budget_floor() {
+    crate::testkit::install_test_seams();
     // Plenty of budget: the cap is the configured value.
     assert_eq!(attempt_cap(200, 30).as_millis(), 200);
     // Cap larger than the remaining budget: clamped to the budget.

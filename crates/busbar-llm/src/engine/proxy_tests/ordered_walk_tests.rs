@@ -58,6 +58,7 @@ fn cands() -> Vec<WeightedLane> {
 /// pinning to it on the NORMAL path, silently defeating the operator's drain.
 #[tokio::test]
 async fn sticky_affinity_never_selects_zero_weight_drained_member() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     // Single candidate, weight 0 (fully drained). The affinity key hashes to pos 0 (the only
     // candidate), so the sticky path is exercised ON the drained lane. With the drain gate it is
@@ -124,6 +125,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
 /// The walk dispatches to the FIRST ranked lane that is healthy: order [2,0,1] all-healthy ⇒ 2.
 #[tokio::test]
 async fn ordered_walk_picks_first_preferred_when_healthy() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
@@ -136,6 +138,7 @@ async fn ordered_walk_picks_first_preferred_when_healthy() {
 /// A tripped (Open) preferred lane is SKIPPED to the next ranked lane — same health filter as SWRR.
 #[tokio::test]
 async fn ordered_walk_skips_tripped_preferred_to_next() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     // Trip lane 2 (the #1 preference) Open with a cooldown well past the REAL wall clock that
     // `pick_among` reads (it passes `state::now()` to `ready_in`/SWRR), so the lane is not
@@ -156,6 +159,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
 /// An EXCLUDED preferred lane (already tried this request) is skipped to the next ranked lane.
 #[tokio::test]
 async fn ordered_walk_skips_excluded_preferred() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     let mut rc = RequestCtx::new(60, 1);
     rc.exclude(2); // lane 2 already tried
@@ -170,6 +174,7 @@ async fn ordered_walk_skips_excluded_preferred() {
 /// THROUGH to SWRR over the remaining candidates — an unranked-but-healthy lane is still reachable.
 #[tokio::test]
 async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     app.store
         .force_open_in("p", 2, busbar_core::state::now() + 1_000_000); // the only ranked lane is tripped
@@ -190,6 +195,7 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
 /// the healthy candidates rather than pinning one lane, and (b) never dispatches to an unhealthy lane.
 #[tokio::test]
 async fn ordered_walk_empty_order_is_swrr() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     let order: [usize; 0] = [];
 
@@ -233,6 +239,7 @@ async fn ordered_walk_empty_order_is_swrr() {
 /// without the `Instant + Duration` overflow panic the plain `+` operator would raise.
 #[test]
 fn request_ctx_new_huge_deadline_does_not_panic() {
+    crate::testkit::install_test_seams();
     for secs in [u64::MAX, u64::MAX / 2, 1_000_000_000_000_000_000] {
         let rc = RequestCtx::new(secs, 1);
         // Reading the wall-clock budget back must also not panic and must be a large positive bound.
@@ -249,6 +256,7 @@ fn request_ctx_new_huge_deadline_does_not_panic() {
 /// to the next healthy ranked lane.
 #[tokio::test]
 async fn ordered_walk_skips_weight_zero_drained_preferred() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     // Lane 2 drained (weight 0); 0 and 1 still serve.
     let cands = vec![
@@ -292,6 +300,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
 /// set must not serve traffic.
 #[tokio::test]
 async fn ordered_walk_all_weight_zero_selects_none() {
+    crate::testkit::install_test_seams();
     let app = three_lane_app();
     let cands = vec![
         WeightedLane {
@@ -328,6 +337,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
 /// one-lane pool at capacity yields no pick, with an `AtCapacity` reason recorded.
 #[tokio::test]
 async fn excluded_reasons_records_at_capacity() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::Unavailable;
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))
@@ -358,6 +368,7 @@ async fn excluded_reasons_records_at_capacity() {
 /// records `AtCapacity` (rather than falling through with no trace).
 #[tokio::test]
 async fn sticky_fall_through_records_reason() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::Unavailable;
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))

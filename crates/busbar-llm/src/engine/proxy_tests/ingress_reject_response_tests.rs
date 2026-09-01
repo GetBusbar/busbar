@@ -10,6 +10,7 @@ use super::*;
 
 #[tokio::test]
 async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
+    crate::testkit::install_test_seams();
     let resp = ingress_reject_response(
         "openai",
         &busbar_core::handlers::IngressReject::UnsupportedSubOp {
@@ -41,6 +42,7 @@ async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
 
 #[tokio::test]
 async fn bad_request_reject_keeps_the_unchanged_generic_400() {
+    crate::testkit::install_test_seams();
     let resp = ingress_reject_response(
         "openai",
         &busbar_core::handlers::IngressReject::BadRequest("x".into()),

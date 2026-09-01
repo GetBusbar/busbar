@@ -217,7 +217,12 @@ pub mod testkit;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn ensure_test_protocols_registered() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| busbar_substrate::proto::register_test_protocols(DECLS));
+    // FULL install (protocols + plane + path-ingress) — money-path Phase 3-4 C: the relocated
+    // money-path oracles resolve the residual chat protocol / plane fallback (`handlers::chat`,
+    // `residual_default_dialect`) as well as the six dialect codecs, so this ensure must register the
+    // whole seam, not just the protocol table. Idempotent (each substrate registration dedupes) and
+    // `Once`-guarded, so it stays a single atomic load after the first codec/op resolution.
+    REGISTER.call_once(crate::testkit::install_test_seams);
 }
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.

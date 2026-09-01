@@ -514,6 +514,7 @@ proptest! {
 
     #[test]
     fn strengthened_lane_availability_invariant(world in world_strat()) {
+    crate::testkit::install_test_seams();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -532,6 +533,7 @@ proptest! {
 /// SPILL outcome passes.
 #[test]
 fn invariant_rejects_park_then_serve_primary_witness() {
+    crate::testkit::install_test_seams();
     // Silence the default panic printer for the deliberately-panicking witness below.
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
@@ -568,6 +570,7 @@ fn invariant_rejects_park_then_serve_primary_witness() {
 /// prove the fb_elig branch is REACHABLE on the real dispatch path for a concrete targeted shape.
 #[tokio::test]
 async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
+    crate::testkit::install_test_seams();
     let world = World {
         primary: vec![Member {
             dead: false,
@@ -596,6 +599,7 @@ async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
 /// fallback (served by the fallback, primary serves zero) — never park-then-serve the primary.
 #[tokio::test]
 async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
@@ -649,6 +653,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
 /// this test).
 #[tokio::test]
 async fn budget_contract_holds_under_full_saturation_for_every_policy() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
 
     for policy in [

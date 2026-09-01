@@ -14,6 +14,7 @@
 /// forbidden.)
 #[test]
 fn engine_never_branches_on_operation_identity() {
+    crate::testkit::install_test_seams();
     // Scan EVERY file of the forward engine (the module split must not open a blind spot): the engine
     // hub, each area-module, and the engine core + failover walk.
     let engine_files = [

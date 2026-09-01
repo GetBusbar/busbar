@@ -100,6 +100,7 @@ const TRANSLATE_WRITE_ALLOCS: u64 = 0; // the seam contract: no malloc on hot ca
 
 #[test]
 fn alloc_gate_translate_write_stable() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
@@ -175,6 +176,7 @@ const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 107;
 
 #[tokio::test(flavor = "current_thread")]
 async fn alloc_gate_openai_passthrough_forward() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     // One response per request we send (LIFO stack): 1 warm-up + several measured iterations.
     for _ in 0..8 {

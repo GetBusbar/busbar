@@ -32,6 +32,7 @@ fn seam(v: &Value, proto: &str, op: Operation) -> HookFacts {
 
 #[test]
 fn embeddings_body_is_no_longer_gate_blind() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({"model": "text-embedding-3-large", "input": "SCREEN-THIS-INPUT"});
     let f = seam(&v, "openai", Operation::EMBEDDINGS);
     assert!(
@@ -43,6 +44,7 @@ fn embeddings_body_is_no_longer_gate_blind() {
 
 #[test]
 fn image_body_is_no_longer_gate_blind() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({"model": "gpt-image-1", "prompt": "SCREEN-THIS-PROMPT"});
     let f = seam(&v, "openai", Operation::IMAGE);
     assert!(gate_view(&f).contains("SCREEN-THIS-PROMPT"));
@@ -50,6 +52,7 @@ fn image_body_is_no_longer_gate_blind() {
 
 #[test]
 fn speech_body_projects_input_and_instructions() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({
         "model": "gpt-4o-mini-tts",
         "input": "SPEAK-THIS",
@@ -67,6 +70,7 @@ fn speech_body_projects_input_and_instructions() {
 
 #[test]
 fn moderation_body_projects_text_and_marks_image_url_opaque() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({
         "model": "omni-moderation-latest",
         "input": [
@@ -84,6 +88,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
 
 #[test]
 fn rerank_body_projects_query_and_documents() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({
         "model": "rerank-v3.5",
         "query": "THE-QUERY",
@@ -96,6 +101,7 @@ fn rerank_body_projects_query_and_documents() {
 
 #[test]
 fn subscribe_body_projects_its_target() {
+    crate::testkit::install_test_seams();
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -111,6 +117,7 @@ fn subscribe_body_projects_its_target() {
 /// the raw bytes + content-type and project the prompt — the `&Value` path physically cannot.
 #[test]
 fn transcription_prompt_is_seen_through_the_byte_seam() {
+    crate::testkit::install_test_seams();
     let boundary = "----busbartestBOUNDARY";
     let body = format!(
         "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n\
@@ -140,6 +147,7 @@ fn transcription_prompt_is_seen_through_the_byte_seam() {
 /// operation is Absent (no reader to ask) — never a spurious rejection.
 #[test]
 fn absent_semantics_hold_for_opless_and_bodyless() {
+    crate::testkit::install_test_seams();
     // No operation (the pre-routing auth capture): Absent.
     assert!(matches!(
         read_hook_facts(&Value::Null, &[], "", "openai", None).unwrap(),

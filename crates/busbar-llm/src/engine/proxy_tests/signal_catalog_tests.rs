@@ -128,6 +128,7 @@ async fn run_decide(app: &std::sync::Arc<busbar_core::state::App>) -> Vec<busbar
 /// a fresh lane's breaker starts Closed, so the projected value is the `"closed"` label.
 #[tokio::test]
 async fn declared_signal_is_computed_and_projected() {
+    crate::testkit::install_test_seams();
     let bags = run_with_declared(vec![Signal::CandidateBreakerState]).await;
     assert_eq!(bags.len(), 1);
     match bags[0].get(Signal::CandidateBreakerState) {
@@ -151,6 +152,7 @@ async fn declared_signal_is_computed_and_projected() {
 /// rebuilds the mask from the persisted overlay.
 #[tokio::test]
 async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
+    crate::testkit::install_test_seams();
     // PANIC, never skip: a rig that skips when the cdylib is missing reports green over the exact
     // code it was written to cover. `cargo build -p busbar-hook-test-plugin` (or a `--workspace`
     // build) is a precondition of this test, not an option.
@@ -207,6 +209,7 @@ async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
 /// signal in, everything else out" contract.
 #[tokio::test]
 async fn undeclared_signal_is_absent() {
+    crate::testkit::install_test_seams();
     let bags = run_with_declared(vec![Signal::CandidateBreakerState]).await;
     assert!(
         bags[0].get(Signal::CandidateErrorRate).is_none(),
@@ -221,6 +224,7 @@ async fn undeclared_signal_is_absent() {
 /// `SignalBag::push` is never called.
 #[tokio::test]
 async fn default_path_allocates_no_signals_container() {
+    crate::testkit::install_test_seams();
     let bags = run_with_declared(Vec::new()).await;
     assert_eq!(bags.len(), 1);
     assert!(bags[0].is_empty(), "no hook declared any signal");
@@ -235,6 +239,7 @@ async fn default_path_allocates_no_signals_container() {
 /// label from `"closed"` to `"open"`.
 #[tokio::test]
 async fn breaker_state_projects_open_after_a_trip() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -301,6 +306,7 @@ async fn breaker_state_projects_open_after_a_trip() {
 /// exact fraction — a PURE projection of state the breaker already tracks (no new collection).
 #[tokio::test]
 async fn error_rate_projects_the_outcome_window_fraction() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",

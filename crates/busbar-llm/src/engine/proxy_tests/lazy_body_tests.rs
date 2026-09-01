@@ -12,6 +12,7 @@ use serde_json::json;
 /// and non-object top levels.
 #[test]
 fn head_matches_dom_for_captured_keys() {
+    crate::testkit::install_test_seams();
     let bodies: &[&str] = &[
         r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
         r#"{"model":"gpt-4o","stream":false,"system":"you are helpful"}"#,
@@ -47,6 +48,7 @@ fn head_matches_dom_for_captured_keys() {
 /// the malformed-body 400 contract is byte-identical.
 #[test]
 fn head_parse_rejects_iff_dom_parse_rejects() {
+    crate::testkit::install_test_seams();
     let inputs: &[&[u8]] = &[
         b"{\"model\":\"m\"}",
         b"not json",
@@ -82,6 +84,7 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
 /// it always was (exercised here to show the decline is safe, not wrong).
 #[test]
 fn head_pristine_matches_translate_output() {
+    crate::testkit::install_test_seams();
     let cases: &[(&'static str, &'static str, &'static str, Value)] = &[
         // (proto, name, lane_model, body) — pristine expected
         (
@@ -152,6 +155,7 @@ fn head_pristine_matches_translate_output() {
 /// Non-object same-protocol bodies are pristine on BOTH paths (every invalidator no-ops).
 #[test]
 fn non_object_body_is_head_pristine() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
@@ -173,6 +177,7 @@ fn non_object_body_is_head_pristine() {
 /// mutation through ensure_dom is visible to subsequent probe() reads (DOM authoritative).
 #[test]
 fn ensure_dom_materializes_and_probe_tracks_mutation() {
+    crate::testkit::install_test_seams();
     let bytes = Bytes::from(r#"{"model":"a","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     assert_eq!(
@@ -211,6 +216,7 @@ fn first_user_text(ir: &(dyn busbar_substrate::ir::facts::IrFacts + Send + Sync)
 /// hoisted into the IR's system slot, which is the IR's reading and not the raw body's.
 #[test]
 fn ensure_ir_reads_the_body_through_the_ingress_reader() {
+    crate::testkit::install_test_seams();
     let bytes = Bytes::from(
         r#"{"model":"gpt-4o","messages":[{"role":"system","content":"be terse"},{"role":"user","content":"hi"}]}"#,
     );
@@ -235,6 +241,7 @@ fn ensure_ir_reads_the_body_through_the_ingress_reader() {
 /// see the mutation, a memo hit cannot.
 #[test]
 fn ensure_ir_is_memoized_within_one_request() {
+    crate::testkit::install_test_seams();
     let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     assert!(lazy
@@ -262,6 +269,7 @@ fn ensure_ir_is_memoized_within_one_request() {
 /// request as it now stands, never as it arrived.
 #[test]
 fn ensure_dom_invalidates_the_memoized_ir() {
+    crate::testkit::install_test_seams();
     let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
     let mut lazy = LazyBody::parse(&bytes).unwrap();
     assert!(lazy
@@ -282,6 +290,7 @@ fn ensure_dom_invalidates_the_memoized_ir() {
 /// caller falls back to what it does today rather than to a guess. Neither poisons the memo.
 #[test]
 fn ensure_ir_is_none_when_the_body_or_the_protocol_has_no_reading() {
+    crate::testkit::install_test_seams();
     let unreadable = Bytes::from(r#"{"model":"gpt-4o","messages":"not an array"}"#);
     let mut lazy = LazyBody::parse(&unreadable).unwrap();
     assert!(lazy

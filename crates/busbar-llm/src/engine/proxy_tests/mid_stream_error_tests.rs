@@ -20,6 +20,7 @@ fn gemini_shim_key() -> &'static str {
 /// both error-framing helpers it feeds emit a body free of them.
 #[test]
 fn test_mid_stream_generic_detail_has_no_leak_markers() {
+    crate::testkit::install_test_seams();
     // Markers: transport/infrastructure tells (URLs, hyper/reqwest internals) AND busbar-internal
     // reverse-proxy VOCABULARY ("upstream"/"proxy"/"gateway"/"backend"/"lane"/"translate"). A
     // native vendor SDK never emits the latter in an error body or stream exception frame, so the
@@ -107,6 +108,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
 /// a binary body and produce an undecodable prelude/CRC for the AWS SDK's eventstream decoder.
 #[test]
 fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
+    crate::testkit::install_test_seams();
     let bytes = mid_stream_error_bytes("bedrock", true, "connection reset by peer");
     // Must NOT be SSE text.
     assert!(
@@ -154,6 +156,7 @@ fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
 /// `{"response":{...,"error":{...}}}` STREAM shape.
 #[test]
 fn test_sse_ingress_mid_stream_error_uses_native_framing() {
+    crate::testkit::install_test_seams();
     // openai / cohere / gemini: bare `data:`, NO event line, native JSON envelope. (Gemini's
     // native streaming error is a bare `data:` frame — its writer returns an empty event name —
     // NOT `event: error`; emitting an event line for gemini was the pre-fix bug.)
@@ -241,6 +244,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
 /// `client_fault_kind` maps the classified 4xx to a protocol-agnostic kind, exhaustively.
 #[test]
 fn test_client_fault_kind_mapping() {
+    crate::testkit::install_test_seams();
     assert_eq!(
         client_fault_kind(StatusClass::ContextLength),
         "context_length_exceeded" // golden wire-contract literal (kept bare on purpose)
@@ -255,6 +259,7 @@ fn test_client_fault_kind_mapping() {
 /// non-JSON / message-less body so the caller substitutes a generic detail (no foreign leak).
 #[test]
 fn test_extract_error_message() {
+    crate::testkit::install_test_seams();
     assert_eq!(
         extract_error_message(br#"{"error":{"message":"bad param"}}"#).as_deref(),
         Some("bad param")
@@ -272,6 +277,7 @@ fn test_extract_error_message() {
 /// engages the streaming path, while non-streaming/empty CTs do not.
 #[test]
 fn test_is_streaming_content_type() {
+    crate::testkit::install_test_seams();
     assert!(is_streaming_content_type("text/event-stream")); // golden wire-contract literal (kept bare on purpose)
     assert!(is_streaming_content_type(
         "application/vnd.amazon.eventstream"
@@ -290,6 +296,7 @@ fn test_is_streaming_content_type() {
 /// branch only) so a cross-protocol hop keeps the authoritative model `rewrite_model` installs.
 #[test]
 fn test_strip_router_shim_keys() {
+    crate::testkit::install_test_seams();
     let mut v = json!({"model": "p", "stream": true, (gemini_shim_key()): true, "messages": []});
     strip_router_shim_keys(&mut v, "bedrock");
     assert_eq!(
@@ -327,6 +334,7 @@ fn test_strip_router_shim_keys() {
 /// passthrough (model rides the URL there), and is a no-op for body-model ingress.
 #[test]
 fn test_strip_same_protocol_model_shim() {
+    crate::testkit::install_test_seams();
     let mut v = json!({"model": "p", "messages": []});
     strip_same_protocol_model_shim(&mut v, "gemini");
     assert!(
@@ -349,6 +357,7 @@ fn test_strip_same_protocol_model_shim() {
 /// the array key is gone; and the same-protocol path drops `model` and (path-model egress) `stream`.
 #[test]
 fn test_shim_strip_ordering_cross_protocol_keeps_model() {
+    crate::testkit::install_test_seams();
     // Cross-protocol gemini→openai: strip (never-native keys, gated on EGRESS) → rewrite_model
     // installs the lane model → NO same-protocol model strip. Body must carry the egress model AND
     // keep the writer-authored `stream` (openai is a body-model egress, so the backend

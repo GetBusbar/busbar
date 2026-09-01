@@ -17,6 +17,7 @@ const FORWARD_FUTURE_MAX_BYTES: usize = 3_800;
 
 #[test]
 fn forward_future_size_is_pinned() {
+    crate::testkit::install_test_seams();
     let app = crate::test_support::TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "gpt-4o",

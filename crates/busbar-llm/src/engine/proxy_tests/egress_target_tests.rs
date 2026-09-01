@@ -51,6 +51,7 @@ fn assert_table_matches_reference(app: &busbar_core::state::App, lane_idx: usize
 
 #[test]
 fn egress_targets_match_reference_composition_all_protocols() {
+    crate::testkit::install_test_seams();
     for proto in [
         crate::proto_codec::PROTO_OPENAI,
         crate::proto_codec::PROTO_ANTHROPIC,
@@ -69,6 +70,7 @@ fn egress_targets_match_reference_composition_all_protocols() {
 
 #[test]
 fn egress_targets_honor_azure_path_override_with_query() {
+    crate::testkit::install_test_seams();
     // Azure OpenAI: full-path override carrying `?api-version=` — the precomputed URL must keep
     // the query verbatim (the boot parse never re-encodes it; `Url::join`/`set_path` would).
     let app = TestApp::new()
@@ -95,6 +97,7 @@ fn egress_targets_honor_azure_path_override_with_query() {
 
 #[test]
 fn egress_targets_encode_bedrock_model_id_like_the_wire() {
+    crate::testkit::install_test_seams();
     // A Bedrock modelId's reserved `:` must reach the wire single-encoded (`%3A`) with the SigV4
     // canonical double-encoded (`%253A`) — the sign-what-you-send rule `health_tests` pins. The
     // boot-time `Url::parse` must pass those `%XX` bytes through unchanged.

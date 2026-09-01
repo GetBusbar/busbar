@@ -21,6 +21,7 @@ fn http() -> busbar_core::transport::Transport {
 
 #[test]
 fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
+    crate::testkit::install_test_seams();
     // OpenAI ingress → Anthropic lane = a cross-protocol hop whose response is read through the
     // single-candidate IR. v1.5.4 forwarded `n:3` and returned candidate [0]; restore that. The
     // request must translate to a valid Anthropic body (Anthropic models no `n`, so it is dropped).
@@ -65,6 +66,7 @@ fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
 
 #[test]
 fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
+    crate::testkit::install_test_seams();
     // Gemini ingress → OpenAI lane = cross-protocol. v1.5.4 forwarded `candidateCount:2` and read
     // candidate [0] back. OpenAI models `n`, so the ask crosses; the response reader still keeps
     // only the first candidate. Either way it must NOT be rejected with a 400.
@@ -103,6 +105,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
 
 #[test]
 fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
+    crate::testkit::install_test_seams();
     // OpenAI ingress → OpenAI lane = same-protocol. The response body relays verbatim (never through
     // the IR), so `n:3` is legitimate and must NOT be rejected. The request seam short-circuits to
     // the pristine bytes, which still carry `n:3`.
@@ -141,6 +144,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
 
 #[test]
 fn single_candidate_cross_protocol_is_not_rejected() {
+    crate::testkit::install_test_seams();
     // Guardrail: a genuine single-candidate cross-protocol request (n=1, or n absent) must succeed.
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -176,6 +180,7 @@ fn single_candidate_cross_protocol_is_not_rejected() {
 
 #[test]
 fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
+    crate::testkit::install_test_seams();
     // OpenAI embeddings (multi-input) → Gemini lane. Gemini `:embedContent` embeds a SINGLE input;
     // v1.5.4 embedded the FIRST input (with a `warn!`) and returned 200. Restore that: forward with
     // the first input on the wire, do not reject.
@@ -217,6 +222,7 @@ fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
 
 #[test]
 fn single_input_embeddings_to_gemini_is_allowed() {
+    crate::testkit::install_test_seams();
     // A single-input embeddings request is representable on `:embedContent` and must succeed.
     let app = TestApp::new()
         .lane(LaneSpec::new(

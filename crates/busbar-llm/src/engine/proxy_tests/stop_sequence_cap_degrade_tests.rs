@@ -21,6 +21,7 @@ fn http() -> busbar_core::transport::Transport {
 
 #[test]
 fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
+    crate::testkit::install_test_seams();
     // OpenAI ingress (unbounded `stop` array) → Cohere lane = cross-protocol. Cohere v2 caps
     // `stop_sequences` at 5; a 6-item list is CLAMPED to the first 5 and forwarded, not rejected.
     let app = TestApp::new()
@@ -58,6 +59,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
 
 #[test]
 fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
+    crate::testkit::install_test_seams();
     // Guardrail: exactly 5 stop sequences is within Cohere's published cap and must be forwarded
     // whole (no clamp when at or under the cap).
     let app = TestApp::new()
@@ -95,6 +97,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
 
 #[test]
 fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
+    crate::testkit::install_test_seams();
     // OpenAI ingress (unbounded `stop` array) → Gemini lane = cross-protocol. Gemini caps
     // `stopSequences` at 5; a 6-item list is clamped to 5 and forwarded, not rejected.
     let app = TestApp::new()
@@ -132,6 +135,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
 
 #[test]
 fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
+    crate::testkit::install_test_seams();
     // Anthropic ingress (unbounded `stop_sequences` array) → OpenAI lane = cross-protocol. OpenAI
     // Chat Completions caps `stop` at 4; a 5-item list is clamped to 4 and forwarded, not rejected.
     let app = TestApp::new()
@@ -172,6 +176,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
 
 #[test]
 fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
+    crate::testkit::install_test_seams();
     // Cohere ingress → Cohere lane = same-protocol. The request relays verbatim (never rebuilt
     // through the IR), so busbar's own clamp never runs here; an over-cap list is left to
     // Cohere's own native 400 on the wire, not intercepted at this layer.

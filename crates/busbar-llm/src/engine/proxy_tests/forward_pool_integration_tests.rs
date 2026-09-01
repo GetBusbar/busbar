@@ -54,6 +54,7 @@ use std::sync::Arc;
 /// Emits a line the site metrics harness parses:  `BUSBAR_METRICS busbar.latency.inproc_handle_us ...`
 #[tokio::test]
 async fn capture_latency_metrics() {
+    crate::testkit::install_test_seams();
     if std::env::var("BUSBAR_CAPTURE_METRICS").is_err() {
         return; // opt-in only — normal test runs skip this.
     }
@@ -172,6 +173,7 @@ async fn capture_latency_metrics() {
 
 #[tokio::test]
 async fn test_mock_server_ok_response() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -191,6 +193,7 @@ async fn test_mock_server_ok_response() {
 
 #[tokio::test]
 async fn test_mock_server_rate_limit() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::RateLimit {
         status: StatusCode::TOO_MANY_REQUESTS,
@@ -209,6 +212,7 @@ async fn test_mock_server_rate_limit() {
 
 #[tokio::test]
 async fn test_mock_server_billing_error() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Billing {
         status: StatusCode::PAYMENT_REQUIRED,
@@ -227,6 +231,7 @@ async fn test_mock_server_billing_error() {
 
 #[tokio::test]
 async fn test_mock_server_auth_error() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Auth {
         status: StatusCode::UNAUTHORIZED,
@@ -243,6 +248,7 @@ async fn test_mock_server_auth_error() {
 
 #[tokio::test]
 async fn test_mock_server_5xx_error() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::ServerError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -260,6 +266,7 @@ async fn test_mock_server_5xx_error() {
 
 #[tokio::test]
 async fn test_non_stream_json_relay() {
+    crate::testkit::install_test_seams();
     // ensure the Prometheus recorder is live so the forward path's counters record.
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -315,6 +322,7 @@ async fn test_non_stream_json_relay() {
 /// no model, while direct routes that passed through verbatim kept it).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_preserves_model() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -375,6 +383,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 /// TPM never tripped. After recording, a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
 
@@ -497,6 +506,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 /// stream fully drains (160 tokens charged), a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
 
@@ -625,6 +635,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
 /// tripped (unlimited requests) and `ok` stayed 0.
 #[tokio::test]
 async fn test_max_requests_budget_caps_lane_and_counts_ok() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..3 {
@@ -718,6 +729,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 /// the time.
 #[tokio::test]
 async fn test_failover_exclusions_remove_member_from_pool() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let mk_server = |model: &'static str| async move {
         let state = Arc::new(MockServerState::new());
@@ -818,6 +830,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 /// supersedes the 0.16.2 note describing `/metrics` as intentionally open.
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
@@ -863,6 +876,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 /// the test-only groups module stands in for a real chain module.)
 #[tokio::test]
 async fn test_metrics_requires_auth_in_chain_mode() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
@@ -919,6 +933,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 /// governance-enabled router enforces virtual-key auth + allowed-pools over real HTTP.
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
 
     busbar_core::metrics::init();
@@ -997,6 +1012,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 /// a virtual key over its budget is rejected (429 for body/Anthropic ingress) before forwarding.
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, Store};
 
     busbar_core::metrics::init();
@@ -1193,6 +1209,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 /// envelope (`error.type == "insufficient_quota"`).
 #[tokio::test]
 async fn test_budget_over_quota_openai_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
@@ -1225,6 +1242,7 @@ async fn test_budget_over_quota_openai_envelope() {
 /// envelope (`error.type == "insufficient_quota"`).
 #[tokio::test]
 async fn test_budget_over_quota_responses_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
@@ -1258,6 +1276,7 @@ async fn test_budget_over_quota_responses_envelope() {
 /// a BARE top-level `message` with NO `error`/`type` wrapper.
 #[tokio::test]
 async fn test_budget_over_quota_cohere_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
@@ -1286,6 +1305,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 /// (the canonical quota shape; the old behavior yielded a mismatched INVALID_ARGUMENT status).
 #[tokio::test]
 async fn test_budget_over_quota_gemini_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
@@ -1323,6 +1343,7 @@ async fn test_budget_over_quota_gemini_envelope() {
 /// `x-amzn-errortype` / `x-amzn-RequestId` headers a native Bedrock runtime response carries.
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
@@ -1361,6 +1382,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
 /// a virtual key over its RPM is rejected with 429 + Retry-After.
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
 
     busbar_core::metrics::init();
@@ -1530,6 +1552,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 /// envelope (`error.type == "rate_limit_error"`) and the `Retry-After` header.
 #[tokio::test]
 async fn test_rate_limit_429_openai_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
@@ -1567,6 +1590,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 /// envelope (`error.type == "rate_limit_error"`).
 #[tokio::test]
 async fn test_rate_limit_429_responses_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
@@ -1597,6 +1621,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 /// a BARE top-level `message` with NO `error`/`type` wrapper.
 #[tokio::test]
 async fn test_rate_limit_429_cohere_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
@@ -1628,6 +1653,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 /// Gemini error envelope — `error.code == 429` and `error.status == "RESOURCE_EXHAUSTED"`.
 #[tokio::test]
 async fn test_rate_limit_429_gemini_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
@@ -1668,6 +1694,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
 /// `x-amzn-RequestId` headers a native Bedrock runtime response always carries.
 #[tokio::test]
 async fn test_rate_limit_429_bedrock_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
@@ -1713,6 +1740,7 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_governance_admin_api() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
 
     busbar_core::metrics::init();
@@ -1821,6 +1849,7 @@ async fn test_governance_admin_api() {
 
 #[tokio::test]
 async fn test_sse_incremental_arrival() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let mut events = Vec::new();
     for i in 0..10 {
@@ -1880,6 +1909,7 @@ async fn test_sse_incremental_arrival() {
 /// Fails against the old code which pushed `"[DONE]\n\n"`.
 #[tokio::test]
 async fn test_sse_done_terminator_has_data_prefix() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let events: Vec<String> = vec!["chunk-0".to_string(), "chunk-1".to_string()];
     state.push(MockResponse::Sse {
@@ -1934,6 +1964,7 @@ async fn test_sse_done_terminator_has_data_prefix() {
 /// be produced. Fails against the old tests that pre-prefixed their event strings.
 #[tokio::test]
 async fn test_sse_events_single_data_prefix() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let events: Vec<String> = vec!["event-0".to_string(), "event-1".to_string()];
     state.push(MockResponse::Sse {
@@ -1984,6 +2015,7 @@ async fn test_sse_events_single_data_prefix() {
 
 #[tokio::test]
 async fn test_permit_lifetime_during_stream() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let events: Vec<String> = (0..5).map(|i| format!("data-{i}")).collect();
     state.push(MockResponse::Sse {
@@ -2041,6 +2073,7 @@ async fn test_permit_lifetime_during_stream() {
 /// Pre-first-byte error triggers failover to next lane.
 #[tokio::test]
 async fn test_pre_first_byte_failover() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // LIFO order: push success first (lane 1), then error (lane 0)
@@ -2112,6 +2145,7 @@ async fn test_pre_first_byte_failover() {
 /// Mid-stream abort records lane breaker failure and does NOT failover.
 #[tokio::test]
 async fn test_midstream_abort_records_and_no_failover() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // LIFO order: push lane 1 success first, then lane 0 mid-stream abort
@@ -2218,6 +2252,7 @@ async fn test_midstream_abort_records_and_no_failover() {
 /// Caveat: passthrough 401 does NOT trip breaker; token mode 401 DOES.
 #[tokio::test]
 async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Each scenario pushes exactly one 401 immediately before its forward() call.
@@ -2345,6 +2380,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
 /// test pins the actual ordering so a single push-per-consume is the only safe pattern.
 #[tokio::test]
 async fn test_mock_server_state_is_lifo() {
+    crate::testkit::install_test_seams();
     let state = MockServerState::new();
     // Two distinguishable responses (different statuses).
     state.push(MockResponse::Ok {
@@ -2384,6 +2420,7 @@ async fn test_mock_server_state_is_lifo() {
 /// Passthrough forwards the CALLER's bearer token, not busbar's api_key.
 #[tokio::test]
 async fn test_passthrough_forwards_caller_token() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Mock returns 200 so we can inspect what auth header it received
@@ -2446,6 +2483,7 @@ async fn test_passthrough_forwards_caller_token() {
 /// 2-lane pool with transient errors → verify only max_failover attempts made, not unbounded retry of same lane.
 #[tokio::test]
 async fn test_failover_exclusions() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Push error responses for multiple attempts
@@ -2527,6 +2565,7 @@ async fn test_failover_exclusions() {
 /// All lanes return TransientUpstream → max_failover attempts capped, then 503.
 #[tokio::test]
 async fn test_failover_cap() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Push errors in LIFO order: lane 2 (top), lane 1, lane 0 (bottom)
@@ -2617,6 +2656,7 @@ async fn test_failover_cap() {
 /// Deadline computed once at start; verify default behavior works correctly with normal flow.
 #[tokio::test]
 async fn test_failover_deadline() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Push success response - should succeed within deadline.
@@ -2689,6 +2729,7 @@ async fn test_failover_deadline() {
 /// — which names no codec type. Byte-identical assertion.
 #[tokio::test]
 async fn test_stream_inspection_tap_usage_parsing() {
+    crate::testkit::install_test_seams();
     // Byte-identical stream forwarding (integration test with mock)
     let state = Arc::new(MockServerState::new());
 
@@ -2770,6 +2811,7 @@ mod disposition_matrix_tests {
 
     #[test]
     fn test_status_class_from_str_exhaustive() {
+    crate::testkit::install_test_seams();
         // Exhaustive check: all valid StatusClass names must parse correctly
         assert_eq!(
             status_class_from_str("rate_limit"),
@@ -2811,6 +2853,7 @@ mod disposition_matrix_tests {
 
     #[test]
     fn test_normalize_raw_error_with_provider_override() {
+    crate::testkit::install_test_seams();
         let error_map: HashMap<String, String> = [("1113".to_string(), "billing".to_string())]
             .iter()
             .cloned()
@@ -2839,6 +2882,7 @@ mod disposition_matrix_tests {
 
     #[test]
     fn test_normalize_raw_error_http_status_fallback() {
+    crate::testkit::install_test_seams();
         let error_map: HashMap<String, String> = HashMap::new();
 
         // HTTP 401 → Auth (universal spec)
@@ -2884,6 +2928,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_client_fault_no_known_code() {
+    crate::testkit::install_test_seams();
         // HTTP 400, no known code → ClientFault → lane health UNCHANGED + body relayed
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Ok {
@@ -2943,6 +2988,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_hard_down_billing_code() {
+    crate::testkit::install_test_seams();
         // HTTP 200/400 body w/ code 1113 → Billing → HardDown: lane hard-down
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Billing {
@@ -3006,6 +3052,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_transient_rate_limit_code() {
+    crate::testkit::install_test_seams();
         // HTTP 429 body w/ code 1302 → RateLimit → TransientUpstream (record_rate_limit)
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::RateLimit {
@@ -3064,6 +3111,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_transient_rate_limit_no_code() {
+    crate::testkit::install_test_seams();
         // HTTP 429 NO known code → RateLimit (status) → TransientUpstream
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::RateLimit {
@@ -3123,6 +3171,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_transient_server_error() {
+    crate::testkit::install_test_seams();
         // HTTP 500 → ServerError → TransientUpstream
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::ServerError {
@@ -3182,6 +3231,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_hard_down_auth() {
+    crate::testkit::install_test_seams();
         // HTTP 401 → Auth → HardDown
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Auth {
@@ -3275,6 +3325,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_disposition_code_drives_classification() {
+    crate::testkit::install_test_seams();
         // The key one: same HTTP status, different provider_code → different Disposition
         // This proves the error_map drives it, not the status.
 
@@ -3376,6 +3427,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_empty_error_map_is_valid_but_bad_value_fails() {
+    crate::testkit::install_test_seams();
         // An EMPTY error_map is valid (HTTP-status classification still applies, like the
         // shipped `anthropic` catalog entry) — it must NOT fail validation. A present entry
         // with an unknown StatusClass value must still fail.
@@ -3488,6 +3540,7 @@ mod disposition_matrix_tests {
 
     #[test]
     fn test_normalize_wrong_mapping_fails() {
+    crate::testkit::install_test_seams();
         // Anti-fab: prove wrong mapping produces wrong disposition
 
         let mut error_map = HashMap::new();
@@ -3524,6 +3577,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_client_fault_400_relayed_verbatim_no_penalty() {
+    crate::testkit::install_test_seams();
         // ClientFault (400 invalid_request) → relay verbatim, NO breaker penalty
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Ok {
@@ -3592,6 +3646,7 @@ mod disposition_matrix_tests {
 
     #[tokio::test]
     async fn test_client_fault_no_failover_two_lanes() {
+    crate::testkit::install_test_seams();
         // ClientFault on lane 0 → lane 1 NOT hit (no failover)
         let state0 = Arc::new(MockServerState::new());
         let state1 = Arc::new(MockServerState::new());
@@ -3668,6 +3723,7 @@ mod disposition_matrix_tests {
 /// Status503 mode test - all lanes tripped, verify 503 with Retry-After header.
 #[tokio::test]
 async fn test_exhaustion_status_503_with_retry_after() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Push rate limit responses to trip all lanes
@@ -3742,6 +3798,7 @@ async fn test_exhaustion_status_503_with_retry_after() {
 /// return distinguishable bodies, so we can assert WHICH member served.
 #[tokio::test]
 async fn test_exhaustion_least_bad_selects_soonest() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
 
     // Lane 0 server (the "wrong" member — far cooldown). Marker identifies it if picked.
@@ -3841,6 +3898,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
 /// decremented after one served request.
 #[tokio::test]
 async fn test_forward_once_records_success_and_spends_budget() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -3906,6 +3964,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 /// and the smuggled shim key never reaches the backend.
 #[tokio::test]
 async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -3980,6 +4039,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
 /// `forward_once`.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     for (upstream_status, want_kind) in [
         (StatusCode::UNAUTHORIZED, "authentication_error"),
@@ -4049,6 +4109,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
 /// This is the safety-critical test for multi-level fallback chains.
 #[tokio::test]
 async fn test_fallback_pool_loop_guard() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
 
     // No upstream is ever reached (all pools exhausted); the server only supplies base_urls.
@@ -4139,6 +4200,7 @@ async fn test_fallback_pool_loop_guard() {
 /// backup, not a 503-with-header stub. This is the test skipped.
 #[tokio::test]
 async fn test_fallback_pool_routes_to_backup() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
 
     // Backup member (lane 2) returns a recognizable success body.
@@ -4231,6 +4293,7 @@ async fn test_fallback_pool_routes_to_backup() {
 /// Test 1: Sticky while healthy - same x-session-id should route to same member.
 #[tokio::test]
 async fn test_sticky_session_while_healthy() {
+    crate::testkit::install_test_seams();
     // Create separate mock servers for each lane so we can track which lane served the request
     let state0 = Arc::new(MockServerState::new());
     let server0 = MockServer::new(state0.clone()).await;
@@ -4425,6 +4488,7 @@ async fn test_sticky_session_while_healthy() {
 /// fail.
 #[tokio::test]
 async fn test_sticky_yields_when_tripped() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
 
     // Separate mock servers for each lane, each returning a distinguishable body
@@ -4531,6 +4595,7 @@ async fn test_sticky_yields_when_tripped() {
 /// Active health probe: a 2xx response to the probe recovers a tripped lane (→ Closed).
 #[tokio::test]
 async fn test_health_probe_recovers_tripped_lane() {
+    crate::testkit::install_test_seams();
     let state0 = Arc::new(MockServerState::new());
     let server0 = MockServer::new(state0.clone()).await;
     state0.push(MockResponse::Ok {
@@ -4576,6 +4641,7 @@ async fn test_health_probe_recovers_tripped_lane() {
 /// Active health probe: a failing probe records a transient error against the lane.
 #[tokio::test]
 async fn test_health_probe_failure_records_transient() {
+    crate::testkit::install_test_seams();
     let state0 = Arc::new(MockServerState::new());
     let server0 = MockServer::new(state0.clone()).await;
     state0.push(MockResponse::ServerError {
@@ -4614,6 +4680,7 @@ async fn test_health_probe_failure_records_transient() {
 /// Test 3: No header → system block hash for affinity.
 #[tokio::test]
 async fn test_sticky_from_system_block() {
+    crate::testkit::install_test_seams();
     // Separate mock servers for each lane
     let state0 = Arc::new(MockServerState::new());
     let server0 = MockServer::new(state0.clone()).await;
@@ -4774,6 +4841,7 @@ async fn openai_mock_handler(
 /// OpenAI ingress same-protocol passthrough test.
 #[tokio::test]
 async fn test_openai_ingress_same_protocol_passthrough() {
+    crate::testkit::install_test_seams();
     use busbar_core::ingress;
     use axum::http::HeaderMap;
 
@@ -4881,6 +4949,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
 /// OpenAI ingress missing model → 400.
 #[tokio::test]
 async fn test_openai_ingress_missing_model() {
+    crate::testkit::install_test_seams();
     use busbar_core::ingress;
     use axum::http::HeaderMap;
 
@@ -4914,6 +4983,7 @@ async fn test_openai_ingress_missing_model() {
 /// emitted, so caller path segments can't inflate `/metrics` cardinality).
 #[tokio::test]
 async fn test_adhoc_rejects_unconfigured_provider_model() {
+    crate::testkit::install_test_seams();
     use busbar_core::ingress;
 
     let app = TestApp::new()
@@ -4966,6 +5036,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 /// OpenAI ingress unknown model → 404.
 #[tokio::test]
 async fn test_openai_ingress_unknown_model() {
+    crate::testkit::install_test_seams();
     use busbar_core::ingress;
     use axum::http::HeaderMap;
 
@@ -4999,6 +5070,7 @@ async fn test_openai_ingress_unknown_model() {
 /// Assert the MOCK UPSTREAM RECEIVED an Anthropic-shaped body (top-level "system" field, messages without system entry).
 #[tokio::test]
 async fn test_cross_protocol_openai_to_anthropic() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Mock receives the translated Anthropic-shaped body and returns a NATIVE Anthropic response
@@ -5091,6 +5163,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
 /// `forward` wrapper (Anthropic ingress) and returned the raw Anthropic body.
 #[tokio::test]
 async fn test_openai_ingress_single_model_anthropic_response_translated() {
+    crate::testkit::install_test_seams();
     use busbar_core::ingress;
 
     let state = Arc::new(MockServerState::new());
@@ -5204,6 +5277,7 @@ async fn forwarded_openai_to_anthropic(
 /// (Anthropic 400s without it). With no per-lane default, the conservative fallback is injected.
 #[tokio::test]
 async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
+    crate::testkit::install_test_seams();
     let got = forwarded_openai_to_anthropic(
         None,
         json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}]}),
@@ -5220,6 +5294,7 @@ async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
 /// omits `max_tokens`.
 #[tokio::test]
 async fn test_openai_omits_max_tokens_uses_configured_lane_default() {
+    crate::testkit::install_test_seams();
     let got = forwarded_openai_to_anthropic(
         Some(1234),
         json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}]}),
@@ -5236,6 +5311,7 @@ async fn test_openai_omits_max_tokens_uses_configured_lane_default() {
 /// it never overrides a caller-supplied value (even when a lane default is configured).
 #[tokio::test]
 async fn test_openai_explicit_max_tokens_preserved_over_lane_default() {
+    crate::testkit::install_test_seams();
     let got = forwarded_openai_to_anthropic(
             Some(1234),
             json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 7}),
@@ -5252,6 +5328,7 @@ async fn test_openai_explicit_max_tokens_preserved_over_lane_default() {
 /// anthropic ingress → anthropic lane (ingress_protocol="anthropic") → mock receives body with model rewritten, NO translation applied.
 #[tokio::test]
 async fn test_same_protocol_anthropic_passthrough() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Mock will receive the anthropic body as-is (with model rewritten) and return 200
@@ -5307,6 +5384,7 @@ async fn test_same_protocol_anthropic_passthrough() {
 /// frames (translated on the wire), not raw OpenAI chunks.
 #[tokio::test]
 async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     // OpenAI egress lane streams chat.completion.chunks (handler wraps each as `data: ...`).
     state.push(MockResponse::Sse {
@@ -5383,6 +5461,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
 /// Anthropic-shaped message (translated whole-response), not the raw OpenAI body.
 #[tokio::test]
 async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     // OpenAI egress lane returns a non-streaming chat.completion.
     state.push(MockResponse::Ok {
@@ -5465,6 +5544,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
 /// (the lane is healthy — the request was just too big for that model).
 #[tokio::test]
 async fn test_context_length_failover_no_penalty() {
+    crate::testkit::install_test_seams();
     // One mock server, LIFO queue: push the success LAST-but-popped-SECOND. responses.pop()
     // is LIFO, so push 200 first, then the 400 context-length → the FIRST attempt gets the
     // context-length error, the failover attempt gets 200.
@@ -5538,6 +5618,7 @@ async fn test_context_length_failover_no_penalty() {
 /// failover EXCLUDES lane0 (and any ≤8000) → lane1 (200000) SERVES (assert 200 + lane1 served).
 #[tokio::test]
 async fn test_prefers_larger_context_max() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // LIFO: push success (lane 1) first, then context-length error (lane 0)
@@ -5622,6 +5703,7 @@ async fn test_prefers_larger_context_max() {
 /// failover finds no bigger lane → exhausts (returns 503/exhaustion, neither lane tripped).
 #[tokio::test]
 async fn test_same_size_pool_exhausts() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
 
     // Both lanes return context-length errors (LIFO: lane 1, then lane 0)
@@ -5696,6 +5778,7 @@ async fn test_same_size_pool_exhausts() {
 /// arm recorded a spurious failure on every completed stream, tripping healthy streaming lanes.
 #[tokio::test]
 async fn test_clean_sse_end_records_success_not_failure() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
 
@@ -5768,6 +5851,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
 /// store cooldown floor) that no test previously covered — the header was silently dropped.
 #[tokio::test]
 async fn test_429_retry_after_header_sets_cooldown_floor() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Single lane; a 429 with Retry-After: 45. streak=0 → computed backoff is the base (15s),
@@ -5832,6 +5916,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
 /// an unbounded 1ms spin-loop with no deadline check (a head-of-line-blocking DoS surface).
 #[tokio::test]
 async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
@@ -5901,6 +5986,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
 /// truly unbounded.
 #[tokio::test]
 async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -5947,6 +6033,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
 /// (N+1)th concurrent acquire is denied until a permit frees.
 #[tokio::test]
 async fn test_bounded_max_concurrent_still_enforces_the_cap() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -5985,6 +6072,7 @@ async fn test_bounded_max_concurrent_still_enforces_the_cap() {
 /// a request. This is the override `test_permit_lifetime_during_stream` relies on.
 #[test]
 fn test_lanespec_sem_override_is_shared() {
+    crate::testkit::install_test_seams();
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
         .lane(
@@ -6018,6 +6106,7 @@ fn test_lanespec_sem_override_is_shared() {
 /// instead of silent zero-values.
 #[test]
 fn test_lanespec_runtime_state_setters_land_in_built_app() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(
             LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:0")

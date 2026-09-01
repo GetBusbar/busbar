@@ -16,6 +16,7 @@ use busbar_core::store::LaneRuntime as _;
 /// because deadlines are index-keyed. No clock in this assertion — synchronous pointer identity.
 #[test]
 fn a_rebuild_carries_the_probe_schedule() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let no_lane_cfg = || {
         cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
@@ -70,6 +71,7 @@ fn a_rebuild_carries_the_probe_schedule() {
 /// -set pointer identity: reuse clones the same `Arc<[Client]>`, a rebuild allocates a fresh one.
 #[test]
 fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let cfg = || {
         cfg_with_provider_api_key(busbar_core::config::SecretRef::env(

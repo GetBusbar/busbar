@@ -25,6 +25,7 @@ fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
 /// not a literal 0.
 #[test]
 fn test_scrape_gauges_pool_queued_reads_live_depth() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Unique pool/model labels: the `metrics` recorder is process-global, so sharing a label with
     // another test would cross-contaminate this gauge across tests.

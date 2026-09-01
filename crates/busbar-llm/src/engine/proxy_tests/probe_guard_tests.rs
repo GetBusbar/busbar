@@ -33,6 +33,7 @@ fn win_probe(store: &Arc<HealthState>) {
 /// (the implicit future-drop-while-parked path).
 #[test]
 fn dropping_armed_guard_releases_probe() {
+    crate::testkit::install_test_seams();
     let store = Arc::new(HealthState::new(vec![lane(1)]));
     win_probe(&store);
     {
@@ -55,6 +56,7 @@ fn dropping_armed_guard_releases_probe() {
 /// request now owns it and will release it via its recorded outcome.
 #[test]
 fn disarmed_guard_leaves_probe_held() {
+    crate::testkit::install_test_seams();
     let store = Arc::new(HealthState::new(vec![lane(1)]));
     win_probe(&store);
     {
@@ -80,6 +82,7 @@ fn disarmed_guard_leaves_probe_held() {
 /// superseded the release is a strict no-op and the current probe owner keeps its HalfOpen cell.
 #[test]
 fn stalled_guard_does_not_release_a_newer_probe() {
+    crate::testkit::install_test_seams();
     let store = Arc::new(HealthState::new(vec![lane(1)]));
     // Guard A wins the first probe and captures its (older) epoch.
     win_probe(&store);

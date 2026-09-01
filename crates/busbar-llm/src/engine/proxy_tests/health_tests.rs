@@ -46,6 +46,7 @@ async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockSe
 /// User-Agent, so its absence on the probe was a tell.
 #[tokio::test]
 async fn test_probe_sends_native_user_agent_and_accept_headers() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -78,6 +79,7 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
 
 #[tokio::test]
 async fn test_probe_auth_failure_is_hard_down_not_transient() {
+    crate::testkit::install_test_seams();
     // Regression: a 401 probe must classify as HardDown (auth) and PARK the lane dead in the
     // default cell AND the per-pool cell — not be mis-recorded as a recoverable transient that
     // oscillates between cooldown and re-probe forever.
@@ -101,6 +103,7 @@ async fn test_probe_auth_failure_is_hard_down_not_transient() {
 
 #[tokio::test]
 async fn test_probe_server_error_is_transient_not_hard_down() {
+    crate::testkit::install_test_seams();
     // A single 503 probe is a transient failure: it must NOT immediately Open the default cell
     // with the multi-minute sticky hard-down cooldown (one sub-threshold transient stays Closed
     // under the default error-rate breaker).
@@ -120,6 +123,7 @@ async fn test_probe_server_error_is_transient_not_hard_down() {
 
 #[tokio::test]
 async fn test_probe_client_fault_does_not_penalize_lane() {
+    crate::testkit::install_test_seams();
     // A 400 (client fault — the probe request shape, not the lane) must record NOTHING: the lane
     // stays Closed with no cooldown, so a healthy lane is never benched over a probe-construction
     // issue.
@@ -144,6 +148,7 @@ async fn test_probe_client_fault_does_not_penalize_lane() {
 
 #[tokio::test]
 async fn test_probe_skips_lane_without_key() {
+    crate::testkit::install_test_seams();
     // No api_key → no probe (can't authenticate; a guaranteed 401 would only thrash the breaker).
     // The lane must stay Closed even though no upstream is reachable.
     let app = TestApp::new()
@@ -173,6 +178,7 @@ async fn test_probe_skips_lane_without_key() {
 /// failure trips the default cell Open — this test fails there and passes after.
 #[tokio::test]
 async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
@@ -227,6 +233,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
 /// proves the healthy-lane success was recorded.
 #[tokio::test]
 async fn test_probe_success_recorded_even_on_healthy_lane() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
@@ -276,6 +283,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
 /// probes and assert `ok == 2` (the pre-fix code would read 8).
 #[tokio::test]
 async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
@@ -314,6 +322,7 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
 /// against the config key while real requests fail against the upstream model ID.
 #[tokio::test]
 async fn test_probe_uses_upstream_model_override() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -355,6 +364,7 @@ async fn test_probe_uses_upstream_model_override() {
 /// scheduling, so dropping the last strong ref must make `upgrade()` fail immediately.
 #[tokio::test]
 async fn test_spawn_probers_retains_no_strong_app_ref() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -386,6 +396,7 @@ async fn test_spawn_probers_retains_no_strong_app_ref() {
 /// test) so a future refactor of the probe can't reintroduce a raw-send divergence.
 #[test]
 fn test_probe_signs_and_sends_same_encoded_path_for_reserved_chars() {
+    crate::testkit::install_test_seams();
     let url_path = "/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse";
     let wire_path = crate::engine::sign_and_wire_path(url_path);
     let canonical_uri = wire_path
@@ -421,6 +432,7 @@ fn test_probe_signs_and_sends_same_encoded_path_for_reserved_chars() {
 /// test harness rather than the fix.
 #[tokio::test]
 async fn a_swap_does_not_push_the_probe_deadline_out() {
+    crate::testkit::install_test_seams();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let app = TestApp::new()
         .lane(
@@ -487,6 +499,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
 /// interval diverges — instead of the synthetic clone, testing exactly what a reload does.
 #[tokio::test]
 async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
@@ -569,6 +582,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
 /// scheduler to race.
 #[test]
 fn a_late_tick_write_does_not_revert_a_newer_generations_clamp() {
+    crate::testkit::install_test_seams();
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let slot = AtomicU64::new(3_600_000); // gen 1 owns this deadline

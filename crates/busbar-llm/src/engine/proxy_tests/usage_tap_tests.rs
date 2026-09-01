@@ -8,6 +8,7 @@ use std::sync::Arc;
 /// returns false, so the request proceeds with the original body.
 #[test]
 fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
+    crate::testkit::install_test_seams();
     use busbar_core::hooks::wire::RewriteReply;
 
     // Chat-shaped body → messages replaced, tool injected (appended to existing tools).
@@ -54,6 +55,7 @@ fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
 /// responses into the input list; a non-text rewrite message aborts untouched.
 #[test]
 fn apply_rewrite_renders_per_dialect() {
+    crate::testkit::install_test_seams();
     use busbar_core::hooks::wire::RewriteReply;
     let rw = RewriteReply {
         messages: vec![
@@ -99,6 +101,7 @@ fn apply_rewrite_renders_per_dialect() {
 /// user turns.
 #[test]
 fn gemini_rewrite_role_round_trips_model_and_assistant() {
+    crate::testkit::install_test_seams();
     use busbar_core::hooks::wire::RewriteReply;
 
     // Projection canonicalizes the gemini-native `model` role to `assistant`.
@@ -156,6 +159,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 /// whatever it sees →"B" ends at "B", proving B ran on A's output.
 #[tokio::test]
 async fn apply_global_rewrites_chains_in_order() {
+    crate::testkit::install_test_seams();
     use busbar_core::hooks::wire::RewriteReply;
     use busbar_core::hooks::{
         Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
@@ -227,6 +231,7 @@ async fn apply_global_rewrites_chains_in_order() {
 // window-attribution intent is asserted on the token ledger itself.)
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
 
     let store = Arc::new(MemoryStore::new());
@@ -341,6 +346,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 /// clamps to `u64::MAX` and `record_ir_usage` returns without panicking.
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 
     let store = Arc::new(MemoryStore::new());
@@ -394,6 +400,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
 
 #[test]
 fn test_stable_hash_is_deterministic() {
+    crate::testkit::install_test_seams();
     // Stable across calls AND processes (unlike DefaultHasher) so session affinity survives
     // restarts. Pin the FNV-1a output to a precomputed golden so an algorithm or
     // FNV1A_OFFSET_BASIS/PRIME swap is caught directly, not merely via the indirect routing test.
@@ -416,6 +423,7 @@ fn test_stable_hash_is_deterministic() {
 /// assertion is that spend is derived, and derived at the card's rate.
 #[test]
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
 
     let store = Arc::new(MemoryStore::new());

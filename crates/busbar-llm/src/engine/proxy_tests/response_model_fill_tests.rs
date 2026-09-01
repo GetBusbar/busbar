@@ -75,6 +75,7 @@ const LANE_MODEL: &str = "gemini-2.5-pro-routed";
 /// REAL lane model the proxy routed to — not omitted, not empty, not a default.
 #[tokio::test]
 async fn cross_protocol_response_reports_routed_lane_model_when_upstream_omits_it() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: axum::http::StatusCode::OK,
@@ -137,6 +138,7 @@ async fn cross_protocol_response_reports_routed_lane_model_when_upstream_omits_i
 /// the fill lossless rather than a lie.
 #[tokio::test]
 async fn cross_protocol_response_never_overrides_an_upstream_provided_model() {
+    crate::testkit::install_test_seams();
     const UPSTREAM_MODEL: &str = "gemini-2.5-flash-actual";
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {

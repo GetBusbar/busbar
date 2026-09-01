@@ -12,6 +12,7 @@ use crate::test_support::{LaneSpec, TestApp};
 /// the fast path — every pool name (known, unknown, empty) resolves to the ALL-POOLS default.
 #[test]
 fn no_override_fast_path_returns_all_pools_default() {
+    crate::testkit::install_test_seams();
     for default in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
         let app = TestApp::new()
             .lane(LaneSpec::new(
@@ -42,6 +43,7 @@ fn no_override_fast_path_returns_all_pools_default() {
 /// to the all-pools default (the SCALAR override rule, unchanged by the fast path).
 #[test]
 fn override_present_runs_full_lookup() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",

@@ -29,6 +29,7 @@ fn fixture() -> (
     Arc<busbar_core::cost::CostModel>,
     busbar_core::governance::VirtualKey,
 ) {
+    crate::testkit::install_test_seams();
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, None).expect("gov"));
     let groups = std::collections::BTreeMap::from([(
@@ -193,6 +194,7 @@ async fn drive(op: busbar_core::handlers::Op, ingress: &'static str, body: Vec<u
 /// (the guard disarms, so no refund).
 #[tokio::test]
 async fn delivered_cross_protocol_response_bills_once() {
+    crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
         busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http),
@@ -221,7 +223,9 @@ async fn delivered_cross_protocol_response_bills_once() {
 /// ledger NOR the request budget may be charged: the budget unit is refunded (5) and the ledger is 0.
 #[tokio::test]
 async fn ingress_unsupported_404_does_not_charge() {
+    crate::testkit::install_test_seams();
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#.to_vec();
+    crate::testkit::install_test_seams();
     let out = drive(
         busbar_core::handlers::op_for(
             "openai",
@@ -254,11 +258,13 @@ async fn ingress_unsupported_404_does_not_charge() {
 /// nothing is delivered, so the request budget must be refunded (5) and the token ledger stays 0.
 #[tokio::test]
 async fn untranslatable_500_does_not_charge() {
+    crate::testkit::install_test_seams();
     // Non-JSON bytes: forces the engine's OPAQUE arm; the OpenAI speech reader accepts any binary
     // audio body and returns a `Flat` usage marker.
     let body = vec![
         0x00u8, 0x01, 0x02, 0xFF, b'n', b'o', b't', b'-', b'j', b's', b'o', b'n',
     ];
+    crate::testkit::install_test_seams();
     let out = drive(
         busbar_core::handlers::op_for(
             "openai",

@@ -24,6 +24,7 @@ fn built_route_headers(rb: axum::http::response::Builder) -> (String, String) {
 /// all. Even with a policy name present, `enabled == false` must suppress BOTH headers.
 #[test]
 fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name() {
+    crate::testkit::install_test_seams();
     let rb = axum::http::Response::builder();
     let (policy, target) = built_route_headers(maybe_attach_route_policy_gated(
         rb,
@@ -46,6 +47,7 @@ fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_n
 /// header-free regardless of the operator's opt-in.
 #[test]
 fn route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled() {
+    crate::testkit::install_test_seams();
     let rb = axum::http::Response::builder();
     let (policy, target) =
         built_route_headers(maybe_attach_route_policy_gated(rb, true, None, "claude"));
@@ -63,6 +65,7 @@ fn route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled
 /// emits the pair, and it carries the exact policy name / target model passed in.
 #[test]
 fn route_policy_headers_present_only_when_both_gates_open() {
+    crate::testkit::install_test_seams();
     let rb = axum::http::Response::builder();
     let (policy, target) = built_route_headers(maybe_attach_route_policy_gated(
         rb,
@@ -78,6 +81,7 @@ fn route_policy_headers_present_only_when_both_gates_open() {
 /// combination is left unpinned.
 #[test]
 fn route_policy_headers_absent_when_both_gates_closed() {
+    crate::testkit::install_test_seams();
     let rb = axum::http::Response::builder();
     let (policy, target) =
         built_route_headers(maybe_attach_route_policy_gated(rb, false, None, "claude"));
@@ -101,6 +105,7 @@ fn route_policy_headers_absent_when_both_gates_closed() {
 /// and no dialect response headers.
 #[tokio::test]
 async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
+    crate::testkit::install_test_seams();
     let resp = ingress_error(
         "no-such-protocol",
         StatusCode::SERVICE_UNAVAILABLE,
@@ -128,6 +133,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
 /// `event:` line (some dialects' shape, not others') and no dialect vocabulary in `type`.
 #[test]
 fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
+    crate::testkit::install_test_seams();
     let bytes = mid_stream_error_bytes("no-such-protocol", false, "upstream vanished");
     let s = String::from_utf8(bytes).expect("utf8 frame");
     assert!(

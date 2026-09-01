@@ -4,18 +4,21 @@ use busbar_core::config;
 
 #[test]
 fn test_config_parsing_status_503() {
+    crate::testkit::install_test_seams();
     let cfg: config::OnExhaustedCfg = serde_yaml::from_str("reject").unwrap();
     assert!(matches!(cfg.to_runtime(), config::OnExhausted::Status503));
 }
 
 #[test]
 fn test_config_parsing_least_bad() {
+    crate::testkit::install_test_seams();
     let cfg: config::OnExhaustedCfg = serde_yaml::from_str("least_bad").unwrap();
     assert!(matches!(cfg.to_runtime(), config::OnExhausted::LeastBad));
 }
 
 #[test]
 fn test_config_parsing_fallback_pool() {
+    crate::testkit::install_test_seams();
     let cfg: config::OnExhaustedCfg = serde_yaml::from_str("{ fallback_pool: drain }").unwrap();
     if let config::OnExhausted::FallbackPool(name) = cfg.to_runtime() {
         assert_eq!(name, "drain");
@@ -26,12 +29,14 @@ fn test_config_parsing_fallback_pool() {
 
 #[test]
 fn test_config_parsing_unknown_fails() {
+    crate::testkit::install_test_seams();
     let result: Result<config::OnExhaustedCfg, _> = serde_yaml::from_str("invalid");
     assert!(result.is_err(), "Unknown action should fail parsing");
 }
 
 #[test]
 fn test_config_parsing_queue() {
+    crate::testkit::install_test_seams();
     let cfg: config::OnExhaustedCfg = serde_yaml::from_str("{ queue: { max_ms: 250 } }").unwrap();
     assert!(matches!(
         cfg.to_runtime(),
@@ -41,6 +46,7 @@ fn test_config_parsing_queue() {
 
 #[test]
 fn test_config_parsing_both_fallback_and_queue_conflicts() {
+    crate::testkit::install_test_seams();
     // A mapping carrying BOTH keys is an explicit "exactly one of" error, never a force-fit.
     let result: Result<config::OnExhaustedCfg, _> =
         serde_yaml::from_str("{ fallback_pool: cold, queue: { max_ms: 250 } }");
@@ -56,6 +62,7 @@ fn test_config_parsing_both_fallback_and_queue_conflicts() {
 
 #[test]
 fn test_config_parsing_queue_unknown_inner_key_fails() {
+    crate::testkit::install_test_seams();
     // `deny_unknown_fields` on the inner body: a typo'd `max_millis` must fail, not be ignored.
     let result: Result<config::OnExhaustedCfg, _> =
         serde_yaml::from_str("{ queue: { max_millis: 250 } }");
@@ -67,6 +74,7 @@ fn test_config_parsing_queue_unknown_inner_key_fails() {
 
 #[test]
 fn test_config_parsing_bare_fallback_pool_fails() {
+    crate::testkit::install_test_seams();
     // The old colon form `fallback_pool:drain` is no longer a bare keyword; only the
     // structured `{ fallback_pool: name }` map is accepted.
     let result: Result<config::OnExhaustedCfg, _> = serde_yaml::from_str("'fallback_pool:drain'");
@@ -136,6 +144,7 @@ fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_core::confi
 /// for it precisely when everything else is on fire inverts that.
 #[tokio::test]
 async fn least_bad_never_reaches_an_excluded_member() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server_a = ok_server_for("alpha").await;
     let server_b = ok_server_for("beta").await;
@@ -193,6 +202,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
 /// lanes that could actually serve.
 #[tokio::test]
 async fn least_bad_ranks_only_admissible_lanes() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server_dead = ok_server_for("gone").await;
     let server_soon = ok_server_for("soon").await;
@@ -254,6 +264,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
 /// dominant exhaustion case it holds every member and `least_bad` silently degenerates to `reject`.
 #[tokio::test]
 async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server = ok_server_for("solo").await;
 
@@ -294,6 +305,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
 /// could still be reached by spilling into the pool — the one path exclusions exist to prevent.
 #[tokio::test]
 async fn a_fallback_pool_applies_its_own_exclusions() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let server_primary = ok_server_for("primary").await;
     let server_ok = ok_server_for("spare").await;
@@ -472,6 +484,7 @@ async fn drive_shed(
 /// not queue behind the busy member to the deadline (which would park to 300s).
 #[tokio::test]
 async fn at_capacity_reject_sheds_503_not_queued() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -498,6 +511,7 @@ async fn at_capacity_reject_sheds_503_not_queued() {
 /// saturated pool sheds 503 + Retry-After, not queue.
 #[tokio::test]
 async fn at_capacity_default_no_on_exhausted_sheds_503() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -525,6 +539,7 @@ async fn at_capacity_default_no_on_exhausted_sheds_503() {
 /// at-capacity); parking on the primary would never reach the spill.
 #[tokio::test]
 async fn at_capacity_fallback_spills_to_fast_member() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem, _held) = saturated();
@@ -565,6 +580,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
 /// concurrency limit; parking in `pick_among` would never reach `least_bad`.
 #[tokio::test]
 async fn at_capacity_least_bad_sheds_when_saturated() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -590,6 +606,7 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
 /// scenario turned into a permanent guard; otherwise all N park behind the one busy slot.
 #[tokio::test]
 async fn at_capacity_bounded_burst_all_spill_not_serialized() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let fast = ok_server_for("fast").await; // pushes 4 canned OKs
     let (sem, _held) = saturated();
@@ -638,6 +655,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
 /// defect to the pool-exhaustion check, not per-member capacity accounting.
 #[tokio::test]
 async fn at_capacity_all_members_busy_two_member_pool_spills() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
@@ -673,6 +691,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
 /// member). Also proves the fix composes with the existing breaker-Open exclusion path.
 #[tokio::test]
 async fn at_capacity_plus_tripped_member_rejects_503() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -708,6 +727,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
 /// than parking on A.
 #[tokio::test]
 async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
@@ -741,6 +761,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
 /// terminate at the visited-pool loop guard with 503 — never recurse or park.
 #[tokio::test]
 async fn at_capacity_self_referential_fallback_stays_503() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -767,6 +788,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
 /// target being exhausted too must still terminate in a shed, not a queue.
 #[tokio::test]
 async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
@@ -801,6 +823,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
 /// already-working tripped/unreachable exhaustion → fallback path.
 #[tokio::test]
 async fn tripped_member_still_falls_back_to_overflow() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let fast = ok_server_for("fast").await;
     let app = TestApp::new()
@@ -846,6 +869,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
 /// soonest member and 503'd on failure, so this returned 503; after, it falls to the free sibling.
 #[tokio::test]
 async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let sibling = ok_server_for("sibling").await;
     let (sem, _held) = saturated();
@@ -906,6 +930,7 @@ fn retry_after_secs(resp: &axum::response::Response) -> u64 {
 /// under-serving backoff; the fix ignores at-capacity-Closed members' 0 when a real cooldown exists.
 #[tokio::test]
 async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -941,6 +966,7 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
 /// than the misleading `Retry-After: 1` the old code always produced under load.
 #[tokio::test]
 async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -965,6 +991,7 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
 /// ("retry immediately, just re-collide"), which is why the `None` arm floors instead of returning 1.
 #[test]
 fn retry_after_empty_candidate_set_uses_floor_not_one() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("p"))
@@ -1038,6 +1065,7 @@ async fn wait_until_queued(app: &std::sync::Arc<busbar_core::state::App>, pool: 
 /// immediate 503.
 #[tokio::test]
 async fn queue_dispatches_when_permit_frees_before_deadline() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
@@ -1089,6 +1117,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
 /// dropped await, so none run on drop and the cell stays HalfOpen.
 #[tokio::test]
 async fn queue_dropped_dispatch_future_releases_probe() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -1171,6 +1200,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
 /// the cell goes Open and a fresh `try_admit` wins a NEW probe. With `None` the cell is untouched.
 #[tokio::test]
 async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // A gated non-2xx body: least_bad's `forward_once` parks reading it (BEFORE recording any breaker
     // outcome) — the exact mid-dispatch await a dropped future must not turn into a peer-probe revert.
@@ -1262,6 +1292,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
 /// loser is provably still parked; releasing the winner then lets the loser dispatch and serve 200.
 #[tokio::test]
 async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -1359,6 +1390,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
 /// immediately) and shed well before the budget, rather than shedding immediately with no wait.
 #[tokio::test]
 async fn queue_times_out_to_503_when_capacity_never_frees() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (sem, _held) = saturated(); // permit held for the whole test → never frees
     let app = TestApp::new()
@@ -1416,6 +1448,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
 /// pointless. Proven by the reject completing far inside `max_ms`.
 #[tokio::test]
 async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -1466,6 +1499,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
 /// design makes it pass.
 #[tokio::test]
 async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
@@ -1506,6 +1540,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
 /// composition on the won lane.
 #[tokio::test]
 async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let svc = ok_server_for("svc").await; // wired, but must NEVER be dispatched to
     let sem = Arc::new(tokio::sync::Semaphore::new(1));

@@ -11,6 +11,7 @@ use bytes::Bytes;
 /// the flag set and every original key preserved.
 #[test]
 fn pristine_injector_splices_include_usage() {
+    crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("spliced body must be valid JSON");
@@ -37,6 +38,7 @@ fn pristine_injector_splices_include_usage() {
 /// ends up with a SINGLE `stream_options` whose `include_usage` is honored true.
 #[test]
 fn pristine_injector_idempotent_when_stream_options_already_present() {
+    crate::testkit::install_test_seams();
     // As if a rewrite hook injected `stream_options` after the has-stream_options decision was
     // captured false: the pristine injector is (wrongly, per the stale flag) selected.
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
@@ -67,6 +69,7 @@ fn pristine_injector_idempotent_when_stream_options_already_present() {
 /// ahead of the top-level value) - the splice still lands right after the brace.
 #[test]
 fn pristine_injector_tolerates_leading_whitespace() {
+    crate::testkit::install_test_seams();
     let body = b"  \n\t{\"model\":\"m\",\"stream\":true}";
     let out = inject_openai_stream_include_usage_pristine(Bytes::copy_from_slice(body));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
@@ -81,6 +84,7 @@ fn pristine_injector_tolerates_leading_whitespace() {
 /// rather than producing invalid JSON via a blind splice.
 #[test]
 fn pristine_injector_falls_back_on_empty_or_non_object() {
+    crate::testkit::install_test_seams();
     // `{}` - next non-space is `}`, not a key: DOM injector inserts stream_options.
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"{}"));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
@@ -105,6 +109,7 @@ fn pristine_injector_falls_back_on_empty_or_non_object() {
 /// completion with nothing found).
 #[test]
 fn pristine_injector_does_not_overrun_an_all_whitespace_body() {
+    crate::testkit::install_test_seams();
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"   \n\t "));
     // Not valid JSON either way - the point is only that this does not panic, and passes the
     // untouched bytes through (nothing looked like an object to reshape).
@@ -119,6 +124,7 @@ fn pristine_injector_does_not_overrun_an_all_whitespace_body() {
 /// the difference since both paths produce equivalent JSON, only the raw bytes can.
 #[test]
 fn pristine_injector_actually_splices_rather_than_falling_back_to_dom_reconstruction() {
+    crate::testkit::install_test_seams();
     let body: &[u8] = br#"{"model":  "m",    "stream":true}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
     let out_str = String::from_utf8(out.to_vec()).unwrap();
@@ -137,6 +143,7 @@ fn pristine_injector_actually_splices_rather_than_falling_back_to_dom_reconstruc
 /// `stream_options.include_usage: true` so the upstream reports usage busbar can bill.
 #[test]
 fn adds_include_usage_when_absent() {
+    crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[]}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
@@ -151,6 +158,7 @@ fn adds_include_usage_when_absent() {
 /// flag set to true WITHOUT dropping sibling options.
 #[test]
 fn upgrades_existing_stream_options_preserving_siblings() {
+    crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false,"foo":1},"messages":[]}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
@@ -170,6 +178,7 @@ fn upgrades_existing_stream_options_preserving_siblings() {
 /// caller's malformed value; the upstream will reject it).
 #[test]
 fn leaves_non_object_stream_options_untouched() {
+    crate::testkit::install_test_seams();
     let body = br#"{"stream":true,"stream_options":"bogus"}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     assert_eq!(
@@ -182,6 +191,7 @@ fn leaves_non_object_stream_options_untouched() {
 /// A body that already opted in stays semantically opted in.
 #[test]
 fn keeps_existing_true() {
+    crate::testkit::install_test_seams();
     let body = br#"{"stream":true,"stream_options":{"include_usage":true}}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");

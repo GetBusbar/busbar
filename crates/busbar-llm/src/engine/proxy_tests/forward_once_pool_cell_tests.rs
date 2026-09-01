@@ -16,6 +16,7 @@ use std::sync::Arc;
 /// untouched, proving the recording targeted the pool cell, not `""`).
 #[tokio::test]
 async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
+    crate::testkit::install_test_seams();
     // Fallback-pool member's upstream serves a clean 200.
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -102,6 +103,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
 /// `""` cell. Before the fix the reopen hit `""`, leaving the pool cell wedged HalfOpen forever.
 #[tokio::test]
 async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
+    crate::testkit::install_test_seams();
     let t0 = store_now();
     // Lane 0 = dead primary (exhausts the primary pool). Lane 1 = fallback member pointed at an
     // unreachable address so the upstream call fails pre-response (transport error).
@@ -182,6 +184,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
 /// backoff elapses. This is the "a 503 MUST trip the breaker" half of the PX1 pair.
 #[tokio::test]
 async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
+    crate::testkit::install_test_seams();
     // The fallback member's upstream serves a 503 (a genuine upstream fault the degraded path
     // classifies as TransientUpstream → records a breaker penalty, then relays verbatim).
     let state = Arc::new(MockServerState::new());
@@ -287,6 +290,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
 /// this immediate re-acquire returned false (the regression signature).
 #[tokio::test]
 async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
+    crate::testkit::install_test_seams();
     // The fallback member's upstream serves a 400 (Anthropic invalid_request_error) — a client
     // fault the breaker model treats as a healthy, deterministic response, NOT an upstream fault.
     let state = Arc::new(MockServerState::new());
@@ -383,6 +387,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
 /// 200 here is the regression signature.
 #[tokio::test]
 async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
+    crate::testkit::install_test_seams();
     // Lane 2 (pool A's FALLBACK member) is a live upstream that would serve 200 if the cycle
     // erroneously re-entered pool A. The guard must prevent that dispatch entirely.
     let state = Arc::new(MockServerState::new());
@@ -468,6 +473,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
 /// and fails only to translate.
 #[tokio::test]
 async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -571,6 +577,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
 /// only the metric LABEL is decoupled, which is exactly what `metric_pool_label` computes.
 #[test]
 fn test_metric_pool_label_resolves_model_for_default_cell() {
+    crate::testkit::install_test_seams();
     use super::metric_pool_label;
     let app = TestApp::new()
         .lane(LaneSpec::new(

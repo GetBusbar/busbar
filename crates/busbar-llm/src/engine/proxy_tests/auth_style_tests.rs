@@ -48,6 +48,7 @@ fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
 
 #[test]
 fn test_api_key_auth_sends_api_key_header() {
+    crate::testkit::install_test_seams();
     // Azure-style: `auth: api-key` sends `api-key: <key>`, NOT a bearer Authorization header.
     let lane = lane_with_auth(Some("api-key"));
     let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
@@ -58,6 +59,7 @@ fn test_api_key_auth_sends_api_key_header() {
 
 #[test]
 fn test_default_auth_falls_back_to_protocol_bearer() {
+    crate::testkit::install_test_seams();
     // No/`bearer` auth override uses the protocol's native sign_request (openai → bearer).
     for auth in [None, Some("bearer")] {
         let lane = lane_with_auth(auth);
@@ -70,6 +72,7 @@ fn test_default_auth_falls_back_to_protocol_bearer() {
 
 #[test]
 fn test_host_from_base_strips_scheme_and_userinfo() {
+    crate::testkit::install_test_seams();
     use super::host_from_base;
     // Plain host: scheme stripped, nothing else touched.
     assert_eq!(
@@ -116,6 +119,7 @@ fn test_host_from_base_strips_scheme_and_userinfo() {
 
 #[test]
 fn test_host_from_base_backslash_authority_matches_wire_host() {
+    crate::testkit::install_test_seams();
     // CLASS-SIBLING of the SSRF backslash defect: the WHATWG URL parser the `url` crate (and
     // thus reqwest) uses treats `\` as an authority/path delimiter exactly like `/`, so reqwest
     // dials the host that ENDS at the first backslash. A `/?#`-only split read PAST the
@@ -148,6 +152,7 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
 
 #[test]
 fn test_sign_and_wire_path_parts_strips_query_from_canonical() {
+    crate::testkit::install_test_seams();
     use super::sign_and_wire_path_parts;
     // The SigV4 canonical_uri MUST exclude the query string while the wire path retains it. This
     // guards the operator `path:`-override branch (Bedrock's own paths are query-free, so the
@@ -166,6 +171,7 @@ fn test_sign_and_wire_path_parts_strips_query_from_canonical() {
 
 #[test]
 fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
+    crate::testkit::install_test_seams();
     use super::sign_and_wire_path;
     // A Bedrock modelId carrying reserved chars (`:` for a cross-region inference profile /
     // provisioned-throughput ARN, `.` already unreserved). The path must be encoded ONCE and used

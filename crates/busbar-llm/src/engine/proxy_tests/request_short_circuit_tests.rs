@@ -42,6 +42,7 @@ fn shape_same_proto(
 // == lane.model and no shim keys, so NOTHING mutates → short-circuit emits the original bytes.
 #[test]
 fn pristine_same_proto_is_byte_identical_body_model() {
+    crate::testkit::install_test_seams();
     let cases: &[(&'static str, &'static str, serde_json::Value)] = &[
         (
             crate::proto_codec::PROTO_ANTHROPIC,
@@ -82,6 +83,7 @@ fn pristine_same_proto_is_byte_identical_body_model() {
 // protocol: upstream_path_for_stream embeds `upstream_model` in the path.
 #[test]
 fn upstream_model_override_rewrites_body_and_url_model() {
+    crate::testkit::install_test_seams();
     // Body-model protocol: rewrite_model_if_needed installs `upstream_model`.
     let app = TestApp::new()
         .lane(
@@ -147,6 +149,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
 // real Vertex; this test catches it offline.
 #[test]
 fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
+    crate::testkit::install_test_seams();
     let vbase = "/v1/projects/p/locations/us-central1/publishers/anthropic/models";
     let app = TestApp::new()
         .lane(
@@ -191,6 +194,7 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
 // MODEL-IN-URL protocols (gemini/bedrock): a pristine native request carries NO body `model`
 #[test]
 fn pristine_same_proto_is_byte_identical_url_model() {
+    crate::testkit::install_test_seams();
     let cases: &[(&'static str, &'static str, serde_json::Value)] = &[
         (
             crate::proto_codec::PROTO_GEMINI,
@@ -223,6 +227,7 @@ fn pristine_same_proto_is_byte_identical_url_model() {
 // #1: gemini JSON-array shim key present → stripped → NON-pristine → bytes differ, key gone.
 #[test]
 fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
+    crate::testkit::install_test_seams();
     // Use a body-model ingress so only #1 fires (the key is stripped on EVERY egress).
     // The never-native array shim key, reached through the NEUTRAL registry accessor (it is a
     // Gemini-declared marker; core names no dialect module to obtain it).
@@ -245,6 +250,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
 // #2: `stream` present on a PATH-MODEL egress (gemini) → stripped → NON-pristine → stream gone.
 #[test]
 fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
+    crate::testkit::install_test_seams();
     let body = json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_GEMINI, "gemini", "url-model-x", body);
@@ -263,6 +269,7 @@ fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
 // backend needs → NOT stripped → with model matching lane, request stays pristine + byte-identical.
 #[test]
 fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
+    crate::testkit::install_test_seams();
     let body = json!({"model":"gpt-4o","messages":[],"stream":true});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o", body);
@@ -276,6 +283,7 @@ fn invalidator_2_stream_on_body_model_egress_stays_pristine() {
 // NON-pristine → bytes differ, model rewritten to the authoritative lane model.
 #[test]
 fn invalidator_3_model_rewrite_forces_non_pristine() {
+    crate::testkit::install_test_seams();
     let body = json!({"model":"client-alias","messages":[]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o-real", body);
@@ -294,6 +302,7 @@ fn invalidator_3_model_rewrite_forces_non_pristine() {
 // #3 negative control: body.model already EQUALS lane.model → no change → pristine short-circuit.
 #[test]
 fn invalidator_3_matching_model_stays_pristine() {
+    crate::testkit::install_test_seams();
     let body = json!({"model":"gpt-4o-real","messages":[]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o-real", body);
@@ -307,6 +316,7 @@ fn invalidator_3_matching_model_stays_pristine() {
 // NON-pristine → bytes differ, model gone (gemini carries model in the URL).
 #[test]
 fn invalidator_4_same_proto_model_shim_strip_forces_non_pristine() {
+    crate::testkit::install_test_seams();
     let body = json!({"model":"router-shim","contents":[{"role":"user","parts":[{"text":"hi"}]}]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
     let out = shape_same_proto(crate::proto_codec::PROTO_GEMINI, "gemini", "url-model-x", body);
@@ -330,6 +340,7 @@ fn invalidator_4_same_proto_model_shim_strip_forces_non_pristine() {
 // traffic through the cross-protocol IR seam.
 #[test]
 fn same_proto_gemini_thought_signature_round_trips_verbatim() {
+    crate::testkit::install_test_seams();
     let body = json!({
         "contents": [
             {

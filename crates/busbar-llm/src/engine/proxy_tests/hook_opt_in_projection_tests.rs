@@ -37,6 +37,7 @@ fn facts(v: &Value, proto: &str) -> HookFacts {
 /// block arrays (text blocks joined by newline, non-text blocks skipped).
 #[test]
 fn prompt_projection_flattens_string_and_block_content() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "system": "be brief",
         "messages": [
@@ -68,6 +69,7 @@ fn prompt_projection_flattens_string_and_block_content() {
 /// empty system stays `None` so the wire omits the key.
 #[test]
 fn prompt_projection_system_blocks_and_absent() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "system": [{"type": "text", "text": "sys a"}, {"type": "text", "text": "sys b"}],
         "messages": []
@@ -101,6 +103,7 @@ fn prompt_projection_system_blocks_and_absent() {
 /// anyway. That is asserted here as the rejection it now is.
 #[test]
 fn prompt_projection_keeps_empty_entries_aligned() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "user", "content": [{"type": "image", "source": {"data": "AAAA"}}]},
@@ -152,6 +155,7 @@ fn prompt_projection_keeps_empty_entries_aligned() {
 /// so there is nothing left for them to disagree about).
 #[test]
 fn system_text_chars_counts_block_arrays() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "system": [{"type": "text", "text": "abcde"}, {"type": "text", "text": "fgh"}],
         "messages": []
@@ -170,6 +174,7 @@ fn system_text_chars_counts_block_arrays() {
 /// them because the gemini READER does — there is no second read path left to be blind.
 #[test]
 fn prompt_projection_reads_gemini_contents() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "systemInstruction": {"parts": [{"text": "be brief"}]},
         "contents": [
@@ -208,6 +213,7 @@ fn prompt_projection_reads_gemini_contents() {
 /// Responses-API half: `input` (list OR bare string) and `instructions` must project.
 #[test]
 fn prompt_projection_reads_responses_input() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "instructions": "be brief",
         "input": [
@@ -281,6 +287,7 @@ fn prompt_projection_reads_responses_input() {
 /// signal. On the IR every spelling lands in one field, which is a FIX and not merely a move.
 #[test]
 fn max_tokens_signal_is_dialect_aware_for_responses() {
+    crate::testkit::install_test_seams();
     // Responses ingress: only `max_output_tokens` is present.
     let resp: Value = serde_json::json!({"input": "hi", "max_output_tokens": 4096});
     assert_eq!(facts(&resp, "responses").shape().max_tokens, Some(4096));
@@ -306,6 +313,7 @@ fn max_tokens_signal_is_dialect_aware_for_responses() {
 /// Bedrock ingress: its `content: [{text}]` blocks (no `type` key) read through the bedrock reader.
 #[test]
 fn prompt_projection_reads_bedrock_messages() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "system": [{"text": "sys"}],
         "messages": [
@@ -324,6 +332,7 @@ fn prompt_projection_reads_bedrock_messages() {
 /// `metadata.user_id`, and the hook seam reads one field either way.
 #[test]
 fn body_end_user_reads_both_dialects() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({"messages": [], "user": "alice"});
     assert_eq!(facts(&v, "openai").end_user().as_deref(), Some("alice"));
     let v: Value = serde_json::json!({"messages": [], "metadata": {"user_id": "bob"}});
@@ -345,6 +354,7 @@ fn body_end_user_reads_both_dialects() {
 /// Anthropic `thinking` plaintext lives under the key `thinking`, not `text`.
 #[test]
 fn prompt_projection_sees_anthropic_thinking_text() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -364,6 +374,7 @@ fn prompt_projection_sees_anthropic_thinking_text() {
 /// client-fabricated, entirely unsigned block ships to the provider verbatim. It must be screenable.
 #[test]
 fn prompt_projection_sees_bedrock_reasoning_text() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -386,6 +397,7 @@ fn prompt_projection_sees_bedrock_reasoning_text() {
 /// `summary[].text`, never at the item root.
 #[test]
 fn prompt_projection_sees_responses_reasoning_summary_only() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "input": [
             {"type": "reasoning", "summary": [{"type": "summary_text", "text": "SMUGGLED"}]}
@@ -406,6 +418,7 @@ fn prompt_projection_sees_responses_reasoning_summary_only() {
 /// two checks: opacity is asked FIRST, `text` is read only after.
 #[test]
 fn prompt_projection_marks_anthropic_redacted_thinking() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -426,6 +439,7 @@ fn prompt_projection_marks_anthropic_redacted_thinking() {
 /// Same guard, Bedrock's redacted shape (`reasoningContent.redactedContent`).
 #[test]
 fn prompt_projection_marks_bedrock_redacted_content() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -450,6 +464,7 @@ fn prompt_projection_marks_bedrock_redacted_content() {
 /// predicate is what stops that, and this is its witness.
 #[test]
 fn prompt_projection_marks_responses_encrypted_content_only_reasoning() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "input": [
             {"type": "reasoning", "encrypted_content": "OPAQUE_BLOB_XYZ"}
@@ -470,6 +485,7 @@ fn prompt_projection_marks_responses_encrypted_content_only_reasoning() {
 /// the marker, not silently contribute 0.
 #[test]
 fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content_array() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "input": [
             {"type": "reasoning", "content": [], "encrypted_content": "OPAQUE_BLOB_XYZ"}
@@ -495,6 +511,7 @@ fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content
 /// at it directly, where it already lives, instead of at a second copy of its accept/skip rules.
 #[test]
 fn responses_reasoning_reader_rejects_malformed_encrypted_content() {
+    crate::testkit::install_test_seams();
     // The reader's own accept/skip rules (`read_reasoning_encrypted_content` rejecting an empty
     // string / non-string blob) are asserted directly beside that codec now — RELOCATED to
     // `busbar-llm` (`src/tests/proto/phase1_5_relocated_tests.rs`).
@@ -510,6 +527,7 @@ fn responses_reasoning_reader_rejects_malformed_encrypted_content() {
 /// and neither the marker nor the blob's bytes leak into the wrong place.
 #[test]
 fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "input": [
             {
@@ -537,6 +555,7 @@ fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
 /// by construction rather than by two functions happening to pick the same word.
 #[test]
 fn prompt_projection_attributes_responses_reasoning_to_assistant() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "input": [
             {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "chain of thought"}]}
@@ -552,6 +571,7 @@ fn prompt_projection_attributes_responses_reasoning_to_assistant() {
 /// newline-joined, in the order the reader produced them — which is the order the writer will send.
 #[test]
 fn prompt_projection_mixed_text_and_thinking_turn_joins_both() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -573,6 +593,7 @@ fn prompt_projection_mixed_text_and_thinking_turn_joins_both() {
 /// happened to catch it.
 #[test]
 fn prompt_projection_gemini_thought_part_still_projects() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "contents": [
             {"role": "model", "parts": [
@@ -592,6 +613,7 @@ fn prompt_projection_gemini_thought_part_still_projects() {
 /// contributed 0 to the old count, silently under-counting a request a size-keyed policy keys on.
 #[test]
 fn total_text_chars_counts_reasoning_text() {
+    crate::testkit::install_test_seams();
     let anthropic: Value = serde_json::json!({
         "messages": [{"role": "assistant", "content": [{"type": "thinking", "thinking": "12345"}]}]
     });
@@ -618,6 +640,7 @@ fn total_text_chars_counts_reasoning_text() {
 /// "these two agree" is a claim worth continuing to check.
 #[test]
 fn size_signal_and_projection_agree_on_reasoning() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -652,6 +675,7 @@ fn size_signal_and_projection_agree_on_reasoning() {
 /// in the CHANGELOG, and it is bounded by `limits.hook_content_max_bytes`.
 #[test]
 fn size_signal_and_projection_agree_on_tool_role_content() {
+    crate::testkit::install_test_seams();
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "user", "content": "run it"},
@@ -709,6 +733,7 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
 /// so a future change to the write-back path cannot silently regress the note into a stale claim.
 #[test]
 fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
+    crate::testkit::install_test_seams();
     let mut v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
@@ -761,6 +786,7 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
 ///    The always-present size bucket still reports the real total, so the omission is visible.
 #[test]
 fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
+    crate::testkit::install_test_seams();
     let big = "x".repeat(200_000);
     let v: Value = serde_json::json!({"messages": [{"role": "user", "content": big}]});
     let f = facts(&v, "openai");

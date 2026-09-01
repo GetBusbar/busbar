@@ -36,6 +36,7 @@ fn ok_response() -> MockResponse {
 
 #[tokio::test(flavor = "current_thread")]
 async fn huge_body_translates_via_offload_and_forwards() {
+    crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(ok_response());
     state.push(ok_response());

@@ -21,6 +21,7 @@ fn http() -> busbar_core::transport::Transport {
 /// recorded under the caller's key id.
 #[test]
 fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
@@ -71,6 +72,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
 /// may still call a tool — behaviour unchanged), and a `degraded` audit event is recorded.
 #[test]
 fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
+    crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "anthropic.claude-3-5-sonnet",
@@ -123,6 +125,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 /// Bedrock egress drops BOTH `response_format` and `tool_choice=none`.
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
+    crate::testkit::install_test_seams();
     let ingress = busbar_core::handlers::chat("openai", http());
     let body = json!({
         "model": "gpt-4o",

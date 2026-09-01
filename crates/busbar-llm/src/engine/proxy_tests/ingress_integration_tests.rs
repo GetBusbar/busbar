@@ -36,6 +36,7 @@ fn minimal_app() -> Arc<App> {
 
 #[test]
 fn test_finish_emits_request_metrics() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
@@ -67,6 +68,7 @@ fn test_finish_emits_request_metrics() {
 
 #[test]
 fn test_affinity_header_defaults_to_session_id() {
+    crate::testkit::install_test_seams();
     // No pool_runtime entry → default header.
     let app = minimal_app();
     assert_eq!(affinity_header_for(&app, "anypool"), "x-session-id");
@@ -74,6 +76,7 @@ fn test_affinity_header_defaults_to_session_id() {
 
 #[test]
 fn test_affinity_header_honors_configured_name() {
+    crate::testkit::install_test_seams();
     let mut app = minimal_app();
     let mut pr = std::collections::HashMap::new();
     pr.insert(
@@ -99,6 +102,7 @@ fn test_affinity_header_honors_configured_name() {
 
 #[test]
 fn test_affinity_header_session_mode_without_name_uses_default() {
+    crate::testkit::install_test_seams();
     let mut app = minimal_app();
     let mut pr = std::collections::HashMap::new();
     pr.insert(
@@ -167,6 +171,7 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
 // `key_spend` reads.
 #[test]
 fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = busbar_core::governance::GovCtx {
@@ -239,6 +244,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 // internal `charged_at = store::now()`, so the prior charge and any spurious refund hit one row.
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = busbar_core::governance::GovCtx {
@@ -284,6 +290,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
 
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
@@ -311,6 +318,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 // admission charge is seeded via the real admission charge into the charged_at window.
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
     busbar_core::metrics::init();
 
@@ -406,6 +414,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 /// overshot the cap.
 #[tokio::test]
 async fn test_admit_check_uses_charged_at_window_not_clock() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
     busbar_core::metrics::init();
 
@@ -556,6 +565,7 @@ fn anthropic_ok_body() -> serde_json::Value {
 /// the IR to an OpenAI backend and back, returning a 2xx the Cohere SDK can parse.
 #[tokio::test]
 async fn test_cohere_ingress_to_openai_backend() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -603,6 +613,7 @@ async fn test_cohere_ingress_to_openai_backend() {
 /// Anthropic backend and back.
 #[tokio::test]
 async fn test_responses_ingress_to_anthropic_backend() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -660,6 +671,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
 /// proves model+stream injection happened (resolution by path model can't happen otherwise).
 #[tokio::test]
 async fn test_gemini_path_resolves_model_and_stream() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Two backend responses: one for the non-stream call, one we won't reach (stream call uses
     // a fresh state below). Keep them separate for clarity.
@@ -727,6 +739,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 /// gain `model` (from the path) and `stream` (from the action). This is the "body shim".
 #[test]
 fn test_path_model_injects_model_and_stream_into_body() {
+    crate::testkit::install_test_seams();
     // Mirror the injection ingress_path_model performs (kept here as a focused assertion on the
     // exact body mutation, independent of the HTTP/forward plumbing).
     let mut v: Value = json!({"contents": [{"role": "user", "parts": [{"text": "x"}]}]});
@@ -747,6 +760,7 @@ fn test_path_model_injects_model_and_stream_into_body() {
 /// Gemini unknown action ⇒ native 404 (not a 200, not a panic).
 #[tokio::test]
 async fn test_gemini_unknown_action_is_404() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -780,6 +794,7 @@ async fn test_gemini_unknown_action_is_404() {
 /// assertion lives in `test_bedrock_converse_stream_returns_binary_eventstream`.
 #[tokio::test]
 async fn test_bedrock_converse_routes_and_returns_json() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -875,6 +890,7 @@ fn openai_stream_events() -> Vec<String> {
 /// cross-protocol to a streaming OpenAI backend so the SSE→binary reframe path runs.
 #[tokio::test]
 async fn test_bedrock_converse_stream_returns_binary_eventstream() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -987,6 +1003,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
 /// upstream id verbatim (proving it was passed through, not a freshly-minted UUID).
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match it — the only way the assertion passes is verbatim passthrough.
@@ -1115,6 +1132,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
 /// the body carries the native Converse shape (`output`/`usage`).
 #[tokio::test]
 async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Fixed upstream request id: NOT UUID-shaped, so a synthesized id can never accidentally
     // match — the assertion passes ONLY on verbatim passthrough.
@@ -1232,6 +1250,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
 /// variants cannot reach.
 #[tokio::test]
 async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_binary_exception() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::EventStreamTransportError {
@@ -1320,6 +1339,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
 /// wiring previously exercised only by the isolated `mid_stream_error_bytes` unit test.
 #[tokio::test]
 async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -1377,6 +1397,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
 /// emit one mid-stream) whose `data:` is the native OpenAI error envelope.
 #[tokio::test]
 async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -1433,6 +1454,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
 /// top-level `model`/`stream`.
 #[tokio::test]
 async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // A minimal native-shaped Bedrock Converse response; same-protocol passthrough relays it
@@ -1502,6 +1524,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
 /// top-level `model`/`stream` off the native generateContent body the backend receives.
 #[tokio::test]
 async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1567,6 +1590,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
 /// Routes gemini→openai (cross-protocol) so the request reaches the backend and is reframed.
 #[tokio::test]
 async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -1654,6 +1678,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
 /// `SseTransportError` so the upstream drops the connection after the first frame.
 #[tokio::test]
 async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -1734,6 +1759,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
 /// 404 (both-maps-miss) path through the real router and scrapes the registry.
 #[tokio::test]
 async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // A lane/pool named "foo" exists, but the client asks for a DISTINCT unknown model so both
     // `app.pools` and `app.by_model` miss and the 404 path runs.
@@ -1802,6 +1828,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
 /// that old behavior.
 #[tokio::test]
 async fn test_body_model_parse_error_is_observable() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // No backend needed: the request never gets past the body parse.
     let app = TestApp::new()
@@ -1841,6 +1868,7 @@ async fn test_body_model_parse_error_is_observable() {
 /// unrouted.
 #[tokio::test]
 async fn test_bedrock_invoke_unresolvable_body_is_observable() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -1883,6 +1911,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
 /// parallel tests cannot contribute to the matched samples).
 #[tokio::test]
 async fn test_served_request_increments_hot_path_metrics() {
+    crate::testkit::install_test_seams();
     use crate::test_support::metric_sum;
     const POOL: &str = "metrics-harness-pool";
     const MODEL: &str = "metrics-harness-model";
@@ -1953,6 +1982,7 @@ async fn test_served_request_increments_hot_path_metrics() {
 /// the synthesized key: limits live on `groups:`, keys are pure auth.)
 #[tokio::test]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
@@ -2061,6 +2091,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
 #[tokio::test]
 #[ignore = "timing gate — run explicitly (CI: cargo test --release -- --ignored timing_gate)"]
 async fn timing_gate_hot_path_p50_p99() {
+    crate::testkit::install_test_seams();
     const WARMUP: usize = 100;
     const MEASURED: usize = 500;
     const P50_MAX_MS: u128 = 25;
@@ -2136,6 +2167,7 @@ async fn timing_gate_hot_path_p50_p99() {
 /// early-return. Asserts a strict counter increase, so it fails against the old early-return.
 #[tokio::test]
 async fn test_body_model_missing_model_is_observable() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -2172,6 +2204,7 @@ async fn test_body_model_missing_model_is_observable() {
 /// early-return that bypassed `finish`.
 #[tokio::test]
 async fn test_path_model_non_object_body_is_observable() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -2209,6 +2242,7 @@ async fn test_path_model_non_object_body_is_observable() {
 /// old early-return.
 #[tokio::test]
 async fn test_gemini_unsupported_action_is_observable() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -2249,6 +2283,7 @@ async fn test_gemini_unsupported_action_is_observable() {
 /// `"unresolved"` for anything else.
 #[test]
 fn test_pool_label_bounds_cardinality() {
+    crate::testkit::install_test_seams();
     let mut app = minimal_app();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -2282,6 +2317,7 @@ fn test_pool_label_bounds_cardinality() {
 /// as a JSON array whose elements are gemini `GenerateContentResponse` objects.
 #[tokio::test]
 async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -2349,6 +2385,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
 /// `FirstByteBody`'s `Poll::Ready(Some(Err))` arm while `json_array` is active.
 #[tokio::test]
 async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -2419,6 +2456,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
 /// stripped only for path-model (gemini/bedrock) egress where it rides the URL.
 #[tokio::test]
 async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -2473,6 +2511,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
 /// Routes openai→anthropic and inspects the first `message_start` SSE frame.
 #[tokio::test]
 async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -2540,6 +2579,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
 /// shape (`{"type":"error","error":{"type":...}}`), not the OpenAI `{"error":{...}}` shape.
 #[tokio::test]
 async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Auth {
@@ -2587,6 +2627,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
 /// malformed-path branch and must return a Gemini-shaped 404 (not a 200, not a panic).
 #[tokio::test]
 async fn test_gemini_malformed_path_no_colon_is_404() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -2619,6 +2660,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
 /// pre-colon segment is empty) and must return a Gemini-shaped 404, not misroute.
 #[tokio::test]
 async fn test_gemini_empty_model_is_404() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -2643,6 +2685,7 @@ async fn test_gemini_empty_model_is_404() {
 /// "v1beta" is a distinguishability tell against a google-generativeai SDK pinned to v1.
 #[tokio::test]
 async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -2704,6 +2747,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
 /// full surface) — the fix is version-faithful, not a blanket rewrite.
 #[tokio::test]
 async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -2739,6 +2783,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
 /// `gemini_ingress` no-colon branch's delegation to `proto::proto_for_path`.
 #[tokio::test]
 async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -2896,6 +2941,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
 /// resolves and 2xx round-trips.
 #[tokio::test]
 async fn test_gemini_model_with_colon_splits_on_last_colon() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -2945,6 +2991,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
 /// `%3A` decodes to a literal colon.
 #[test]
 fn test_percent_decode_colon() {
+    crate::testkit::install_test_seams();
     assert_eq!(percent_decode("%3A"), ":");
     assert_eq!(
         percent_decode("anthropic.claude-3%3A0"),
@@ -2955,6 +3002,7 @@ fn test_percent_decode_colon() {
 /// `%2E` decodes to a literal period, and an undecoded id passes through unchanged.
 #[test]
 fn test_percent_decode_period_and_plain() {
+    crate::testkit::install_test_seams();
     assert_eq!(percent_decode("a%2Eb"), "a.b");
     assert_eq!(
         percent_decode("anthropic.claude-3-sonnet"),
@@ -2966,6 +3014,7 @@ fn test_percent_decode_period_and_plain() {
 /// panicking.
 #[test]
 fn test_percent_decode_malformed_escape_passes_through() {
+    crate::testkit::install_test_seams();
     assert_eq!(percent_decode("%XY"), "%XY");
     assert_eq!(percent_decode("a%ZZb"), "a%ZZb");
 }
@@ -2974,6 +3023,7 @@ fn test_percent_decode_malformed_escape_passes_through() {
 /// out-of-bounds index, the bytes pass through.
 #[test]
 fn test_percent_decode_trailing_percent_is_safe() {
+    crate::testkit::install_test_seams();
     assert_eq!(percent_decode("abc%"), "abc%");
     assert_eq!(percent_decode("abc%3"), "abc%3");
 }
@@ -2983,6 +3033,7 @@ fn test_percent_decode_trailing_percent_is_safe() {
 /// `not_found`. Drives the real router so the body-model ingress → resolution-miss path runs.
 #[tokio::test]
 async fn test_unknown_model_404_uses_canonical_openai_type() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3040,6 +3091,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, busbar_core::governance::Virtual
 /// `finish` and were invisible to Prometheus / the request-log webhook.
 #[tokio::test]
 async fn test_governance_rejection_is_counted_via_finish() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_core::governance::GovCtx {
@@ -3089,6 +3141,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
 /// `None` so the caller proceeds to resolve+forward.
 #[tokio::test]
 async fn test_governance_guard_passes_when_allowed() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_core::governance::GovCtx {
@@ -3114,6 +3167,7 @@ async fn test_governance_guard_passes_when_allowed() {
 /// gates the refund on the `charged` flag from `governance_guard`.
 #[tokio::test]
 async fn finish_admitted_does_not_refund_an_uncharged_admit() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = busbar_core::governance::GovCtx {
@@ -3163,6 +3217,7 @@ async fn body_string(resp: Response) -> String {
 /// these envelopes; leaking the key id / pool topology is both a proxy tell and an info leak.
 #[tokio::test]
 async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
 
     // --- 403: pool not allowed ---
@@ -3342,6 +3397,7 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_core::governance::VirtualKey
 /// errors had no `x-amzn-*` headers and left the SDK's request id empty.
 #[test]
 fn test_bedrock_ingress_error_has_amzn_headers() {
+    crate::testkit::install_test_seams();
     let resp = ingress_error(
         "bedrock",
         StatusCode::NOT_FOUND,
@@ -3383,6 +3439,7 @@ fn test_bedrock_ingress_error_has_amzn_headers() {
 /// tell only).
 #[test]
 fn test_bedrock_errortype_header_matches_body_and_others_omit() {
+    crate::testkit::install_test_seams();
     for (kind, status, expected) in [
         (
             crate::engine::KIND_INVALID_REQUEST,
@@ -3440,6 +3497,7 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
 /// (`{"message": ...}`), served as application/json — not a plain-text 400 or a foreign shape.
 #[tokio::test]
 async fn test_cohere_bad_json_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3473,6 +3531,7 @@ async fn test_cohere_bad_json_is_400_native_envelope() {
 /// error envelope (`{"error":{"type":...}}`).
 #[tokio::test]
 async fn test_responses_bad_json_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3496,6 +3555,7 @@ async fn test_responses_bad_json_is_400_native_envelope() {
 /// envelope (`{"error":{"type":"invalid_request_error",...}}`).
 #[tokio::test]
 async fn test_openai_missing_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3526,6 +3586,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
 /// and 404 on a pool/by_model miss; these three tests (openai/cohere/responses) lock the 400.
 #[tokio::test]
 async fn test_openai_empty_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3552,6 +3613,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
 /// (a BARE top-level `message`, NO `error`/`type` wrapper).
 #[tokio::test]
 async fn test_cohere_empty_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3579,6 +3641,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
 /// envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_empty_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3613,6 +3676,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
 /// 400 envelope shape so the guard cannot be weakened to coerce a numeric model.
 #[tokio::test]
 async fn test_openai_numeric_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3645,6 +3709,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
 /// not a string), so it must still 400 rather than fall through to a 404.
 #[tokio::test]
 async fn test_cohere_numeric_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3676,6 +3741,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
 /// bool) ⇒ native Responses 400 envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_numeric_model_is_400_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3707,6 +3773,7 @@ async fn test_responses_numeric_model_is_400_native_envelope() {
 /// envelope is `{"error":{"code":...,"status":...}}`.
 #[tokio::test]
 async fn test_gemini_non_object_body_is_400() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3745,6 +3812,7 @@ async fn test_gemini_non_object_body_is_400() {
 /// headers — not a panic or a 500.
 #[tokio::test]
 async fn test_bedrock_non_object_body_is_400() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3779,6 +3847,7 @@ async fn test_bedrock_non_object_body_is_400() {
 /// (`error.status == "NOT_FOUND"`), produced by `forward_resolved`'s resolution-miss path.
 #[tokio::test]
 async fn test_gemini_unknown_model_404_native_shape() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3807,6 +3876,7 @@ async fn test_gemini_unknown_model_404_native_shape() {
 /// the x-amzn-* headers.
 #[tokio::test]
 async fn test_bedrock_unknown_model_404_native_shape() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3837,6 +3907,7 @@ async fn test_bedrock_unknown_model_404_native_shape() {
 /// Cohere unknown-model 404 must carry the Cohere-native envelope (`{"message": ...}`).
 #[tokio::test]
 async fn test_cohere_unknown_model_404_native_shape() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3860,6 +3931,7 @@ async fn test_cohere_unknown_model_404_native_shape() {
 /// (`{"error":{"type":"not_found_error",...}}`).
 #[tokio::test]
 async fn test_responses_unknown_model_404_native_shape() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -3936,6 +4008,7 @@ fn openai_native_stream_events() -> Vec<String> {
 /// typed-`event:` frame is caught.
 #[tokio::test]
 async fn test_openai_ingress_stream_emits_native_openai_frames() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -4024,6 +4097,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
 /// caught here.
 #[tokio::test]
 async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -4109,6 +4183,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
 /// `chat.completion.chunk` objects. Routes responses→openai (cross-protocol).
 #[tokio::test]
 async fn test_responses_ingress_stream_emits_native_responses_events() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -4187,6 +4262,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
 /// (the unit `percent_decode` tests bypass axum's own first decode).
 #[tokio::test]
 async fn test_bedrock_percent_encoded_model_id_converse_stream() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -4259,6 +4335,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
 /// `error` only (the leak guarded against here would be an `event:` line or a foreign shape).
 #[tokio::test]
 async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -4330,6 +4407,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
 /// `event.response`).
 #[tokio::test]
 async fn test_responses_ingress_mid_stream_transport_error_appends_response_failed() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::SseTransportError {
@@ -4409,6 +4487,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
 /// dispatch).
 #[tokio::test]
 async fn test_real_failover_serves_second_member_after_first_5xx() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     const POOL: &str = "failover-e2e-pool";
     const MODEL_BAD: &str = "failover-e2e-bad";
@@ -4503,6 +4582,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
 /// breaker must have recorded the mid-stream failure.
 #[tokio::test]
 async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     const POOL: &str = "mid-stream-e2e-pool";
     const MODEL_BAD: &str = "mid-stream-e2e-primary";
@@ -4613,6 +4693,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
 /// deterministic proxy tell on any of the six surfaces.
 #[tokio::test]
 async fn test_no_client_error_message_carries_router_prefix() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -4759,6 +4840,7 @@ async fn governed_pool_acl_router(
 /// (`{"message": ...}`), served as application/json.
 #[tokio::test]
 async fn test_governance_pool_acl_403_cohere_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("co", crate::proto_codec::PROTO_OPENAI, "zai").await;
@@ -4792,6 +4874,7 @@ async fn test_governance_pool_acl_403_cohere_native_envelope() {
 /// envelope (`{"error":{"type":"permission_error"}}`).
 #[tokio::test]
 async fn test_governance_pool_acl_403_responses_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("re", crate::proto_codec::PROTO_OPENAI, "zai").await;
@@ -4832,6 +4915,7 @@ async fn test_governance_pool_acl_403_responses_native_envelope() {
 /// caught here exactly as the symmetric four tests catch it for their protocols.
 #[tokio::test]
 async fn test_governance_pool_acl_403_openai_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("gpt-4o", crate::proto_codec::PROTO_OPENAI, "openai").await;
@@ -4870,6 +4954,7 @@ async fn test_governance_pool_acl_403_openai_native_envelope() {
 /// Gemini-native error envelope (`{"error":{"code":403,"status":"PERMISSION_DENIED"}}`).
 #[tokio::test]
 async fn test_governance_pool_acl_403_gemini_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
@@ -4914,6 +4999,7 @@ async fn test_governance_pool_acl_403_gemini_native_envelope() {
 /// header (plus `x-amzn-RequestId`), exactly as a real AWS Bedrock 403 does.
 #[tokio::test]
 async fn test_governance_pool_acl_403_bedrock_native_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (addr, handle, secret) =
         governed_pool_acl_router("foo", crate::proto_codec::PROTO_OPENAI, "zai").await;
@@ -4973,6 +5059,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 /// is reachable from A on exhaustion and the key may not use B.
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
 
@@ -5061,6 +5148,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 /// fix over-rejecting legitimate fallback configurations.
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
 
@@ -5143,6 +5231,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 /// CallerToken extension wiring, and `finish` — none of which the handler-direct unit test runs.
 #[tokio::test]
 async fn test_adhoc_success_round_trip_via_router() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -5183,6 +5272,7 @@ async fn test_adhoc_success_round_trip_via_router() {
 /// not a foreign shape or a plain-text body.
 #[tokio::test]
 async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
@@ -5241,6 +5331,7 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 /// which passes a default no-key GovCtx).
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
     let store = StdArc::new(MemoryStore::new());
@@ -5313,6 +5404,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 /// the end-to-end gemini surface is covered by `test_gemini_model_not_found_uses_native_message`.
 #[test]
 fn test_not_found_message_is_protocol_native() {
+    crate::testkit::install_test_seams();
     // A pre-shaped dialect body is used verbatim (here: the native Gemini string built by the arrival),
     // with NO OpenAI "does not exist" phrasing leaking in.
     let shaped = "models/gemini-1.5-pro is not found for API version v1beta, \
@@ -5338,6 +5430,7 @@ fn test_not_found_message_is_protocol_native() {
 /// `error.message`). Drives the real router with an empty app so resolution misses on both maps.
 #[tokio::test]
 async fn test_gemini_model_not_found_uses_native_message() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
     let (addr, handle) = serve(app).await;
@@ -5388,6 +5481,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
 /// framing and that the frames carry native gemini `candidates[]` (never OpenAI `choices`).
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -5462,6 +5556,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
 /// on the v1 path so a regression isolating the stable-v1 alias is caught.
 #[tokio::test]
 async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -5614,6 +5709,7 @@ async fn governed_limit_router(
 /// for gemini/bedrock) that the 403-only set above does not reach.
 #[tokio::test]
 async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
 
     // openai / responses / cohere: body-model routes, native error envelope is JSON.
@@ -5693,6 +5789,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 /// the `budget_check` guard.
 #[tokio::test]
 async fn test_governance_over_budget_native_envelope_all_ingress() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
 
     // 429-mapping protocols: openai / responses / cohere / gemini.
@@ -5753,6 +5850,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
 /// round-trips through `forward_with_pool` to its backend and returns 2xx; the upstream sees the request.
 #[tokio::test]
 async fn test_named_by_model_fallback_round_trip_via_router() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -5838,6 +5936,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 /// cooldown alone cleanly separates fixed from broken.
 #[tokio::test]
 async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = StdArc::new(MockServerState::new());
     // One upstream 5xx is enough: a single transient failure sets a pending cooldown on the
@@ -5943,6 +6042,7 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_core::governance::VirtualKe
 /// id or the internal governance vocabulary. Nothing is charged on the rejected attempt.
 #[tokio::test]
 async fn test_group_blocked_429_names_the_budget_group() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
     let gov = busbar_core::governance::GovCtx {
@@ -5977,6 +6077,7 @@ async fn test_group_blocked_429_names_the_budget_group() {
 /// bucket named as unconfigured) - never a silent uncapped admit.
 #[tokio::test]
 async fn test_missing_group_fails_closed_at_ingress() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
@@ -6000,6 +6101,7 @@ async fn test_missing_group_fails_closed_at_ingress() {
 #[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
@@ -6125,6 +6227,7 @@ fn governed_app_downgrade(
 /// value's participation set - the caller keeps working, on the cheaper tier.
 #[tokio::test]
 async fn test_budget_exhaustion_downgrades_pool() {
+    crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(None);
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
@@ -6157,6 +6260,7 @@ async fn test_budget_exhaustion_downgrades_pool() {
 /// distinguish `==` from `!=` at all; this test is the one that actually needs 2+ hops.
 #[tokio::test]
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -6271,6 +6375,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
 /// into `value` by exhaustion - the request falls back to the plain budget rejection.
 #[tokio::test]
 async fn test_downgrade_never_bypasses_pool_acl() {
+    crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),

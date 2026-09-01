@@ -55,6 +55,7 @@ async fn hyper_transport_err() -> hyper::Error {
 /// ConverseStream (stream) call, `application/json` for the unary Converse call.
 #[test]
 fn test_egress_accept_matches_native_sdk() {
+    crate::testkit::install_test_seams();
     // Bedrock: eventstream on stream, json on unary (the botocore split).
     assert_eq!(
         egress_accept("bedrock", true),
@@ -81,6 +82,7 @@ fn test_egress_accept_matches_native_sdk() {
 /// returns a non-empty, plausibly-versioned UA.
 #[test]
 fn test_egress_ua_versions_are_pinned_and_present() {
+    crate::testkit::install_test_seams();
     // GOLDEN WIRE LITERALS — the exact bytes a native SDK sends. Comparing against the
     // `EGRESS_UA_*` constants themselves is a tautology (both sides move together when the
     // constant is edited); pinning the literal here means changing a constant is a deliberate,
@@ -166,6 +168,7 @@ fn test_egress_ua_versions_are_pinned_and_present() {
 /// status arms the mapping distinguishes.
 #[test]
 fn test_cross_protocol_error_kind_mapping() {
+    crate::testkit::install_test_seams();
     assert_eq!(
         cross_protocol_error_kind(StatusCode::UNAUTHORIZED),
         "authentication_error" // golden wire-contract literal (kept bare on purpose)
@@ -216,6 +219,7 @@ fn test_cross_protocol_error_kind_mapping() {
 /// degraded-path `invalid_request_error`.
 #[tokio::test]
 async fn test_shape_cross_protocol_error_auth_kinds() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     for (status, want_kind) in [
         (StatusCode::UNAUTHORIZED, "authentication_error"), // golden wire-contract literal (kept bare on purpose)
@@ -243,6 +247,7 @@ async fn test_shape_cross_protocol_error_auth_kinds() {
 /// carry them.
 #[test]
 fn test_ingress_error_bedrock_amzn_headers() {
+    crate::testkit::install_test_seams();
     let resp = ingress_error(
         "bedrock",
         StatusCode::TOO_MANY_REQUESTS,
@@ -281,6 +286,7 @@ fn test_ingress_error_bedrock_amzn_headers() {
 /// decodes.
 #[tokio::test]
 async fn test_ingress_error_emits_native_envelope_with_status() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let resp = ingress_error(
         "anthropic",
@@ -341,6 +347,7 @@ async fn test_ingress_error_emits_native_envelope_with_status() {
 /// the body `request_id`, and non-anthropic ingress carries no such header.
 #[tokio::test]
 async fn test_anthropic_ingress_error_request_id_header_matches_body() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     let resp = ingress_error(
         "anthropic",
@@ -371,6 +378,7 @@ async fn test_anthropic_ingress_error_request_id_header_matches_body() {
 /// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`.
 #[test]
 fn test_ingress_stream_content_type_by_protocol() {
+    crate::testkit::install_test_seams();
     for p in ["openai", "anthropic", "gemini", "cohere", "responses"] {
         assert_eq!(ingress_stream_content_type(p), Some("text/event-stream"));
         // golden wire-contract literal (kept bare on purpose)
@@ -388,6 +396,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 /// response is served with the INGRESS Content-Type (`application/json`).
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend response with a foreign `chatcmpl-` id + created + fingerprint.
@@ -481,6 +490,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 /// response is the ingress-native 500 AND that the gov budget recorded ZERO spend.
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
+    crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -587,6 +597,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 /// return the unit and flip the cell to Open.
 #[tokio::test]
 async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -682,6 +693,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 /// the gov recorded the tokens (the old code would record 0 → spend 0).
 #[tokio::test]
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
@@ -812,6 +824,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 /// several transport-frame-sized chunks (mirroring `test_same_protocol_nonstream_multichunk_counts_usage`).
 #[tokio::test]
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
@@ -959,6 +972,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 #[test]
 #[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
 fn nonstream_tap_cap_is_read_once_per_decision() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
@@ -1090,6 +1104,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
 /// must carry `usageMetadata.promptTokenCount == 600` (the real value), not 0/absent.
 #[tokio::test]
 async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -1173,6 +1188,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
 /// `message_delta` must carry the real `usage.output_tokens` (400), not 0.
 #[tokio::test]
 async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -1250,6 +1266,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 /// gate) the Drop billing site charged the 150 partial tokens = 15c.
 #[tokio::test]
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
@@ -1361,6 +1378,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
 /// credential — NOT `Bearer sk-operator-secret` (the old borrow-the-operator-key behavior).
 #[tokio::test]
 async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
 
     // Upstream answers 200 so we can inspect the Authorization header it received.
@@ -1450,6 +1468,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
 /// This asserts both are now present on the translated Gemini body.
 #[tokio::test]
 async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response_id() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Native AWS Converse (non-stream) 2xx: NO body-level id/created/model — only output,
@@ -1537,6 +1556,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
 /// `request_id()`); the error path already synthesizes it, this closes the SUCCESS gap.
 #[tokio::test]
 async fn test_bedrock_ingress_success_carries_amzn_request_id() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend 2xx; ingress is bedrock → cross-protocol translation to Converse.
@@ -1611,6 +1631,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
 /// no upstream anthropic id to forward, so busbar must SYNTHESIZE a shape-correct `req_…` one.
 #[tokio::test]
 async fn test_anthropic_ingress_success_carries_request_id_header() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1681,6 +1702,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
 /// tell. Same-protocol anthropic stream (no upstream id supplied by the mock) → synthesized `req_`.
 #[tokio::test]
 async fn test_anthropic_ingress_streaming_carries_request_id_header() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A minimal anthropic-shaped SSE stream (the mock serves `text/event-stream`, driving the
@@ -1752,6 +1774,7 @@ data: {"type":"message_stop"}"#
 /// the Anthropic error shape (`{"type":"error","error":{...}}`), with no OpenAI fields leaking.
 #[tokio::test]
 async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 400 client-fault error body from the backend.
@@ -1829,6 +1852,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 /// returns the ingress protocol's native JSON envelope with the right status.
 #[tokio::test]
 async fn test_forward_error_path_returns_native_envelope() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
     let app = TestApp::new().build();
@@ -1872,6 +1896,7 @@ async fn test_forward_error_path_returns_native_envelope() {
 /// the egress body the backend actually received.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -1977,6 +2002,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
 /// broken tool round-trip. Assert the client sees an OpenAI-native `call_…` id, never the raw one.
 #[tokio::test]
 async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -2075,6 +2101,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
 /// would fall back from header-first to body `__type`, both detectable tells.
 #[tokio::test]
 async fn test_forward_once_bedrock_error_relays_amzn_headers() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
@@ -2159,6 +2186,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
 /// assertion guards the axum `header()`-APPENDS double-attach failure mode.
 #[tokio::test]
 async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 4xx carries a `request-id` response header; the same-proto relay must
@@ -2236,6 +2264,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
 /// from a double-attach) is a proxy tell the SDK's `APIError.request_id` would surface.
 #[tokio::test]
 async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 401 carries a `request-id` response header; the same-proto passthrough
@@ -2315,6 +2344,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
 /// Status503 retry body) for every ingress protocol and asserts the body is free of `router:`.
 #[tokio::test]
 async fn test_forward_layer_errors_carry_no_router_prefix() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
     for ingress in [
@@ -2360,6 +2390,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
 /// fn directly; this asserts the response-builder wiring (CT, frames, amzn id) on a real Response.
 #[tokio::test]
 async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -2448,6 +2479,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
 /// the real, currently-mandatory injection actually happens on the wire.
 #[tokio::test]
 async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
@@ -2516,6 +2548,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
 /// the SSE-backend tests only exercise the live `GeminiJsonArrayFramer`, never this branch.
 #[tokio::test]
 async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -2600,6 +2633,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
 /// backend, and assert the same one-element JSON array under `application/json`.
 #[tokio::test]
 async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
+    crate::testkit::install_test_seams();
     use busbar_core::store::now as store_now;
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
@@ -2691,6 +2725,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
 /// being translated and delivered (which is what would let its tokens be charged).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Serialize against sibling tests that mutate the process-global `limits::INSTALLED`, and pin a
     // small KNOWN cap under an RAII guard so the body below is deterministically over-cap regardless
@@ -2764,6 +2799,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
 /// (a refund-by-default guard would invert it).
 #[tokio::test]
 async fn test_truncated_body_does_not_refund_budget() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     // Serialize against the sibling tests that mutate the process-global `limits::INSTALLED`
     // (`InstallGuard::install` / `install`) — this test READS the translate-body cap to build an
@@ -2839,6 +2875,7 @@ async fn test_truncated_body_does_not_refund_budget() {
 /// reserved capacity rather than `cap`.)
 #[tokio::test]
 async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A 64 KiB raw JSON-string body — far larger than the 1 KiB cap used below.
@@ -2877,6 +2914,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
 /// against any version that interpolates `{e}` into the response body.
 #[tokio::test]
 async fn test_unparseable_json_400_carries_no_serde_internals() {
+    crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -2938,6 +2976,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
 /// symmetrically (guarded by `budget_spent`).
 #[tokio::test]
 async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
@@ -3040,6 +3079,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
 /// which before the fix they were not.)
 #[tokio::test]
 async fn test_repeated_pre_first_byte_failures_trip_breaker() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
@@ -3124,6 +3164,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
 /// must drive the cell Closed→Open; before the fix it stays Closed (no transient recorded).
 #[tokio::test]
 async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
@@ -3230,6 +3271,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 /// translate.aborted()` as failed: the cell trips Closed→Open AND no token fee is charged.
 #[tokio::test]
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use busbar_core::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
@@ -3379,6 +3421,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 /// `Poll::Ready(None)` gate; the no-double-bill on clean completion is guaranteed by `usage_sink.take()`.)
 #[tokio::test]
 async fn test_cancel_drop_bills_partial_tokens() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use busbar_core::store::BreakerCfg;
@@ -3486,6 +3529,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
 /// the charge → the key's spend stays 0.
 #[tokio::test]
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use busbar_core::store::BreakerCfg;
@@ -3592,6 +3636,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
 /// read `budget_spent` loses the unit forever.
 #[tokio::test]
 async fn test_cancel_drop_mid_stream_refunds_budget() {
+    crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_core::store::BreakerCfg;
     use bytes::Bytes;
@@ -3654,6 +3699,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 /// must fall through to the plain single-object response every non-Gemini client expects.
 #[tokio::test]
 async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
+    crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
     busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());

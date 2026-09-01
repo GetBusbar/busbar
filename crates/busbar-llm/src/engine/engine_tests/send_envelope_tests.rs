@@ -56,6 +56,7 @@ async fn black_hole() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure() {
+    crate::testkit::install_test_seams();
     let (addr, server) = black_hole().await;
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -116,6 +117,7 @@ async fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_fail
 /// dispatch takes `forward_once`; its stream send must ride the same ceiling envelope.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling() {
+    crate::testkit::install_test_seams();
     let (addr, server) = black_hole().await;
     let app = TestApp::new()
         .lane(LaneSpec::new(
