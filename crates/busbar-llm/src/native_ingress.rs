@@ -41,7 +41,7 @@ pub(crate) async fn operation_ingress_inner(
     headers: &HeaderMap,
     body: Bytes,
     proto: &'static str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     model_hint: Option<String>,
 ) -> Response {
     let started = Instant::now();
@@ -184,7 +184,7 @@ pub(crate) async fn operation_ingress_inner(
 struct NativePlane<'a> {
     app: &'a Arc<App>,
     proto: &'static str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     headers: &'a HeaderMap,
     body: Bytes,
@@ -356,7 +356,7 @@ pub async fn run(
     app: &Arc<App>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
@@ -403,7 +403,7 @@ pub async fn operation_resolved(
     app: &Arc<App>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
@@ -496,7 +496,7 @@ async fn ingress_path_model_inner(
     headers: &HeaderMap,
     body: Bytes,
     model: &str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     stream: bool,
     gemini_json_array: bool,
     proto: &'static str,
@@ -660,7 +660,7 @@ pub async fn operation_ingress(
     headers: HeaderMap,
     body: Bytes,
     proto: &'static str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     model_hint: Option<String>,
 ) -> Response {
     let p = payload(ctx);
@@ -684,7 +684,7 @@ pub async fn ingress_path_model(
     headers: HeaderMap,
     body: Bytes,
     model: String,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     stream: bool,
     gemini_json_array: bool,
     proto: &'static str,

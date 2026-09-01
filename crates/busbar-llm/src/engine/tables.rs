@@ -75,7 +75,7 @@ pub(crate) struct Lane {
     /// documents the vocabulary and the never-`Url::join` encoding rule). A lookup miss is exactly
     /// the old per-request `upstream_path` `None` arm: the lane's protocol has no handler.
     pub(crate) egress_targets:
-        HashMap<(busbar_core::operation::Operation, bool), crate::engine::EgressTarget>,
+        HashMap<(busbar_api::operation::Operation, bool), crate::engine::EgressTarget>,
     /// Boot-prebuilt egress auth headers for `Own`-mode dispatch, or `None` when this lane's
     /// credential is not lane-constant (OAuth mints, SigV4 signs — those stay per-request). Built
     /// by `egress_auth::prebuild_auth` from the SAME `headers_for` call the request path makes, so
@@ -95,7 +95,7 @@ impl Lane {
     /// read. `None` == the old `upstream_path` `None` arm (no handler for this lane's protocol).
     pub(crate) fn egress_target(
         &self,
-        op: busbar_core::operation::Operation,
+        op: busbar_api::operation::Operation,
         stream: bool,
     ) -> Option<&crate::engine::EgressTarget> {
         self.egress_targets.get(&(op, stream))
@@ -141,7 +141,7 @@ pub(crate) struct PoolRuntime {
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3).
     /// `None` = inherit `App::upstream_credentials`. Read per request by
     /// [`App::pool_upstream_creds`].
-    pub(crate) upstream_credentials: Option<busbar_core::auth::UpstreamCreds>,
+    pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// Per-pool session-affinity settings (which request header pins a session to a lane).
     pub(crate) affinity: Option<busbar_core::config::AffinityCfg>,
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
@@ -225,7 +225,7 @@ pub(crate) struct NativeRuntime {
     pub(crate) failover_cfg: Option<busbar_core::config::FailoverCfg>,
     pub(crate) queued_depth: Arc<QueuedDepth>,
     pub(crate) probe_schedule: Arc<crate::engine::health::ProbeSchedule>,
-    pub(crate) upstream_credentials: busbar_core::auth::UpstreamCreds,
+    pub(crate) upstream_credentials: busbar_api::UpstreamCreds,
     pub(crate) any_pool_upstream_creds_override: bool,
     pub(crate) client: UpstreamClients,
     /// The client-affecting resolved limits this generation's `client` was built on — the key the
@@ -238,14 +238,14 @@ pub(crate) struct NativeRuntime {
 impl NativeRuntime {
     /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
     /// Moved verbatim from `App::upstream_creds`.
-    pub(crate) fn upstream_creds(&self) -> busbar_core::auth::UpstreamCreds {
+    pub(crate) fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
         self.upstream_credentials
     }
 
     /// The upstream-credential mode in force for `pool` — the pool's own `upstream_credentials:` when
     /// it sets one, else the all-pools default. SCALAR override. Moved verbatim from
     /// `App::pool_upstream_creds` (same fast path, same SipHash-probe skip when no override exists).
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> busbar_core::auth::UpstreamCreds {
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> busbar_api::UpstreamCreds {
         if !self.any_pool_upstream_creds_override {
             return self.upstream_credentials;
         }
@@ -393,7 +393,7 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         failover_cfg: None,
         queued_depth: Arc::new(QueuedDepth::default()),
         probe_schedule: Arc::new(crate::engine::health::ProbeSchedule::new(0)),
-        upstream_credentials: busbar_core::auth::UpstreamCreds::default(),
+        upstream_credentials: busbar_api::UpstreamCreds::default(),
         any_pool_upstream_creds_override: false,
         client: UpstreamClients::build(1, || {
             busbar_core::proxy::build_egress_client(
@@ -451,13 +451,13 @@ impl<'a> EngineTables<'a> {
     }
 
     /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
-    pub(crate) fn upstream_creds(&self) -> busbar_core::auth::UpstreamCreds {
+    pub(crate) fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
         self.rt.upstream_creds()
     }
 
     /// The upstream-credential mode for `pool` — its own `upstream_credentials:` override, else the
     /// all-pools default (the scalar combine rule).
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> busbar_core::auth::UpstreamCreds {
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> busbar_api::UpstreamCreds {
         self.rt.pool_upstream_creds(pool)
     }
 

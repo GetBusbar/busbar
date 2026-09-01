@@ -1953,8 +1953,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // lane penalty), matching the documented passthrough contract. No-op in canonical
             // keyless passthrough (lane.api_key already empty); only changes the misconfigured
             // passthrough+configured-key case.
-            busbar_core::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-            busbar_core::auth::UpstreamCreds::Own => {
+            busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
+            busbar_api::UpstreamCreds::Own => {
                 app.engine_tables().lanes()[i].api_key.expose_secret()
             }
         };
@@ -2010,7 +2010,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             &app.engine_tables().lanes()[i].prebuilt_auth,
             upstream_creds,
         ) {
-            (Some(pre), busbar_core::auth::UpstreamCreds::Own) => pre.clone(),
+            (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
             _ => convert_headers(busbar_timing::scope("egress_sigv4", || {
                 lane_auth_headers(&app.engine_tables().lanes()[i], key, &signing_ctx)
             })),
@@ -2232,7 +2232,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // caveat: passthrough 401/403 is caller's key failing, not busbar's
                     // Do NOT trip breaker / change member health; relay verbatim to caller
                     let is_passthrough_40x = upstream_creds
-                        == busbar_core::auth::UpstreamCreds::Passthrough
+                        == busbar_api::UpstreamCreds::Passthrough
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN);
 
                     // Clone headers before consuming r with bytes(). The upstream `Retry-After`
@@ -2978,7 +2978,7 @@ fn fire_global_taps(
     body: &Value,
     raw_body: &[u8],
     content_type: &str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,

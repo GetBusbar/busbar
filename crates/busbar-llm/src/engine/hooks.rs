@@ -131,7 +131,7 @@ pub(crate) fn read_hook_facts(
     body: &[u8],
     content_type: &str,
     ingress_protocol: &str,
-    operation: Option<busbar_core::operation::Operation>,
+    operation: Option<busbar_api::operation::Operation>,
 ) -> Result<HookFacts, HookIrRejected> {
     // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
     // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
@@ -377,7 +377,7 @@ pub(crate) async fn apply_global_rewrites(
     v: &mut Value,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<bool, (u16, String)> {
@@ -496,7 +496,7 @@ pub(crate) async fn decide_policy_order(
     content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: busbar_core::operation::Operation,
+    operation: busbar_api::operation::Operation,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<busbar_core::governance::VirtualKey>>,
@@ -993,7 +993,7 @@ pub(crate) fn capture_stage_shape<'a>(
     content_type: &str,
     pool: &'a str,
     ingress_protocol: &'a str,
-    operation: Option<busbar_core::operation::Operation>,
+    operation: Option<busbar_api::operation::Operation>,
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {

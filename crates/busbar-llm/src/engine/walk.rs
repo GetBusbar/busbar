@@ -550,8 +550,8 @@ pub(crate) async fn forward_once(
         // lane penalty), matching the documented passthrough contract. No-op in canonical
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
-        busbar_core::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_core::auth::UpstreamCreds::Own => {
+        busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
+        busbar_api::UpstreamCreds::Own => {
             app.engine_tables().lanes()[i].api_key.expose_secret()
         }
     };
@@ -585,7 +585,7 @@ pub(crate) async fn forward_once(
         &app.engine_tables().lanes()[i].prebuilt_auth,
         app.engine_tables().pool_upstream_creds(pool),
     ) {
-        (Some(pre), busbar_core::auth::UpstreamCreds::Own) => pre.clone(),
+        (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
         _ => convert_headers(lane_auth_headers(
             &app.engine_tables().lanes()[i],
             key,
