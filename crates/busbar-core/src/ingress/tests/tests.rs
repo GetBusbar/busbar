@@ -5397,31 +5397,24 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
     handle.abort();
 }
 
-/// Conformance regression: `not_found_message` shapes the model-not-found copy per the
-/// INGRESS protocol. A gemini api_version yields the NATIVE Gemini string (versioned, no OpenAI
-/// "The model '…'" phrasing); every other protocol (api_version `None`) keeps the canonical
-/// OpenAI-style copy the OpenAI/Responses/Cohere/Anthropic SDKs expect. Guards against a future
-/// edit re-leaking the OpenAI message onto the gemini surface.
+/// Conformance regression: `not_found_message` uses a dialect's PRE-SHAPED body VERBATIM when the
+/// arrival supplied one, and otherwise emits the canonical OpenAI-style copy the
+/// OpenAI/Responses/Cohere/Anthropic SDKs expect — core names no dialect in this helper. A dialect
+/// whose real API uses a different not-found string (Gemini) shapes it at arrival and passes it here;
+/// the end-to-end gemini surface is covered by `test_gemini_model_not_found_uses_native_message`.
 #[test]
 fn test_not_found_message_is_protocol_native() {
-    // Gemini v1beta: native versioned message, NO OpenAI phrasing.
-    let g_beta = not_found_message("gemini-1.5-pro", Some("v1beta"));
-    assert_eq!(
-        g_beta,
-        "models/gemini-1.5-pro is not found for API version v1beta, \
-             or is not supported for the task you are trying to perform."
-    );
-    // Gemini stable v1: the version token echoes "v1" (not a hardcoded "v1beta").
-    let g_v1 = not_found_message("gemini-1.5-pro", Some("v1"));
+    // A pre-shaped dialect body is used verbatim (here: the native Gemini string built by the arrival),
+    // with NO OpenAI "does not exist" phrasing leaking in.
+    let shaped = "models/gemini-1.5-pro is not found for API version v1beta, \
+             or is not supported for the task you are trying to perform.";
+    let out = not_found_message("gemini-1.5-pro", Some(shaped));
+    assert_eq!(out, shaped);
     assert!(
-        g_v1.contains("for API version v1,"),
-        "stable v1 message echoes the v1 token; got {g_v1}"
+        !out.contains("does not exist"),
+        "a pre-shaped body must be used verbatim, no OpenAI phrasing; got {out}"
     );
-    assert!(
-        !g_v1.contains("does not exist"),
-        "gemini message must NOT use the OpenAI 'does not exist' phrasing; got {g_v1}"
-    );
-    // Non-gemini (None): the canonical OpenAI-style copy is preserved.
+    // No pre-shaped body (None): the canonical OpenAI-style copy is preserved.
     let oai = not_found_message("gpt-4o", None);
     assert_eq!(
         oai,

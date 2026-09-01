@@ -739,7 +739,7 @@ async fn ingress_path_model(
     stream: bool,
     gemini_json_array: bool,
     proto: &'static str,
-    gemini_api_version: Option<&str>,
+    model_not_found_message: Option<&str>,
 ) -> Response {
     let caller_token = caller.0.as_deref();
     let started = Instant::now();
@@ -884,7 +884,7 @@ async fn ingress_path_model(
         caller_token,
         started,
         charged_at,
-        gemini_api_version,
+        model_not_found_message,
     )
     .await
 }
@@ -927,23 +927,15 @@ pub use path_ingress::PathIngress;
 #[cfg(test)]
 pub(crate) use dispatch::operation_ingress;
 
-/// Build the human-readable message for a model/pool-miss 404, in the INGRESS protocol's native
-/// vocabulary. Gemini's real API does NOT use the OpenAI-style "The model '{model}' does not exist…"
-/// string — it says "models/{model} is not found for API version {api_version}, or is not supported
-/// for the task you are trying to perform." Any client/SDK that pattern-matches the message string to
-/// distinguish a model-not-found 404 from other 404 variants (Google's client libraries surface
-/// `error.message` in their exception text) would diverge from a native call if we leaked the OpenAI
-/// copy. `gemini_api_version` carries the version token the gemini ingress derived from the request
-/// path (`v1` vs `v1beta`); it is `None` for every non-gemini protocol, which keeps the canonical
-/// OpenAI-style copy the OpenAI/Responses/Cohere/Anthropic SDKs expect. There is no `_ =>` catch-all:
-/// the gemini branch is selected by the presence of the version token, every other protocol shares
-/// the canonical message.
-fn not_found_message(model: &str, gemini_api_version: Option<&str>) -> String {
-    match gemini_api_version {
-        Some(api_version) => format!(
-            "models/{model} is not found for API version {api_version}, \
-             or is not supported for the task you are trying to perform."
-        ),
+/// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
+/// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
+/// (a path-model dialect whose real API uses a different not-found string than the OpenAI-style copy),
+/// and used VERBATIM when present. `None` for every caller that shares the canonical OpenAI-style copy
+/// (the OpenAI/Responses/Cohere/Anthropic surfaces), so this fn names no dialect: core emits the
+/// neutral copy and a dialect that wants otherwise supplies its own shaped body.
+fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
+    match model_not_found_message {
+        Some(shaped) => shaped.to_string(),
         None => format!("The model '{model}' does not exist or you do not have access to it."),
     }
 }

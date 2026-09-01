@@ -184,7 +184,7 @@ pub(crate) async fn operation_ingress(
 /// pre-admission [`destination_guard`] (pool ACL, fallback-pool ACL, unpriced-model gate); `drive` is
 /// the single budget-admission door ([`admission_door`]) → pool/lane candidate selection →
 /// `forward_with_pool_parsed` (THE ONE ENGINE, streaming) → [`finish_admitted`]. Byte-identical to
-/// the pre-seam `operation_resolved`: same order, same errors, same `gemini_api_version`/not-found
+/// the pre-seam `operation_resolved`: same order, same errors, same `model_not_found_message`/not-found
 /// shaping, same budget-door position, same stream-end metering. A later milestone relocates this
 /// impl into its plane crate; M3 only makes it a sibling on the shared seam.
 struct NativePlane<'a> {
@@ -196,8 +196,11 @@ struct NativePlane<'a> {
     body: Bytes,
     parsed_v: Option<crate::proxy::LazyBody>,
     caller_token: Option<&'a str>,
-    /// Shapes the gemini dialect's model-not-found echo in `drive`; opaque to every other stage.
-    gemini_api_version: Option<&'a str>,
+    /// A dialect's PRE-SHAPED model-not-found body, or `None` for the neutral copy. The dialect that
+    /// owns the request built this at arrival (a path-model dialect that echoes its own not-found
+    /// vocabulary); `drive` uses it verbatim on a model miss, opaque to every other stage — core names
+    /// no dialect here.
+    model_not_found_message: Option<&'a str>,
 }
 
 #[async_trait::async_trait]
@@ -236,7 +239,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             body,
             parsed_v,
             caller_token,
-            gemini_api_version,
+            model_not_found_message,
         } = *self;
 
         // STAGE 3–4 — THE single budget-admission door charges the chain buckets. On rejection
@@ -278,7 +281,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                     proto,
                     StatusCode::NOT_FOUND,
                     crate::proxy::KIND_NOT_FOUND,
-                    &not_found_message(model, gemini_api_version),
+                    &not_found_message(model, model_not_found_message),
                 );
                 return finish_admitted(
                     app,
@@ -352,8 +355,9 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 }
 
 /// THE UNIVERSAL RESOLVED CORE — every operation, chat included, from the moment the model is known:
-/// governance → candidates → affinity → the one engine. `gemini_api_version` shapes the gemini
-/// dialect's model-not-found echo; everything else is operation- and protocol-blind.
+/// governance → candidates → affinity → the one engine. `model_not_found_message` is a dialect's
+/// PRE-SHAPED model-not-found body (built by the arrival that owns the request), used verbatim on a
+/// model miss; everything else is operation- and protocol-blind, and core names no dialect.
 ///
 /// THE ONE GAUNTLET (1.6 vision): this is the single canonical entry every arrival converges on once
 /// the model is resolved. It is surfaced as [`crate::operation::run`] — while [`operation_resolved`]
@@ -377,7 +381,7 @@ pub async fn run(
     caller_token: Option<&str>,
     started: Instant,
     charged_at: u64,
-    gemini_api_version: Option<&str>,
+    model_not_found_message: Option<&str>,
 ) -> Response {
     let plane = NativePlane {
         app,
@@ -388,7 +392,7 @@ pub async fn run(
         body,
         parsed_v,
         caller_token,
-        gemini_api_version,
+        model_not_found_message,
     };
     // The shared sequence owns only stage 1 (identity, via `gov`) and the verify-before-admit order;
     // the LLM plane's `drive` owns admission/route/metering/finish byte-identically. `correlation_id`
@@ -424,7 +428,7 @@ pub async fn operation_resolved(
     caller_token: Option<&str>,
     started: Instant,
     charged_at: u64,
-    gemini_api_version: Option<&str>,
+    model_not_found_message: Option<&str>,
 ) -> Response {
     run(
         app,
@@ -439,7 +443,7 @@ pub async fn operation_resolved(
         caller_token,
         started,
         charged_at,
-        gemini_api_version,
+        model_not_found_message,
     )
     .await
 }
