@@ -256,6 +256,12 @@ pub struct LlmPoolInput {
 /// generation's warm client iff these are unchanged).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LlmClientSettings {
+    /// The overall streaming request timeout (`limits.upstream_request_timeout_secs`) the warm-pool
+    /// -reuse compare is keyed on: a config apply that CHANGES it must REBUILD the sharded upstream
+    /// client so the new deadline takes effect, not silently reuse the prior client and pin the old
+    /// timeout until restart. Carried here (part of the reuse tuple) as the byte-identical successor to
+    /// the pre-relocation `UpstreamClientSettings.upstream_request_timeout_secs` the compare keyed on.
+    pub upstream_request_timeout_secs: u64,
     /// Per-host idle connection budget (divided across shards by the plane).
     pub pool_max_idle_per_host: usize,
     /// Idle connection keep-alive ceiling in seconds.

@@ -746,6 +746,14 @@ impl App {
         self.plane_slots.get_mut(key)
     }
 
+    /// The INTERNED runtime-slot key for the fallback (LLM) plane, precomputed ONCE at build
+    /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
+    /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
+    /// on every `engine_tables()`/`llm_runtime()` call — the hot-path allocation the alloc gate pins.
+    pub fn llm_runtime_key(&self) -> &'static str {
+        self.llm_runtime_key
+    }
+
     /// The per-container submission-gate map for the plane identified by the opaque registry
     /// `plane_key`, or `None` when the plane attached no gates this generation — a pure
     /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a

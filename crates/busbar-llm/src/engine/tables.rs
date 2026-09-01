@@ -344,9 +344,7 @@ impl AppEngineExt for busbar_core::state::App {
         // plane's `"llm"` key in every production and core-`cfg(test)` build), so this reads the same
         // slot the deleted inherent `App::llm_runtime` did.
         match self
-            .plane_slot(busbar_substrate::plane_host::runtime_slot_key(
-                crate::PLANE_DECL.key,
-            ))
+            .plane_slot(self.llm_runtime_key())
             .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
         {
             Some(rt) => rt,
@@ -355,7 +353,7 @@ impl AppEngineExt for busbar_core::state::App {
     }
     #[cfg(any(test, feature = "test-support"))]
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
-        let key = busbar_substrate::plane_host::runtime_slot_key(crate::PLANE_DECL.key);
+        let key = self.llm_runtime_key();
         std::sync::Arc::get_mut(
             self.plane_slot_mut(key)
                 .expect("fallback-plane runtime slot present for in-place test mutation"),
@@ -400,6 +398,7 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         // The empty runtime's client is the never-dialled default shard; its settings key exists only
         // so the warm-reuse compare has a value to read (it never matches a real generation's).
         client_settings: busbar_substrate::plane_host::LlmClientSettings {
+            upstream_request_timeout_secs: 0,
             pool_max_idle_per_host: 4,
             pool_idle_timeout_secs: 300,
             http1_only: false,

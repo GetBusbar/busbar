@@ -102,6 +102,9 @@ fn rerank_body_projects_query_and_documents() {
 #[test]
 fn subscribe_body_projects_its_target() {
     crate::testkit::install_test_seams();
+    // SUBSCRIBE is an MCP operation — register the MCP protocol declaration too so `read_hook_facts`
+    // resolves the `mcp` reader that projects the subscribe params (busbar-mcp is a dev-dep here).
+    busbar_substrate::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,

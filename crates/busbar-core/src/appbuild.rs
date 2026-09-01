@@ -846,6 +846,7 @@ pub fn build_app_from_config(
     // its own copy of these scalars is unchanged.
     let new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
     let llm_client_settings = LlmClientSettings {
+        upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
         http1_only: cfg.limits.upstream_http1_only,

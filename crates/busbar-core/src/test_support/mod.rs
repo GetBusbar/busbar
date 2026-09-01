@@ -1634,6 +1634,7 @@ impl TestApp {
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
                 client_settings: busbar_substrate::plane_host::LlmClientSettings {
+                    upstream_request_timeout_secs: 0,
                     pool_max_idle_per_host: 4,
                     pool_idle_timeout_secs: 300,
                     http1_only: false,
