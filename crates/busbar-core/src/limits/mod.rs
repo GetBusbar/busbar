@@ -94,7 +94,7 @@ pub struct InstallGuard {
 
 impl InstallGuard {
     /// Snapshot the currently-installed limits and install `resolved` in their place.
-    pub(crate) fn install(resolved: &LimitsResolved) -> Self {
+    pub fn install(resolved: &LimitsResolved) -> Self {
         let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
         let prior = slot.clone();
         *slot = Some(resolved.clone());

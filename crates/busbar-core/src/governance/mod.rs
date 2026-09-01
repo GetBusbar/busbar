@@ -321,7 +321,7 @@ impl std::fmt::Debug for AdmitGrant {
 /// the token ledger x the current rate card at the moment of the read - never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedUsage {
-    pub(crate) spend_cents: i64,
+    pub spend_cents: i64,
     pub tokens: u64,
     pub(crate) requests: u64,
 }

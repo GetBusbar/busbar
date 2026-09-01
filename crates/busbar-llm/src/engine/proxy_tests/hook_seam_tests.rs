@@ -311,31 +311,60 @@ fn canned_gate(canned: Canned, name: &'static str) -> ResolvedPolicy {
     }
 }
 
-/// A `PoolRuntime` carrying per-lane tags (for restrict reconciles) and the pool's own gates.
+/// A NEUTRAL pool-fixture carrier (money-path Phase 3-4 C): the plane's `PoolRuntime` no longer
+/// carries the routing `policy`/`gates`/`rewrite_hooks` (they moved to the core-side `App::pool_*`
+/// facade), and core's `TestApp` names no `PoolRuntime`. This test-local struct lets the call sites
+/// keep the `.pool_runtime("p", …)` shape — the [`PoolRuntimeExt`] impl below decomposes it into the
+/// granular `TestApp` setters (`pool_member_meta` / `pool_gates_resolved` / `pool_policy_resolved` /
+/// `pool_rewrites_resolved`), the byte-identical successor to the deleted whole-`PoolRuntime` fixture.
+#[derive(Default)]
+struct PoolFixture {
+    /// Per-lane restrict tags, keyed by lane idx.
+    members: std::collections::HashMap<usize, Vec<String>>,
+    policy: Option<ResolvedPolicy>,
+    gates: Vec<(u16, ResolvedPolicy)>,
+    rewrite_hooks: Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>,
+}
+
+/// A `PoolFixture` carrying per-lane tags (for restrict reconciles) and the pool's own gates.
 fn pool_runtime_with(
     tags_by_idx: &[(usize, &[&str])],
     gates: Vec<(u16, ResolvedPolicy)>,
-) -> crate::engine::PoolRuntime {
+) -> PoolFixture {
     let mut members = std::collections::HashMap::new();
     for (idx, tags) in tags_by_idx {
-        members.insert(
-            *idx,
-            crate::engine::MemberMeta {
-                tier: None,
-                cost_per_mtok: None,
-                tags: tags.iter().map(|t| t.to_string()).collect(),
-            },
-        );
+        members.insert(*idx, tags.iter().map(|t| t.to_string()).collect());
     }
-    crate::engine::PoolRuntime {
-        upstream_credentials: None,
+    PoolFixture {
         members,
-        failover: None,
-        affinity: None,
-        breaker: None,
         policy: None,
         gates,
         rewrite_hooks: Vec::new(),
+    }
+}
+
+/// Keeps the `.pool_runtime("p", PoolFixture{…})` fixture shape working atop the granular pool
+/// setters, decomposing the neutral carrier into the pool-hook facade maps + member metadata.
+trait PoolRuntimeExt {
+    fn pool_runtime(self, name: &str, fixture: PoolFixture) -> Self;
+}
+
+impl PoolRuntimeExt for TestApp {
+    fn pool_runtime(mut self, name: &str, fixture: PoolFixture) -> Self {
+        for (idx, tags) in &fixture.members {
+            let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+            self = self.pool_member_meta(name, *idx, None, None, &tag_refs);
+        }
+        if let Some(policy) = fixture.policy {
+            self = self.pool_policy_resolved(name, policy);
+        }
+        if !fixture.gates.is_empty() {
+            self = self.pool_gates_resolved(name, fixture.gates);
+        }
+        if !fixture.rewrite_hooks.is_empty() {
+            self = self.pool_rewrites_resolved(name, fixture.rewrite_hooks);
+        }
+        self
     }
 }
 
@@ -628,10 +657,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         ))
         .pool("p", &[(0, 1)])
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg {
-                chain: vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")],
-                ..busbar_core::config::AuthCfg::default_none()
-            },
+            &busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")]),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -666,10 +692,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg {
-                chain: vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")],
-                ..busbar_core::config::AuthCfg::default_none()
-            },
+            &busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")]),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -1874,12 +1897,8 @@ async fn reject_rides_the_full_forward_path() {
         .pool("pa", &[(0, 1)])
         .pool_runtime(
             "pa",
-            crate::engine::PoolRuntime {
-                upstream_credentials: None,
+            PoolFixture {
                 members: Default::default(),
-                failover: None,
-                affinity: None,
-                breaker: None,
                 policy: Some(ResolvedPolicy::Policy {
                     policy: Arc::new(CapturingPolicy {
                         seen: seen.clone(),

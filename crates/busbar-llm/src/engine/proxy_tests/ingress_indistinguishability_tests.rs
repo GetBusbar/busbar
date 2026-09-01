@@ -822,10 +822,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     // A cap small enough that the filler content alone blows well past it, but the RAII guard
     // restores whatever was installed before this test regardless of how it exits.
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
-        request_body_max_bytes: CAP,
-        ..busbar_core::config::LimitsResolved::default()
-    });
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
     let store = Arc::new(MemoryStore::new());
@@ -1019,14 +1016,8 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let toggler = std::thread::spawn(move || {
-        let hi = busbar_core::config::LimitsResolved {
-            request_body_max_bytes: CHUNK1_LEN * 10,
-            ..busbar_core::config::LimitsResolved::default()
-        };
-        let lo = busbar_core::config::LimitsResolved {
-            request_body_max_bytes: CHUNK1_LEN / 2,
-            ..busbar_core::config::LimitsResolved::default()
-        };
+        let hi = busbar_core::config::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN * 10);
+        let lo = busbar_core::config::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN / 2);
         while !stop2.load(Ordering::Relaxed) {
             busbar_core::limits::install(&hi);
             busbar_core::limits::install(&lo);
@@ -2707,10 +2698,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     // `huge`, and a sibling install could move it mid-run.
     let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
-        request_body_max_bytes: CAP,
-        ..busbar_core::config::LimitsResolved::default()
-    });
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
     // An OpenAI chat.completion whose `content` alone is > CAP, so the whole body overruns the
@@ -2784,10 +2772,7 @@ async fn test_truncated_body_does_not_refund_budget() {
     // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
     let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved {
-        request_body_max_bytes: CAP,
-        ..busbar_core::config::LimitsResolved::default()
-    });
+    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
     let huge = "x".repeat(CAP + 1024);

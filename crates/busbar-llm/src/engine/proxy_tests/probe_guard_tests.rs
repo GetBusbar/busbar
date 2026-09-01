@@ -11,25 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 fn lane(max: usize) -> LaneData {
-    LaneData {
-        reasoning: false,
-        prompt_caching: false,
-        model: "m0".into(),
-        provider: "p0".into(),
-        max,
-        sem: Arc::new(Semaphore::new(max)),
-        limited: false,
-        budget: -1,
-        cooldown_until: 0,
-        streak: 0,
-        dead: false,
-        dead_reason: String::new(),
-        ok: 0,
-        err: 0,
-        client_fault: 0,
-        upstream_model: None,
-        attempt_timeout_ms: None,
-    }
+    LaneData::for_test("m0", "p0", max)
 }
 
 /// Park the default ("") cell as a WON probe (HalfOpen + probe_in_flight), exactly the state

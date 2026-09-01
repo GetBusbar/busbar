@@ -224,7 +224,7 @@ impl HealthState {
     /// Construct with the historical hardcoded operational limits. Used by tests and any caller that
     /// does not thread operator config; production goes through [`new_with_limits`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn new(lanes: Vec<LaneData>) -> Self {
+    pub fn new(lanes: Vec<LaneData>) -> Self {
         Self::new_with_limits(
             lanes,
             crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
@@ -513,6 +513,35 @@ pub struct LaneData {
     pub(crate) reasoning: bool,
     /// Operator-declared prompt-caching capability flag (see `ModelCfg::prompt_caching`).
     pub(crate) prompt_caching: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl LaneData {
+    /// TEST-SUPPORT constructor: a minimal live lane (alive, unlimited budget, zero counters) with
+    /// the given model/provider/permit count — the shape the relocated probe-guard tests need. Gated
+    /// to the test-support surface so the plane's tests reach a `LaneData` through this public seam
+    /// instead of a cross-crate struct literal over its private fields.
+    pub fn for_test(model: &str, provider: &str, max: usize) -> Self {
+        LaneData {
+            reasoning: false,
+            prompt_caching: false,
+            model: model.into(),
+            provider: provider.into(),
+            max,
+            sem: Arc::new(Semaphore::new(max)),
+            limited: false,
+            budget: -1,
+            cooldown_until: 0,
+            streak: 0,
+            dead: false,
+            dead_reason: String::new(),
+            ok: 0,
+            err: 0,
+            client_fault: 0,
+            upstream_model: None,
+            attempt_timeout_ms: None,
+        }
+    }
 }
 
 /// Helper for weighted selection tests - creates a lane with specific weight.

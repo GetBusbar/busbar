@@ -647,7 +647,7 @@ pub struct AuthChainEntry {
 
 impl AuthChainEntry {
     /// A bare, definition-less built-in entry (`chain: [keys]` / `admin_auth: [admin-tokens]`).
-    pub(crate) fn bare(module: impl Into<String>) -> Self {
+    pub fn bare(module: impl Into<String>) -> Self {
         let module = module.into();
         Self {
             name: module.clone(),
@@ -908,6 +908,18 @@ impl AuthCfg {
             methods: AuthMethods::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
+        }
+    }
+
+    /// TEST-SUPPORT constructor: the default (open, default-admin) posture with ONLY the data-plane
+    /// `chain` overridden — the shape the relocated hook-seam tests need. Gated to the test-support
+    /// surface so the private-field FRU stays in-crate; the plane's tests reach it through this seam
+    /// rather than a cross-crate struct literal over the private `signing_key`/`policy`/… fields.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_chain(chain: Vec<AuthChainEntry>) -> Self {
+        Self {
+            chain,
+            ..Self::default_none()
         }
     }
 
@@ -1353,8 +1365,8 @@ pub struct HealthCfg {
 #[serde(deny_unknown_fields)]
 pub struct ModelCfg {
     #[serde(default = "neg1")]
-    pub(crate) max_requests: i64,
-    pub(crate) provider: String,
+    pub max_requests: i64,
+    pub provider: String,
     /// Per-lane concurrency limiter: the max number of in-flight requests admitted to this lane at
     /// once (excess requests park on the lane's semaphore until a slot frees or the request budget
     /// expires). OPTIONAL — omitted means UNBOUNDED (no concurrency cap), the same opt-in-limiter
@@ -1364,23 +1376,23 @@ pub struct ModelCfg {
     /// "effectively unbounded"; a literal `usize::MAX` would panic (tokio caps permits at
     /// `MAX_PERMITS`).
     #[serde(default)]
-    pub(crate) max_concurrent: Option<usize>,
+    pub max_concurrent: Option<usize>,
     /// Default max output tokens injected when a cross-protocol translation targets a backend that
     /// REQUIRES `max_tokens` (Anthropic Messages) and the source request omitted it (legal for
     /// OpenAI). Unset falls back to `crate::proto::DEFAULT_MAX_TOKENS`. Must be > 0 when set.
     #[serde(default)]
-    pub(crate) default_max_tokens: Option<u32>,
+    pub default_max_tokens: Option<u32>,
     /// Optional upstream model name override. When set, this value is sent to the provider as the
     /// model identifier in the request body and URL path, instead of the config key. Useful when
     /// the provider expects a different model string (e.g. Bedrock model IDs).
     #[serde(default)]
-    pub(crate) upstream_model: Option<String>,
+    pub upstream_model: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms). If this lane has not returned response headers
     /// within the budget, the attempt is abandoned (transient → breaker) and the request FAILS OVER
     /// to the next member — the hang detector. Model-level default; a pool member's
     /// `attempt_timeout_ms` overrides it per workload. Absent = bounded only by the request budget.
     #[serde(default)]
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// Operator declaration that THIS model accepts reasoning/thinking request parameters
     /// (Anthropic `thinking`, Gemini `thinkingConfig`, OpenAI `reasoning_effort`). Capability is
     /// per-MODEL, not per-provider (Sonnet takes `thinking`, Haiku 400s on it), and busbar keeps no
@@ -1390,7 +1402,7 @@ pub struct ModelCfg {
     /// translation). A pool member's `reasoning` overrides this per pool. Same-protocol passthrough
     /// is byte-exact and ignores the flag.
     #[serde(default)]
-    pub(crate) reasoning: Option<bool>,
+    pub reasoning: Option<bool>,
     /// Operator declaration that THIS model accepts prompt-cache markers on dialects where the
     /// marker is model-gated (Bedrock Converse `cachePoint`: Claude accepts it, Amazon Nova
     /// hard-rejects it with 400 "extraneous key"). Same family as `reasoning` — busbar keeps no
@@ -1400,7 +1412,7 @@ pub struct ModelCfg {
     /// whose cache form is universally accepted (Anthropic `cache_control`) ignore this flag, as
     /// does same-protocol passthrough (byte-exact).
     #[serde(default)]
-    pub(crate) prompt_caching: Option<bool>,
+    pub prompt_caching: Option<bool>,
 }
 
 fn neg1() -> i64 {
@@ -3696,13 +3708,13 @@ fn default_per_request_fee() -> i64 {
 #[serde(deny_unknown_fields)]
 pub struct RateEntryCfg {
     #[serde(default)]
-    pub(crate) input_utok: f64,
+    pub input_utok: f64,
     #[serde(default)]
-    pub(crate) output_utok: f64,
+    pub output_utok: f64,
     #[serde(default)]
-    pub(crate) cache_read_utok: f64,
+    pub cache_read_utok: f64,
     #[serde(default)]
-    pub(crate) cache_write_utok: f64,
+    pub cache_write_utok: f64,
 }
 
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the
@@ -4492,6 +4504,18 @@ impl LimitsResolved {
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
+        }
+    }
+
+    /// TEST-SUPPORT constructor: the default resolved limits with ONLY `request_body_max_bytes`
+    /// overridden — the shape the relocated ingress body-cap tests need (they name no other private
+    /// field). Gated to the test-support surface so the private-field FRU stays in-crate; the plane's
+    /// tests reach it through this public seam instead of a cross-crate struct literal.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_request_body_max_bytes(request_body_max_bytes: usize) -> Self {
+        Self {
+            request_body_max_bytes,
+            ..Self::default()
         }
     }
 }

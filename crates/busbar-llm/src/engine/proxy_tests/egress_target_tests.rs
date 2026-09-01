@@ -11,6 +11,7 @@
 //! production signature mismatch.
 
 use crate::engine::AppEngineExt as _;
+use crate::engine::OpEgressExt as _;
 use crate::test_support::{LaneSpec, TestApp};
 
 /// For one built lane, prove every table entry equals the reference composition, and that the
