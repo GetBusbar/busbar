@@ -1,10 +1,10 @@
 use super::*;
 
-use busbar_core::diagnostics::{
-    diag_debug, diag_warn, ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
-    ON_ERROR_FALLBACK_HOOK_FAILED, ROUTING_POLICY_DEADLINE_EXCEEDED,
-    ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
+use busbar_substrate::diagnostics::{
+    ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED, ON_ERROR_FALLBACK_HOOK_FAILED,
+    ROUTING_POLICY_DEADLINE_EXCEEDED, ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
 };
+use busbar_substrate::{diag_debug, diag_warn};
 
 /// The coerced result of running a routing policy at the seam — what the ordered walk should do.
 pub(crate) enum PolicyOutcome {
@@ -499,7 +499,7 @@ pub(crate) async fn decide_policy_order(
     operation: busbar_api::operation::Operation,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_core::governance::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
 ) -> PolicyOutcome {
     use busbar_core::hooks::{
         Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest,

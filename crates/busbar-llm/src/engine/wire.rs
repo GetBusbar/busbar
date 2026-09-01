@@ -425,10 +425,10 @@ pub(crate) fn translate_request_cross_protocol(
                 )
                 .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
             return match translated.wire {
-                busbar_core::handlers::EgressWire::Bytes(b) => Ok(b),
+                busbar_substrate::wire::EgressWire::Bytes(b) => Ok(b),
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
                 // serialize it rather than panic on the request path.
-                busbar_core::handlers::EgressWire::Json(v) => Ok(Bytes::from(
+                busbar_substrate::wire::EgressWire::Json(v) => Ok(Bytes::from(
                     busbar_substrate::json::to_vec(&v).unwrap_or_default(),
                 )),
             };
@@ -516,11 +516,11 @@ pub(crate) fn translate_request_cross_protocol(
             );
         }
         match translated.wire {
-            busbar_core::handlers::EgressWire::Json(written) => body = written,
+            busbar_substrate::wire::EgressWire::Json(written) => body = written,
             // The EGRESS wire is not JSON (multipart transcription): the IR carried the resolved model
             // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
             // apply — emit the handler's bytes directly.
-            busbar_core::handlers::EgressWire::Bytes(b) => return Ok(b),
+            busbar_substrate::wire::EgressWire::Bytes(b) => return Ok(b),
         }
         // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
         // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the

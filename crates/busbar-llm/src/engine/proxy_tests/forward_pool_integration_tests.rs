@@ -405,16 +405,16 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "tpm".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pa".to_string()]),
@@ -541,16 +541,16 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "tpm-stream".to_string(),
                 // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
                 allowed_pools: Some(vec!["pas".to_string()]),
@@ -967,16 +967,16 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 
     busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "tester".to_string(),
                 allowed_pools: Some(vec!["allowedpool".to_string()]),
                 group: None,
@@ -1046,9 +1046,9 @@ async fn test_governance_budget_over_quota() {
 
     busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
@@ -1056,7 +1056,7 @@ async fn test_governance_budget_over_quota() {
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "broke".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1165,9 +1165,9 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
     use busbar_core::governance::{GovState, MemoryStore, Store};
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
@@ -1175,7 +1175,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "broke-multi".to_string(),
                 allowed_pools: None, // all pools
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
@@ -1416,16 +1416,16 @@ async fn test_governance_rate_limit_429() {
 
     busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "rl".to_string(),
                 allowed_pools: None,
                 // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
@@ -1529,16 +1529,16 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
     use busbar_core::governance::{GovState, MemoryStore};
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "rl-multi".to_string(),
                 allowed_pools: None, // all pools
                 group: Some("rl0".to_string()),
@@ -1779,9 +1779,9 @@ async fn test_governance_admin_api() {
     busbar_core::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // A signing key is required to MINT signed-token keys (1.5.0).
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),

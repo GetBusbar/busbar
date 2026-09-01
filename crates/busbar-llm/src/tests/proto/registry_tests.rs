@@ -359,8 +359,8 @@ impl busbar_substrate::ir::handle::IrHandle for TelexRespHandle {
         &self,
         _ingress_protocol: &str,
         _ingress_serves_op: bool,
-    ) -> busbar_core::handlers::TranslatedResponse {
-        busbar_core::handlers::TranslatedResponse::Typed(WireBody::typed(
+    ) -> busbar_substrate::wire::TranslatedResponse {
+        busbar_substrate::wire::TranslatedResponse::Typed(WireBody::typed(
             Bytes::from(
                 self.0
                     .registration
@@ -420,7 +420,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     let resp = cell
         .read_response(b"REGISTERED paris")
         .expect("its cell reads its own response");
-    let busbar_core::handlers::TranslatedResponse::Typed(out) =
+    let busbar_substrate::wire::TranslatedResponse::Typed(out) =
         resp.write_ingress_response("telex", true)
     else {
         panic!("telex response writes a typed body");

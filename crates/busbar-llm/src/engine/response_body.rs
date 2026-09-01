@@ -1,7 +1,8 @@
 use super::*;
 
-use busbar_core::diagnostics::{
-    diag_debug, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR, UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
+use busbar_substrate::diag_debug;
+use busbar_substrate::diagnostics::{
+    UPSTREAM_MIDSTREAM_TRANSPORT_ERROR, UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
 };
 
@@ -16,7 +17,7 @@ pub(crate) struct UsageSink {
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
     /// charge time, so building the sink (once per request) and cloning it (once per failover
     /// attempt) is a refcount bump, not a per-request `String` clone.
-    pub(crate) key: Arc<busbar_core::governance::VirtualKey>,
+    pub(crate) key: Arc<busbar_api::VirtualKey>,
     /// The pool this request was ADMITTED through (the ingress-requested pool) - the accounting
     /// scope for pool-qualified limits. Stream-end token accrual charges exactly the buckets the
     /// admission charged, so the two can never disagree on a pool-scoped budget. `Arc<str>`: the

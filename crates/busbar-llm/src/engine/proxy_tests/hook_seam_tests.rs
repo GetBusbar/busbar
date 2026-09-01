@@ -1539,9 +1539,9 @@ async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = std::sync::Arc::new(
         GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
@@ -1652,7 +1652,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
     // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
-    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
@@ -1758,7 +1758,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
     // different synthesized principal key (exactly what a fallthrough from `Some(key) if
     // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
-    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
         id: "synthesized-principal".to_string(),
         generation_hash: "principal:synthesized-principal".to_string(),
         name: "synthesized-principal".to_string(),
@@ -1832,7 +1832,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
-    let synth = std::sync::Arc::new(busbar_core::governance::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),

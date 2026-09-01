@@ -124,7 +124,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
-fn governed_app_with_key() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
@@ -3176,7 +3176,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
-fn governed_app_pool_restricted() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -3422,7 +3422,7 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 }
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
-fn governed_app_over_budget() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -3467,7 +3467,7 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_core::governance::VirtualKey)
 
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
-fn governed_app_rate_limited() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -4941,16 +4941,16 @@ async fn governed_pool_acl_router(
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "acl".to_string(),
                 // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
                 allowed_pools: Some(vec!["other-pool".to_string()]),
@@ -5210,16 +5210,16 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "fb".to_string(),
                 // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
                 allowed_pools: Some(vec!["A".to_string()]),
@@ -5302,16 +5302,16 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let a_url = server.base_url();
 
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "fb2".to_string(),
                 // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
                 allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
@@ -5481,16 +5481,16 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
     use busbar_core::governance::{GovState, MemoryStore};
     busbar_core::metrics::init();
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "adhoc-acl".to_string(),
                 allowed_pools: Some(vec!["other-pool".to_string()]),
                 group: None,
@@ -5798,16 +5798,16 @@ async fn governed_limit_router(
     use busbar_core::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_core::governance::{GovState, MemoryStore};
     let store = StdArc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = StdArc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (_key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "limit".to_string(),
                 allowed_pools: None, // all pools; ACL never short-circuits
                 group: Some("tripped".to_string()),
@@ -6153,7 +6153,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// Governance-enabled App whose key binds to a ZERO-cap budget group ("finance") while the key
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
-fn governed_app_group_blocked() -> (Arc<App>, busbar_core::governance::VirtualKey) {
+fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -6330,7 +6330,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
-) -> (Arc<App>, busbar_core::governance::VirtualKey) {
+) -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());

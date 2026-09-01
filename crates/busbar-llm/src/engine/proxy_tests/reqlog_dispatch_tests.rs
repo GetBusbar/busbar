@@ -77,14 +77,14 @@ async fn a_governed_deployment(
     let a_url = server.base_url();
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).unwrap());
     let (key, secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "chained".to_string(),
                 // Allowed on A and NOT on B, so a request to B is refused by the pool ACL —
                 // a real governance decision, taken before any upstream is contacted.

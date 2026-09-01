@@ -26,7 +26,7 @@ fn fixture() -> (
     Arc<busbar_core::state::App>,
     Arc<GovState>,
     Arc<busbar_core::cost::CostModel>,
-    busbar_core::governance::VirtualKey,
+    busbar_api::VirtualKey,
 ) {
     crate::testkit::install_test_seams();
     let store = Arc::new(MemoryStore::new());

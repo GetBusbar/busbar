@@ -9,9 +9,8 @@
 
 use super::*;
 
-use busbar_core::diagnostics::{
-    diag_debug, ATTEMPT_TIMEOUT_DEGRADED, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
-};
+use busbar_substrate::diag_debug;
+use busbar_substrate::diagnostics::{ATTEMPT_TIMEOUT_DEGRADED, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE};
 // See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
 // `busbar_substrate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
 // rejects a leading `crate` keyword segment.

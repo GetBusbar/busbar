@@ -153,7 +153,7 @@ pub fn build_egress_targets(
             }
             let path = match path_override {
                 Some(p) => p.to_string(),
-                None => rh.upstream_path(&busbar_core::handlers::EgressCtx {
+                None => rh.upstream_path(&busbar_substrate::wire::EgressCtx {
                     operation: op,
                     model: wire_model,
                     stream,
@@ -321,7 +321,7 @@ impl OpEgressExt for busbar_core::handlers::OpDispatch {
             return Some(p.clone());
         }
         busbar_core::handlers::request_handler(lane.protocol).map(|rh| {
-            rh.upstream_path(&busbar_core::handlers::EgressCtx {
+            rh.upstream_path(&busbar_substrate::wire::EgressCtx {
                 operation: self.operation,
                 model: lane.wire_model(),
                 stream: wants_stream,

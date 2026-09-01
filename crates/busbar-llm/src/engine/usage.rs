@@ -1,6 +1,7 @@
 use super::*;
 
-use busbar_core::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::LANE_BREAKER_TRIPPED;
 
 /// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the
 /// IR. The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered

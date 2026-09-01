@@ -7,15 +7,16 @@ use super::*;
 use busbar_substrate::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
-use busbar_core::diagnostics::{
-    diag_debug, diag_error, diag_warn, ATTEMPT_TIMEOUT_FAILOVER, CROSSPROTO_BINARY_CODEC_FAILED,
-    CROSSPROTO_JSON_CODEC_FAILED, CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
-    CROSSPROTO_RESPONSE_NOT_TRANSLATABLE, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
-    CROSSPROTO_TRANSLATION_CAP_EXCEEDED, DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT,
-    DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE, LANE_HARD_DOWN, REWRITE_BODY_MATERIALIZE_FAILED,
-    REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED,
-    ROUTING_POLICY_RESTRICT_REJECT, ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
+use busbar_substrate::diagnostics::{
+    ATTEMPT_TIMEOUT_FAILOVER, CROSSPROTO_BINARY_CODEC_FAILED, CROSSPROTO_JSON_CODEC_FAILED,
+    CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
+    CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED, CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
+    DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
+    LANE_HARD_DOWN, REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED,
+    REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
+    ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 use busbar_substrate::handlers::TranslateCodec;
 
 /// Bodies at or above this size run the (pure, synchronous) cross-protocol translate on the
@@ -132,7 +133,7 @@ pub(crate) fn forward_with_pool_keyed<'a>(
     cands: Vec<WeightedLane>,
     body: Bytes,
     caller_token: Option<&'a str>,
-    resolved_gov_key: Option<&'a std::sync::Arc<busbar_core::governance::VirtualKey>>,
+    resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
@@ -207,7 +208,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     mut v: Option<LazyBody>,
     req_content_type: &'a str,
     caller_token: Option<&'a str>,
-    resolved_gov_key: Option<&'a std::sync::Arc<busbar_core::governance::VirtualKey>>,
+    resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
@@ -532,7 +533,7 @@ pub(crate) async fn translate_response_cross_protocol(
                     );
                 }
                 Ok((usage, delivery)) => {
-                    if let busbar_core::handlers::TranslatedResponse::Typed(wire) = delivery {
+                    if let busbar_substrate::wire::TranslatedResponse::Typed(wire) = delivery {
                         // Delivered: bill + disarm the spend guard here (tokens are now committed to
                         // this key; keep the lane unit too rather than refund it out from under an
                         // already-billed request).
@@ -620,9 +621,9 @@ pub(crate) async fn translate_response_cross_protocol(
                         // (captured before `prepare_for_ingress`).
                         if matches!(
                             delivery,
-                            busbar_core::handlers::TranslatedResponse::StreamFrames(_)
-                                | busbar_core::handlers::TranslatedResponse::Typed(_)
-                                | busbar_core::handlers::TranslatedResponse::Json(_)
+                            busbar_substrate::wire::TranslatedResponse::StreamFrames(_)
+                                | busbar_substrate::wire::TranslatedResponse::Typed(_)
+                                | busbar_substrate::wire::TranslatedResponse::Json(_)
                         ) {
                             record_resp_usage(
                                 usage,
@@ -635,7 +636,7 @@ pub(crate) async fn translate_response_cross_protocol(
                             // Bedrock ingress that requested ConverseStream but got a BUFFERED 2xx: a
                             // native AWS SDK decoder expects binary `eventstream` frames, delivered
                             // under `application/vnd.amazon.eventstream`.
-                            busbar_core::handlers::TranslatedResponse::StreamFrames(frames) => {
+                            busbar_substrate::wire::TranslatedResponse::StreamFrames(frames) => {
                                 let rb = Response::builder().status(status).header(
                                     CONTENT_TYPE,
                                     crate::engine::ingress_stream_content_type(ingress_protocol)
@@ -652,7 +653,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                     .body(Body::from(frames))
                                     .unwrap_or_else(|_| status.into_response());
                             }
-                            busbar_core::handlers::TranslatedResponse::IngressUnsupported => {
+                            busbar_substrate::wire::TranslatedResponse::IngressUnsupported => {
                                 return ingress_error(
                                     ingress_protocol,
                                     StatusCode::NOT_FOUND,
@@ -662,7 +663,7 @@ pub(crate) async fn translate_response_cross_protocol(
                             }
                             // The ingress dialect's response is NOT JSON (binary speech): relay the
                             // WireBody — bytes + its content-type.
-                            busbar_core::handlers::TranslatedResponse::Typed(wire) => {
+                            busbar_substrate::wire::TranslatedResponse::Typed(wire) => {
                                 let rb = Response::builder()
                                     .status(status)
                                     .header(CONTENT_TYPE, wire.content_type);
@@ -677,7 +678,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                     .body(Body::from(wire.bytes))
                                     .unwrap_or_else(|_| status.into_response());
                             }
-                            busbar_core::handlers::TranslatedResponse::Json(mut translated) => {
+                            busbar_substrate::wire::TranslatedResponse::Json(mut translated) => {
                                 // A native AWS Bedrock Converse (non-stream) response ALWAYS populates
                                 // `metrics.latencyMs`; the bedrock writer's `write_response` emits only
                                 // output/stopReason/usage, so a bedrock-ingress non-stream client would
@@ -744,7 +745,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                     .unwrap_or_else(|_| status.into_response());
                             }
                             // Opaque-only terminal; unreachable on the JSON path.
-                            busbar_core::handlers::TranslatedResponse::Untranslatable => {}
+                            busbar_substrate::wire::TranslatedResponse::Untranslatable => {}
                         }
                     }
                 }
@@ -815,7 +816,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     caller_token: Option<&str>,
     // The key the auth layer already resolved/synthesized for this caller (`GovCtx.key`) — used as
     // the routing-signal source when the token is not a virtual-key secret (group/SSO principals).
-    resolved_gov_key: Option<&std::sync::Arc<busbar_core::governance::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,

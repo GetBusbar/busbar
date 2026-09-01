@@ -107,9 +107,9 @@ async fn dp_serve(
 fn dp_gov_with_key() -> (std::sync::Arc<busbar_core::governance::GovState>, String) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = std::sync::Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -320,9 +320,9 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
@@ -331,7 +331,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
-    let mk_spec = |name: &str| busbar_core::governance::NewKeySpec {
+    let mk_spec = |name: &str| busbar_substrate::governance::NewKeySpec {
         name: name.to_string(),
         allowed_pools: Some(vec!["pa".to_string()]),
         group: None,
@@ -455,9 +455,9 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
@@ -468,7 +468,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "kc".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
@@ -582,16 +582,16 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
     let (key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "revocable".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
@@ -860,9 +860,9 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // Admin token set → governance is ACTIVE (this is the real minted-keys deploy).
     let gov = Arc::new(
@@ -874,7 +874,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     );
     let (_key, token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
@@ -1101,9 +1101,9 @@ async fn test_active_governance_persisted_key_is_enforced() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // Admin token SET → ACTIVE: the key resolves and its pool-ACL is enforced.
     let gov = Arc::new(
@@ -1115,7 +1115,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     );
     let (_key, persisted_secret) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "kold".to_string(),
                 allowed_pools: Some(vec!["restricted".to_string()]), // NOT "pa"
                 group: None,
