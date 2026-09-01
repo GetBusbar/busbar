@@ -73,7 +73,7 @@ pub(crate) async fn stats(
         view.pools()
             .iter()
             .filter(|(n, _)| visible_pool(n))
-            .any(|(_, members)| members.iter().any(|&idx| idx == i))
+            .any(|(_, members)| members.contains(&i))
     };
 
     let lanes: Vec<Value> = (0..view.lane_count())

@@ -10,7 +10,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use serde_json::Value;
 
 use crate::state::App;
 
@@ -72,10 +71,7 @@ fn fallback_pools_authorized(
         // The FALLBACK-POOL target `current` fails over to, through the neutral read seam. `None` when
         // its `on_exhausted:` policy is `Status503`/`LeastBad`/`Queue` (all stay within `current` — no
         // new pool name) or the pool is unconfigured (defaults to 503) — the walk ends here.
-        let next = match view.on_exhausted_fallback(&current) {
-            Some(fallback) => fallback,
-            None => return None,
-        };
+        let next = view.on_exhausted_fallback(&current)?;
         // Re-run the identical ACL gate against the fallback pool name before it could ever be
         // dispatched to. A 403 here is byte-for-byte the initial-pool 403.
         if let Some(resp) = pool_authorized(gov, &next, proto) {

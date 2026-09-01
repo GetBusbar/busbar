@@ -743,12 +743,12 @@ impl App {
         self.plane_gates.get(plane_key)
     }
 
-    /// THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
-    /// resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
-    /// `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
-    /// cannot cross the `build_runtime` downcast). Byte-identical: the SAME objects `appbuild` resolved
-    /// via `hooks::resolve_pool_*`, read by pool name. `pub` — the plane names them; the allowed
-    /// plane→core edge (no core type crosses a downcast, the plane just calls these directly).
+    // THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
+    // resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
+    // `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
+    // cannot cross the `build_runtime` downcast). Byte-identical: the SAME objects `appbuild` resolved
+    // via `hooks::resolve_pool_*`, read by pool name. `pub` — the plane names them; the allowed
+    // plane→core edge (no core type crosses a downcast, the plane just calls these directly).
 
     /// This pool's resolved routing policy, or `None` for the zero-cost SWRR default (no `route:`/hook).
     pub fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy> {

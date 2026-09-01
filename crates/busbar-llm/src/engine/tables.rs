@@ -349,19 +349,10 @@ impl AppEngineExt for busbar_core::state::App {
     }
 }
 
-/// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
-/// every plane's runtime rides — the constructor `appbuild` calls to seed
-/// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
-/// flat `App::llm_runtime` field). The `PlaneDecl::build_runtime` fn pointer the sibling planes carry
-/// stays `None` for THIS plane this phase — the plane crate that owns the decl (`busbar-llm`) may not
-/// name a `busbar_core::` item, and [`NativeRuntime`] is still a core type — so `appbuild` calls this
-/// core-local constructor by name instead. Phase 3 relocates `NativeRuntime` to `busbar-llm`, at which
-/// point this becomes the plane's own `build_runtime` and the decl carries the pointer like MCP.
-pub(crate) fn compose_native_runtime_slot(
-    rt: NativeRuntime,
-) -> Arc<dyn std::any::Any + Send + Sync> {
-    Arc::new(rt)
-}
+// `compose_native_runtime_slot` (the core-local runtime-slot constructor `appbuild` used while
+// `NativeRuntime` still lived in core) is GONE (money-path Phase 3-4 C — THE PIVOT): the type is now
+// plane-owned and the slot is composed through the plane's own `build_runtime` fn-pointer
+// (`crate::engine::build_runtime::build_runtime`, wired into `PLANE_DECL.build_runtime`).
 
 /// THE PROCESS-LIFETIME EMPTY LLM RUNTIME the money-path read ([`App::llm_runtime`]) falls back to when
 /// no LLM plane contributed a slot — the featureless zero-plane binary, whose `appbuild` inserted none.
