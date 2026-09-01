@@ -958,7 +958,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 /// The non-stream usage-tap reassembly decision at
 /// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
 /// = max_translated_body_bytes() - ... }` reads the live-reloadable
-/// `busbar_core::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
+/// `busbar_substrate::proxy::max_translate_body_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
 /// mutates that `RwLock` under a still-running gateway (a config apply/rollback), so a write
 /// landing in the gap between the two reads makes the first read's `if` pass on a HIGH cap while
 /// the second read subtracts against a freshly-LOWERED one — an underflow (`remaining = lo - buf`)

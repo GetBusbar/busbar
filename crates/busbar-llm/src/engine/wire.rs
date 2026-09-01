@@ -610,7 +610,7 @@ pub(crate) use busbar_substrate::proxy::max_upstream_buffered_bytes;
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
 /// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
 pub(crate) fn max_translated_body_bytes() -> usize {
-    busbar_core::limits::translate_body_max_bytes()
+    busbar_substrate::proxy::max_translate_body_bytes()
 }
 
 // THE CAPPED READ and its `ReadEnd` outcome moved DOWN into the neutral `busbar-substrate` crate in
