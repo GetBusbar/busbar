@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE MODEL PLANE'S CHAIN, PROVEN FROM THE OUTSIDE: a real model request, over a real socket,
-//! through `crate::build_router` and the real governance guards, landing a real hash-chained record
+//! through `busbar_core::build_router` and the real governance guards, landing a real hash-chained record
 //! that is then read back and RECOMPUTED.
 //!
 //! ## Why this battery does not touch the log's write surface
@@ -28,8 +28,8 @@
 //! `prev_hash` to `hash`, which is also the only way to prove the refusal was not written onto a
 //! second chain of its own.
 
-use crate::governance::{GovState, MemoryStore};
-use crate::proxy::reqlog::{
+use busbar_core::governance::{GovState, MemoryStore};
+use busbar_core::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
@@ -64,7 +64,8 @@ async fn a_governed_deployment(
     String,
     String,
 ) {
-    crate::metrics::init();
+    crate::testkit::install_test_seams();
+    busbar_core::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..answers {
         state.push(MockResponse::Ok {
@@ -76,14 +77,14 @@ async fn a_governed_deployment(
     let a_url = server.base_url();
 
     let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        crate::governance::signing::DEFAULT_KID,
+        busbar_core::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).unwrap());
     let (key, secret) = gov
         .mint_signed(
-            crate::governance::NewKeySpec {
+            busbar_core::governance::NewKeySpec {
                 name: "chained".to_string(),
                 // Allowed on A and NOT on B, so a request to B is refused by the pool ACL —
                 // a real governance decision, taken before any upstream is contacted.
@@ -100,14 +101,14 @@ async fn a_governed_deployment(
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .lane(LaneSpec::new("A", crate::proto::PROTO_ANTHROPIC, &a_url).provider("zai"))
+        .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -130,7 +131,7 @@ async fn call(addr: std::net::SocketAddr, pool: &str, secret: &str) -> u16 {
 /// EVERY MODEL REQUEST LANDS ON THE PRESENTING KEY'S HASH CHAIN — the dispatch and the refusal
 /// alike, as consecutive links of one chain, and the chain RECOMPUTES.
 ///
-/// This is the `audit-chain x llm` cell. Before it, `grep crate::audit` over `proxy/` and
+/// This is the `audit-chain x llm` cell. Before it, `grep busbar_core::audit` over `proxy/` and
 /// `handlers/` returned nothing at all: model traffic reached billing and telemetry and no
 /// tamper-evident record of any kind, while the other two planes chained theirs.
 ///
@@ -204,13 +205,13 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
 /// go unrecorded.
 #[tokio::test]
 async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_than_dropped() {
-    crate::metrics::init();
+    busbar_core::metrics::init();
     let before = REQUESTS.records_for(PRINCIPAL_UNGOVERNED).len();
 
     // No `governance(..)`: nothing resolves a key, and the request is refused for want of a route.
     // The refusal is the point — this is the path that had no evidence of any kind.
     let app = TestApp::new().build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

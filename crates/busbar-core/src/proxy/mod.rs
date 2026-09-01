@@ -108,7 +108,7 @@ tokio::task_local! {
 // THE MODEL PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
 // because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
 // where the plane's metrics and its refund decision are already made.
-pub(crate) mod reqlog;
+pub mod reqlog;
 // THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
 // one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
 // re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
@@ -135,9 +135,6 @@ pub fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
 // claim is that a CUSTOMER'S REQUEST reaches the chain, and only a test that goes through
 // `crate::build_router` and a real socket can see that. A record-level test would pass just as
 // happily against a log with no production call site — which is the state this plane was in.
-#[cfg(test)]
-#[path = "tests/reqlog_dispatch_tests.rs"]
-mod reqlog_dispatch_tests;
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /

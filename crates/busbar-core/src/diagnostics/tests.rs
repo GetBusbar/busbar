@@ -15,11 +15,11 @@
 /// Paths relative to `crates/busbar-core` (this crate's manifest dir).
 const MIGRATED_FILES: &[&str] = &[
     "src/admin/audit.rs",
-    "src/proxy/response_body.rs",
-    "src/proxy/usage.rs",
-    "src/proxy/hooks.rs",
-    "src/proxy/engine/mod.rs",
-    "src/proxy/engine/walk.rs",
+    // The forward-engine sources (`proxy/response_body.rs`, `proxy/usage.rs`, `proxy/hooks.rs`,
+    // `proxy/engine/{mod,walk}.rs`) RELOCATED to the `busbar-llm` plugin's `src/engine/` with the
+    // money-path pivot (1.6.0 money-path Phase 3-4 C). Core does NOT scan a plane crate's tree — the
+    // plane-purity lint forbids core naming a plane path — and `busbar-llm` carries its own
+    // uncoded-diagnostic floor, so these are no longer listed here (mirroring the substrate/plane note).
     "src/handlers/mod.rs",
     "src/metrics.rs",
     "src/auth/exchange.rs",

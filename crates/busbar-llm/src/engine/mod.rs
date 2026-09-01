@@ -182,6 +182,9 @@ mod probe_release_owner_tests;
 #[path = "proxy_tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 #[cfg(test)]
+#[path = "proxy_tests/reqlog_dispatch_tests.rs"]
+mod reqlog_dispatch_tests;
+#[cfg(test)]
 #[path = "proxy_tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
 #[cfg(test)]
