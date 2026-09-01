@@ -505,19 +505,15 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         // (min_requests: 5) would never trip on the single compensating transient. Consecutive
         // mode with n=1 makes one transient an observable trip even from Closed, isolating the
         // discriminator (a transient IS recorded) from unrelated volume thresholds.
-        .pool_runtime(
+        .pool_breaker(
             "fb",
-            crate::engine::PoolRuntime {
-                upstream_credentials: None,
-                breaker: Some(BreakerCfg {
-                    trip: TripConfig {
-                        mode: TripMode::Consecutive,
-                        consecutive_n: 1,
-                        ..TripConfig::default()
-                    },
-                    ..BreakerCfg::default()
-                }),
-                ..Default::default()
+            &BreakerCfg {
+                trip: TripConfig {
+                    mode: TripMode::Consecutive,
+                    consecutive_n: 1,
+                    ..TripConfig::default()
+                },
+                ..BreakerCfg::default()
             },
         )
         .build();

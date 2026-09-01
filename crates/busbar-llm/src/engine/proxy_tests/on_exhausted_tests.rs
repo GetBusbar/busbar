@@ -119,20 +119,14 @@ fn chat_body(pool: &str) -> Vec<u8> {
     .unwrap()
 }
 
-fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> crate::engine::PoolRuntime {
-    crate::engine::PoolRuntime {
-        upstream_credentials: None,
-        members: Default::default(),
-        failover: Some(busbar_core::config::FailoverCfg {
-            timeout_secs: 120,
-            exclusions: excl,
-            max_hops: 3,
-        }),
-        affinity: None,
-        breaker: None,
-        policy: None,
-        gates: Vec::new(),
-        rewrite_hooks: Vec::new(),
+// Pool-hook facade (money-path Phase 3-4 C): the per-pool `failover:` override is a NEUTRAL pool spec
+// now (the fixture lowers it through `LlmBuildInput` → `build_runtime`), so this returns the config the
+// `.pool_failover(...)` setter takes instead of a hand-built `PoolRuntime`.
+fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_core::config::FailoverCfg {
+    busbar_core::config::FailoverCfg {
+        timeout_secs: 120,
+        exclusions: excl,
+        max_hops: 3,
     }
 }
 
@@ -156,7 +150,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
                 .provider("p"),
         )
         .pool("pe", &[(0, 1), (1, 1)])
-        .pool_runtime(
+        .pool_failover(
             "pe",
             pool_runtime_with_exclusions(Some(vec!["beta".into()])),
         )
@@ -222,7 +216,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
             .provider("p"),
         )
         .pool("pl", &[(0, 1), (1, 1)])
-        .pool_runtime("pl", pool_runtime_with_exclusions(None))
+        .pool_failover("pl", pool_runtime_with_exclusions(None))
         .on_exhausted("pl", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
@@ -268,7 +262,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
             LaneSpec::new("solo", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
         )
         .pool("ps", &[(0, 1)])
-        .pool_runtime("ps", pool_runtime_with_exclusions(None))
+        .pool_failover("ps", pool_runtime_with_exclusions(None))
         .on_exhausted("ps", busbar_core::config::OnExhausted::LeastBad)
         .build();
 
@@ -331,13 +325,13 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
             .provider("p"),
         )
         .pool("pf", &[(0, 1)])
-        .pool_runtime("pf", pool_runtime_with_exclusions(None))
+        .pool_failover("pf", pool_runtime_with_exclusions(None))
         .on_exhausted(
             "pf",
             busbar_core::config::OnExhausted::FallbackPool("spill".into()),
         )
         .fallback_pool("spill", &[(1, 1), (2, 1)])
-        .pool_runtime(
+        .pool_failover(
             "spill",
             pool_runtime_with_exclusions(Some(vec!["blocked".into()])),
         )
@@ -866,7 +860,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
             .provider("p"),
         ) // idx 1 — worse cooldown, but a free permit
         .pool("p", &[(0, 1), (1, 1)])
-        .pool_runtime("p", pool_runtime_with_exclusions(None))
+        .pool_failover("p", pool_runtime_with_exclusions(None))
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();

@@ -97,20 +97,20 @@ pub use busbar_substrate::store::{now, now_ms};
 // (e.g. set_now_for_test(1000)) would poison the clock for a concurrently-running forward
 // integration test that records breaker cooldowns against the real wall clock. Per-thread storage
 // isolates each test's injected time to its own thread while leaving real-time tests on real time.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static TEST_NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Test helper to inject time for unit tests (this thread only).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn set_now_for_test(t: u64) {
     TEST_NOW.with(|c| c.set(t));
     IN_TEST.with(|c| c.set(true));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn now_for_test() -> u64 {
     // "Unset" is signalled SOLELY by the `IN_TEST` flag (set true by `set_now_for_test`), NOT by the
     // stored value. The old guard (`val != 0`) conflated a legitimately-injected instant of 0 with
@@ -172,50 +172,50 @@ pub enum Permit {
 
 /// Snapshot of lane stats for /stats endpoint.
 #[derive(Debug, Clone)]
-pub(crate) struct LaneSnapshot {
-    pub(crate) model: String,
-    pub(crate) provider: String,
-    pub(crate) max_concurrent: usize,
-    pub(crate) inflight: i64,
-    pub(crate) free_slots: usize,
+pub struct LaneSnapshot {
+    pub model: String,
+    pub provider: String,
+    pub max_concurrent: usize,
+    pub inflight: i64,
+    pub free_slots: usize,
     /// Available concurrency permits for a BOUNDED lane (`Some(n)`); `None` for an unbounded lane
     /// (`max_concurrent` omitted — nothing is counted). Distinct from `free_slots` only in that it
     /// makes "unbounded" explicit rather than reporting an effectively-infinite number: a saturated
     /// lane must be externally distinguishable — `Some(0)` — from an idle or unbounded one.
-    pub(crate) available: Option<usize>,
+    pub available: Option<usize>,
     /// True iff this lane is BOUNDED and has zero available permits — i.e. at its `max_concurrent`
     /// limit. Post the at-capacity-exhaustion fix, such a lane sheds/spills rather than queueing, so
     /// this flag is the external signal that a pool is oversubscribed (not merely slow). This is the
     /// CAPACITY axis, deliberately kept INDEPENDENT of `availability`/`breaker_state`: a lane can
     /// be both breaker-Open AND at-capacity, and an operator must see both facts to understand why an
     /// Open lane's breaker never recovers (its recovery probe needs a dispatch it can never win).
-    pub(crate) at_capacity: bool,
+    pub at_capacity: bool,
     /// Lane-GLOBAL availability over the shared [`Unavailable`] taxonomy: the SAME
     /// classification `classify`/routing speaks, aggregated across the cells production routes through.
     /// `Ok(())` = the lane would admit; `Err(_)` carries the reason (and its `recovery_hint_ms`). This
     /// is the ONE source `/stats` and (per-pool) `/metrics` render from, so observability cannot drift
     /// from behaviour. Breaker-first: an Open-and-at-capacity lane classifies `BreakerOpen`, while the
     /// orthogonal `at_capacity`/`breaker_state` fields still expose each axis independently.
-    pub(crate) availability: Result<(), Unavailable>,
+    pub availability: Result<(), Unavailable>,
     /// Lane-GLOBAL aggregate breaker FSM state (best-case across the routed cells, matching `usable`),
     /// surfaced as its own field so the BREAKER axis is legible independently of `availability` and
     /// `at_capacity`. An expired-Open cell still reports `Open` here even though it would win a
     /// recovery probe (so `availability` may read `at_capacity` while this reads `open`) — that pairing
     /// is exactly the Open+AtCapacity operators need to see.
-    pub(crate) breaker_state: BreakerState,
-    pub(crate) ok: u64,
-    pub(crate) err: u64,
-    pub(crate) client_fault: u64,
-    pub(crate) usable: bool,
-    pub(crate) dead: bool,
-    pub(crate) dead_reason: String,
-    pub(crate) cooldown_remaining_s: u64,
-    pub(crate) streak: u32,
-    pub(crate) budget: i64,
+    pub breaker_state: BreakerState,
+    pub ok: u64,
+    pub err: u64,
+    pub client_fault: u64,
+    pub usable: bool,
+    pub dead: bool,
+    pub dead_reason: String,
+    pub cooldown_remaining_s: u64,
+    pub streak: u32,
+    pub budget: i64,
     /// Monotonic Closed→Open trip count + the most recent trip's epoch (0 = never) — the
     /// poll-safe "did a trip happen since I last looked" signal.
-    pub(crate) trips: u64,
-    pub(crate) last_trip_at: u64,
+    pub trips: u64,
+    pub last_trip_at: u64,
 }
 
 /// LaneRuntime trait - the seam for lane state access.
@@ -289,7 +289,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // side-effect-free all-cells `is_ready_any_cell` (so /healthz and /stats can't steal a recovery
     // probe), leaving the bare form test-only — so it is `#[cfg(test)]`-gated out of the release
     // binary entirely rather than merely silenced.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn usable(&self, lane: usize, now: u64) -> bool;
     // As of the lane-availability refactor, `pick_among`'s sticky fast path uses `try_admit` instead
     // of `usable_in`, so this has no non-test caller left; retained as a tested primitive.
@@ -301,7 +301,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// `is_ready_any_cell` instead (production routes through NAMED pools whose cells trip
     /// independently), leaving this default-cell-only form exercised by the unit tests, so it is
     /// `#[cfg(test)]`-gated out of the release binary entirely.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn is_ready(&self, lane: usize, now: u64) -> bool;
     /// Side-effect-FREE readiness across ANY cell: true iff the lane is admissible (not dead / in
     /// budget) AND the default cell OR ANY per-pool cell would admit a request right now. `/healthz`
@@ -456,22 +456,22 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `is_ready`, `breaker_state`, `usable`, `record_success`, `record_rate_limit`, `record_hard_down`
     // are all `#[cfg(test)]`-gated out of the release binary entirely rather than merely silenced with
     // a dead-code allow.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn breaker_state(&self, lane: usize) -> BreakerState;
     /// Per-(pool, lane) breaker FSM state — test-only, so regressions can assert the POOL cell (not
     /// just the default `""` cell) transitions correctly on the degraded forward path.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn breaker_state_in(&self, pool: &str, lane: usize) -> BreakerState;
     /// Force a (pool, lane) breaker cell into Open with the given `cooldown_until` — test-only. Set
     /// `cooldown_until` in the PAST for an expired-Open cell, which `acquire_for_dispatch_in`
     /// transitions to HalfOpen (the single-flight recovery probe) on the next dispatch — the exact
     /// state the degraded-forward regression requires on the ROUTING POOL cell.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn force_open_in(&self, pool: &str, lane: usize, cooldown_until: u64);
     // `snapshot()` now reports the lane-GLOBAL (worst-across-all-pool-cells) cooldown via
     // `lane_max_cooldown_remaining`, not the default-cell-only `cooldown_remaining` (which stayed 0
     // for pool-routed traffic), so this bare-lane form is release-dead and exercised only by tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn cooldown_remaining(&self, lane: usize, now: u64) -> u64;
     fn cooldown_remaining_in(&self, pool: &str, lane: usize, now: u64) -> u64;
     /// True if the breaker is suppressing this lane in ANY cell (default or any pool) — either a
@@ -484,7 +484,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `record_success` is now release-dead: the degraded `forward_once` path records against the
     // ROUTING POOL cell via `record_success_in`, so this bare default-cell form is test-only and
     // `#[cfg(test)]`-gated out of the release binary.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_success(&self, lane: usize);
     fn record_success_in(&self, pool: &str, lane: usize);
     /// A SUCCESSFUL (2xx) out-of-band health probe: push a success outcome into the sliding
@@ -515,7 +515,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// which drives the trip decision (error-rate vs consecutive thresholds) and cooldown backoff.
     /// Returns `true` iff this failure drove a Closed→Open trip on the (pool, lane) cell, so the
     /// caller emits `BREAKER_TRIPS_TOTAL` once per logical trip.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_transient(
         &self,
         lane: usize,
@@ -531,7 +531,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
     ) -> bool;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_rate_limit(
         &self,
         lane: usize,
@@ -552,7 +552,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // through the all-cells `record_hard_down_all_cells` primitive (which inlines the per-cell trip to
     // avoid re-locking `pool_cells`), so this bare form is exercised only by the unit tests in release
     // — hence the not(test) dead-code allow, matching the other release-dead bare mutators above.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_hard_down(&self, lane: usize, reason: &str);
     /// Hard-down the lane in EVERY cell (the default/direct-route cell AND every existing per-pool
     /// cell), mirroring the all-cells reach of `recover_lane` / `record_probe_failure_all_cells`. A
@@ -614,7 +614,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// `candidates` are indices into the store's lane array.
     /// `weights` is the per-member weight for each candidate (must match candidates length).
     /// Returns None if no healthy members or all candidates are unusable.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize>;
     fn select_weighted_in(
         &self,

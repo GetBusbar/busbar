@@ -104,7 +104,7 @@ impl GovState {
     /// token carrying ANY audience is rejected here; the MCP ingress passes its canonical URI and
     /// rejects a token whose audience is absent or different. Enforced inside
     /// [`TokenVerifier::verify`](super::signing::TokenVerifier::verify), never per handler.
-    pub(crate) fn verify_token(
+    pub fn verify_token(
         &self,
         token: &str,
         now: u64,
@@ -1440,7 +1440,7 @@ impl GovState {
     /// the caller validates the named group exists). `generation_hash`/`name`/`allowed_pools`/
     /// `created_at` are preserved (the credential is never re-minted). Returns `Ok(None)` when the
     /// key does not exist (so the caller can 404), `Ok(Some(updated_metadata))` otherwise.
-    pub(crate) fn update_key(
+    pub fn update_key(
         &self,
         id: &str,
         enabled: Option<bool>,
@@ -1546,7 +1546,7 @@ impl GovState {
     /// fee x requests) - reprice-on-read. The AUTHORITATIVE in-memory cell wins for the current
     /// window (it reflects hot-path accruals the write-behind flusher may not have persisted yet);
     /// falls back to the durable ledger for a bucket whose cell was never materialised.
-    pub(crate) fn usage_for(
+    pub fn usage_for(
         &self,
         cost: &crate::cost::CostModel,
         id: &str,
@@ -1570,7 +1570,7 @@ impl GovState {
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
     /// must pass `true` for both. The parameter exists only for callers that deliberately want
     /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
-    pub(crate) fn derived_bucket_usage(
+    pub fn derived_bucket_usage(
         &self,
         cost: &crate::cost::CostModel,
         bucket_id: &str,

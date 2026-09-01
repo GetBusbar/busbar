@@ -263,7 +263,7 @@ impl CostModel {
     /// Resolve from config. Assumes `config_validate` has already passed (completeness, acyclic
     /// groups, valid limit shapes); this is a pure projection and is defensive, never panicking,
     /// on anything validation should have caught.
-    pub(crate) fn resolve_parts(
+    pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,

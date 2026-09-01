@@ -101,7 +101,7 @@ fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8>
         },
     );
     let mut out = egress_p.writer().write_request(&req);
-    busbar_core::proxy::strip_router_shim_keys(&mut out, egress);
+    crate::engine::strip_router_shim_keys(&mut out, egress);
     egress_p
         .writer()
         .rewrite_model_if_needed(&mut out, LANE_MODEL);

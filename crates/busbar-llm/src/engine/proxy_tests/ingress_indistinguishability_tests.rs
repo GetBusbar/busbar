@@ -610,19 +610,15 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
                 .budget(1),
         )
         .pool("pa", &[(0, 1)])
-        .pool_runtime(
+        .pool_breaker(
             "pa",
-            crate::engine::PoolRuntime {
-                upstream_credentials: None,
-                breaker: Some(BreakerCfg {
-                    trip: TripConfig {
-                        mode: TripMode::Consecutive,
-                        consecutive_n: 1,
-                        ..TripConfig::default()
-                    },
-                    ..BreakerCfg::default()
-                }),
-                ..Default::default()
+            &BreakerCfg {
+                trip: TripConfig {
+                    mode: TripMode::Consecutive,
+                    consecutive_n: 1,
+                    ..TripConfig::default()
+                },
+                ..BreakerCfg::default()
             },
         )
         .build();

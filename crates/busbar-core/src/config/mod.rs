@@ -899,7 +899,7 @@ pub struct AuthCfg {
 
 impl AuthCfg {
     /// Create a default (open front door, default admin chain) AuthCfg for initialization.
-    pub(crate) fn default_none() -> Self {
+    pub fn default_none() -> Self {
         Self {
             signing_key: None,
             chain: vec![],
@@ -1238,13 +1238,13 @@ pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 pub struct ProviderCfg {
     #[serde(default = "default_protocol")]
     pub(crate) protocol: String,
-    pub(crate) base_url: String,
+    pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
     pub(crate) api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
-    pub(crate) health: Option<HealthCfg>,
+    pub health: Option<HealthCfg>,
     // error_map is REQUIRED on every provider — NO default (fail loud if missing)
     pub(crate) error_map: HashMap<String, String>,
     /// Optional upstream request-path override (see ProviderDef::path).
@@ -2660,7 +2660,7 @@ pub enum OnExhaustedCfg {
 
 impl OnExhaustedCfg {
     /// The executable behavior this config value selects.
-    pub(crate) fn to_runtime(&self) -> OnExhausted {
+    pub fn to_runtime(&self) -> OnExhausted {
         match self {
             OnExhaustedCfg::Reject => OnExhausted::Status503,
             OnExhaustedCfg::LeastBad => OnExhausted::LeastBad,

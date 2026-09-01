@@ -6,7 +6,6 @@
 
 use crate::engine::AppEngineExt as _;
 use busbar_core::auth::UpstreamCreds;
-use crate::engine::PoolRuntime;
 use crate::test_support::{LaneSpec, TestApp};
 
 /// COMMON config (no pool sets `upstream_credentials:`): the flag is `false`, so the accessor takes
@@ -58,13 +57,7 @@ fn override_present_runs_full_lookup() {
         .pool("pt", &[(1, 1)])
         // All-pools default is Own; the `pt` pool overrides to Passthrough.
         .upstream_creds(UpstreamCreds::Own)
-        .pool_runtime(
-            "pt",
-            PoolRuntime {
-                upstream_credentials: Some(UpstreamCreds::Passthrough),
-                ..PoolRuntime::default()
-            },
-        )
+        .pool_upstream_creds("pt", UpstreamCreds::Passthrough)
         .build();
 
     assert!(

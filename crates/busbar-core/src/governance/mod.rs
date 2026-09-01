@@ -320,9 +320,9 @@ impl std::fmt::Debug for AdmitGrant {
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
 /// the token ledger x the current rate card at the moment of the read - never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct DerivedUsage {
+pub struct DerivedUsage {
     pub(crate) spend_cents: i64,
-    pub(crate) tokens: u64,
+    pub tokens: u64,
     pub(crate) requests: u64,
 }
 
