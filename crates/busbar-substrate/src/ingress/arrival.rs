@@ -111,6 +111,13 @@ pub struct Arrival {
     pub ctx: ArrivalCtx,
     /// The request path, already `to_string`ed by the catch-all. The dialect parses ITS OWN model out.
     pub path: String,
+    /// An OUT-OF-BAND routing name the catch-all resolved from the URL, for the busbar convenience
+    /// surfaces whose model/pool lives in the PATH rather than the body: the `/{name}/v1/messages`
+    /// (`named`) pool/model name, or the `/{provider}/{model}/v1/messages` (`adhoc`) model. `None` for
+    /// a dialect-native arrival (anthropic `/v1/messages`, the generic body-model dispatch), where the
+    /// model rides the body. A body-model arrival threads this straight into `operation_ingress`'s
+    /// `model_hint`, the byte-identical successor to the pre-relocation `named`/`adhoc` name routing.
+    pub model_hint: Option<String>,
     /// The original request URI (query intact — Gemini reads `?alt=sse`).
     pub uri: Uri,
     pub headers: HeaderMap,

@@ -805,6 +805,9 @@ pub(crate) async fn named(
         caller,
         proto,
         format!("/{name}/v1/messages"),
+        // The `named` convenience surface routes by the PATH name (a pool or model), NOT a body
+        // `model` — so thread it as the model hint the universal ingress resolves against.
+        Some(name),
         headers,
         body,
     )
@@ -823,6 +826,7 @@ async fn delegate_body_arrival(
     caller: crate::auth::CallerToken,
     proto: &'static str,
     path: String,
+    model_hint: Option<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -839,6 +843,7 @@ async fn delegate_body_arrival(
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
             ctx,
             path,
+            model_hint,
             uri,
             headers,
             body,
@@ -866,12 +871,33 @@ pub async fn adhoc(
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
     // `named`); `""` when no LLM dialect is registered.
     let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
+    // provider and a model, and a configured model reached under the WRONG provider is a client error,
+    // not a route to that model's real provider. Read the neutral routing view: a model that IS
+    // configured but whose lane's provider differs from the path provider → the anthropic-shaped 400.
+    // A model MISS falls through to the universal ingress, which renders the same not-found 404.
+    {
+        let view = app.engine_tables_view();
+        if let Some(idx) = view.model_index(&model) {
+            if !view.lane_view(idx).is_some_and(|l| l.provider == provider) {
+                return crate::proxy::ingress_error(
+                    proto,
+                    StatusCode::BAD_REQUEST,
+                    crate::proxy::KIND_INVALID_REQUEST,
+                    &not_found_message(&model, None),
+                );
+            }
+        }
+    }
     delegate_body_arrival(
         app,
         gov,
         caller,
         proto,
         format!("/{provider}/{model}/v1/messages"),
+        // The `adhoc` surface names the model in the PATH (with the provider verified above); thread the
+        // model as the hint the universal ingress resolves against.
+        Some(model),
         headers,
         body,
     )

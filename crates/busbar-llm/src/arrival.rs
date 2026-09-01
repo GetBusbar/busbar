@@ -247,6 +247,7 @@ pub fn bedrock_arrival(a: Arrival) -> Fut {
         host,
         ctx,
         path,
+        model_hint: _,
         uri,
         headers,
         body,
@@ -429,6 +430,7 @@ async fn body_arrival(proto: &'static str, a: Arrival) -> Response {
         host,
         ctx,
         path: _,
+        model_hint,
         uri,
         headers,
         body,
@@ -452,7 +454,9 @@ async fn body_arrival(proto: &'static str, a: Arrival) -> Response {
             ),
         );
     };
-    crate::native_ingress::operation_ingress(&ctx, headers, body, proto, operation, None).await
+    // `model_hint` carries the busbar convenience surfaces' PATH-borne routing name (`named`/`adhoc`);
+    // `None` for a dialect-native body-model arrival, where the model rides the body.
+    crate::native_ingress::operation_ingress(&ctx, headers, body, proto, operation, model_hint).await
 }
 
 /// Generate one `BodyIngress` fn-pointer target per dialect (a bare `fn(Arrival) -> Fut`, since the
