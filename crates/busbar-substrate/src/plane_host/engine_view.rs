@@ -72,6 +72,14 @@ pub trait EngineTablesView {
 
     /// The live `on_exhausted: queue` park depth for `pool` (0 when the pool never queues).
     fn queued_depth(&self, pool: &str) -> u64;
+
+    /// The FALLBACK-POOL target `pool` fails over to on exhaustion, if its `on_exhausted:` policy is
+    /// `fallback_pool:<name>` — else `None` (every other policy, `503`/`least_bad`/`queue`, stays
+    /// within the pool and introduces no new pool name; an unconfigured pool defaults to `503`). A
+    /// NEUTRAL projection of the plane's `on_exhausted` config (the config enum is a plane type this
+    /// seam must not name), used by the staying ingress ACL walk (`fallback_pools_authorized`) to
+    /// re-enforce a key's `allowed_pools` against every reachable fallback pool.
+    fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
 }
 
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
@@ -103,5 +111,8 @@ impl EngineTablesView for EmptyEngineTablesView {
     }
     fn queued_depth(&self, _pool: &str) -> u64 {
         0
+    }
+    fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
+        None
     }
 }

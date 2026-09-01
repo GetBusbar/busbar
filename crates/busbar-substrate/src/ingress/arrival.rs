@@ -217,3 +217,78 @@ pub fn path_ingress_for(name: &str) -> Option<PathIngress> {
     }
     None
 }
+
+// ============================================================================
+// THE NEUTRAL BODY-MODEL ARRIVAL SEAM — the ABI a body-model dialect's universal ingress (the LLM
+// plane's relocated `operation_ingress`) is registered through, mirroring the path-model seam above.
+// A body-model protocol keeps the model IN THE BODY, so its arrival does no URL parsing; but the
+// resolution + forward tail (`operation_ingress` → the one engine) reads the LLM routing tables and
+// so RELOCATED into `busbar-llm`. Core's `protocol_dispatch` resolves the body-arrival by protocol
+// name and calls it, naming no LLM type — exactly the plane ABI, reusing `Arrival`/`ArrivalHost`/
+// `ArrivalCtx`.
+// ============================================================================
+
+/// A body-model dialect's own universal ingress: one arrival in, one boxed response future out.
+/// Structurally identical to [`PathIngress` ] (it too takes an [`Arrival`] and returns a boxed
+/// response future); a distinct alias names the DIFFERENT registration table it lands in (the
+/// body-model side-table, not the path-model one).
+pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+
+/// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
+pub type BodyIngressEntry = (&'static str, BodyIngress);
+
+/// A fn that yields a `&'static` body-arrival table — the shape the core-test/`test-support` hook seeds.
+#[cfg(any(test, feature = "test-support"))]
+pub type BodyIngressFn = fn() -> &'static [BodyIngressEntry];
+
+/// The body-arrivals the COMPOSITION ROOT installed, protocol-name-keyed. Set once by
+/// [`install_body_ingress`]; consulted by [`body_ingress_for`]. A `Vec`, not a `&'static [_]`,
+/// because the composition root ASSEMBLES it from whichever protocol crates are linked.
+static INSTALLED_BODY_INGRESS: std::sync::OnceLock<Vec<(&'static str, BodyIngress)>> =
+    std::sync::OnceLock::new();
+
+/// INSTALL THE BODY-MODEL ARRIVALS — the composition root's one write, mirroring
+/// [`install_path_ingress`]. Set-once.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+pub fn install_body_ingress(arrivals: Vec<(&'static str, BodyIngress)>) {
+    assert!(
+        INSTALLED_BODY_INGRESS.set(arrivals).is_ok(),
+        "install_body_ingress called twice: there is one composition root, and it registers once"
+    );
+}
+
+/// THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK — the analogue of [`set_test_path_ingress`]. A
+/// build with no composition root seeds the LLM plane's `BODY_INGRESS` slice here so
+/// [`body_ingress_for`] resolves the universal ingress without a set-once `install_body_ingress`.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_BODY_INGRESS_HOOK: std::sync::OnceLock<BodyIngressFn> = std::sync::OnceLock::new();
+
+/// SEED THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK. Idempotent (first writer wins).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_body_ingress(f: BodyIngressFn) {
+    let _ = TEST_BODY_INGRESS_HOOK.set(f);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn test_body_ingress() -> &'static [BodyIngressEntry] {
+    TEST_BODY_INGRESS_HOOK.get().map(|f| f()).unwrap_or(&[])
+}
+
+/// RESOLVE A BODY-MODEL DIALECT'S UNIVERSAL ARRIVAL BY NAME — the lookup `protocol_dispatch` performs
+/// for a body-model protocol. Consults the installed table first, then the test hook. `None` when no
+/// LLM plane is linked (core booted plane-agnostic): the caller then answers the honest no-handler
+/// 404.
+pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
+    if let Some(installed) = INSTALLED_BODY_INGRESS.get() {
+        if let Some((_, f)) = installed.iter().find(|(n, _)| *n == name) {
+            return Some(*f);
+        }
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some((_, f)) = test_body_ingress().iter().find(|(n, _)| *n == name) {
+        return Some(*f);
+    }
+    None
+}

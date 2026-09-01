@@ -297,6 +297,12 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     fn queued_depth(&self, pool: &str) -> u64 {
         self.queued_depth.depth(pool)
     }
+    fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
+        match self.on_exhausted_cfgs.get(pool) {
+            Some(busbar_core::config::OnExhausted::FallbackPool(fallback)) => Some(fallback.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot

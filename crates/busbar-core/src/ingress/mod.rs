@@ -60,28 +60,25 @@ fn fallback_pools_authorized(
     // nothing to walk. (An explicit empty list is the EMPTY set and walks like any list: every
     // pool denies.)
     key.allowed_scopes.as_ref()?;
-    let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut current = pool;
+    let view = app.engine_tables_view();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut current = pool.to_string();
     loop {
         // Termination guard: a chain that cycles back to an already-walked pool (A→B→A) stops —
         // mirrors `handle_fallback_pool`'s `visited_pools` guard so the two cannot diverge.
-        if !visited.insert(current) {
+        if !visited.insert(current.clone()) {
             return None;
         }
-        let next = match app.engine_tables().on_exhausted_cfgs().get(current) {
-            Some(crate::config::OnExhausted::FallbackPool(fallback)) => fallback.as_str(),
-            // `Status503`, `LeastBad`, and `Queue` all stay within `current` (no new pool name is
-            // introduced — queue waits on this pool's own members then falls through to 503), and an
-            // unconfigured pool defaults to 503 — none can reach a different pool, so the walk ends
-            // here. Explicit arms, no `_ =>` catch-all.
-            Some(crate::config::OnExhausted::Status503)
-            | Some(crate::config::OnExhausted::LeastBad)
-            | Some(crate::config::OnExhausted::Queue { .. })
-            | None => return None,
+        // The FALLBACK-POOL target `current` fails over to, through the neutral read seam. `None` when
+        // its `on_exhausted:` policy is `Status503`/`LeastBad`/`Queue` (all stay within `current` — no
+        // new pool name) or the pool is unconfigured (defaults to 503) — the walk ends here.
+        let next = match view.on_exhausted_fallback(&current) {
+            Some(fallback) => fallback,
+            None => return None,
         };
         // Re-run the identical ACL gate against the fallback pool name before it could ever be
         // dispatched to. A 403 here is byte-for-byte the initial-pool 403.
-        if let Some(resp) = pool_authorized(gov, next, proto) {
+        if let Some(resp) = pool_authorized(gov, &next, proto) {
             return Some(resp);
         }
         current = next;
@@ -218,8 +215,12 @@ fn admit_check(
                 // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
                 // one guard clause that IS distinguishable). Kept as an explicit bound rather than
                 // removed: it's the backstop if the duplicate-free invariant is ever loosened.
-                && visited.len() < app.engine_tables().pools().len()
-                && app.engine_tables().pools().contains_key(&to)
+                && visited.len() < app.engine_tables_view().pools().len()
+                && app
+                    .engine_tables_view()
+                    .pools()
+                    .iter()
+                    .any(|(n, _)| *n == to.as_str())
                 && pool_authorized(gov, &to, proto).is_none()
                 && fallback_pools_authorized(app, gov, &to, proto).is_none() =>
             {
@@ -399,7 +400,12 @@ fn governance_guard(
 /// through `finish_rejected` (so it still emits REQUESTS_TOTAL / the duration histogram / the
 /// request-log webhook). The raw client-supplied `pool` is mapped to the bounded metric label BEFORE
 /// it reaches `finish` — passing it raw was an unbounded-cardinality DoS vector.
-fn destination_guard(
+// `pub` (was module-private): the LLM plane's `NativePlane::verify_destination` (relocated to
+// `busbar-llm`) calls DOWN into this neutral pre-admission gauntlet stage — the allowed plane→core
+// edge. Its `gov: &crate::governance::GovCtx` names the still-crate-private carrier, so the same
+// narrow `private_interfaces` allow `finish_admitted` carries keeps `GovCtx` `pub(crate)`.
+#[allow(private_interfaces)]
+pub fn destination_guard(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &'static str,
@@ -432,8 +438,11 @@ fn destination_guard(
     // single borrowed map probe otherwise.
     if gov.key.is_some()
         && app.cost.pricing_enabled()
-        && !app.engine_tables().pools().contains_key(pool)
-        && !app.engine_tables().by_model().contains_key(pool)
+        && {
+            // NEUTRAL read seam: the model names no configured pool AND no by-model lane.
+            let v = app.engine_tables_view();
+            !v.pools().iter().any(|(n, _)| *n == pool) && v.model_index(pool).is_none()
+        }
         && app.cost.model_unpriced(pool)
     {
         tracing::info!(model = %pool, "governance: no configured rate for model; rejecting (rate_card is authoritative and complete)");
@@ -456,7 +465,11 @@ fn destination_guard(
 /// charged → `finish_rejected` (no refund). On admission the returned grant reports whether the
 /// charge LANDED (`Some` = refund on non-2xx) and holds the `concurrent` in-flight gauges;
 /// `effective_pool` is `Some` when a budget `on_exhaust: downgrade` re-pooled the admission.
-fn admission_door(
+// `pub` (was module-private): the LLM plane's relocated `NativePlane::drive` calls DOWN into this
+// single budget-admission door — the allowed plane→core edge. Same `GovCtx` privacy allow as
+// `finish_admitted`/`destination_guard`.
+#[allow(private_interfaces)]
+pub fn admission_door(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &'static str,
@@ -485,10 +498,9 @@ fn admission_door(
 /// memory-exhaustion DoS that also bloats every `/metrics` scrape and leaks the attacker-chosen
 /// string into the request-log webhook. The label space is now bounded BY CONSTRUCTION:
 /// |configured pools| + |configured by-model lanes| + 1.
-fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
-    if app.engine_tables().pools().contains_key(model)
-        || app.engine_tables().by_model().contains_key(model)
-    {
+pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
+    let v = app.engine_tables_view();
+    if v.pools().iter().any(|(n, _)| *n == model) || v.model_index(model).is_some() {
         model
     } else {
         crate::proxy::POOL_LABEL_UNRESOLVED
@@ -941,7 +953,9 @@ pub(crate) use dispatch::operation_ingress;
 /// and used VERBATIM when present. `None` for every caller that shares the canonical OpenAI-style copy
 /// (the OpenAI/Responses/Cohere/Anthropic surfaces), so this fn names no dialect: core emits the
 /// neutral copy and a dialect that wants otherwise supplies its own shaped body.
-fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
+// `pub` (was module-private): the relocated LLM `NativePlane::drive` shapes its model-miss 404 body
+// through this neutral helper — the allowed plane→core edge (names only `&str`).
+pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
     match model_not_found_message {
         Some(shaped) => shaped.to_string(),
         None => format!("The model '{model}' does not exist or you do not have access to it."),
