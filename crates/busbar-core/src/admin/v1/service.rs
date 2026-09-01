@@ -607,7 +607,7 @@ pub(crate) fn build_with_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.pools.contains_key(p),
+        &|p| current.engine_tables().pools().contains_key(p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -690,7 +690,7 @@ pub(crate) fn build_without_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.pools.contains_key(p),
+        &|p| current.engine_tables().pools().contains_key(p),
         &mut errors,
     );
     if !errors.is_empty() {
@@ -871,8 +871,13 @@ impl AdminService {
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
-        let providers: std::collections::BTreeSet<&str> =
-            self.app.lanes.iter().map(|l| l.provider.as_str()).collect();
+        let providers: std::collections::BTreeSet<&str> = self
+            .app
+            .engine_tables()
+            .lanes()
+            .iter()
+            .map(|l| l.provider.as_str())
+            .collect();
 
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
@@ -884,8 +889,8 @@ impl AdminService {
             uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
             started_at: PROCESS_START_EPOCH.get().copied(),
             topology: TopologyInfo {
-                pools: self.app.pools.len(),
-                models: self.app.by_model.len(),
+                pools: self.app.engine_tables().pools().len(),
+                models: self.app.engine_tables().by_model().len(),
                 providers: providers.len(),
             },
             config_persistence: self.app.overlay_path.is_some(),
@@ -899,7 +904,8 @@ impl AdminService {
     pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
         let mut pools: Vec<PoolView> = self
             .app
-            .pools
+            .engine_tables()
+            .pools()
             .iter()
             .map(|(name, members)| PoolView {
                 name: name.clone(),
@@ -907,7 +913,7 @@ impl AdminService {
                     .iter()
                     .map(|m| PoolMemberView {
                         // `idx` is the stable lane handle; project the lane's model name.
-                        model: self.app.lanes[m.idx].model.clone(),
+                        model: self.app.engine_tables().lanes()[m.idx].model.clone(),
                         weight: m.weight,
                     })
                     .collect(),
@@ -923,7 +929,8 @@ impl AdminService {
     pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
         let members = self
             .app
-            .pools
+            .engine_tables()
+            .pools()
             .get(name)
             .ok_or_else(|| AdminError::not_found(format!("pool `{name}`")))?;
         Ok(self.pool_detail(name, members))
@@ -945,7 +952,7 @@ impl AdminService {
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
                 let snap = self.app.store.snapshot(m.idx, now);
                 PoolMemberStatusView {
-                    model: self.app.lanes[m.idx].model.clone(),
+                    model: self.app.engine_tables().lanes()[m.idx].model.clone(),
                     weight: m.weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the
@@ -979,7 +986,8 @@ impl AdminService {
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
         let mut pools: Vec<PoolDetailView> = self
             .app
-            .pools
+            .engine_tables()
+            .pools()
             .iter()
             .map(|(name, members)| self.pool_detail(name, members))
             .collect();
@@ -992,7 +1000,8 @@ impl AdminService {
     pub(crate) async fn list_models(&self) -> Result<Page<ModelView>, AdminError> {
         let mut models: Vec<ModelView> = self
             .app
-            .lanes
+            .engine_tables()
+            .lanes()
             .iter()
             .map(|l| ModelView {
                 model: l.model.clone(),
@@ -1007,7 +1016,7 @@ impl AdminService {
     /// through each. Read scope. Sorted by provider name.
     pub(crate) async fn list_providers(&self) -> Result<Page<ProviderView>, AdminError> {
         let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-        for lane in &self.app.lanes {
+        for lane in self.app.engine_tables().lanes() {
             *counts.entry(lane.provider.as_str()).or_insert(0) += 1;
         }
         let providers = counts

@@ -17,7 +17,7 @@
 //! ## THE ONE PATHWAY, which is the sentence this module must keep true
 //!
 //! A sampling ask IS an LLM request, so it rides the LLM request's own pipeline —
-//! [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion),
+//! [`EngineHost::synthesize_completion`](busbar_substrate::plane_host::EngineHost::synthesize_completion),
 //! the neutral host seam over the same resolved core every arriving chat request enters after its
 //! model is known. That buys, without a second implementation of any of them: the
 //! INBOUND caller's governance (the completion is admitted under the caller's key, charged on the
@@ -99,11 +99,13 @@ impl SamplingSpend {
 ///
 /// ## What each completion runs AS
 ///
-/// The entry's params are translated to one non-streaming chat request in the `openai` ingress
-/// dialect — the tree's lingua-franca wire shape, which every registered provider protocol has a
-/// translation from — and dispatched through the resolved ingress pipeline behind
-/// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion)
-/// under `gov`, the INBOUND caller's own governance context. Text content only, in this release: an image or
+/// The entry's params are translated to one non-streaming chat request in the tree's lingua-franca
+/// chat wire shape — which every registered provider protocol has a translation from — and dispatched
+/// through the resolved ingress pipeline behind
+/// [`EngineHost::synthesize_completion`](busbar_substrate::plane_host::EngineHost::synthesize_completion)
+/// under `gov`, the INBOUND caller's own governance context. The host resolves which chat dialect the
+/// request drives as (the registry's residual-default), so this bridge names none. Text content only,
+/// in this release: an image or
 /// audio block in the ask is refused rather than silently dropped, because a completion computed
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
@@ -275,12 +277,13 @@ async fn complete(
 ) -> Result<serde_json::Value, String> {
     let bytes = axum::body::Bytes::from(serde_json::to_vec(&body).map_err(|e| e.to_string())?);
     // THE ONE PATHWAY, reached through the neutral host seam: the completion rides the same resolved
-    // ingress pipeline (`operation_resolved` with the `openai` chat handler) every arriving chat
-    // request enters, under `gov`, on the operator's declared model — governance, breaker/failover,
-    // metering and the request log, byte-identically to the in-core dispatch. The raw wire outcome
-    // (status + body bytes) comes back; the MCP-protocol translation below stays plane-side.
+    // ingress pipeline (`operation_resolved` with the residual-default chat handler the host resolves)
+    // every arriving chat request enters, under `gov`, on the operator's declared model — governance,
+    // breaker/failover, metering and the request log, byte-identically to the in-core dispatch. The
+    // raw wire outcome (status + body bytes) comes back; the MCP-protocol translation below stays
+    // plane-side. This bridge names NO LLM dialect — the host owns which chat protocol drives.
     let completion = host
-        .drive_openai_completion(gov, &cfg.model, bytes, MAX_COMPLETION_BYTES)
+        .synthesize_completion(gov, &cfg.model, bytes, MAX_COMPLETION_BYTES)
         .await?;
     let status = completion.status;
     let body = completion.body;

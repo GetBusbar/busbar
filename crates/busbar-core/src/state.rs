@@ -247,7 +247,7 @@ impl UpstreamClients {
     /// pool of its own and shard selection is a direct index by worker id. Unset (tests, embedded
     /// uses that never call `set_data_workers`) falls back to the machine-derived
     /// `min(cores, 16).next_power_of_two()` the pre-topology sharding used.
-    pub(crate) fn shard_count() -> usize {
+    pub fn shard_count() -> usize {
         match DATA_WORKERS.get() {
             Some(&n) => n,
             None => {
@@ -274,7 +274,7 @@ impl UpstreamClients {
 
     /// Build N shards from a builder factory (each shard is an IDENTICAL client; reqwest clients
     /// cannot be cloned into independent pools, so the builder runs once per shard).
-    pub(crate) fn build(count: usize, mut make: impl FnMut() -> Client) -> Self {
+    pub fn build(count: usize, mut make: impl FnMut() -> Client) -> Self {
         let shards: Arc<[Client]> = (0..count.max(1)).map(|_| make()).collect();
         UpstreamClients { shards }
     }
@@ -431,7 +431,16 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    pub(crate) lanes: Vec<Lane>,
+    /// THE LLM DATA-PLANE RUNTIME'S SLOT KEY — the interned `runtime_slot_key(<llm plane key>)` under
+    /// which THIS config generation's [`NativeRuntime`] rides in [`App::plane_slots`], the same opaque
+    /// slot MCP/A2A already carry their runtimes in (R3/R4 sub-phase B — the LLM runtime moved off the
+    /// flat `llm_runtime` field it was bundled into by sub-phase A). Resolved ONCE at build
+    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables`] →
+    /// [`App::llm_runtime`]) is a single cheap `plane_slots` lookup + ONE downcast, never the interning
+    /// `runtime_slot_key` call. An ABSENT slot — the featureless binary boots with no LLM plane, so
+    /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
+    /// flat field encoded), never a panic. Neutral: names no dialect.
+    pub(crate) llm_runtime_key: &'static str,
     pub(crate) store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
@@ -475,23 +484,6 @@ pub struct App {
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     >,
-    /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
-    /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
-    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
-    pub(crate) by_model: HashMap<String, usize>,
-    /// Pool members, each carrying a lane index and its configured weight.
-    pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
-    /// The ALL-POOLS `upstream_credentials:` default — see [`App::upstream_creds`].
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
-    /// Does ANY pool set its own `upstream_credentials:` override? Resolved ONCE at config apply
-    /// (`false` for the overwhelmingly common config where no pool overrides — the all-pools default
-    /// governs everywhere). It exists so [`App::pool_upstream_creds`] can restore the pre-1.5.3
-    /// per-request `Copy` read: when this is `false`, the accessor returns `upstream_credentials`
-    /// directly and skips the `pool_runtime` String-keyed (SipHash) HashMap probe entirely. The
-    /// probe only ever runs when an override actually exists, so the fast path is provably behavior-
-    /// identical to the full lookup (no pool has a `Some(_)` to find).
-    pub(crate) any_pool_upstream_creds_override: bool,
-    pub client: UpstreamClients,
     /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
     /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
@@ -776,18 +768,6 @@ pub struct App {
     /// `0` = unlimited (default). Carried on the snapshot for the same reason as
     /// `max_keys_per_principal`.
     pub(crate) max_auto_provisioned_groups: usize,
-    /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
-    pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
-    /// Per-pool runtime config (failover/exclusions today; breaker/affinity as they're wired).
-    pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
-    /// Fallback pools mapping (pool name -> WeightedLane vec) for fallback mode.
-    pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
-    /// OnExhausted config per pool name.
-    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
-    /// Live per-pool `on_exhausted: queue` park depth — the source behind `busbar_pool_queued`.
-    /// Arc-shared across config swaps so an in-flight parked request and a scrape agree (see
-    /// [`QueuedDepth`]).
-    pub(crate) queued_depth: Arc<QueuedDepth>,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub governance: Option<std::sync::Arc<crate::governance::GovState>>,
     /// The SECRET RESOLVER seam: resolves a config [`crate::config::SecretRef`] to bytes via
@@ -866,6 +846,280 @@ pub struct App {
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
+/// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App` fields,
+/// now ONE bundle built once per config apply ([`crate::appbuild`]) and carried on the snapshot in the
+/// opaque plane slot ([`App::plane_slots`]) under `runtime_slot_key(<llm plane key>)`, reached through
+/// the [`App::llm_runtime`] downcast (R3/R4 sub-phase B). Grouping them was sub-phase A's payoff (core
+/// carries no LLM-shaped FLAT state); sub-phase B then moved the bundle off its typed field into the
+/// SAME type-erased slot every other plane's runtime already rides, so `App` names one `&'static str`
+/// key ([`App::llm_runtime_key`]) instead of this type. `cost` deliberately stays OUTSIDE this (it is
+/// NEUTRAL — MCP/A2A meter through it too). Still `Clone` (Phase 3 relocates the type to `busbar-llm`;
+/// today the apply-path `build_runtime` seam clones the freshly-lowered bundle into the shared slot).
+/// Neutral: names no dialect, adds no LLM type to core (the freeze witness stays 0).
+#[derive(Clone)]
+pub(crate) struct NativeRuntime {
+    pub(crate) lanes: Vec<Lane>,
+    pub(crate) by_model: HashMap<String, usize>,
+    pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
+    pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
+    pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
+    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
+    pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
+    pub(crate) queued_depth: Arc<QueuedDepth>,
+    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
+    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
+    pub(crate) any_pool_upstream_creds_override: bool,
+    pub(crate) client: UpstreamClients,
+}
+
+impl NativeRuntime {
+    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
+    /// Moved verbatim from `App::upstream_creds`.
+    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+        self.upstream_credentials
+    }
+
+    /// The upstream-credential mode in force for `pool` — the pool's own `upstream_credentials:` when
+    /// it sets one, else the all-pools default. SCALAR override. Moved verbatim from
+    /// `App::pool_upstream_creds` (same fast path, same SipHash-probe skip when no override exists).
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        if !self.any_pool_upstream_creds_override {
+            return self.upstream_credentials;
+        }
+        self.pool_runtime
+            .get(pool)
+            .and_then(|rt| rt.upstream_credentials)
+            .unwrap_or(self.upstream_credentials)
+    }
+}
+
+/// NEUTRAL READ-SIDE PROJECTION of this runtime's routing tables for the core-resident scrape/
+/// discovery readers (1.6.0 money-path Phase 3-4 B). `NativeRuntime` is still a core type this commit
+/// (the pivot relocates it to `busbar-llm`); implementing the substrate trait now lets `/metrics`, the
+/// `/v1/models` listing, and the telemetry label bank read these tables through neutral projections —
+/// naming no `Lane`/`WeightedLane` — so they need not move when the tables do. Every projection is a
+/// cold/scrape-path read that may allocate; the hot engine path never touches this seam (it reads the
+/// concrete fields directly).
+impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
+    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
+        self.pools
+            .iter()
+            .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+            .collect()
+    }
+    fn model_indices(&self) -> Vec<(&str, usize)> {
+        self.by_model
+            .iter()
+            .map(|(m, &idx)| (m.as_str(), idx))
+            .collect()
+    }
+    fn model_index(&self, model: &str) -> Option<usize> {
+        self.by_model.get(model).copied()
+    }
+    fn lane_view(&self, idx: usize) -> Option<busbar_substrate::plane_host::LaneView<'_>> {
+        self.lanes
+            .get(idx)
+            .map(|lane| busbar_substrate::plane_host::LaneView {
+                model: &lane.model,
+                provider: &lane.provider,
+                base_url: &lane.base_url,
+            })
+    }
+    fn queued_depth(&self, pool: &str) -> u64 {
+        self.queued_depth.depth(pool)
+    }
+}
+
+/// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
+/// every plane's runtime rides — the constructor `appbuild` calls to seed
+/// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
+/// flat `App::llm_runtime` field). The `PlaneDecl::build_runtime` fn pointer the sibling planes carry
+/// stays `None` for THIS plane this phase — the plane crate that owns the decl (`busbar-llm`) may not
+/// name a `busbar_core::` item, and [`NativeRuntime`] is still a core type — so `appbuild` calls this
+/// core-local constructor by name instead. Phase 3 relocates `NativeRuntime` to `busbar-llm`, at which
+/// point this becomes the plane's own `build_runtime` and the decl carries the pointer like MCP.
+pub(crate) fn compose_native_runtime_slot(
+    rt: NativeRuntime,
+) -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(rt)
+}
+
+/// THE PROCESS-LIFETIME EMPTY LLM RUNTIME the money-path read ([`App::llm_runtime`]) falls back to when
+/// no LLM plane contributed a slot — the featureless zero-plane binary, whose `appbuild` inserted none.
+/// Zero lanes, zero pools, a single default egress shard that is never dialled (nothing routes without a
+/// lane). Built once, lazily, and ONLY if such a build actually reads `engine_tables()` (a boot
+/// health/metrics/telemetry probe); a normal LLM-planed boot always finds its slot and never touches
+/// this. Replicates the emptiness the always-present-but-empty flat `llm_runtime` field used to carry,
+/// so the field→slot move stays byte-identical for the zero-plane case — an empty read, never a panic.
+fn empty_native_runtime() -> &'static NativeRuntime {
+    static EMPTY: std::sync::OnceLock<NativeRuntime> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| NativeRuntime {
+        lanes: Vec::new(),
+        by_model: HashMap::new(),
+        pools: HashMap::new(),
+        pool_runtime: HashMap::new(),
+        fallback_pools: HashMap::new(),
+        on_exhausted_cfgs: std::collections::HashMap::new(),
+        failover_cfg: None,
+        queued_depth: Arc::new(QueuedDepth::default()),
+        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
+        upstream_credentials: crate::auth::UpstreamCreds::default(),
+        any_pool_upstream_creds_override: false,
+        client: UpstreamClients::build(1, || {
+            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+                4, 300, false, false,
+            ))
+        }),
+    })
+}
+
+/// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface (R3/R4 sub-phase A, LOCKED §7
+/// "wire the seam in place"). A zero-cost newtype over `&NativeRuntime`, so every read through it is
+/// byte-identical to reading the bundle directly. It exists so the engine and the model-plane readers
+/// reach the pool/lane/failover tables through ONE named seam — the seam whose SOURCE sub-phase B
+/// flipped from the flat `App::llm_runtime` field to the LLM plane's opaque `plane_slot` (downcast ONCE
+/// per [`App::engine_tables`] call), WITHOUT touching a single reader.
+#[derive(Clone, Copy)]
+pub(crate) struct EngineTables<'a> {
+    rt: &'a NativeRuntime,
+}
+
+impl<'a> EngineTables<'a> {
+    /// The pool table — each pool name to its weighted lane members.
+    pub(crate) fn pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
+        &self.rt.pools
+    }
+
+    /// The direct-model index — a model name to its lane position.
+    pub(crate) fn by_model(&self) -> &'a HashMap<String, usize> {
+        &self.rt.by_model
+    }
+
+    /// The lane table — each resolved upstream (model, provider, dialect, credential, egress target).
+    pub(crate) fn lanes(&self) -> &'a [Lane] {
+        &self.rt.lanes
+    }
+
+    /// The global default failover config (the fallback for pools that set none), if configured.
+    /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
+    pub(crate) fn failover_cfg(&self) -> &'a Option<crate::config::FailoverCfg> {
+        &self.rt.failover_cfg
+    }
+
+    /// Per-pool runtime (resolved members / per-pool `upstream_credentials:` override state).
+    pub(crate) fn pool_runtime(&self) -> &'a HashMap<String, PoolRuntime> {
+        &self.rt.pool_runtime
+    }
+
+    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
+    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+        self.rt.upstream_creds()
+    }
+
+    /// The upstream-credential mode for `pool` — its own `upstream_credentials:` override, else the
+    /// all-pools default (the scalar combine rule).
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        self.rt.pool_upstream_creds(pool)
+    }
+
+    /// The fallback-pool routing table — a pool's `on_exhausted = fallback_pool:<name>` target set.
+    pub(crate) fn fallback_pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
+        &self.rt.fallback_pools
+    }
+
+    /// The per-pool queue-depth gauge (the `on_exhausted = queue` waiter park counter).
+    pub(crate) fn queued_depth(&self) -> &'a std::sync::Arc<QueuedDepth> {
+        &self.rt.queued_depth
+    }
+
+    /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
+    pub(crate) fn on_exhausted_cfgs(
+        &self,
+    ) -> &'a std::collections::HashMap<String, crate::config::OnExhausted> {
+        &self.rt.on_exhausted_cfgs
+    }
+
+    /// The health-probe schedule shared across snapshots of this lineage.
+    pub(crate) fn probe_schedule(&self) -> &'a std::sync::Arc<crate::health::ProbeSchedule> {
+        &self.rt.probe_schedule
+    }
+
+    /// The shared upstream HTTP client pool (the LLM egress transport).
+    pub(crate) fn client(&self) -> &'a UpstreamClients {
+        &self.rt.client
+    }
+}
+
+impl App {
+    /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam. A
+    /// zero-cost newtype over [`App::llm_runtime`] — sub-phase B re-sourced it from the flat
+    /// `llm_runtime` field to the LLM plane's opaque runtime slot, so this is ONE `plane_slots` lookup +
+    /// ONE downcast per call, then plain field reads through the returned borrow.
+    pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
+        EngineTables {
+            rt: self.llm_runtime(),
+        }
+    }
+
+    /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
+    /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
+    /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not relocate when the
+    /// tables move into `busbar-llm` (1.6.0 money-path Phase 3-4 B). This commit still SOURCES the view
+    /// by downcasting the in-core `NativeRuntime` slot (the pivot swaps this for the plane's viewer
+    /// fn-pointer); an ABSENT slot — the featureless zero-plane boot — yields the substrate-resident
+    /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (zero pools/models), so a scrape or
+    /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
+    /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
+    pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+        match self
+            .plane_slot(self.llm_runtime_key)
+            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+        {
+            Some(rt) => rt,
+            None => &busbar_substrate::plane_host::EMPTY_VIEW,
+        }
+    }
+
+    /// THIS SNAPSHOT'S LLM DATA-PLANE RUNTIME, read through the opaque plane slot (R3/R4 sub-phase B).
+    /// ONE `plane_slots` lookup by the pre-interned [`llm_runtime_key`](Self::llm_runtime_key) + ONE
+    /// downcast; the returned borrow is then plain-field-read (by [`EngineTables`] and the peripheral
+    /// LLM readers). When the slot is ABSENT — the featureless binary boots with no LLM plane, so
+    /// `appbuild` inserted none — this yields the process-lifetime EMPTY default (zero lanes/pools), the
+    /// byte-identical successor to the always-present-but-empty flat field the zero-plane build carried.
+    /// Never panics on absence: a boot health/metrics/telemetry probe sees empty tables and does nothing.
+    pub(crate) fn llm_runtime(&self) -> &NativeRuntime {
+        match self
+            .plane_slot(self.llm_runtime_key)
+            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+        {
+            Some(rt) => rt,
+            None => empty_native_runtime(),
+        }
+    }
+
+    /// TEST-ONLY in-place mutable access to this snapshot's LLM runtime — the successor to the deleted
+    /// flat `llm_runtime` field's `&mut` for the fixtures that build an `App`, take sole `Arc` ownership
+    /// and then poke a lane/pool into its tables before asserting. Downcasts the UNIQUELY-OWNED plane
+    /// slot back to `NativeRuntime`; panics if the slot is absent or shared (a mutating fixture always
+    /// holds it alone). Production never mutates the runtime in place post-build — `appbuild` rebuilds a
+    /// fresh bundle every apply — so this stays test-gated. Read only by core's own `cfg(test)`
+    /// fixtures; a `test-support`-only lib build (the plane suites' dependency-copy) links it unused,
+    /// so it is allowed dead there exactly as the MCP plane's `&App`-typed test reads are.
+    #[cfg(any(test, feature = "test-support"))]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
+        let key = self.llm_runtime_key;
+        Arc::get_mut(
+            self.plane_slots
+                .get_mut(key)
+                .expect("fallback-plane runtime slot present for in-place test mutation"),
+        )
+        .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
+        .downcast_mut::<NativeRuntime>()
+        .expect("fallback-plane runtime slot is a NativeRuntime")
+    }
+}
+
 impl App {
     /// The ALL-POOLS UPSTREAM-credential DEFAULT — whether the egress path signs with busbar's
     /// configured lane key (`Own`) or forwards the caller's credential (`Passthrough`). Resolved once
@@ -876,25 +1130,7 @@ impl App {
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.upstream_credentials
-    }
-
-    /// The UPSTREAM-credential mode in force for `pool`: the pool's own `upstream_credentials:` when
-    /// it sets one, else the all-pools default ([`App::upstream_creds`]). SCALAR override, never a
-    /// union — the pool's value REPLACES the inherited one. An empty/unknown pool name
-    /// (the direct-model and degraded ad-hoc routes) falls back to the default.
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
-        // Fast path (the norm): no pool overrides `upstream_credentials:`, so the all-pools default
-        // governs every pool — return it with a `Copy` read and skip the String-keyed `pool_runtime`
-        // SipHash probe. Behavior-identical: with no override present, the full lookup below could
-        // only ever fall through to `self.upstream_credentials` anyway.
-        if !self.any_pool_upstream_creds_override {
-            return self.upstream_credentials;
-        }
-        self.pool_runtime
-            .get(pool)
-            .and_then(|rt| rt.upstream_credentials)
-            .unwrap_or(self.upstream_credentials)
+        self.llm_runtime().upstream_creds()
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no
@@ -960,6 +1196,65 @@ impl App {
         crate::hooks::resolve_container_gates(
             containers,
             section_hooks,
+            &self.hook_registry,
+            &self.hook_env,
+            self.config_version,
+        )
+    }
+
+    /// Resolve a POOL's base ordering against THIS snapshot's hook registry, env and config version —
+    /// the core-side of the LLM plane's per-pool base-ordering resolution. The MONEY-PATH twin of
+    /// [`App::resolve_container_gates`]: the extracted LLM plane hands the neutral `(&PoolCfg,
+    /// default_hook)` inputs across and gets back the resolved policy to store in busbar-llm's
+    /// `PoolRuntime`, so the plane names no `crate::hooks::resolve_pool_ordering` and never constructs
+    /// a `HookEnv`. Byte-identical to `appbuild`'s build-time `hooks::resolve_pool_ordering` pass
+    /// (`self.hook_registry` == the built `cfg.hooks`, `self.hook_env` == the built env,
+    /// `self.config_version` == the build's `app_config_version`).
+    // Called only from the extracted LLM plane's pool lowering (Commit C); with the plane compiled out
+    // it has no caller, exactly like the `crate::hooks::resolve_pool_ordering` it wraps.
+    #[allow(dead_code)]
+    pub fn resolve_pool_ordering(
+        &self,
+        cfg: &crate::config::PoolCfg,
+        default_hook: Option<&str>,
+    ) -> Option<crate::hooks::ResolvedPolicy> {
+        crate::hooks::resolve_pool_ordering(
+            cfg,
+            &self.hook_registry,
+            &self.hook_env,
+            default_hook,
+            self.config_version,
+        )
+    }
+
+    /// Resolve a POOL's decision GATES against THIS snapshot — the money-path twin of
+    /// [`App::resolve_container_gates`] for the priority-carrying phase-2 gate chain. Byte-identical to
+    /// `appbuild`'s `hooks::resolve_pool_gates` pass; the plane stores the returned rank in busbar-llm's
+    /// `PoolRuntime` without naming `crate::hooks::resolve_pool_gates` or building a `HookEnv`.
+    #[allow(dead_code)]
+    pub fn resolve_pool_gates(
+        &self,
+        cfg: &crate::config::PoolCfg,
+    ) -> Vec<(u16, crate::hooks::ResolvedPolicy)> {
+        crate::hooks::resolve_pool_gates(
+            cfg,
+            &self.hook_registry,
+            &self.hook_env,
+            self.config_version,
+        )
+    }
+
+    /// Resolve a POOL's phase-1 REWRITE gates against THIS snapshot — the money-path twin of
+    /// [`App::resolve_container_gates`] for the pool rewrite chain. Byte-identical to `appbuild`'s
+    /// `hooks::resolve_pool_rewrites` pass; the plane stores the returned chain in busbar-llm's
+    /// `PoolRuntime` without naming `crate::hooks::resolve_pool_rewrites` or building a `HookEnv`.
+    #[allow(dead_code)]
+    pub fn resolve_pool_rewrites(
+        &self,
+        cfg: &crate::config::PoolCfg,
+    ) -> Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)> {
+        crate::hooks::resolve_pool_rewrites(
+            cfg,
             &self.hook_registry,
             &self.hook_env,
             self.config_version,

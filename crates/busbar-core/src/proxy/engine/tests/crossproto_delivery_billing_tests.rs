@@ -139,7 +139,8 @@ async fn drive(op: crate::handlers::Op, ingress: &'static str, body: Vec<u8>) ->
                 axum::http::HeaderMap::new(),
                 bytes::Bytes::new(),
             );
-            app.client
+            app.engine_tables()
+                .client()
                 .get()
                 .request(req)
                 .await

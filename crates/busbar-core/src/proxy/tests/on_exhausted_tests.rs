@@ -1025,11 +1025,11 @@ fn spawn_request(
 /// the queue park point. Panics if the depth is not reached within the bound.
 async fn wait_until_queued(app: &std::sync::Arc<crate::state::App>, pool: &str, min_depth: u64) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while app.queued_depth.depth(pool) < min_depth {
+    while app.engine_tables().queued_depth().depth(pool) < min_depth {
         assert!(
             tokio::time::Instant::now() < deadline,
             "timed out waiting for queue depth >= {min_depth} on pool {pool} (got {})",
-            app.queued_depth.depth(pool)
+            app.engine_tables().queued_depth().depth(pool)
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -1056,7 +1056,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
     // Poll until the request has actually PARKED in the queue (not a fixed sleep — flaky under CI load).
     wait_until_queued(&app, "p", 1).await;
     assert!(
-        app.queued_depth.depth("p") >= 1,
+        app.engine_tables().queued_depth().depth("p") >= 1,
         "the request must be parked in the queue (busbar_pool_queued source > 0 during the wait)"
     );
     // Free the permit — the queued waiter acquires it and dispatches on the freed lane.
@@ -1077,7 +1077,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         "the freed lane served the queued request"
     );
     assert_eq!(
-        app.queued_depth.depth("p"),
+        app.engine_tables().queued_depth().depth("p"),
         0,
         "the park depth returns to 0 after dispatch (RAII guard dropped)"
     );
@@ -1350,7 +1350,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
         "the survivor serializes through the one freed permit to a valid outcome; got {statuses:?}"
     );
     assert_eq!(
-        app.queued_depth.depth("p"),
+        app.engine_tables().queued_depth().depth("p"),
         0,
         "park depth returns to 0 after both waiters resolve"
     );
@@ -1408,7 +1408,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
         "the wait is bounded by max_ms (300ms), not the 300s failover budget; waited {elapsed:?}"
     );
     assert_eq!(
-        app.queued_depth.depth("p"),
+        app.engine_tables().queued_depth().depth("p"),
         0,
         "depth returns to 0 after the timeout"
     );

@@ -85,7 +85,7 @@ fn plane_identity_strings_never_collide_across_planes() {
 /// THE SUPERSET-IR RULE, computed rather than asserted per plane: a plane earns a superset IR when
 /// it has TWO wire formats to translate between, and not before.
 ///
-/// This is the whole content of `plane-layering.md`. Writing it as `matches!(key, RESIDUAL_KEY)`
+/// This is the whole content of `plane-layering.md`. Writing it as `matches!(key, FALLBACK_KEY)`
 /// would make it a fact about today's planes; writing it as the COUNT makes it a rule, so the day a
 /// second dialect lands on some plane, that plane earns an IR and this test is what says so.
 #[test]
@@ -153,18 +153,18 @@ fn transports_do_not_count_as_wire_formats() {
 
 // ── plane DISPATCH ───────────────────────────────────────────────────────────────────────────────
 
-/// The plane a path resolves to, the residual included. Built here, over the ONE resolver, so the
+/// The plane a path resolves to, the fallback included. Built here, over the ONE resolver, so the
 /// dispatch table below still reads as "path → plane" while every assertion in it exercises
 /// `ingress_of` — the merged resolver is what production reads, and a test helper that read
 /// anything else would be pinning a second answer.
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
-        Ingress::Residual(_) => residual_key(),
+        Ingress::Fallback(_) => fallback_key(),
     }
 }
 
-/// With no plane mounted, everything is LLM: the LLM ingress is the residual, exactly as the
+/// With no plane mounted, everything is LLM: the LLM ingress is the fallback, exactly as the
 /// protocol catch-all is today.
 #[test]
 fn with_nothing_mounted_every_path_is_the_llm_plane() {
@@ -232,17 +232,17 @@ fn a_mount_is_normalised_before_it_is_matched() {
     }
 }
 
-/// The LLM plane cannot be mounted: it IS the residual. Letting an operator mount it would create
+/// The LLM plane cannot be mounted: it IS the fallback. Letting an operator mount it would create
 /// two ways to reach the same plane and a precedence question with no good answer.
 #[test]
 fn the_llm_plane_cannot_be_mounted() {
-    let d = PlaneDispatch::default().mount(residual_key(), "/llm", WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(fallback_key(), "/llm", WIRE_JSONRPC);
     assert_eq!(
         plane_of(&d, "/llm"),
         "llm",
-        "it is the residual anyway, so the mount is a no-op rather than a second door"
+        "it is the fallback anyway, so the mount is a no-op rather than a second door"
     );
-    assert_eq!(d.mount_of(residual_key()), None);
+    assert_eq!(d.mount_of(fallback_key()), None);
 }
 
 /// A plane's mount is readable back, which is what lets the router mount the right handler and what
@@ -292,7 +292,7 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
             "{p:?} claims no wire format at all, which is not a plane"
         );
     }
-    // The residual is the plane with no door at all, so it is the one plane no claim can label —
+    // The fallback is the plane with no door at all, so it is the one plane no claim can label —
     // which is why `observe` needs no plane comparison to skip it.
     assert_eq!(sole_wire_format("llm"), None);
     assert_eq!(sole_wire_format("mcp"), Some("jsonrpc"));
@@ -380,7 +380,7 @@ fn a_claim_only_names_a_wire_format_its_plane_speaks() {
 /// absent one is what it is written for.
 #[test]
 fn every_mounted_planes_door_dialect_is_jsonrpc() {
-    for p in plane_keys().filter(|p| *p != residual_key()) {
+    for p in plane_keys().filter(|p| *p != fallback_key()) {
         assert_eq!(
             Ingress::Mounted(p).shaping_wire_format(),
             Some(WIRE_JSONRPC),
@@ -406,7 +406,7 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
 
 /// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE first, the path shape
 /// only for what is left over. `/v1/chat/completions` names a dialect by shape and is still
-/// residual; `/mcp` names none and is nevertheless claimed, because the operator mounted it.
+/// fallback; `/mcp` names none and is nevertheless claimed, because the operator mounted it.
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
     let d = PlaneDispatch::default().mount("mcp", "/mcp", WIRE_JSONRPC);
@@ -414,16 +414,16 @@ fn the_mount_table_is_read_before_the_path_shape() {
     assert_eq!(d.ingress_of("/mcp/tools/list"), Ingress::Mounted("mcp"));
     assert_eq!(
         d.ingress_of("/v1/chat/completions"),
-        Ingress::Residual(Some("openai"))
+        Ingress::Fallback(Some("openai"))
     );
-    // The sibling: not the plane, and therefore resolved by shape like any other residual path.
-    assert_eq!(d.ingress_of("/mcpx"), Ingress::Residual(None));
+    // The sibling: not the plane, and therefore resolved by shape like any other fallback path.
+    assert_eq!(d.ingress_of("/mcpx"), Ingress::Fallback(None));
     // Nothing mounted there, so the path shape is all there is — and it names nothing.
-    assert_eq!(d.ingress_of("/a2a"), Ingress::Residual(None));
+    assert_eq!(d.ingress_of("/a2a"), Ingress::Fallback(None));
 }
 
 /// A MOUNT CANNOT BE INFERRED FROM A URL. The same path, on a deployment that mounted nothing, is
-/// an ordinary residual path — so the merge cannot have turned an unmounted plane into one that
+/// an ordinary fallback path — so the merge cannot have turned an unmounted plane into one that
 /// claims paths by name.
 #[test]
 fn an_unmounted_plane_is_never_resolved_from_the_path() {
@@ -431,7 +431,7 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
     for path in ["/mcp", "/mcp/tools/list", "/a2a", "/a2a/tasks/send"] {
         assert_eq!(
             d.ingress_of(path),
-            Ingress::Residual(None),
+            Ingress::Fallback(None),
             "{path} on a deployment with no plane mounted"
         );
     }
@@ -460,7 +460,7 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     );
 }
 
-/// `mounted_plane_of` distinguishes the residual from a mounted plane, and agrees with the
+/// `mounted_plane_of` distinguishes the fallback from a mounted plane, and agrees with the
 /// resolver everywhere else — the two must never be able to name different planes for one path.
 #[test]
 fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
@@ -478,13 +478,13 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
         "/",
     ] {
         assert_eq!(
-            d.mounted_plane_of(path).unwrap_or(residual_key()),
+            d.mounted_plane_of(path).unwrap_or(fallback_key()),
             plane_of(&d, path),
             "the two readings disagree about {path}"
         );
     }
-    // The residual is `None`, which is what keeps the ingress boundary off the model plane without
-    // a plane comparison. `/mcpx` is residual too: a sibling path inherits neither the plane's
+    // The fallback is `None`, which is what keeps the ingress boundary off the model plane without
+    // a plane comparison. `/mcpx` is fallback too: a sibling path inherits neither the plane's
     // grants nor its metrics.
     assert_eq!(d.mounted_plane_of("/v1/chat/completions"), None);
     assert_eq!(d.mounted_plane_of("/mcpx"), None);
@@ -537,7 +537,7 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
 /// `sole_wire_format()` and `has_superset_ir()` have NO production consumer at all (they are read
 /// by these tests and cited in `transport.rs` / `ingress` / `plane::observe` prose); the production
 /// readers of `wire_format_names()` are `a2a::serve::servable_bindings` (the A2A plane's own list)
-/// and `Ingress::shaping_wire_format` (`Ingress::Mounted` only — and the LLM plane is the RESIDUAL,
+/// and `Ingress::shaping_wire_format` (`Ingress::Mounted` only — and the LLM plane is the FALLBACK,
 /// never mounted). So an empty LLM list cannot produce a wrong answer on any request path today:
 /// the hazard here is a rule going quietly vacuous, not a live fail-open. It is pinned rather than
 /// fixed because `None`/`false` are the right answers for a plane with no dialect.

@@ -154,10 +154,10 @@ pub(crate) async fn read_capped_token_response(
 /// provider's and global `allow_metadata_hosts` carve-outs, the nuclear `allow_all_metadata`, and the
 /// operator's extra `blocked_metadata_hosts`. Without threading these, a token endpoint an operator
 /// deliberately allow-listed passes `--validate` but dies at boot — the reverse of the safety guarantee.
-pub(crate) struct MetadataSsrfPolicy<'a> {
-    pub(crate) allow_overrides: &'a [String],
-    pub(crate) allow_all: bool,
-    pub(crate) blocked_hosts: &'a [String],
+pub struct MetadataSsrfPolicy<'a> {
+    pub allow_overrides: &'a [String],
+    pub allow_all: bool,
+    pub blocked_hosts: &'a [String],
 }
 
 /// Produces the outbound auth headers for a single upstream request.
@@ -166,7 +166,7 @@ pub(crate) struct MetadataSsrfPolicy<'a> {
 /// [`crate::auth::UpstreamCreds::Own`], or the forwarded caller token for `Passthrough`. A
 /// self-minting credential (e.g. a future OAuth token provider) ignores `key`. `ctx` carries the
 /// host / canonical-uri / body / timestamp a signer needs, plus the `Own | Passthrough` mode.
-pub(crate) trait CredentialProvider: Send + Sync {
+pub trait CredentialProvider: Send + Sync {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)>;
 
     /// Whether this credential can currently produce a usable auth header. Static credentials
@@ -192,7 +192,7 @@ pub(crate) trait CredentialProvider: Send + Sync {
 
 /// Resolve a lane's egress credential at boot from its protocol name and auth style.
 /// `auth: api-key` overrides the protocol's native scheme.
-pub(crate) fn resolve(
+pub fn resolve(
     protocol_name: &str,
     auth: Option<crate::config::ProviderAuth>,
 ) -> Arc<dyn CredentialProvider> {
@@ -307,7 +307,7 @@ mod helper_tests;
 /// so the map a request clones is byte-identical to what it would have built live; the context's
 /// request-varying fields are inert by definition of [`CredentialProvider::is_lane_constant`]
 /// (a `false` there is exactly "this credential reads them", and such a credential never gets here).
-pub(crate) fn prebuild_auth(
+pub fn prebuild_auth(
     credential: &Arc<dyn CredentialProvider>,
     api_key: &str,
     signing_host: &str,

@@ -294,7 +294,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             .provider("zai"),
         )
         .build();
-    let lane = lane_app.lanes[0].clone();
+    let lane = lane_app.engine_tables().lanes()[0].clone();
 
     // A buffered completion carrying 600 input + 400 output = 1000 tokens, sourced from IrUsage
     // (Billing reads the IR usage the egress reader decoded, not a byte-scan).
@@ -379,7 +379,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
             .provider("zai"),
         )
         .build();
-    let lane = lane_app.lanes[0].clone();
+    let lane = lane_app.engine_tables().lanes()[0].clone();
 
     // input_tokens + output_tokens overflows u64: u64::MAX + 5 would panic under an unchecked `+`.
     let usage = TokenUsage {
@@ -486,7 +486,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
             .upstream_model("glm-4.6"),
         )
         .build();
-    let lane = lane_app.lanes[0].clone();
+    let lane = lane_app.engine_tables().lanes()[0].clone();
     assert_ne!(
         lane.wire_model(),
         lane.model,

@@ -59,6 +59,9 @@ impl ArrivalCtx {
 pub trait ArrivalHost: Send + Sync {
     /// THE SHARED PATH-MODEL CORE (`crate::ingress::ingress_path_model`): inject the URL-derived
     /// `model` + route `stream` intent into the body and run the universal resolution + forward.
+    /// `model_not_found_message` is the dialect's PRE-SHAPED model-not-found body in its own native
+    /// vocabulary, used verbatim by core on a model miss — the dialect that owns the request builds it
+    /// (so core names no dialect); `None` shares the neutral OpenAI-style copy.
     #[allow(clippy::too_many_arguments)]
     fn ingress_path_model(
         &self,
@@ -70,7 +73,7 @@ pub trait ArrivalHost: Send + Sync {
         stream: bool,
         gemini_json_array: bool,
         proto: &'static str,
-        gemini_api_version: Option<String>,
+        model_not_found_message: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
 
     /// THE UNIVERSAL BODY-MODEL/RESOLVED-OP INGRESS (`crate::ingress::dispatch::operation_ingress`) —

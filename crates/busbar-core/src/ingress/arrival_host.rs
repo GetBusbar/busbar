@@ -55,7 +55,7 @@ impl ArrivalHost for CoreArrivalHost {
         stream: bool,
         gemini_json_array: bool,
         proto: &'static str,
-        gemini_api_version: Option<String>,
+        model_not_found_message: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
         let p = payload(ctx);
         let app = p.app.clone();
@@ -73,7 +73,7 @@ impl ArrivalHost for CoreArrivalHost {
                 stream,
                 gemini_json_array,
                 proto,
-                gemini_api_version.as_deref(),
+                model_not_found_message.as_deref(),
             )
             .await
         })

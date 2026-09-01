@@ -46,7 +46,8 @@ pub(crate) async fn stats(
     // makes `/stats` output non-reproducible across restarts. Lane order is already deterministic
     // (index order, and lane indices are now built sorted-by-model — see main.rs).
     let pools: std::collections::BTreeMap<&String, Vec<&str>> = app
-        .pools
+        .engine_tables()
+        .pools()
         .iter()
         .filter(|(n, _)| visible_pool(n))
         .map(|(n, weighted_lanes)| {
@@ -54,7 +55,7 @@ pub(crate) async fn stats(
                 n,
                 weighted_lanes
                     .iter()
-                    .map(|wl| app.lanes[wl.idx].model.as_str())
+                    .map(|wl| app.engine_tables().lanes()[wl.idx].model.as_str())
                     .collect(),
             )
         })
@@ -69,13 +70,14 @@ pub(crate) async fn stats(
         if !restricted {
             return true;
         }
-        app.pools
+        app.engine_tables()
+            .pools()
             .iter()
             .filter(|(n, _)| visible_pool(n))
             .any(|(_, weighted_lanes)| weighted_lanes.iter().any(|wl| wl.idx == i))
     };
 
-    let lanes: Vec<Value> = (0..app.lanes.len())
+    let lanes: Vec<Value> = (0..app.engine_tables().lanes().len())
         .filter(|&i| lane_visible(i))
         .map(|i| {
             let snap = app.store.snapshot(i, t);
@@ -182,6 +184,12 @@ fn list_models_dialect(
     gemini_path: bool,
 ) -> Response {
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
+    // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): discovery reads the
+    // pool label space, the direct-model index, and pool membership as neutral projections, so
+    // `/v1/models` names no `Lane`/`WeightedLane` and need not relocate with the tables. `pools()`
+    // allocates its projection, so bind it once — the visible-name build reads membership repeatedly.
+    let view = app.engine_tables_view();
+    let pools = view.pools();
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -192,32 +200,28 @@ fn list_models_dialect(
 
     // Stable order: pools first, then direct models, each sorted — SDK consumers and UIs
     // render this list directly, and a deterministic order diffs cleanly in tests and docs.
-    let mut names: Vec<&str> = app
-        .pools
-        .keys()
+    let mut names: Vec<&str> = pools
+        .iter()
+        .map(|(n, _)| *n)
         .filter(|n| visible_pool(n))
-        .map(String::as_str)
         .collect();
     names.sort_unstable();
 
-    let mut models: Vec<&str> = app
-        .by_model
-        .keys()
-        .filter(|m| {
+    let mut models: Vec<&str> = view
+        .model_indices()
+        .into_iter()
+        .filter_map(|(m, idx)| {
             if !restricted {
-                return true;
+                return Some(m);
             }
             // A restricted key sees a direct model only if a visible pool routes to its lane
             // (mirrors the /stats lane rule; pool-less lanes stay hidden from restricted keys).
-            let Some(&idx) = app.by_model.get(*m) else {
-                return false;
-            };
-            app.pools
+            let routed = pools
                 .iter()
                 .filter(|(n, _)| visible_pool(n))
-                .any(|(_, wls)| wls.iter().any(|wl| wl.idx == idx))
+                .any(|(_, member_idxs)| member_idxs.contains(&idx));
+            routed.then_some(m)
         })
-        .map(String::as_str)
         .collect();
     models.sort_unstable();
     names.extend(models);
@@ -273,7 +277,7 @@ pub(crate) async fn healthz(crate::state::CurrentApp(app): crate::state::Current
     // default cell AND every per-pool cell: production routes through NAMED pools whose per-pool cells
     // trip independently, so reading only the default `""` cell would report 200 while every pool lane
     // is circuit-broken (the default cell never moves for pool-routed traffic).
-    if (0..app.lanes.len()).any(|i| app.store.is_ready_any_cell(i, t)) {
+    if (0..app.engine_tables().lanes().len()).any(|i| app.store.is_ready_any_cell(i, t)) {
         (StatusCode::OK, "ok").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "no usable lanes").into_response()

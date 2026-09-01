@@ -22,6 +22,10 @@
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
 pub mod breaker;
+// THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
+// the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
+// readers name so they need not move when the tables relocate into `busbar-llm`.
+pub mod engine_view;
 // The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-certificate
 // SPKI DER walk — PURE host-side TLS helpers (process-atomic registries + an RFC 5280 length-skip; no
 // `App`, no engine, no FFI). They live here so the host egress chokepoint and the A2A plane both name
@@ -35,6 +39,9 @@ pub mod trust_anchor;
 use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
+pub use crate::plane_host::engine_view::{
+    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
+};
 pub use crate::plane_host::scope::{DispatchScope, DurableScope, SessionScope};
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
@@ -455,16 +462,18 @@ pub trait EngineHost: Send + Sync {
     /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
     fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 
-    /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
-    /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
-    /// operator's declared `model`, and return the raw wire outcome. Identical to calling
-    /// `busbar_core::ingress::operation_resolved` with the `openai` chat handler over the live App.
+    /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
+    /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
+    /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
+    /// driven as is NEUTRAL to this seam: the host resolves it from the registry's residual-default
+    /// chat protocol (`None` — no chat dialect installed — surfaces as an error, not a hard-coded
+    /// identity), so MCP's `sampling/complete` bridge names no LLM dialect to reach a completion.
     ///
     /// The ONE async method beside [`identity_admit`](EngineHost::identity_admit) — but simpler:
-    /// `operation_resolved` is a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this
-    /// only `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
+    /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
+    /// `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
     /// bounds the response body read.
-    async fn drive_openai_completion(
+    async fn synthesize_completion(
         &self,
         gov: &busbar_api::PlaneRequestCtx,
         model: &str,

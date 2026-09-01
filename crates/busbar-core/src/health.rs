@@ -50,7 +50,7 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 /// Carrying the deadline here makes the schedule phase-stable across swaps: at each deadline the
 /// live generation probes, and the stale ones exit. A full rebuild from disk mints a new schedule,
 /// which is correct — a reload genuinely re-establishes probing.
-pub(crate) struct ProbeSchedule {
+pub struct ProbeSchedule {
     /// Bumped by every `spawn_probers`. A prober whose captured generation is no longer current
     /// exits at its next tick, so generations never double-probe during the window where the old
     /// snapshot is still alive on an in-flight request.
@@ -90,7 +90,7 @@ fn advance_owned_deadline(slot: &std::sync::atomic::AtomicU64, owned: u64, next:
 }
 
 impl ProbeSchedule {
-    pub(crate) fn new(lane_count: usize) -> Self {
+    pub fn new(lane_count: usize) -> Self {
         Self {
             generation: std::sync::atomic::AtomicU64::new(0),
             origin: tokio::time::Instant::now(),
@@ -122,10 +122,10 @@ impl ProbeSchedule {
 /// no swap site can forget to re-attach probing.
 pub fn spawn_probers(app: &Arc<App>) {
     use std::sync::atomic::Ordering;
-    let schedule = app.probe_schedule.clone();
+    let schedule = app.engine_tables().probe_schedule().clone();
     let my_gen = schedule.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    for i in 0..app.lanes.len() {
-        let Some(h) = app.lanes[i].health.clone() else {
+    for i in 0..app.engine_tables().lanes().len() {
+        let Some(h) = app.engine_tables().lanes()[i].health.clone() else {
             continue;
         };
         if h.mode == HealthMode::None {
@@ -143,7 +143,7 @@ pub fn spawn_probers(app: &Arc<App>) {
         );
         let mode = h.mode;
         let weak = Arc::downgrade(app);
-        let model = app.lanes[i].model.clone();
+        let model = app.engine_tables().lanes()[i].model.clone();
         // Inherit this lane's deadline, or schedule the first probe one interval out (the
         // deliberate "don't probe a cold upstream at startup" behaviour, now expressed as a
         // deadline instead of a discarded first tick).
@@ -244,7 +244,7 @@ pub fn spawn_probers(app: &Arc<App>) {
 ///     bench a working lane over a probe-construction issue, matching the organic "record nothing"
 ///     disposition for these classes.
 pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
-    let lane = &app.lanes[i];
+    let lane = &app.engine_tables().lanes()[i];
 
     // No key, no probe — we can't authenticate (e.g. a passthrough deployment with no static key),
     // and a guaranteed 401 would only thrash the breaker.
@@ -350,7 +350,8 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // capped error-body read (`read_capped_error_body`), so a black-holed upstream can never hang
     // the prober past its configured `timeout_secs`.
     let deadline = tokio::time::Instant::now() + timeout;
-    let res = tokio::time::timeout_at(deadline, app.client.get().request(req)).await;
+    let res =
+        tokio::time::timeout_at(deadline, app.engine_tables().client().get().request(req)).await;
 
     // Classify the probe outcome through the organic disposition pipeline so auth/billing failures
     // reach HardDown instead of being mis-filed as transient cooldowns. Carry the server-requested
@@ -437,7 +438,8 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // organic forward path resolves (proxy engine `breaker_cfg`). This replaces the prior
             // one-size `BreakerCfg::default()` that ignored per-pool thresholds/cooldowns (#24/#25).
             let resolve_cfg = |pool: &str| -> BreakerCfg {
-                app.pool_runtime
+                app.engine_tables()
+                    .pool_runtime()
                     .get(pool)
                     .and_then(|r| r.breaker.clone())
                     .unwrap_or_default()

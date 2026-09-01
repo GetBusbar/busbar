@@ -51,7 +51,7 @@ struct Signer {
 /// scope when set. `subject` is the operator-configured `ProviderCfg::subject` (RFC 7523 `sub`) — `None`
 /// (the default) omits the claim entirely, unchanged from before this field existed; `Some` emits it
 /// verbatim, for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`.
-pub(crate) fn build(
+pub fn build(
     credential: &str,
     scope_override: Option<&str>,
     subject: Option<&str>,

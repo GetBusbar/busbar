@@ -428,7 +428,7 @@ pub(crate) fn translate_request_cross_protocol(
     // caller control is a first-class, hash-chained event, not just a log warn).
     caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
-    let egress_name = app.lanes[i].protocol;
+    let egress_name = app.engine_tables().lanes()[i].protocol;
     // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
     // four separate registry scans of the same name).
     let egress_decl = crate::proto::decl_for(egress_name);
@@ -441,13 +441,13 @@ pub(crate) fn translate_request_cross_protocol(
         (ingress_protocol != egress_name).then(|| crate::ir::egress_prep::EgressPrep {
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
-            lane_default_max_tokens: app.lanes[i].default_max_tokens,
+            lane_default_max_tokens: app.engine_tables().lanes()[i].default_max_tokens,
             global_default_max_tokens: app.default_max_tokens,
             reasoning_allowed,
             reasoning_budgets: app.reasoning_effort_budgets,
             // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
             // (Bedrock) must assert `prompt_caching` to receive breakpoints.
-            prompt_caching_allowed: app.lanes[i].prompt_caching
+            prompt_caching_allowed: app.engine_tables().lanes()[i].prompt_caching
                 || !egress_decl.is_some_and(|d| d.cache_markers_model_gated),
             cache_control_cap: egress_decl.and_then(|d| d.max_cache_control_breakpoints),
             // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
@@ -455,7 +455,7 @@ pub(crate) fn translate_request_cross_protocol(
             // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the
             // sentinel bypass and has real reports of rejecting it.
             thought_signature_fill: egress_decl.is_some_and(|d| d.fills_thought_signature)
-                && app.lanes[i].path_base.is_none(),
+                && app.engine_tables().lanes()[i].path_base.is_none(),
         });
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
     // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
@@ -485,7 +485,7 @@ pub(crate) fn translate_request_cross_protocol(
                     },
                     Some(egress_name),
                     prep,
-                    app.lanes[i].wire_model(),
+                    app.engine_tables().lanes()[i].wire_model(),
                 )
                 .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
             return match translated.wire {
@@ -562,7 +562,7 @@ pub(crate) fn translate_request_cross_protocol(
             crate::handlers::TranslateReqInput::Json(&body),
             egress_handler.map(|_| egress_name),
             prep,
-            app.lanes[i].wire_model(),
+            app.engine_tables().lanes()[i].wire_model(),
         ) {
             Ok(t) => t,
             Err(e) => return Err(Box::new(map_translate_req_reject(ingress_protocol, e))),
@@ -607,17 +607,20 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
                                                                  // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
                                                                  // are identical: same dialect, same two mutations, same order.
-    let lane_dialect = crate::proto::decl_for(app.lanes[i].protocol).and_then(|d| d.dialect());
+    let lane_dialect =
+        crate::proto::decl_for(app.engine_tables().lanes()[i].protocol).and_then(|d| d.dialect());
     pristine &= !lane_dialect
         .as_ref()
-        .map(|dc| dc.rewrite_model_if_needed(&mut body, app.lanes[i].wire_model()))
+        .map(|dc| {
+            dc.rewrite_model_if_needed(&mut body, app.engine_tables().lanes()[i].wire_model())
+        })
         .unwrap_or(false); // invalidator #3
                            // PATH-BASE BODY RESHAPE. A lane with a `path_base` carries the model in the URL, and some
                            // dialects must reshape the body for that form (Claude-on-Vertex drops `model` and adds
                            // `anthropic_version`). WHICH reshape, and whether there is one at all, is the writer's;
                            // this path only knows the lane's URL shape. A reshape necessarily mutates the body, so such
                            // a same-protocol passthrough is (correctly) no longer pristine.
-    if app.lanes[i].path_base.is_some()
+    if app.engine_tables().lanes()[i].path_base.is_some()
         && lane_dialect
             .as_ref()
             .map(|dc| dc.reshape_for_path_base(&mut body))
