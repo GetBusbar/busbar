@@ -1,0 +1,587 @@
+{
+  "schema_version": "1",
+  "release": {
+    "version": "dev",
+    "tag": "dev",
+    "qa_sha": "863e7f62ecc61491322b89319c7c1dde70987dd4",
+    "staging_tag": null,
+    "digest": null,
+    "run_id": "",
+    "run_url": "https://github.com/GetBusbar/busbar/actions",
+    "recorded_at": "2026-09-01T20:35:27Z"
+  },
+  "verdicts": [
+    {
+      "class": "byte-identity",
+      "title": "Your bytes survive read to IR to write",
+      "status": "unknown",
+      "evidence_count": 118,
+      "evidence_total": 118,
+      "unit": "golden byte-pairs",
+      "sources": [
+        {
+          "id": "translate-parity-cross-pairs",
+          "kind": "golden",
+          "status": "pass",
+          "count": 118,
+          "total": 118,
+          "lane_count": 22,
+          "drilldown": {
+            "type": "lane-matrix",
+            "path": "crates/busbar-llm/src/tests/proto/golden/",
+            "lanes": [
+              {
+                "lane": "a2b",
+                "status": "present",
+                "count": 10,
+                "cases": [
+                  "req_a2b_degenerate.json",
+                  "req_a2b_extras_cleared.json",
+                  "req_a2b_multi_turn.json",
+                  "req_a2b_plain.json",
+                  "req_a2b_system_array_images.json",
+                  "req_a2b_thinking_metadata.json",
+                  "req_a2b_tools.json",
+                  "resp_a2b_plain.json",
+                  "resp_a2b_thinking.json",
+                  "resp_a2b_tool_use.json"
+                ]
+              },
+              {
+                "lane": "a2c",
+                "status": "present",
+                "count": 10,
+                "cases": [
+                  "req_a2c_degenerate.json",
+                  "req_a2c_extras_cleared.json",
+                  "req_a2c_multi_turn.json",
+                  "req_a2c_plain.json",
+                  "req_a2c_system_array_images.json",
+                  "req_a2c_thinking_metadata.json",
+                  "req_a2c_tools.json",
+                  "resp_a2c_plain.json",
+                  "resp_a2c_thinking.json",
+                  "resp_a2c_tool_use.json"
+                ]
+              },
+              {
+                "lane": "a2g",
+                "status": "present",
+                "count": 7,
+                "cases": [
+                  "req_a2g_degenerate.json",
+                  "req_a2g_extras_cleared.json",
+                  "req_a2g_multi_turn.json",
+                  "req_a2g_plain.json",
+                  "req_a2g_system_array_images.json",
+                  "req_a2g_thinking_metadata.json",
+                  "req_a2g_tools.json"
+                ]
+              },
+              {
+                "lane": "a2o",
+                "status": "present",
+                "count": 7,
+                "cases": [
+                  "req_a2o_degenerate.json",
+                  "req_a2o_extras_cleared.json",
+                  "req_a2o_multi_turn.json",
+                  "req_a2o_plain.json",
+                  "req_a2o_system_array_images.json",
+                  "req_a2o_thinking_metadata.json",
+                  "req_a2o_tools.json"
+                ]
+              },
+              {
+                "lane": "a2r",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "resp_a2r_plain.json",
+                  "resp_a2r_thinking.json",
+                  "resp_a2r_tool_use.json"
+                ]
+              },
+              {
+                "lane": "b2a",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "req_b2a_attachments.json",
+                  "req_b2a_plain.json",
+                  "req_b2a_tools.json",
+                  "resp_b2a_plain.json",
+                  "resp_b2a_reasoning.json",
+                  "resp_b2a_tool_use.json"
+                ]
+              },
+              {
+                "lane": "b2c",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "req_b2c_attachments.json",
+                  "req_b2c_plain.json",
+                  "req_b2c_tools.json",
+                  "resp_b2c_plain.json",
+                  "resp_b2c_reasoning.json",
+                  "resp_b2c_tool_use.json"
+                ]
+              },
+              {
+                "lane": "b2o",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "req_b2o_attachments.json",
+                  "req_b2o_plain.json",
+                  "req_b2o_tools.json",
+                  "resp_b2o_plain.json",
+                  "resp_b2o_reasoning.json",
+                  "resp_b2o_tool_use.json"
+                ]
+              },
+              {
+                "lane": "c2a",
+                "status": "present",
+                "count": 7,
+                "cases": [
+                  "req_c2a_plain.json",
+                  "req_c2a_tool_result_document.json",
+                  "req_c2a_tools.json",
+                  "resp_c2a_citations.json",
+                  "resp_c2a_plain.json",
+                  "resp_c2a_tool_plan.json",
+                  "resp_c2a_tool_use.json"
+                ]
+              },
+              {
+                "lane": "c2b",
+                "status": "present",
+                "count": 7,
+                "cases": [
+                  "req_c2b_plain.json",
+                  "req_c2b_tool_result_document.json",
+                  "req_c2b_tools.json",
+                  "resp_c2b_citations.json",
+                  "resp_c2b_plain.json",
+                  "resp_c2b_tool_plan.json",
+                  "resp_c2b_tool_use.json"
+                ]
+              },
+              {
+                "lane": "c2o",
+                "status": "present",
+                "count": 7,
+                "cases": [
+                  "req_c2o_plain.json",
+                  "req_c2o_tool_result_document.json",
+                  "req_c2o_tools.json",
+                  "resp_c2o_citations.json",
+                  "resp_c2o_plain.json",
+                  "resp_c2o_tool_plan.json",
+                  "resp_c2o_tool_use.json"
+                ]
+              },
+              {
+                "lane": "g2a",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "resp_g2a_function_call.json",
+                  "resp_g2a_grounding.json",
+                  "resp_g2a_plain.json"
+                ]
+              },
+              {
+                "lane": "g2o",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "resp_g2o_function_call.json",
+                  "resp_g2o_grounding.json",
+                  "resp_g2o_plain.json"
+                ]
+              },
+              {
+                "lane": "g2r",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "req_g2r_inline_data.json",
+                  "req_g2r_plain.json",
+                  "req_g2r_tools.json"
+                ]
+              },
+              {
+                "lane": "o2a",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "resp_o2a_cached_usage.json",
+                  "resp_o2a_minimal.json",
+                  "resp_o2a_multipart.json",
+                  "resp_o2a_plain.json",
+                  "resp_o2a_reasoning.json",
+                  "resp_o2a_tool_calls.json"
+                ]
+              },
+              {
+                "lane": "o2b",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "req_o2b_attachments.json",
+                  "req_o2b_plain.json",
+                  "req_o2b_tools.json",
+                  "resp_o2b_plain.json",
+                  "resp_o2b_reasoning.json",
+                  "resp_o2b_tool_calls.json"
+                ]
+              },
+              {
+                "lane": "o2c",
+                "status": "present",
+                "count": 6,
+                "cases": [
+                  "req_o2c_attachments.json",
+                  "req_o2c_plain.json",
+                  "req_o2c_tools.json",
+                  "resp_o2c_plain.json",
+                  "resp_o2c_reasoning.json",
+                  "resp_o2c_tool_calls.json"
+                ]
+              },
+              {
+                "lane": "o2g",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "req_o2g_attachments.json",
+                  "req_o2g_plain.json",
+                  "req_o2g_tools.json"
+                ]
+              },
+              {
+                "lane": "o2r",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "req_o2r_attachments.json",
+                  "req_o2r_plain.json",
+                  "req_o2r_tools.json"
+                ]
+              },
+              {
+                "lane": "r2a",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "req_r2a_input_file.json",
+                  "req_r2a_plain.json",
+                  "req_r2a_tools.json"
+                ]
+              },
+              {
+                "lane": "r2g",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "resp_r2g_function_call.json",
+                  "resp_r2g_plain.json",
+                  "resp_r2g_reasoning.json"
+                ]
+              },
+              {
+                "lane": "r2o",
+                "status": "present",
+                "count": 3,
+                "cases": [
+                  "resp_r2o_function_call.json",
+                  "resp_r2o_plain.json",
+                  "resp_r2o_reasoning.json"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "egress-differential",
+          "kind": "oracle",
+          "status": "unknown",
+          "note": "present",
+          "drilldown": {
+            "type": "test",
+            "path": "crates/busbar-core/src/proxy/tests/egress_differential_tests.rs"
+          }
+        },
+        {
+          "id": "crossproto-billing",
+          "kind": "oracle",
+          "status": "unknown",
+          "note": "present",
+          "drilldown": {
+            "type": "test",
+            "path": "crates/busbar-core/src/proxy/engine/tests/crossproto_delivery_billing_tests.rs"
+          }
+        },
+        {
+          "id": "on-exhausted",
+          "kind": "oracle",
+          "status": "unknown",
+          "note": "present",
+          "drilldown": {
+            "type": "test",
+            "path": "crates/busbar-core/src/proxy/tests/on_exhausted_tests.rs"
+          }
+        },
+        {
+          "id": "pool-upstream-creds",
+          "kind": "oracle",
+          "status": "unknown",
+          "note": "present",
+          "drilldown": {
+            "type": "test",
+            "path": "crates/busbar-core/src/proxy/tests/pool_upstream_creds_tests.rs"
+          }
+        },
+        {
+          "id": "usage-decode-tap",
+          "kind": "oracle",
+          "status": "unknown",
+          "note": "present",
+          "drilldown": {
+            "type": "test",
+            "path": "crates/busbar-core/src/ingress/tests/tests.rs"
+          }
+        }
+      ]
+    },
+    {
+      "class": "plane-neutrality",
+      "title": "The core cannot know any plane",
+      "status": "fail",
+      "evidence_count": 0,
+      "unit": "side channels (0 = property holds)",
+      "meter": "zero-debt",
+      "sources": [
+        {
+          "id": "plane-purity-lint",
+          "kind": "gate",
+          "status": "pass",
+          "count": 0,
+          "breakdown": {
+            "PATH-INCLUDE": 0,
+            "SYMBOL": 0,
+            "TYPE": 0,
+            "KEY": 0,
+            "DIALECT": 0,
+            "BACKWARDS": 0
+          },
+          "selftest": "pass",
+          "runs_in": [
+            "ci.yml:structure-lint",
+            "qa/segments.toml:plane-purity"
+          ],
+          "drilldown": {
+            "type": "hit-list",
+            "artifact": "plane-purity-hits.tsv"
+          }
+        },
+        {
+          "id": "g6-freeze-witness",
+          "kind": "gate",
+          "status": "pass",
+          "count": 0
+        },
+        {
+          "id": "plane-grep-gate",
+          "kind": "gate",
+          "status": "report-only",
+          "count": 69,
+          "breakdown": {
+            "openai": 20,
+            "gemini": 17,
+            "anthropic": 0,
+            "bedrock": 5,
+            "cohere": 0,
+            "responses": 0,
+            "mcp": 18,
+            "a2a": 9
+          },
+          "selftest": "pass",
+          "drilldown": {
+            "type": "hit-list",
+            "artifact": "plane-grep-hits.tsv"
+          }
+        },
+        {
+          "id": "plane-abi-neutrality",
+          "kind": "gate",
+          "status": "fail",
+          "count": 1231
+        }
+      ]
+    },
+    {
+      "class": "composability",
+      "title": "Any plane is removable; any subset runs",
+      "status": "unknown",
+      "sources": [
+        {
+          "id": "no-plugins-gate",
+          "kind": "gate",
+          "status": "unknown",
+          "unit": "failed assertions",
+          "note": "cargo-backed; run in ci.yml no-plugins-gate job"
+        },
+        {
+          "id": "plane-delete-test",
+          "kind": "gate",
+          "status": "unknown",
+          "planes": {
+            "llm": "unknown",
+            "mcp": "unknown",
+            "a2a": "unknown"
+          },
+          "note": "cargo-backed; run in ci.yml structure-lint (--all)"
+        },
+        {
+          "id": "proto-deletion-gate",
+          "kind": "gate",
+          "status": "unknown",
+          "note": "cargo-backed; run in ci.yml deletion area"
+        }
+      ]
+    },
+    {
+      "class": "field-coverage",
+      "title": "Every provider field is accounted for",
+      "status": "pass",
+      "evidence_count": 404,
+      "evidence_total": 412,
+      "unit": "fields carried",
+      "sources": [
+        {
+          "id": "field-coverage",
+          "kind": "ledger",
+          "status": "pass",
+          "carried": 404,
+          "waived": 8,
+          "missing": 0,
+          "by_dialect": {
+            "anthropic": 75,
+            "openai": 77,
+            "gemini": 58,
+            "cohere": 52,
+            "bedrock": 57,
+            "responses": 85
+          },
+          "waivers": [
+            {
+              "field": "anthropic/request/model",
+              "date": "2026-08-13",
+              "reason": "set by the engine from the routing lane (proxy/wire.rs set_model), not by the reader/writer pair"
+            },
+            {
+              "field": "openai/request/model",
+              "date": "2026-08-13",
+              "reason": "set by the engine from the routing lane, not by the reader/writer pair"
+            },
+            {
+              "field": "openai/request/content[].type=image_url.image_url.detail",
+              "date": "2026-08-13",
+              "reason": "a cost/latency hint ONE vendor models; dropped with a warn at openai_chat/mod.rs, no cross-protocol carrier exists"
+            },
+            {
+              "field": "gemini/request/cachedContent",
+              "date": "2026-08-13",
+              "reason": "the referenced cache lives server-side at Google and cannot be projected into contents; dropped with a warn naming both consequences at ir/variant.rs"
+            },
+            {
+              "field": "bedrock/request/guardrailConfig",
+              "date": "2026-08-13",
+              "reason": "names an AWS account resource that exists at exactly one vendor; no cross-protocol projection"
+            },
+            {
+              "field": "cohere/request/documents",
+              "date": "2026-08-13",
+              "reason": "Cohere-native RAG grounding with no faithful target mapping; warned at the reader before the seam clears it"
+            },
+            {
+              "field": "responses/request/previous_response_id",
+              "date": "2026-08-13",
+              "reason": "conversation state lives at OpenAI; a foreign backend has no handle to continue from"
+            },
+            {
+              "field": "responses/request/conversation",
+              "date": "2026-08-13",
+              "reason": "same as previous_response_id: server-side state at exactly one vendor"
+            }
+          ],
+          "drilldown": {
+            "type": "field-ledger",
+            "path": "qa/field-coverage.status"
+          }
+        }
+      ]
+    },
+    {
+      "class": "wire-conformance",
+      "title": "We speak every protocol to spec",
+      "status": "unknown",
+      "sources": [
+        {
+          "id": "mcp-conformance",
+          "kind": "conformance",
+          "status": "unknown",
+          "legs": {
+            "control": "unknown",
+            "subject": "unknown"
+          },
+          "drilldown": {
+            "type": "conformance-report",
+            "artifact": "mcp-battery-control-report"
+          },
+          "note": "reads testing/mcp-conformance report JSON when present"
+        },
+        {
+          "id": "a2a-conformance",
+          "kind": "conformance",
+          "status": "unknown",
+          "legs": {
+            "control-go-http_json": "unknown",
+            "control-go-jsonrpc": "unknown",
+            "control-python": "unknown",
+            "negative-control": "unknown",
+            "swap-proof": "unknown",
+            "tck": "unknown",
+            "subject": "unknown"
+          },
+          "drilldown": {
+            "type": "conformance-report",
+            "artifact": "a2a-battery-control-http_json"
+          }
+        },
+        {
+          "id": "llm-dialects",
+          "kind": "conformance",
+          "status": "unknown",
+          "dialects": {
+            "anthropic": "unknown",
+            "openai": "unknown",
+            "gemini": "unknown",
+            "responses": "unknown",
+            "bedrock": "unknown",
+            "cohere": "unknown"
+          },
+          "note": "proven by the exhaustive translate-parity golden corpus (see byte-identity)"
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "content_digest": "sha256:deb5ae570f3a855087b846d5666abd65ef5f23d57bfa349e62dae8afb8ec6584",
+    "collator": "scripts/proof-manifest.py"
+  }
+}
