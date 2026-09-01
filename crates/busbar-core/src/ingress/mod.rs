@@ -537,8 +537,13 @@ fn finish(
 /// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
 /// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
 /// requests' spend/count in the same window — so those requests must finish with `charged = false`.
+// `pub` (was module-private): the charged-admission finish/audit terminal the relocated LLM engine's
+// native drive path ends on — surfaced through `crate::engine_facade` (Phase-0 visibility lift; pure
+// visibility). Its `gov: &crate::governance::GovCtx` arg names a still-crate-private carrier, so a
+// narrow `#[allow(private_interfaces)]` keeps `GovCtx` `pub(crate)` (reversible in Phase 6).
+#[allow(private_interfaces)]
 #[allow(clippy::too_many_arguments)]
-fn finish_admitted(
+pub fn finish_admitted(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
@@ -569,7 +574,10 @@ fn finish_admitted(
 /// SPURIOUS refund — `refund_request` is a blind `UPDATE` that decrements the spend/requests of
 /// OTHER, legitimately-charged requests in the same window, eroding the budget cap. So every
 /// pre-charge exit MUST use this, never `finish`.
-fn finish_rejected(
+// `pub` (was module-private): the pre-charge turn-away finish terminal, surfaced through
+// `crate::engine_facade` (Phase-0). Same `GovCtx` leak allow as `finish_admitted`.
+#[allow(private_interfaces)]
+pub fn finish_rejected(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     ingress_protocol: &str,

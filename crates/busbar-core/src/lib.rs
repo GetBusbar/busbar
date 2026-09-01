@@ -152,6 +152,9 @@ pub use busbar_api::durable;
 pub mod egress;
 pub mod egress_auth;
 pub mod endpoints;
+// The narrow, `pub` re-export facade the extracted LLM engine reaches DOWN into core through once it
+// lives in busbar-llm (1.6.0 money-path relocation, Phase 0). Pure visibility lift — see the module.
+pub mod engine_facade;
 // wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate busbar-llm may name) so
 // the LLM plane reaches the AWS EventStream framing codec via the ABI, not `busbar_core::`. Core
 // re-exports it here so `crate::eventstream::…` call sites are unchanged.

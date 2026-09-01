@@ -146,7 +146,11 @@ pub use busbar_substrate::store::{
 /// probe (an expired-Open cell driven Open→HalfOpen). A Closed-and-ready admission wins no probe and
 /// carries `None`: the dispatch path then builds NO `ProbeGuard`, so it can never revert a probe a
 /// peer legitimately won on the same cell (see `ProbeAdmit`).
-pub(crate) struct Admit {
+// `pub` (was `pub(crate)`): the held-resources token `LaneRuntime::try_admit` returns — surfaced
+// through `crate::engine_facade` for the relocated engine's admission call (Phase-0 visibility lift).
+// Its fields stay `pub(crate)`, so the struct-as-type is `pub` while the permit/probe internals are
+// not externally accessible — no `private_interfaces` leak.
+pub struct Admit {
     pub(crate) permit: Permit,
     pub(crate) probe_epoch: Option<u64>,
 }
@@ -267,7 +271,14 @@ pub(crate) struct PoolCellHealthSnapshot {
     pub(crate) err: u64,
 }
 
-pub(crate) trait LaneRuntime: Send + Sync + 'static {
+// `pub` (was `pub(crate)`): the breaker-admission FSM the extracted LLM engine drives once it lives
+// in busbar-llm — surfaced through `crate::engine_facade` as part of the 1.6.0 money-path relocation
+// Phase-0 visibility lift (pure visibility; no behavior change). Its method signatures name a few
+// still-crate-private data types (`Permit`, `BreakerCfg`, `LaneSnapshot`, `LaneHealthSnapshot`); those
+// stay `pub(crate)` — the engine names the METHODS, not those incidental carriers — so a narrow
+// `#[allow(private_interfaces)]` keeps the exposed TYPE surface tight (reversible in Phase 6).
+#[allow(private_interfaces)]
+pub trait LaneRuntime: Send + Sync + 'static {
     // ── Health queries ─────────────────────────────────────────────────────────────────────────
     // The bare `lane` methods operate on the lane-default cell (direct/ad-hoc routes, `/stats`);
     // the `_in(pool, …)` variants operate on the per-(pool, lane) breaker cell so a lane shared

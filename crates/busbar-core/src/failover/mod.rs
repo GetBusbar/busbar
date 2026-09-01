@@ -217,8 +217,11 @@ impl CandidatePoolCfg {
 // No production caller now: both planes drive [`walk_with`] with the host `breaker_admit` seam
 // directly (CLUSTER-1), so the breaker-only spelling survives only for the failover unit tests, which
 // drive it under `#[cfg(test)]`.
+// `pub` (was `pub(crate)`): a disposition half the relocated LLM engine drives — surfaced through
+// `crate::engine_facade` (Phase-0 visibility lift; pure visibility). A `pub` fn is never dead, so the
+// `not(test)` dead-code allow is now a harmless no-op the Phase-6 tighten-back will drop.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn walk<'a, C: Candidate>(
+pub fn walk<'a, C: Candidate>(
     store: &dyn LaneRuntime,
     pool: &str,
     members: &'a [C],
@@ -249,9 +252,14 @@ pub(crate) fn walk<'a, C: Candidate>(
 ///
 /// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
 /// re-deciding it.
+// `pub` (was `pub(crate)`): the disposition writer the relocated LLM engine records through —
+// surfaced via `crate::engine_facade` (Phase-0). Its `cfg: &crate::store::BreakerCfg` arg names a
+// still-crate-private carrier the engine passes back verbatim, so a narrow `#[allow(private_interfaces)]`
+// keeps `BreakerCfg` `pub(crate)` (reversible in Phase 6).
+#[allow(private_interfaces)]
 #[cfg_attr(not(test), allow(dead_code))] // see the module note: the plane call sites record via
                                          // `PlaneBreakers::record_signal` (per-cell hard-down).
-pub(crate) fn record_outcome<C: Candidate>(
+pub fn record_outcome<C: Candidate>(
     store: &dyn LaneRuntime,
     pool: &str,
     candidate: &C,
@@ -302,8 +310,10 @@ pub(crate) fn record_outcome<C: Candidate>(
 /// The success half of [`record_outcome`], kept separate for the same reason the model plane keeps it
 /// separate: a success closes a HalfOpen cell and resets its accumulator, and that is a different
 /// write from any failure.
+// `pub` (was `pub(crate)`): the success half of `record_outcome`, surfaced via `crate::engine_facade`
+// (Phase-0 visibility lift). Signature names only `pub`/neutral types, so no leak allow is needed.
 #[cfg_attr(not(test), allow(dead_code))] // twin of `record_outcome`'s allow, same argument.
-pub(crate) fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
+pub fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
     store.record_success_in(pool, candidate.lane());
 }
 
