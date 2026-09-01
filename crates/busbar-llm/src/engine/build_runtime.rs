@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use busbar_substrate::plane_host::{
-    LlmAuthStyle, LlmBuildInput, LlmHealthMode, LlmOnExhausted, PlaneSlots,
+    LlmAuthStyle, LlmBuildInput, LlmOnExhausted, PlaneSlots,
 };
 
 use busbar_core::egress_auth::{self, MetadataSsrfPolicy};
@@ -42,19 +42,6 @@ fn provider_auth(style: LlmAuthStyle) -> Option<busbar_core::config::ProviderAut
         LlmAuthStyle::OAuthClientCredentials => {
             Some(busbar_core::config::ProviderAuth::OAuthClientCredentials)
         }
-    }
-}
-
-/// Rebuild the runtime `HealthCfg` from the neutral [`busbar_substrate::plane_host::LlmHealthInput`].
-fn health_cfg(h: &busbar_substrate::plane_host::LlmHealthInput) -> busbar_core::config::HealthCfg {
-    busbar_core::config::HealthCfg {
-        mode: match h.mode {
-            LlmHealthMode::None => busbar_core::config::HealthMode::None,
-            LlmHealthMode::Dead => busbar_core::config::HealthMode::Dead,
-            LlmHealthMode::Active => busbar_core::config::HealthMode::Active,
-        },
-        interval_secs: h.interval_secs,
-        timeout_secs: h.timeout_secs,
     }
 }
 
@@ -160,7 +147,7 @@ pub(crate) fn build_runtime(
             context_max: li.context_max,
             path: li.path.clone(),
             path_base: li.path_base.clone(),
-            health: li.health.as_ref().map(health_cfg),
+            health: li.health.clone(),
             attempt_timeout_ms: li.attempt_timeout_ms,
             reasoning: li.reasoning,
             prompt_caching: li.prompt_caching,
@@ -209,22 +196,13 @@ pub(crate) fn build_runtime(
             p.name.clone(),
             PoolRuntime {
                 members,
-                failover: p
-                    .failover
-                    .as_ref()
-                    .map(|f| busbar_core::config::FailoverCfg {
-                        timeout_secs: f.timeout_secs,
-                        exclusions: f.exclusions.clone(),
-                        max_hops: f.max_hops,
-                    }),
+                // ABI-purity P5: store the neutral LlmFailoverInput / LlmAffinityInput carriers
+                // DIRECTLY — byte-identical mirrors of the retired config::FailoverCfg / AffinityCfg
+                // (affinity's only mode is `session`, so its presence IS the fact). Collapses the
+                // LlmBuildInput -> core-config -> runtime round-trip to a clone.
+                failover: p.failover.clone(),
                 upstream_credentials: p.upstream_credentials,
-                affinity: p
-                    .affinity
-                    .as_ref()
-                    .map(|a| busbar_core::config::AffinityCfg {
-                        mode: busbar_core::config::AffinityMode::Session,
-                        header_name: a.header_name.clone(),
-                    }),
+                affinity: p.affinity.clone(),
                 breaker: p
                     .breaker
                     .as_ref()
@@ -240,34 +218,21 @@ pub(crate) fn build_runtime(
     // The fallback-pool routing table mirrors the pools map (any pool can be an on_exhausted target).
     let fallback_pools = pools.clone();
 
-    // Per-pool on_exhausted policy table.
-    let mut on_exhausted_cfgs: HashMap<String, busbar_core::config::OnExhausted> =
+    // Per-pool on_exhausted policy table. The plane RUNTIME stores the neutral
+    // `LlmOnExhausted` carried on `LlmBuildInput` DIRECTLY — its variants are the byte-identical
+    // mirror of the retired `busbar_core::config::OnExhausted` round-trip, so the lowering is a
+    // clone rather than a re-map (ABI-purity P5: the LlmBuildInput -> core-config -> runtime
+    // round-trip collapses to LlmBuildInput -> runtime).
+    let mut on_exhausted_cfgs: HashMap<String, LlmOnExhausted> =
         HashMap::with_capacity(input.pools.len());
     for p in &input.pools {
-        let mode = match &p.on_exhausted {
-            LlmOnExhausted::Status503 => busbar_core::config::OnExhausted::Status503,
-            LlmOnExhausted::FallbackPool(name) => {
-                busbar_core::config::OnExhausted::FallbackPool(name.clone())
-            }
-            LlmOnExhausted::LeastBad => busbar_core::config::OnExhausted::LeastBad,
-            LlmOnExhausted::Queue { max_ms } => {
-                busbar_core::config::OnExhausted::Queue { max_ms: *max_ms }
-            }
-        };
-        on_exhausted_cfgs.insert(p.name.clone(), mode);
+        on_exhausted_cfgs.insert(p.name.clone(), p.on_exhausted.clone());
     }
 
     // The global-default failover config — the fixed fallback for pools that set no `failover:` of
     // their own. Carried on the input (production fills the `DEFAULT_FAILOVER_*` constants; the test
     // fixture may override), so this is byte-identical to the pre-pivot inline lowering.
-    let failover_cfg = input
-        .default_failover
-        .as_ref()
-        .map(|f| busbar_core::config::FailoverCfg {
-            timeout_secs: f.timeout_secs,
-            exclusions: f.exclusions.clone(),
-            max_hops: f.max_hops,
-        });
+    let failover_cfg = input.default_failover.clone();
 
     // The active-probe schedule: CARRY the prior generation's Arc iff the lane set is identical (the
     // deadlines are lane-indexed, and a genuine lane change should re-establish probing), else fresh.
