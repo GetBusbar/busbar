@@ -573,11 +573,13 @@ async fn resolve_then_issue_via_real_seam() {
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .unwrap();
-    assert!(issued.secret.starts_with("bbk_"));
+    assert!(issued.secret.expose_secret().starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
     let now = crate::store::now();
-    assert!(gov.verify_token(&issued.secret, now, None).is_some());
+    assert!(gov
+        .verify_token(issued.secret.expose_secret(), now, None)
+        .is_some());
 }
 
 /// A real OIDC/GitHub/LDAP plugin sets `principal.id = "oidc:<sub>"` (module-namespaced). Such an id
@@ -601,7 +603,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         "the whole sub lives inside the user: namespace"
     );
     assert!(gov
-        .verify_token(&issued.secret, crate::store::now(), None)
+        .verify_token(issued.secret.expose_secret(), crate::store::now(), None)
         .is_some());
 }
 
@@ -614,7 +616,7 @@ struct FakeKeys;
 impl SelfServeKeys for FakeKeys {
     async fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
         Ok(IssuedKey {
-            secret: format!("fake-scheme-token:{}", principal.id),
+            secret: busbar_api::Redacted::new(format!("fake-scheme-token:{}", principal.id)),
             key_id: "fake".into(),
             group: format!("user:{}", principal.id),
             exp: 9999,
@@ -633,12 +635,38 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
-    assert_eq!(issued.secret, "fake-scheme-token:sam");
+    assert_eq!(issued.secret.expose_secret(), "fake-scheme-token:sam");
     // Refresh path also rides the same trait object.
     let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
         .await
         .unwrap();
-    assert_eq!(refreshed.secret, "fake-scheme-token:sam");
+    assert_eq!(refreshed.secret.expose_secret(), "fake-scheme-token:sam");
+}
+
+/// HEADLINE secret-hygiene fix: an `IssuedKey` carries a LIVE bearer token, and the struct derives
+/// `Debug`. Before the `secret: Redacted<String>` conversion, `format!("{issued:?}")` printed the
+/// token verbatim — a latent leak the instant any code `tracing`/`{:?}`'d an `IssuedKey`. Now the
+/// token is `[REDACTED]` in Debug while the safe `key_id` identity still shows.
+#[tokio::test]
+async fn issued_key_debug_never_leaks_the_live_token() {
+    let rb = bindings("oidc", "eng", Some("team"));
+    let v = identified("oidc", principal("sam", &["eng"]));
+    let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
+    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
+        .await
+        .unwrap();
+    let token = issued.secret.expose_secret().clone();
+    let dbg = format!("{issued:?}");
+    assert!(
+        !dbg.contains(&token),
+        "the live token must NOT appear in a derived Debug of IssuedKey: {dbg}"
+    );
+    assert!(
+        dbg.contains("[REDACTED]"),
+        "the secret field must render redacted: {dbg}"
+    );
+    // The non-secret identity is still visible for logs/audit.
+    assert!(dbg.contains("fake"), "key_id (safe id) still shows: {dbg}");
 }
 
 // ── PROOF: auth.policy.self_mint enforced on the self-serve mint path ─────────────────────────────

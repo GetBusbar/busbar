@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn exchange_ok_body_includes_base_url_equal_to_public_url() {
     let issued = IssuedKey {
-        secret: "sk-busbar-abc".into(),
+        secret: busbar_api::Redacted::new("sk-busbar-abc".to_string()),
         key_id: "kid-1".into(),
         group: "eng".into(),
         exp: 1234567890,
