@@ -254,3 +254,20 @@ tier   = "fast"
 # code edit. The --selftest (proving the scanner catches a planted gemini_api_version + busbar_a2a::Foo)
 # runs FIRST, so the scanner's own honesty is verified alongside the report.
 run    = "scripts/plane-grep-gate.sh --selftest && GREP_GATE_REPORT_ONLY=1 scripts/plane-grep-gate.sh --report"
+
+[[segment]]
+id     = "secret-hygiene"
+status = "active"
+tier   = "fast"
+# THE SECRET-VALUE-TYPE DEBT METER (scripts/secret-hygiene-gate.sh) — the enforcement half of the
+# secret-hygiene design (docs/design/1.6.0-secret-hygiene.md). Check 1: a known-secret field declared
+# as a BARE String/&str/Vec<u8> instead of busbar_api::Redacted<T> (a value that could leak via a
+# derived Debug/Serialize). Check 2: a `.expose_secret()` on the SAME statement as a log/audit/metric
+# sink (the plaintext un-redacted straight into a tracing/println/audit/metric line). RUNS REPORT-ONLY
+# for now (SECRET_GATE_REPORT_ONLY=1, the script default): it PRINTS the current debt (count + offending
+# file:line) and EXITS 0, so it lands non-blocking. The baseline debt is the Phase-2 offenders (the
+# egress-credential holders B/C/D/F in the design audit) which Phase-2 converts POST-PIVOT, at which
+# point arming the hard gate is a one-flag flip (SECRET_GATE_REPORT_ONLY=0) — no code edit. The
+# --selftest (proving the scanner catches a planted `api_key: String` + an expose_secret-at-a-sink, and
+# passes the Redacted-wrapped good fixture) runs FIRST, so the scanner's own honesty is verified with the report.
+run    = "scripts/secret-hygiene-gate.sh --selftest && SECRET_GATE_REPORT_ONLY=1 scripts/secret-hygiene-gate.sh --report"
