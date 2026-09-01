@@ -681,7 +681,7 @@ pub struct RoleBindingCfg {
 }
 
 /// `role_bindings:` - module name -> role name -> grant.
-pub(crate) type RoleBindings =
+pub type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
 
 /// A TOKEN BINDING MODE (`auth.policy.binding_modes:` / a mint ceiling's `binding_modes:`), 1.6.0.

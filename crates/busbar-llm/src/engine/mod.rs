@@ -116,6 +116,9 @@ pub(crate) use busbar_core::proxy::{
 #[path = "proxy_tests/attempt_timeout_precedence_tests.rs"]
 mod attempt_timeout_precedence_tests;
 #[cfg(test)]
+#[path = "proxy_tests/auth_dispatch_tests.rs"]
+mod auth_dispatch_tests;
+#[cfg(test)]
 #[path = "proxy_tests/auth_style_tests.rs"]
 mod auth_style_tests;
 #[cfg(test)]

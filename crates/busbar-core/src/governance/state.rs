@@ -234,7 +234,7 @@ impl GovState {
     /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
     /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
     /// revoked subject's credentials are rejected identically regardless of which credential is presented.
-    pub(crate) fn is_revoked(&self, sub: &str) -> bool {
+    pub fn is_revoked(&self, sub: &str) -> bool {
         self.is_revoked_at(sub, crate::store::now())
     }
 
@@ -1074,7 +1074,7 @@ impl GovState {
     // Only read by the `auth-admin-tokens` chain link; without that feature the getter is unused
     // (the field is still populated/validated, so keep the method rather than gate the field).
     #[cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
-    pub(crate) fn admin_token_hash(&self) -> Option<String> {
+    pub fn admin_token_hash(&self) -> Option<String> {
         self.admin_token_hash
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1170,7 +1170,7 @@ impl GovState {
     /// row shape. The bearer key row is persisted first, then the AWS credential; both then refresh
     /// the in-memory caches so the AccessKeyId resolves on the next request.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn create_key_with_aws(
+    pub fn create_key_with_aws(
         &self,
         spec: NewKeySpec,
         now: u64,
@@ -1249,7 +1249,7 @@ impl GovState {
     }
 
     /// All virtual keys (metadata; callers must strip `generation_hash` before returning).
-    pub(crate) fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    pub fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         self.store.list_keys()
     }
 
