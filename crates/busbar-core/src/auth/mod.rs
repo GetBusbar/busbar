@@ -1310,16 +1310,11 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
         // correlation id rather than a misleading placeholder.
         // The pre-routing auth denial has no resolved operation and no readable body — `operation:
         // None` short-circuits the seam to the zeroed shape before any read (MINOR-8).
-        let shape = crate::proxy::capture_stage_shape(
-            None,
-            &[],
-            "",
-            "",
-            proto,
-            None,
-            false,
-            app.next_request_id(),
-        );
+        // The pre-routing auth denial has no resolved operation and no readable body — build the
+        // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
+        // `operation: None` capture to exactly this before any IR read, MINOR-8), so core names no
+        // plane reader here.
+        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
         crate::proxy::fire_stage_taps(
             &app.tap_hooks_response,

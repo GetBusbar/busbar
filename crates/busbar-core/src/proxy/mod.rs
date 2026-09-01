@@ -1,30 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-
-use axum::{
-    body::Body,
-    http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT},
-    response::IntoResponse,
-    response::Response,
-};
-use bytes::Bytes;
-use futures::Stream;
-use http::StatusCode;
-use serde_json::Value;
-
-use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
-use crate::config::OnExhausted;
 // NOTE THE ABSENCE. This module used to import six `PROTO_*` constants for the hook seam's own
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-use crate::proto::{convert_headers, openai_family, StatusClass};
-use crate::state::{App, WeightedLane};
-use crate::store::{now, Permit};
+use crate::proto::openai_family;
+
+// The NEUTRAL proxy vocabulary that stays in core once the LLM engine moved to `busbar-llm`. Core's
+// own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
+// engine names them across the crate boundary as `busbar_core::proxy::*`.
+pub mod proxy_vocab;
+pub use proxy_vocab::{
+    agnostic_error_envelope, fire_stage_taps, gate_rejected, hook_content_max_bytes, ingress_error,
+    max_upstream_buffered_bytes, read_capped, set_hook_content_max_bytes, spawn_bounded_tap,
+    GateRejected, ReadEnd, StageShape, DEFAULT_HOOK_CONTENT_MAX_BYTES,
+};
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
 // cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.
@@ -32,8 +23,8 @@ use crate::store::{now, Permit};
 /// The two `x-busbar-*` TRANSPARENCY response headers stamped when a non-default routing policy
 /// chose the target lane: the policy name and the chosen lane's model. Hoisted to consts so the
 /// emit site and any future readers cannot drift on spelling.
-const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
-const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
 
 /// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
 /// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at
@@ -53,7 +44,7 @@ pub fn configure_route_policy_headers(enabled: bool) {
 /// Did the operator opt in to the `x-busbar-route-*` headers? Gates
 /// [`wire::maybe_attach_route_policy`] — the header is a fingerprintable observable (same class as
 /// `Server-Timing: busbar`), so it defaults OFF.
-pub(crate) fn route_policy_headers_enabled() -> bool {
+pub fn route_policy_headers_enabled() -> bool {
     ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
 }
 
@@ -108,32 +99,13 @@ tokio::task_local! {
     /// written by `record_upstream_rtt` when an upstream call returns. Microseconds; the
     /// `u64::MAX` sentinel means "no upstream hop on this request" (admin/health/early error),
     /// in which case the middleware reports the full request time.
-    pub(crate) static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
+    pub static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
 }
 
-mod egress;
-mod engine;
-mod hooks;
-mod lazy_body;
 // THE MODEL PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
 // because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
 // where the plane's metrics and its refund decision are already made.
 pub(crate) mod reqlog;
-mod response_body;
-mod select;
-pub(crate) mod usage;
-mod wire;
-// `pub(crate)` (was `pub`): egress.rs no longer exposes any `pub` item — the per-dialect
-// `EGRESS_UA_*` consts it once surfaced at `busbar_core::proxy::*` relocated to the LLM plugin's
-// decls — so every remaining egress name is crate-internal and this re-export is too.
-pub(crate) use egress::*;
-// The boot-time egress-target precompute + host/target primitives the LLM plane's lowering drives
-// DOWN across the crate boundary once the engine lives in `busbar-llm` (1.6.0 money-path Phase 3-4 A).
-// `egress` is a private module re-exported `pub(crate)` above; these three are surfaced explicitly at
-// `pub` (they carry no dialect vocabulary) so `engine_facade` can name the plane→core edge. Behavior
-// and the `crate::proxy::*` in-core call sites are unchanged (the explicit re-export wins over the
-// weaker glob for the same names).
-pub use egress::{build_egress_targets, host_from_base, EgressTarget};
 // THE EGRESS ENGINE moved to the neutral substrate (`busbar_substrate::egress::engine`) — the
 // one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
 // re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
@@ -154,13 +126,6 @@ pub fn build_egress_client(spec: &EgressClientSpec) -> EgressClient {
     busbar_substrate::egress::engine::build_client(spec)
         .expect("the base egress engine posture has no failing build arm")
 }
-pub(crate) use engine::*;
-pub(crate) use hooks::*;
-pub use lazy_body::*;
-pub(crate) use response_body::*;
-pub(crate) use select::*;
-pub(crate) use usage::*;
-pub use wire::*;
 
 // THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
 // `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the
