@@ -808,12 +808,7 @@ pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
 }
 
 /// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane)`.
-pub fn upstream_failure(
-    app: &App,
-    pool_label: &str,
-    lane_idx: usize,
-    disposition: &'static str,
-) {
+pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, disposition: &'static str) {
     let fam = app.tslots.lane_family(pool_label, lane_idx);
     let di = DISPOSITIONS.iter().position(|d| *d == disposition);
     match (fam, di) {

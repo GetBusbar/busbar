@@ -28,12 +28,12 @@
 //! `prev_hash` to `hash`, which is also the only way to prove the refusal was not written onto a
 //! second chain of its own.
 
+use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_core::governance::{GovState, MemoryStore};
 use busbar_core::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -103,7 +103,12 @@ async fn a_governed_deployment(
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "B",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])

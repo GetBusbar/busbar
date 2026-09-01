@@ -22,17 +22,17 @@ use crate::preflight::{
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-use busbar_substrate::plane_host::{
-    LlmAffinityInput, LlmAuthStyle, LlmBuildInput, LlmClientSettings, LlmFailoverInput,
-    LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput, LlmPoolMemberInput,
-};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
-    store, telemetry, tls, transport, trust,
+    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
+    telemetry, tls, transport, trust,
+};
+use busbar_substrate::plane_host::{
+    LlmAffinityInput, LlmAuthStyle, LlmBuildInput, LlmClientSettings, LlmFailoverInput,
+    LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput, LlmPoolMemberInput,
 };
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
@@ -1329,7 +1329,12 @@ pub fn build_app_from_config(
     // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no `Lane`/`WeightedLane`.
     let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
         .iter()
-        .map(|p| (p.name.as_str(), p.members.iter().map(|m| m.lane_idx).collect()))
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.members.iter().map(|m| m.lane_idx).collect(),
+            )
+        })
         .collect();
     let ts_by_model: Vec<(&str, usize)> = by_model
         .iter()

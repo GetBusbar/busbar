@@ -1,5 +1,5 @@
-use crate::engine::AppEngineExt as _;
 use super::{record_token_usage, stable_hash, UsageSink};
+use crate::engine::AppEngineExt as _;
 use busbar_core::billing::TokenUsage;
 use std::sync::Arc;
 
@@ -255,7 +255,9 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups));
+    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
+        None, 0, &groups,
+    ));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -322,7 +324,13 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // ...and NOT in today's window (which the old `now()`-based code would have used).
     let in_today = gov
-        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, busbar_core::store::now())
+        .derived_bucket_usage(
+            &cost,
+            "group:daygrp@day",
+            "day",
+            true,
+            busbar_core::store::now(),
+        )
         .expect("usage read")
         .tokens;
     assert_eq!(

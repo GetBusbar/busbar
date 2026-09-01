@@ -14,10 +14,10 @@
 //! (`GovState::usage_for`) and the lane request budget (`LaneRuntime::lane_budget_remaining`, refunded
 //! on `BudgetSpendGuard::drop` when the guard is left armed).
 
-use busbar_core::store::LaneRuntime as _;
-use crate::engine::AppEngineExt as _;
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
+use crate::engine::AppEngineExt as _;
 use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_core::store::LaneRuntime as _;
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
@@ -48,7 +48,9 @@ fn fixture() -> (
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups));
+    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
+        None, 0, &groups,
+    ));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {

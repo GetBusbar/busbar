@@ -119,7 +119,10 @@ pub fn build_egress_targets(
     path_base: Option<&str>,
     wire_model: &str,
     base_url: &str,
-) -> Result<std::collections::HashMap<(busbar_core::operation::Operation, bool), EgressTarget>, String> {
+) -> Result<
+    std::collections::HashMap<(busbar_core::operation::Operation, bool), EgressTarget>,
+    String,
+> {
     use busbar_core::operation::Operation;
     let mut out = std::collections::HashMap::new();
     let Some(rh) = busbar_core::handlers::request_handler(protocol) else {

@@ -507,7 +507,8 @@ pub(crate) async fn forward_once(
     // cell against its own thresholds, not a one-size default. Wrapped in an `Arc` so the streaming
     // `FirstByteBody` guard can record mid-stream failures with the SAME thresholds the synchronous
     // path used (mirrors `forward_with_pool`).
-    let forward_once_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> = resolve_breaker_cfg(app, pool);
+    let forward_once_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> =
+        resolve_breaker_cfg(app, pool);
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
     // strip, model rewrite, serialize) — the SAME function the hot `forward_with_pool` path uses, so
@@ -550,7 +551,9 @@ pub(crate) async fn forward_once(
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
         busbar_core::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_core::auth::UpstreamCreds::Own => app.engine_tables().lanes()[i].api_key.expose_secret(),
+        busbar_core::auth::UpstreamCreds::Own => {
+            app.engine_tables().lanes()[i].api_key.expose_secret()
+        }
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress

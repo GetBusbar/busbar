@@ -4,19 +4,20 @@
 // common vocabulary core's `ingress` module re-exported into it.
 use crate::engine::AppEngineExt as _;
 use crate::engine::{forward_with_pool, WeightedLane};
-use crate::test_support::*;
-use busbar_core::ingress::{
-    admit_check, fallback_pools_authorized, finish, finish_admitted, finish_rejected,
-    governance_guard, ingress_error, not_found_message, percent_decode, pool_authorized, pool_label,
-};
-use busbar_core::state::App;
 use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
-use std::sync::Arc;
-use std::time::Instant;
+use crate::test_support::*;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use busbar_core::ingress::{
+    admit_check, fallback_pools_authorized, finish, finish_admitted, finish_rejected,
+    governance_guard, ingress_error, not_found_message, percent_decode, pool_authorized,
+    pool_label,
+};
+use busbar_core::state::App;
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::Instant;
 // `IntoResponse` is no longer used by the (now-delegating) production code, but the in-module
 // tests build responses via `(StatusCode, body).into_response()`, which needs the trait in scope.
 use axum::response::IntoResponse;
@@ -450,7 +451,9 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
+    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
+        None, 30, &groups,
+    ));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -576,8 +579,12 @@ async fn test_cohere_ingress_to_openai_backend() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("co", &[(0, 1)])
         .build();
@@ -684,7 +691,10 @@ async fn test_gemini_path_resolves_model_and_stream() {
 
     // The lane MODEL is "foo" so that resolution via the path model proves the path parse.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -804,7 +814,10 @@ async fn test_bedrock_converse_routes_and_returns_json() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -902,7 +915,10 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // Bedrock ingress → OpenAI backend (cross-protocol) so the upstream SSE stream is re-encoded
     // into the client's native binary eventstream framing.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1347,7 +1363,10 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1406,8 +1425,12 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
@@ -1600,7 +1623,10 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1686,7 +1712,10 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1765,7 +1794,12 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
     // `app.pools` and `app.by_model` miss and the 404 path runs.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
@@ -1833,13 +1867,22 @@ async fn test_body_model_parse_error_is_observable() {
     // No backend needed: the request never gets past the body parse.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -1850,7 +1893,11 @@ async fn test_body_model_parse_error_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "malformed body is a 400");
 
-    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a parse-error pre-routing failure must increment REQUESTS_TOTAL \
@@ -1872,13 +1919,22 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!(
@@ -1895,7 +1951,11 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
         "an InvokeModel body matching no recognized shape is a 400"
     );
 
-    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "an unresolvable InvokeModel body must increment REQUESTS_TOTAL \
@@ -1923,7 +1983,10 @@ async fn test_served_request_increments_hot_path_metrics() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new(MODEL, crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new(MODEL, crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool(POOL, &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -1995,9 +2058,10 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let server = MockServer::new(state.clone()).await;
     let store = StdArc::new(MemoryStore::new());
     let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-    let auth_cfg = busbar_core::config::AuthCfg::with_chain(vec![
-        busbar_core::config::AuthChainEntry::bare("test-groups-module"),
-    ]);
+    let auth_cfg =
+        busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare(
+            "test-groups-module",
+        )]);
     let mut app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2171,13 +2235,22 @@ async fn test_body_model_missing_model_is_observable() {
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -2189,7 +2262,11 @@ async fn test_body_model_missing_model_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "missing model is a 400");
 
-    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a missing-model pre-routing failure must increment REQUESTS_TOTAL \
@@ -2208,13 +2285,22 @@ async fn test_path_model_non_object_body_is_observable() {
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
 
     // Valid JSON, but a top-level ARRAY (not an object) — `as_object_mut` returns `None`.
     let resp = reqwest::Client::new()
@@ -2226,7 +2312,11 @@ async fn test_path_model_non_object_body_is_observable() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "non-object body is a 400");
 
-    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "a non-object-body pre-routing failure must increment REQUESTS_TOTAL \
@@ -2246,13 +2336,22 @@ async fn test_gemini_unsupported_action_is_observable() {
     busbar_core::metrics::init();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "foo",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
 
-    let before = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let before = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
 
     // `:countTokens` is a genuine Gemini action suffix (so the path stays gemini-classified) but
     // is NOT one of the two proxied generate actions → unsupported-action 404 in gemini_ingress.
@@ -2269,7 +2368,11 @@ async fn test_gemini_unsupported_action_is_observable() {
         "unsupported gemini action is a 404"
     );
 
-    let after = requests_total_for(&busbar_core::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    let after = requests_total_for(
+        &busbar_core::metrics::render(),
+        "unresolved",
+        "client_error",
+    ); // golden wire-contract literal (kept bare on purpose)
     assert!(
         after > before,
         "an unsupported-action pre-routing failure must increment REQUESTS_TOTAL \
@@ -2327,7 +2430,10 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2393,7 +2499,10 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2465,7 +2574,10 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2522,7 +2634,10 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     // Anthropic ingress → OpenAI backend (cross-protocol): StreamTranslate reframes the upstream
     // OpenAI SSE into Anthropic SSE via the writer's `write_response_event`.
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -2587,7 +2702,10 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
@@ -3343,7 +3461,9 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_core::governance::VirtualKey)
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
+        None, 30, &groups,
+    ));
     (app, key)
 }
 
@@ -3385,7 +3505,9 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_core::governance::VirtualKey
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(None, 30, &groups));
+    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
+        None, 30, &groups,
+    ));
     (app, key)
 }
 
@@ -4018,8 +4140,12 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai"),
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
@@ -4106,7 +4232,10 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4192,7 +4321,10 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4343,7 +4475,10 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("co", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("co", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -4415,7 +4550,10 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     });
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
-        .lane(LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("re", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5102,7 +5240,12 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "B",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
@@ -5188,7 +5331,12 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
-            LaneSpec::new("B", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").provider("zai"),
+            LaneSpec::new(
+                "B",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
         )
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
@@ -5491,7 +5639,10 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5566,7 +5717,10 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
     let server = MockServer::new(state.clone()).await;
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
@@ -5697,7 +5851,9 @@ async fn governed_limit_router(
     let app = TestApp::new()
         .keys_chain()
         .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(None, 0, &groups))
+        .cost(busbar_core::cost::CostModel::resolve_parts(
+            None, 0, &groups,
+        ))
         .build();
     let (addr, handle) = serve(app).await;
     (addr, handle, secret)
@@ -5952,7 +6108,10 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     // Lane registered in by_model ONLY (no `.pool(...)`), so the universal ingress resolves it
     // through `forward_resolved`'s by_model arm — the site under test.
     let app = TestApp::new()
-        .lane(LaneSpec::new(model, crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new(model, crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .build();
     // Hold a handle to the same App the router serves so the breaker op_handler can be inspected after
     // the request (`serve` only needs a clone of the Arc).

@@ -685,8 +685,10 @@ impl LaneSpec {
             token_url: None,
             subject: None,
             error_map: self.error_map.clone(),
-            health: self.health.as_ref().map(|h| {
-                busbar_substrate::plane_host::LlmHealthInput {
+            health: self
+                .health
+                .as_ref()
+                .map(|h| busbar_substrate::plane_host::LlmHealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
                             busbar_substrate::plane_host::LlmHealthMode::None
@@ -700,8 +702,7 @@ impl LaneSpec {
                     },
                     interval_secs: h.interval_secs,
                     timeout_secs: h.timeout_secs,
-                }
-            }),
+                }),
             allow_metadata_hosts: Vec::new(),
             context_max: self.context_max,
             default_max_tokens: self.default_max_tokens,
@@ -822,7 +823,10 @@ pub struct TestApp {
     #[allow(clippy::type_complexity)]
     pool_rewrite_chains: std::collections::HashMap<
         String,
-        Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+        Vec<(
+            std::time::Duration,
+            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        )>,
     >,
     /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
     upstream_credentials: crate::auth::UpstreamCreds,
@@ -1396,21 +1400,28 @@ impl TestApp {
         cost_per_mtok: Option<f64>,
         tags: &[&str],
     ) -> Self {
-        self.pool_member_meta.entry(name.into()).or_default().insert(
-            lane_idx,
-            (
-                tier.map(str::to_string),
-                cost_per_mtok,
-                tags.iter().map(|t| (*t).to_string()).collect(),
-            ),
-        );
+        self.pool_member_meta
+            .entry(name.into())
+            .or_default()
+            .insert(
+                lane_idx,
+                (
+                    tier.map(str::to_string),
+                    cost_per_mtok,
+                    tags.iter().map(|t| (*t).to_string()).collect(),
+                ),
+            );
         self
     }
     /// Install a pre-resolved pool ROUTING POLICY (the `route:`/base-hook order) read by the engine
     /// through the `App::pool_policy` facade — the successor to the former `.pool_runtime(PoolRuntime{
     /// policy: … })`. The plane's tests build the `ResolvedPolicy` (a core-owned type they name at
     /// `busbar_core::hooks::ResolvedPolicy`) and hand it here.
-    pub fn pool_policy_resolved(mut self, name: &str, policy: crate::hooks::ResolvedPolicy) -> Self {
+    pub fn pool_policy_resolved(
+        mut self,
+        name: &str,
+        policy: crate::hooks::ResolvedPolicy,
+    ) -> Self {
         self.pool_orderings.insert(name.into(), policy);
         self
     }
@@ -1428,7 +1439,10 @@ impl TestApp {
     pub fn pool_rewrites_resolved(
         mut self,
         name: &str,
-        rewrites: Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+        rewrites: Vec<(
+            std::time::Duration,
+            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        )>,
     ) -> Self {
         self.pool_rewrite_chains.insert(name.into(), rewrites);
         self
@@ -1560,7 +1574,10 @@ impl TestApp {
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
                 busbar_substrate::plane_host::LlmPoolMemberInput {
-                    model: lane_inputs.get(idx).map(|l| l.model.clone()).unwrap_or_default(),
+                    model: lane_inputs
+                        .get(idx)
+                        .map(|l| l.model.clone())
+                        .unwrap_or_default(),
                     lane_idx: idx,
                     weight,
                     reasoning: None,
@@ -1579,39 +1596,45 @@ impl TestApp {
             }
             let pool_inputs: Vec<busbar_substrate::plane_host::LlmPoolInput> = pool_map
                 .into_iter()
-                .map(|(name, members)| busbar_substrate::plane_host::LlmPoolInput {
-                    members: members
-                        .iter()
-                        .map(|(idx, w)| member_input(&name, *idx, *w))
-                        .collect(),
-                    failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_substrate::plane_host::LlmFailoverInput {
-                            timeout_secs: f.timeout_secs,
-                            exclusions: f.exclusions.clone(),
-                            max_hops: f.max_hops,
-                        }
-                    }),
-                    affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_substrate::plane_host::LlmAffinityInput {
-                            header_name: a.header_name.clone(),
-                        }
-                    }),
-                    on_exhausted: match self.on_exhausted_cfgs.get(&name) {
-                        Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                            busbar_substrate::plane_host::LlmOnExhausted::FallbackPool(p.clone())
-                        }
-                        Some(crate::config::OnExhausted::LeastBad) => {
-                            busbar_substrate::plane_host::LlmOnExhausted::LeastBad
-                        }
-                        Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_substrate::plane_host::LlmOnExhausted::Queue { max_ms: *max_ms }
-                        }
-                        _ => busbar_substrate::plane_host::LlmOnExhausted::Status503,
+                .map(
+                    |(name, members)| busbar_substrate::plane_host::LlmPoolInput {
+                        members: members
+                            .iter()
+                            .map(|(idx, w)| member_input(&name, *idx, *w))
+                            .collect(),
+                        failover: self.pool_failover.get(&name).map(|f| {
+                            busbar_substrate::plane_host::LlmFailoverInput {
+                                timeout_secs: f.timeout_secs,
+                                exclusions: f.exclusions.clone(),
+                                max_hops: f.max_hops,
+                            }
+                        }),
+                        affinity: self.pool_affinity.get(&name).map(|a| {
+                            busbar_substrate::plane_host::LlmAffinityInput {
+                                header_name: a.header_name.clone(),
+                            }
+                        }),
+                        on_exhausted: match self.on_exhausted_cfgs.get(&name) {
+                            Some(crate::config::OnExhausted::FallbackPool(p)) => {
+                                busbar_substrate::plane_host::LlmOnExhausted::FallbackPool(
+                                    p.clone(),
+                                )
+                            }
+                            Some(crate::config::OnExhausted::LeastBad) => {
+                                busbar_substrate::plane_host::LlmOnExhausted::LeastBad
+                            }
+                            Some(crate::config::OnExhausted::Queue { max_ms }) => {
+                                busbar_substrate::plane_host::LlmOnExhausted::Queue {
+                                    max_ms: *max_ms,
+                                }
+                            }
+                            _ => busbar_substrate::plane_host::LlmOnExhausted::Status503,
+                        },
+                        upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
+                        breaker: self.pool_breaker.get(&name).cloned(),
+                        name,
                     },
-                    upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
-                    breaker: self.pool_breaker.get(&name).cloned(),
-                    name,
-                })
+                )
                 .collect();
             let default_failover = self
                 .failover_cfg
@@ -2130,7 +2153,6 @@ pub mod warn_capture;
 
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
-
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every

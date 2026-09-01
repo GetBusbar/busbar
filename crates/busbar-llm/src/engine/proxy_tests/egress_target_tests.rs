@@ -75,8 +75,12 @@ fn egress_targets_honor_azure_path_override_with_query() {
     // the query verbatim (the boot parse never re-encodes it; `Url::join`/`set_path` would).
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1")
-                .path("/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                "http://127.0.0.1:1",
+            )
+            .path("/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01"),
         )
         .pool("", &[(0, 1)])
         .build();
@@ -103,8 +107,12 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
     // boot-time `Url::parse` must pass those `%XX` bytes through unchanged.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_BEDROCK, "http://127.0.0.1:1")
-                .upstream_model("anthropic.claude-3-sonnet-20240229-v1:0"),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_BEDROCK,
+                "http://127.0.0.1:1",
+            )
+            .upstream_model("anthropic.claude-3-sonnet-20240229-v1:0"),
         )
         .pool("", &[(0, 1)])
         .build();

@@ -3,12 +3,12 @@
 //! the `RoutingDecision::Reject` → `PolicyOutcome::RejectRequest` mapping — plus the reject
 //! status → error-kind mapping and its dialect-native envelope.
 use super::*;
+use crate::engine::WeightedLane;
+use crate::test_support::{LaneSpec, TestApp};
 use busbar_core::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
-use crate::engine::WeightedLane;
-use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Mutex as StdMutex;
 
 /// The prompt as the policy saw it: (flattened system, [(role, text)]).
@@ -473,8 +473,12 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
     crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost")
-                .dead("down for test"),
+            LaneSpec::new(
+                "primary",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://localhost",
+            )
+            .dead("down for test"),
         )
         .lane(LaneSpec::new(
             "fbmember",
@@ -492,7 +496,10 @@ async fn base_policy_restrict_persists_across_fallback_pool_hop() {
         })
         .fallback_pool("fb", &[(1, 1)])
         .pool_runtime("fb", pool_runtime_with(&[(1, &[])], Vec::new()))
-        .on_exhausted("p", busbar_core::config::OnExhausted::FallbackPool("fb".into()))
+        .on_exhausted(
+            "p",
+            busbar_core::config::OnExhausted::FallbackPool("fb".into()),
+        )
         .build();
 
     let resp = forward_with_pool(
@@ -663,7 +670,9 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         ))
         .pool("p", &[(0, 1)])
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")]),
+            &busbar_core::config::AuthCfg::with_chain(vec![
+                busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+            ]),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -699,7 +708,9 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare("test-groups-module")]),
+            &busbar_core::config::AuthCfg::with_chain(vec![
+                busbar_core::config::AuthChainEntry::bare("test-groups-module"),
+            ]),
         )))
         .build();
     Arc::get_mut(&mut app)

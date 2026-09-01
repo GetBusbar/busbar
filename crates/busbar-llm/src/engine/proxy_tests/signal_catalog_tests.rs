@@ -8,12 +8,12 @@
 //! tests (`hook_seam_tests.rs`, `hooks/tests/tests.rs`, `hooks/wire.rs`'s inline tests) are asserted
 //! unchanged elsewhere — this file only covers the NEW substrate.
 
-use busbar_core::store::LaneRuntime as _;
 use super::*;
-use busbar_core::hooks::{Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{Signal, SignalValue};
+use busbar_core::hooks::{Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
+use busbar_core::store::LaneRuntime as _;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.
@@ -254,7 +254,8 @@ async fn breaker_state_projects_open_after_a_trip() {
         .build();
     // Force the ROUTING POOL cell (not the lane-default cell) Open with a cooldown far in the
     // future, so the projected state reads "open" (not an already-expired-back-to-recoverable one).
-    app.store.force_open_in("p", 0, busbar_core::store::now() + 3600);
+    app.store
+        .force_open_in("p", 0, busbar_core::store::now() + 3600);
 
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {

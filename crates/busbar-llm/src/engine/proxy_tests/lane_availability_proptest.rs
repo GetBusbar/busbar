@@ -32,12 +32,12 @@
 //! is dominated by [`assert_served_by_fallback_not_primary`], whose TEETH are proven by
 //! [`invariant_rejects_park_then_serve_primary_witness`].
 
-use busbar_core::store::LaneRuntime as _;
-use busbar_core::config::{FailoverCfg, OnExhausted};
 use crate::engine::forward_with_pool;
-use busbar_core::state::now;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+use busbar_core::config::{FailoverCfg, OnExhausted};
+use busbar_core::state::now;
+use busbar_core::store::LaneRuntime as _;
 use proptest::prelude::*;
 use serde_json::json;
 use std::sync::Arc;
@@ -282,7 +282,8 @@ async fn run_world(world: World) -> Disposition {
         .collect();
     for (i, m) in all.iter().enumerate() {
         let model = format!("m{i}");
-        let mut spec = LaneSpec::new(&model, crate::proto_codec::PROTO_ANTHROPIC, &url).provider("p");
+        let mut spec =
+            LaneSpec::new(&model, crate::proto_codec::PROTO_ANTHROPIC, &url).provider("p");
         match m.cap {
             Cap::Unbounded => spec = spec.max(tokio::sync::Semaphore::MAX_PERMITS),
             Cap::BoundedFree(c) => spec = spec.max(c),
@@ -607,13 +608,22 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("primary", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .provider("p")
-                .max(1)
-                .sem(sem.clone()),
+            LaneSpec::new(
+                "primary",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .provider("p")
+            .max(1)
+            .sem(sem.clone()),
         ) // idx 0 — breaker-healthy but saturated
         .lane(
-            LaneSpec::new("spare", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).provider("p"),
+            LaneSpec::new(
+                "spare",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .provider("p"),
         ) // idx 1 — eligible fallback
         .pool("primary", &[(0, 1)])
         .failover(FailoverCfg {
@@ -671,10 +681,14 @@ async fn budget_contract_holds_under_full_saturation_for_every_policy() {
         let is_fallback = matches!(policy, OnExhausted::FallbackPool(_));
         let mut builder = TestApp::new()
             .lane(
-                LaneSpec::new("busy", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                    .provider("p")
-                    .max(1)
-                    .sem(sem_a.clone()),
+                LaneSpec::new(
+                    "busy",
+                    crate::proto_codec::PROTO_ANTHROPIC,
+                    &server.base_url(),
+                )
+                .provider("p")
+                .max(1)
+                .sem(sem_a.clone()),
             )
             .lane(
                 LaneSpec::new(

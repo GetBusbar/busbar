@@ -294,7 +294,8 @@ pub struct CompletionArrival {
 
 /// The LLM plane's resolved-completion synthesizer: one [`CompletionArrival`] in, one boxed response
 /// future out (core reads its status + body into the neutral `HostCompletion`).
-pub type CompletionIngress = fn(CompletionArrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+pub type CompletionIngress =
+    fn(CompletionArrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
 
 /// The synthesizer the COMPOSITION ROOT installed. Set once by [`install_completion_ingress`];
 /// consulted by [`completion_ingress`]. Single, not a table (one residual-default chat synthesizer).

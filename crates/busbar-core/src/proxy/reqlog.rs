@@ -314,8 +314,7 @@ pub struct RequestLog {
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse
 /// than no chain at all.
-pub static REQUESTS: std::sync::LazyLock<RequestLog> =
-    std::sync::LazyLock::new(RequestLog::new);
+pub static REQUESTS: std::sync::LazyLock<RequestLog> = std::sync::LazyLock::new(RequestLog::new);
 
 impl RequestLog {
     pub(crate) fn new() -> Self {

@@ -73,7 +73,7 @@ pub(crate) use wire::*;
 // their historical short paths (`crate::engine::{route_policy_headers_enabled, HDR_ROUTE_POLICY,
 // HDR_ROUTE_TARGET, UPSTREAM_RTT_US}`).
 pub(crate) use busbar_core::proxy::{
-    route_policy_headers_enabled, UPSTREAM_RTT_US, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET,
+    route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET, UPSTREAM_RTT_US,
 };
 
 // NEUTRAL egress-engine primitives the pipeline drives, re-exported from core (which itself re-exports
@@ -89,17 +89,17 @@ pub(crate) use busbar_core::proxy::{
 // core (`busbar_core::proxy`, itself re-exporting the substrate leaf). Re-exported into the flattened
 // engine namespace so the moved classification/error-envelope call sites keep naming them at their
 // historical short paths (`crate::engine::{KIND_*, ERR_NET_*, DISPOSITION_*, APPLICATION_JSON, …}`).
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_core::proxy::{
-    DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
-    DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT, ERR_NET_TRANSPORT,
-    KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
-    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR,
-    KIND_TIMEOUT,
-};
 pub(crate) use busbar_core::proxy::{
     APPLICATION_JSON, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
     TEXT_EVENT_STREAM,
+};
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use busbar_core::proxy::{
+    DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
+    DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
+    ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
+    KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
+    KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR, KIND_TIMEOUT,
 };
 // The NEUTRAL hook-content ceiling knob + the egress-client builder that STAY in core — re-exported
 // into the flattened engine namespace so the relocated tests (which named them at `proxy::…`) keep
@@ -186,11 +186,11 @@ mod probe_guard_tests;
 #[path = "proxy_tests/probe_release_owner_tests.rs"]
 mod probe_release_owner_tests;
 #[cfg(test)]
-#[path = "proxy_tests/request_short_circuit_tests.rs"]
-mod request_short_circuit_tests;
-#[cfg(test)]
 #[path = "proxy_tests/reqlog_dispatch_tests.rs"]
 mod reqlog_dispatch_tests;
+#[cfg(test)]
+#[path = "proxy_tests/request_short_circuit_tests.rs"]
+mod request_short_circuit_tests;
 #[cfg(test)]
 #[path = "proxy_tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;

@@ -15,9 +15,9 @@
 //! waiting on it, and a regression back to the unbounded send hangs the test's own 30s guard
 //! rather than passing vacuously.
 
-use busbar_core::store::LaneRuntime as _;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 
 fn member(idx: usize) -> WeightedLane {
@@ -129,7 +129,8 @@ async fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling
         .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
     // The only member's breaker is Open → the pool is exhausted → least_bad degrades onto it.
-    app.store.force_open_in("p", 0, busbar_core::store::now() + 300);
+    app.store
+        .force_open_in("p", 0, busbar_core::store::now() + 300);
 
     let body: bytes::Bytes = serde_json::to_vec(&json!({
         "model": "gpt-4o",

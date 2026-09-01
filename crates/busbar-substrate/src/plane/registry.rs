@@ -499,11 +499,8 @@ pub struct PlaneDecl {
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
     /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
     #[allow(clippy::type_complexity)]
-    pub viewer: Option<
-        fn(
-            &(dyn std::any::Any + Send + Sync),
-        ) -> &dyn crate::plane_host::EngineTablesView,
-    >,
+    pub viewer:
+        Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_host::EngineTablesView>,
 
     /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject

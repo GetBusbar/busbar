@@ -294,7 +294,8 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
         return false;
     }
     let lane = &app.engine_tables().lanes()[i];
-    let model_in_url = busbar_core::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
+    let model_in_url =
+        busbar_core::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
     // #2: `stream` is a path shim for a path-model egress (same-proto ⇒ egress == this lane).
     if model_in_url && obj.contains_key("stream") {
         return false;

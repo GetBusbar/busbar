@@ -2,10 +2,10 @@
 //! must dispatch in the policy's ranked order while honoring EXACTLY the same health filter SWRR
 //! honors (a tripped / dead / at-capacity preferred lane is skipped to the next), and fall through
 //! to SWRR when no ranked lane qualifies — never stranding an unranked-but-healthy lane.
-use busbar_core::store::LaneRuntime as _;
 use super::{pick_among, RequestCtx};
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_core::store::LaneRuntime as _;
 
 fn three_lane_app() -> std::sync::Arc<busbar_core::state::App> {
     TestApp::new()
@@ -340,7 +340,14 @@ async fn excluded_reasons_records_at_capacity() {
     crate::testkit::install_test_seams();
     use busbar_core::store::Unavailable;
     let app = TestApp::new()
-        .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))
+        .lane(
+            LaneSpec::new(
+                "m0",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://localhost",
+            )
+            .max(1),
+        )
         .pool("p", &[(0, 1)])
         .build();
     // Occupy the lane's only permit so admission fails at capacity.
@@ -371,7 +378,14 @@ async fn sticky_fall_through_records_reason() {
     crate::testkit::install_test_seams();
     use busbar_core::store::Unavailable;
     let app = TestApp::new()
-        .lane(LaneSpec::new("m0", crate::proto_codec::PROTO_ANTHROPIC, "http://localhost").max(1))
+        .lane(
+            LaneSpec::new(
+                "m0",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://localhost",
+            )
+            .max(1),
+        )
         .pool("p", &[(0, 1)])
         .build();
     let _held = app.store.try_acquire(0).expect("occupy the only permit");

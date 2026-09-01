@@ -428,9 +428,9 @@ pub(crate) fn translate_request_cross_protocol(
                 busbar_core::handlers::EgressWire::Bytes(b) => Ok(b),
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
                 // serialize it rather than panic on the request path.
-                busbar_core::handlers::EgressWire::Json(v) => {
-                    Ok(Bytes::from(busbar_core::json::to_vec(&v).unwrap_or_default()))
-                }
+                busbar_core::handlers::EgressWire::Json(v) => Ok(Bytes::from(
+                    busbar_core::json::to_vec(&v).unwrap_or_default(),
+                )),
             };
         }
         // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
@@ -543,8 +543,8 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
                                                                  // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
                                                                  // are identical: same dialect, same two mutations, same order.
-    let lane_dialect =
-        busbar_core::proto::decl_for(app.engine_tables().lanes()[i].protocol).and_then(|d| d.dialect());
+    let lane_dialect = busbar_core::proto::decl_for(app.engine_tables().lanes()[i].protocol)
+        .and_then(|d| d.dialect());
     pristine &= !lane_dialect
         .as_ref()
         .map(|dc| {
@@ -745,7 +745,8 @@ pub(crate) fn mid_stream_error_bytes(
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
+    let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+    else {
         return agnostic_stream_error_frame(message);
     };
     if ingress_eventstream {

@@ -27,8 +27,8 @@ use busbar_core::egress_auth::{self, MetadataSsrfPolicy};
 
 use crate::engine::health::ProbeSchedule;
 use crate::engine::{
-    build_egress_targets, host_from_base, Lane, MemberMeta, NativeRuntime, PoolRuntime, QueuedDepth,
-    WeightedLane,
+    build_egress_targets, host_from_base, Lane, MemberMeta, NativeRuntime, PoolRuntime,
+    QueuedDepth, WeightedLane,
 };
 
 /// Map the neutral [`LlmAuthStyle`] back to the core `Option<ProviderAuth>` the sync
@@ -46,9 +46,7 @@ fn provider_auth(style: LlmAuthStyle) -> Option<busbar_core::config::ProviderAut
 }
 
 /// Rebuild the runtime `HealthCfg` from the neutral [`busbar_substrate::plane_host::LlmHealthInput`].
-fn health_cfg(
-    h: &busbar_substrate::plane_host::LlmHealthInput,
-) -> busbar_core::config::HealthCfg {
+fn health_cfg(h: &busbar_substrate::plane_host::LlmHealthInput) -> busbar_core::config::HealthCfg {
     busbar_core::config::HealthCfg {
         mode: match h.mode {
             LlmHealthMode::None => busbar_core::config::HealthMode::None,
@@ -112,10 +110,13 @@ pub(crate) fn build_runtime(
         };
         let api_key = li.api_key_plaintext.clone();
         let credential = match li.auth_style {
-            LlmAuthStyle::JwtBearer => {
-                egress_auth::jwt_bearer::build(&api_key, li.scope.as_deref(), li.subject.as_deref(), &ssrf)
-                    .unwrap_or_else(|e| panic!("provider for '{}' (jwt-bearer auth): {e}", li.model))
-            }
+            LlmAuthStyle::JwtBearer => egress_auth::jwt_bearer::build(
+                &api_key,
+                li.scope.as_deref(),
+                li.subject.as_deref(),
+                &ssrf,
+            )
+            .unwrap_or_else(|e| panic!("provider for '{}' (jwt-bearer auth): {e}", li.model)),
             LlmAuthStyle::OAuthClientCredentials => {
                 let token_url = li
                     .token_url
@@ -127,7 +128,10 @@ pub(crate) fn build_runtime(
                     .expect("oauth-client-credentials lane requires scope (validated)");
                 egress_auth::oauth_client_credentials::build(&api_key, token_url, scope, &ssrf)
                     .unwrap_or_else(|e| {
-                        panic!("provider for '{}' (oauth-client-credentials auth): {e}", li.model)
+                        panic!(
+                            "provider for '{}' (oauth-client-credentials auth): {e}",
+                            li.model
+                        )
                     })
             }
             other => egress_auth::resolve(protocol, provider_auth(other)),
@@ -205,17 +209,26 @@ pub(crate) fn build_runtime(
             p.name.clone(),
             PoolRuntime {
                 members,
-                failover: p.failover.as_ref().map(|f| busbar_core::config::FailoverCfg {
-                    timeout_secs: f.timeout_secs,
-                    exclusions: f.exclusions.clone(),
-                    max_hops: f.max_hops,
-                }),
+                failover: p
+                    .failover
+                    .as_ref()
+                    .map(|f| busbar_core::config::FailoverCfg {
+                        timeout_secs: f.timeout_secs,
+                        exclusions: f.exclusions.clone(),
+                        max_hops: f.max_hops,
+                    }),
                 upstream_credentials: p.upstream_credentials,
-                affinity: p.affinity.as_ref().map(|a| busbar_core::config::AffinityCfg {
-                    mode: busbar_core::config::AffinityMode::Session,
-                    header_name: a.header_name.clone(),
-                }),
-                breaker: p.breaker.as_ref().map(busbar_core::store::BreakerCfg::from_llm),
+                affinity: p
+                    .affinity
+                    .as_ref()
+                    .map(|a| busbar_core::config::AffinityCfg {
+                        mode: busbar_core::config::AffinityMode::Session,
+                        header_name: a.header_name.clone(),
+                    }),
+                breaker: p
+                    .breaker
+                    .as_ref()
+                    .map(busbar_core::store::BreakerCfg::from_llm),
             },
         );
     }
@@ -247,11 +260,14 @@ pub(crate) fn build_runtime(
     // The global-default failover config — the fixed fallback for pools that set no `failover:` of
     // their own. Carried on the input (production fills the `DEFAULT_FAILOVER_*` constants; the test
     // fixture may override), so this is byte-identical to the pre-pivot inline lowering.
-    let failover_cfg = input.default_failover.as_ref().map(|f| busbar_core::config::FailoverCfg {
-        timeout_secs: f.timeout_secs,
-        exclusions: f.exclusions.clone(),
-        max_hops: f.max_hops,
-    });
+    let failover_cfg = input
+        .default_failover
+        .as_ref()
+        .map(|f| busbar_core::config::FailoverCfg {
+            timeout_secs: f.timeout_secs,
+            exclusions: f.exclusions.clone(),
+            max_hops: f.max_hops,
+        });
 
     // The active-probe schedule: CARRY the prior generation's Arc iff the lane set is identical (the
     // deadlines are lane-indexed, and a genuine lane change should re-establish probing), else fresh.

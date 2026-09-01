@@ -14,7 +14,8 @@ fn pristine_injector_splices_include_usage() {
     crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("spliced body must be valid JSON");
+    let v: serde_json::Value =
+        busbar_core::json::parse(&out).expect("spliced body must be valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),

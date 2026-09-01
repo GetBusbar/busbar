@@ -145,4 +145,3 @@ pub(crate) async fn protocol_dispatch(
         "the requested resource was not found",
     )
 }
-

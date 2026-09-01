@@ -24,9 +24,9 @@
 //! loop, one mutation. That simultaneity is the cell's real evidence; a per-plane test that survives
 //! a mutation of the shared loop would be proving a plane-local copy instead.
 
-use busbar_core::store::LaneRuntime as _;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 use std::sync::Arc;
 

@@ -9,8 +9,8 @@
 //! relays the backend body verbatim (never through the IR), so an `n>1` request there keeps all N.
 
 use super::translate_request_cross_protocol;
-use busbar_core::operation::Operation;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_core::operation::Operation;
 use serde_json::json;
 
 fn http() -> busbar_core::transport::Transport {

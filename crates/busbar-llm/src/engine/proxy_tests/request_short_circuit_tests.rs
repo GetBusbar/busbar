@@ -1,5 +1,5 @@
-use crate::engine::AppEngineExt as _;
 use super::translate_request_cross_protocol;
+use crate::engine::AppEngineExt as _;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
@@ -253,7 +253,12 @@ fn invalidator_2_stream_on_path_model_egress_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(crate::proto_codec::PROTO_GEMINI, "gemini", "url-model-x", body);
+    let out = shape_same_proto(
+        crate::proto_codec::PROTO_GEMINI,
+        "gemini",
+        "url-model-x",
+        body,
+    );
     assert_ne!(
         out, hop_bytes,
         "#2: `stream` on a path-model egress must invalidate"
@@ -286,7 +291,12 @@ fn invalidator_3_model_rewrite_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"client-alias","messages":[]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o-real", body);
+    let out = shape_same_proto(
+        crate::proto_codec::PROTO_OPENAI,
+        "openai",
+        "gpt-4o-real",
+        body,
+    );
     assert_ne!(
         out, hop_bytes,
         "#3: a model alias differing from lane.model must invalidate"
@@ -305,7 +315,12 @@ fn invalidator_3_matching_model_stays_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"gpt-4o-real","messages":[]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(crate::proto_codec::PROTO_OPENAI, "openai", "gpt-4o-real", body);
+    let out = shape_same_proto(
+        crate::proto_codec::PROTO_OPENAI,
+        "openai",
+        "gpt-4o-real",
+        body,
+    );
     assert_eq!(
         out, hop_bytes,
         "#3 neg: a body model already matching lane.model must NOT invalidate (byte-identical)"
@@ -319,7 +334,12 @@ fn invalidator_4_same_proto_model_shim_strip_forces_non_pristine() {
     crate::testkit::install_test_seams();
     let body = json!({"model":"router-shim","contents":[{"role":"user","parts":[{"text":"hi"}]}]});
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(crate::proto_codec::PROTO_GEMINI, "gemini", "url-model-x", body);
+    let out = shape_same_proto(
+        crate::proto_codec::PROTO_GEMINI,
+        "gemini",
+        "url-model-x",
+        body,
+    );
     assert_ne!(
         out, hop_bytes,
         "#4: a same-proto path-model body `model` must invalidate"
@@ -355,7 +375,12 @@ fn same_proto_gemini_thought_signature_round_trips_verbatim() {
         ]
     });
     let hop_bytes = busbar_core::json::to_vec(&body).unwrap();
-    let out = shape_same_proto(crate::proto_codec::PROTO_GEMINI, "gemini", "url-model-x", body);
+    let out = shape_same_proto(
+        crate::proto_codec::PROTO_GEMINI,
+        "gemini",
+        "url-model-x",
+        body,
+    );
     assert_eq!(
         out, hop_bytes,
         "same-proto gemini->gemini functionCall+thoughtSignature must relay byte-identically"

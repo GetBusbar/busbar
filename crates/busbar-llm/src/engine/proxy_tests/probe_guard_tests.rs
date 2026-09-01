@@ -4,8 +4,8 @@
 //! tests construct the guard directly: dropping an ARMED guard must clear `probe_in_flight` (the
 //! cell reverts HalfOpen→Open and is re-probeable); DISARMING it (the live-permit dispatch paths)
 //! must LEAVE the probe held for the owning request.
-use busbar_core::store::LaneRuntime as _;
 use super::ProbeGuard;
+use busbar_core::store::LaneRuntime as _;
 use busbar_core::store::{BreakerState, HealthState, LaneData, LaneRuntime};
 use std::sync::Arc;
 use tokio::sync::Semaphore;

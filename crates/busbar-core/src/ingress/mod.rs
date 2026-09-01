@@ -41,7 +41,11 @@ mod test_body_ingress;
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
 /// to short-circuit when the key may not use this pool.
-pub fn pool_authorized(gov: &crate::governance::GovCtx, pool: &str, proto: &str) -> Option<Response> {
+pub fn pool_authorized(
+    gov: &crate::governance::GovCtx,
+    pool: &str,
+    proto: &str,
+) -> Option<Response> {
     if let Some(key) = &gov.key {
         if !crate::governance::pool_allowed(key, pool) {
             // The client-facing body carries only vendor-plausible copy — never the internal key id
@@ -903,4 +907,3 @@ pub async fn adhoc(
     )
     .await
 }
-

@@ -80,7 +80,9 @@ impl RequestCtx {
                 .checked_add(std::time::Duration::from_secs(deadline_secs))
                 .unwrap_or_else(|| {
                     std::time::Instant::now()
-                        + std::time::Duration::from_secs(busbar_core::config::MAX_FAILOVER_DEADLINE_SECS)
+                        + std::time::Duration::from_secs(
+                            busbar_core::config::MAX_FAILOVER_DEADLINE_SECS,
+                        )
                 }),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),

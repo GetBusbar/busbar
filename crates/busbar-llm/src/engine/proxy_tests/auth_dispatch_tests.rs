@@ -9,9 +9,9 @@
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::auth::AuthMiddleware;
-use busbar_api::ScopeRef;
 use axum::http::header::AUTHORIZATION;
+use busbar_api::ScopeRef;
+use busbar_core::auth::AuthMiddleware;
 use busbar_core::sigv4::{sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
@@ -94,7 +94,11 @@ fn sign_bedrock_request(
 }
 
 /// A governance engine with ONE key that also carries AWS SigV4 credentials. Returns (gov, akid, secret).
-fn gov_with_aws_key() -> (std::sync::Arc<busbar_core::governance::GovState>, String, String) {
+fn gov_with_aws_key() -> (
+    std::sync::Arc<busbar_core::governance::GovState>,
+    String,
+    String,
+) {
     use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
@@ -320,8 +324,8 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 #[tokio::test]
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -372,8 +376,12 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
@@ -446,8 +454,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 #[tokio::test]
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -588,8 +596,8 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 #[tokio::test]
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -690,8 +698,8 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -786,8 +794,8 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -854,8 +862,8 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 #[tokio::test]
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -976,8 +984,8 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 #[tokio::test]
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, Store, VirtualKey};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore, Store, VirtualKey};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1106,8 +1114,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 #[tokio::test]
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1201,7 +1209,10 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     let (gov, _secret) = dp_gov_with_key();
     // Default auth = empty chain (open front door). Admin token present (governance active).
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
+                .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .governance(gov)
         .build();
@@ -1233,7 +1244,10 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
+                .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .governance(gov)
         .build();
@@ -1267,7 +1281,10 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
+                .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .governance(gov.clone())
         .build();
@@ -1309,7 +1326,10 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
+                .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
@@ -1346,7 +1366,10 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
         &[("eng", binding(Some(&["pa"]), None, None))],
     );
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(
+            LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
+                .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .pool("pb", &[(0, 1)])
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
@@ -1383,8 +1406,8 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 #[tokio::test]
 async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
     busbar_core::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1413,7 +1436,10 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
         .unwrap();
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url()).provider("zai"))
+        .lane(
+            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
         .pool("foo", &[(0, 1)])
         .keys_chain()
         .governance(gov)

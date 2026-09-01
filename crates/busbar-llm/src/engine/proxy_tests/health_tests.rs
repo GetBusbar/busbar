@@ -3,15 +3,15 @@
 
 //! Tests for `crates/busbar-core/src/health.rs`.
 
-use busbar_core::store::LaneRuntime as _;
-use crate::engine::AppEngineExt as _;
 use super::*;
-use busbar_core::config::{HealthCfg, HealthMode};
-use busbar_core::store::BreakerState;
+use crate::engine::AppEngineExt as _;
 use crate::test_support::{
     build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
 use axum::http::StatusCode;
+use busbar_core::config::{HealthCfg, HealthMode};
+use busbar_core::store::BreakerState;
+use busbar_core::store::LaneRuntime as _;
 use std::sync::Arc;
 
 fn health_active() -> HealthCfg {
@@ -30,9 +30,13 @@ async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockSe
     let server = MockServer::new(state).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -55,9 +59,13 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -183,9 +191,13 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -238,9 +250,13 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
         )
         .pool("p", &[(0, 1)])
         .build();
@@ -288,9 +304,13 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude", crate::proto_codec::PROTO_ANTHROPIC, &server.base_url())
-                .api_key("sk-test")
-                .health(health_active()),
+            LaneSpec::new(
+                "claude",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("sk-test")
+            .health(health_active()),
         )
         // Same lane fronted by three distinct pools — the per-cell success loop would bump the
         // lane-global `ok` (1 default + 3 pools) = 4 times per probe under the old code.
@@ -505,9 +525,9 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
     // mock's base URL and an active health block at `interval`, and one model routes to it.
     let make_cfg = |interval: u64| {
-        let mut c = crate::test_support::cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT",
-        ));
+        let mut c = crate::test_support::cfg_with_provider_api_key(
+            busbar_core::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT"),
+        );
         let p = c.providers.get_mut("acme").expect("the sole provider");
         p.base_url = server.base_url();
         p.health = Some(HealthCfg {

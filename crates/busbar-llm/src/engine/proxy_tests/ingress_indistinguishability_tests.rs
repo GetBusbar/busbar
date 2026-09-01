@@ -1,10 +1,10 @@
-use busbar_core::store::LaneRuntime as _;
 use super::{
     cross_protocol_error_kind, egress_accept, egress_user_agent, forward_with_pool, ingress_error,
     ingress_stream_content_type, read_capped, shape_cross_protocol_error, ReadEnd, UsageSink,
     KIND_AUTHENTICATION, KIND_INVALID_REQUEST, KIND_OVERLOADED, KIND_RATE_LIMIT,
 };
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::store::LaneRuntime as _;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -417,8 +417,12 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -540,8 +544,12 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -616,9 +624,13 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai")
-                .budget(1),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai")
+            .budget(1),
         )
         .pool("pa", &[(0, 1)])
         .pool_breaker(
@@ -835,7 +847,9 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     // A cap small enough that the filler content alone blows well past it, but the RAII guard
     // restores whatever was installed before this test regardless of how it exits.
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
+    let _limits_guard = busbar_core::limits::InstallGuard::install(
+        &busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP),
+    );
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
     let store = Arc::new(MemoryStore::new());
@@ -1143,10 +1157,11 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         busbar_core::proto::new_stream_translator("gemini", "openai", true).expect("translator");
     // Neutral seam: the array-stream framer is built the exact way production builds it
     // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
-    let json_array: Box<dyn busbar_core::proto::ArrayStreamFramer> = busbar_core::proto::decl_for("gemini")
-        .and_then(|d| d.dialect())
-        .and_then(|dc| dc.make_array_stream_framer())
-        .expect("gemini dialect builds an array-stream framer");
+    let json_array: Box<dyn busbar_core::proto::ArrayStreamFramer> =
+        busbar_core::proto::decl_for("gemini")
+            .and_then(|d| d.dialect())
+            .and_then(|dc| dc.make_array_stream_framer())
+            .expect("gemini dialect builds an array-stream framer");
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse: streaming
@@ -1403,8 +1418,12 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     let app = TestApp::new()
         .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .api_key("sk-operator-secret"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .api_key("sk-operator-secret"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -1574,8 +1593,12 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -1648,8 +1671,12 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
         .build();
@@ -1792,8 +1819,12 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pc", &[(0, 1)])
         .build();
@@ -2122,12 +2153,16 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
     // URL. Cooled down so LeastBad serves via the degraded forward_once path.
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("claude-3", crate::proto_codec::PROTO_BEDROCK, &server.base_url())
-                .provider("aws")
-                .path("/v1/messages")
-                .cooldown_until(t0 + 600)
-                .streak(3)
-                .err(5),
+            LaneSpec::new(
+                "claude-3",
+                crate::proto_codec::PROTO_BEDROCK,
+                &server.base_url(),
+            )
+            .provider("aws")
+            .path("/v1/messages")
+            .cooldown_until(t0 + 600)
+            .streak(3)
+            .err(5),
         )
         .pool("leastbad", &[(0, 1)])
         .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
@@ -2409,8 +2444,12 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("zai"),
         )
         .pool("pb", &[(0, 1)])
         .build();
@@ -2495,8 +2534,12 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai"),
         )
         .pool("po", &[(0, 1)])
         .build();
@@ -2566,8 +2609,12 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai"),
         )
         .pool("pg", &[(0, 1)])
         .build();
@@ -2653,11 +2700,15 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
     let t0 = store_now();
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai")
-                .cooldown_until(t0 + 600)
-                .streak(3)
-                .err(5),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai")
+            .cooldown_until(t0 + 600)
+            .streak(3)
+            .err(5),
         )
         .pool("leastbad-g", &[(0, 1)])
         .on_exhausted("leastbad-g", busbar_core::config::OnExhausted::LeastBad)
@@ -2733,7 +2784,9 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     // `huge`, and a sibling install could move it mid-run.
     let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
+    let _limits_guard = busbar_core::limits::InstallGuard::install(
+        &busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP),
+    );
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
     // An OpenAI chat.completion whose `content` alone is > CAP, so the whole body overruns the
@@ -2753,8 +2806,12 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai"),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai"),
         )
         .pool("pc", &[(0, 1)])
         .build();
@@ -2808,7 +2865,9 @@ async fn test_truncated_body_does_not_refund_budget() {
     // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
     let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(&busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP));
+    let _limits_guard = busbar_core::limits::InstallGuard::install(
+        &busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP),
+    );
     assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
     let huge = "x".repeat(CAP + 1024);
@@ -2826,9 +2885,13 @@ async fn test_truncated_body_does_not_refund_budget() {
     let server = MockServer::new(state.clone()).await;
     let app = TestApp::new()
         .lane(
-            LaneSpec::new("gpt-4o", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("openai")
-                .budget(1),
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto_codec::PROTO_OPENAI,
+                &server.base_url(),
+            )
+            .provider("openai")
+            .budget(1),
         )
         .pool("pc", &[(0, 1)])
         .build();
@@ -2984,7 +3047,14 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
 
     // Lane 0: budget-limited with a single remaining unit.
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .budget(1),
+        )
         .pool("p", &[(0, 1)])
         .build();
 
@@ -3644,7 +3714,14 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 
     // Lane 0: budget-limited with a single remaining unit.
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto_codec::PROTO_ANTHROPIC, "http://127.0.0.1:1").budget(1))
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::proto_codec::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .budget(1),
+        )
         .pool("p", &[(0, 1)])
         .build();
 

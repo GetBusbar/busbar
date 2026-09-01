@@ -9,7 +9,6 @@ pub(crate) use crate::store::LaneRuntime;
 
 use crate::proxy::EgressClient as Client;
 
-
 // ── DATA-PLANE TOPOLOGY, published once by the composition root ─────────────────────────────────
 // The `busbar` binary spawns N per-worker data runtimes (thread-per-core; see main.rs) and tells
 // core two things before any request is served: HOW MANY workers exist (sizes the client shards
@@ -196,7 +195,6 @@ impl UpstreamClientSettings {
     }
 }
 
-
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
 /// object is carried in [`App::plane_slots`] under `runtime_slot_key(plane_key)` — the neutral
 /// `"<key>:runtime"` convention — DISTINCT from the plane's own decl key, under which the
@@ -335,7 +333,10 @@ pub struct App {
     #[allow(clippy::type_complexity)]
     pub(crate) pool_rewrite_chains: std::collections::HashMap<
         String,
-        Vec<(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)>,
+        Vec<(
+            std::time::Duration,
+            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        )>,
     >,
     /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
     /// resolved to their transports ONCE per config generation and keyed by server name.
@@ -662,7 +663,6 @@ pub struct App {
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
-
 impl App {
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
     /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
@@ -789,7 +789,10 @@ impl App {
     pub fn pool_rewrites(
         &self,
         pool: &str,
-    ) -> &[(std::time::Duration, std::sync::Arc<dyn crate::hooks::RoutingPolicy>)] {
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+    )] {
         self.pool_rewrite_chains
             .get(pool)
             .map(Vec::as_slice)

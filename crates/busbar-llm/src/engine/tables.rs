@@ -222,7 +222,8 @@ pub(crate) struct NativeRuntime {
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
     pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
     pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
-    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, busbar_core::config::OnExhausted>,
+    pub(crate) on_exhausted_cfgs:
+        std::collections::HashMap<String, busbar_core::config::OnExhausted>,
     pub(crate) failover_cfg: Option<busbar_core::config::FailoverCfg>,
     pub(crate) queued_depth: Arc<QueuedDepth>,
     pub(crate) probe_schedule: Arc<crate::engine::health::ProbeSchedule>,
@@ -303,7 +304,9 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     }
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
         match self.on_exhausted_cfgs.get(pool) {
-            Some(busbar_core::config::OnExhausted::FallbackPool(fallback)) => Some(fallback.clone()),
+            Some(busbar_core::config::OnExhausted::FallbackPool(fallback)) => {
+                Some(fallback.clone())
+            }
             _ => None,
         }
     }
@@ -393,9 +396,9 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         upstream_credentials: busbar_core::auth::UpstreamCreds::default(),
         any_pool_upstream_creds_override: false,
         client: UpstreamClients::build(1, || {
-            busbar_core::proxy::build_egress_client(&busbar_core::proxy::EgressClientSpec::llm_lane(
-                4, 300, false, false,
-            ))
+            busbar_core::proxy::build_egress_client(
+                &busbar_core::proxy::EgressClientSpec::llm_lane(4, 300, false, false),
+            )
         }),
         // The empty runtime's client is the never-dialled default shard; its settings key exists only
         // so the warm-reuse compare has a value to read (it never matches a real generation's).
@@ -476,7 +479,9 @@ impl<'a> EngineTables<'a> {
     }
 
     /// The health-probe schedule shared across snapshots of this lineage.
-    pub(crate) fn probe_schedule(&self) -> &'a std::sync::Arc<crate::engine::health::ProbeSchedule> {
+    pub(crate) fn probe_schedule(
+        &self,
+    ) -> &'a std::sync::Arc<crate::engine::health::ProbeSchedule> {
         &self.rt.probe_schedule
     }
 

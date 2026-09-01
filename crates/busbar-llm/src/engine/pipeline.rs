@@ -688,8 +688,9 @@ pub(crate) async fn translate_response_cross_protocol(
                                 // computed-codec method (`DialectCodec::inject_response_metrics`),
                                 // reached by protocol NAME through `decl_for(name).dialect()`, so the
                                 // concrete `ProtocolWriter` is no longer named here (G6 A4b).
-                                if let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol)
-                                    .and_then(|d| d.dialect())
+                                if let Some(dialect) =
+                                    busbar_core::proto::decl_for(ingress_protocol)
+                                        .and_then(|d| d.dialect())
                                 {
                                     dialect.inject_response_metrics(
                                         &mut translated,
@@ -1115,7 +1116,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // once and shared (Arc) so the streaming guard can record mid-stream failures with the same
     // thresholds the synchronous path used. The default (no per-pool breaker — the common case) is
     // a process-wide cached Arc, so the hot path pays no per-request allocation for it.
-    let breaker_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> = resolve_breaker_cfg(app, pool_name);
+    let breaker_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> =
+        resolve_breaker_cfg(app, pool_name);
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
 
@@ -1916,7 +1918,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // injection never leaks an unsolicited usage chunk to an opted-out client.
         let payload = if wants_stream
             && body_is_json
-            && busbar_core::proto::decl_for(egress_name).is_some_and(|d| d.stream_usage_requires_opt_in)
+            && busbar_core::proto::decl_for(egress_name)
+                .is_some_and(|d| d.stream_usage_requires_opt_in)
             && !client_include_usage
         {
             if client_has_stream_options {
@@ -2210,7 +2213,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(app, pool_name, i);
                 }
-                busbar_core::telemetry::upstream_failure(app, metric_pool, i, DISPOSITION_TRANSIENT);
+                busbar_core::telemetry::upstream_failure(
+                    app,
+                    metric_pool,
+                    i,
+                    DISPOSITION_TRANSIENT,
+                );
                 busbar_core::telemetry::failover(app, metric_pool, err_type);
                 last_failure = Some(err_type);
                 drop(permit);
@@ -2444,7 +2452,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 i,
                                 DISPOSITION_TRANSIENT,
                             );
-                            busbar_core::telemetry::failover(app, metric_pool, DISPOSITION_TRANSIENT);
+                            busbar_core::telemetry::failover(
+                                app,
+                                metric_pool,
+                                DISPOSITION_TRANSIENT,
+                            );
                             last_failure = Some(DISPOSITION_TRANSIENT);
                             drop(permit);
                             continue;
@@ -2535,17 +2547,25 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 // (`auth_failure_status_and_kind`) so this path cannot drift from the
                                 // pre-routing auth path.
                                 let (auth_status, auth_kind) =
-                                    busbar_core::auth::auth_failure_status_and_kind(ingress_protocol);
+                                    busbar_core::auth::auth_failure_status_and_kind(
+                                        ingress_protocol,
+                                    );
                                 return ingress_error(
                                     ingress_protocol,
                                     auth_status,
                                     auth_kind,
-                                    busbar_core::proto::vendor_auth_failure_message(ingress_protocol),
+                                    busbar_core::proto::vendor_auth_failure_message(
+                                        ingress_protocol,
+                                    ),
                                 );
                             }
 
                             // For billing hard downs: continue to next lane (failover)
-                            busbar_core::telemetry::failover(app, metric_pool, DISPOSITION_HARD_DOWN);
+                            busbar_core::telemetry::failover(
+                                app,
+                                metric_pool,
+                                DISPOSITION_HARD_DOWN,
+                            );
                             last_failure = Some(DISPOSITION_HARD_DOWN);
                             continue;
                         }
@@ -2797,7 +2817,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     }
                 }
                 drop(_rbf_build);
-                let _rbf_attach = busbar_core::profile::start(busbar_core::profile::Stage::RbfAttach);
+                let _rbf_attach =
+                    busbar_core::profile::start(busbar_core::profile::Stage::RbfAttach);
                 // Bedrock-ingress streaming 2xx must carry `x-amzn-RequestId` (a real ConverseStream
                 // always does, preferring the captured same-protocol upstream id else synthesizing);
                 // anthropic-ingress streaming 2xx must carry `request-id` (the SDK reads it into

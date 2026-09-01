@@ -165,11 +165,7 @@ impl OpDispatch {
     /// WHAT THIS ATTEMPT'S FAILURE MEANT — the attributed outcome the breaker classifies, read by
     /// THIS cell's own codec ([`OperationHandler::extract_error`]). It needs nothing but the cell,
     /// so a caller that holds no `Lane` attributes a failure the same way the lane path does.
-    pub fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> crate::breaker::RawUpstreamError {
+    pub fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
         self.op_handler.extract_error(status, body)
     }
     /// Can this cell produce a client-facing incremental stream?

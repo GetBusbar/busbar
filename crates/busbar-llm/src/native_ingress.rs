@@ -327,7 +327,11 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
             // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
             // and gRPC arrivals get their own entry points and frame the same codecs.
-            busbar_core::handlers::frame(busbar_core::transport::Transport::Http, operation, op_handler),
+            busbar_core::handlers::frame(
+                busbar_core::transport::Transport::Http,
+                operation,
+                op_handler,
+            ),
             usage_sink(app, req.gov, pool_name, req.charged_at, admit),
         )
         .await;
@@ -606,8 +610,8 @@ async fn ingress_path_model_inner(
     // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
     // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
     // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) =
-        busbar_core::handlers::request_handler(proto).and_then(|rh| rh.operation_handler(operation))
+    let Some(op_handler) = busbar_core::handlers::request_handler(proto)
+        .and_then(|rh| rh.operation_handler(operation))
     else {
         return busbar_core::ingress::finish_rejected(
             app,
@@ -660,7 +664,14 @@ pub async fn operation_ingress(
 ) -> Response {
     let p = payload(ctx);
     operation_ingress_inner(
-        &p.app, &p.gov, p.caller_token.as_deref(), &headers, body, proto, operation, model_hint,
+        &p.app,
+        &p.gov,
+        p.caller_token.as_deref(),
+        &headers,
+        body,
+        proto,
+        operation,
+        model_hint,
     )
     .await
 }
@@ -680,8 +691,17 @@ pub async fn ingress_path_model(
 ) -> Response {
     let p = payload(ctx);
     ingress_path_model_inner(
-        &p.app, &p.gov, p.caller_token.as_deref(), &headers, body, &model, operation, stream,
-        gemini_json_array, proto, model_not_found_message.as_deref(),
+        &p.app,
+        &p.gov,
+        p.caller_token.as_deref(),
+        &headers,
+        body,
+        &model,
+        operation,
+        stream,
+        gemini_json_array,
+        proto,
+        model_not_found_message.as_deref(),
     )
     .await
 }

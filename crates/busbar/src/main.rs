@@ -625,8 +625,10 @@ fn register_protocols() {
     // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
     // `BODY_INGRESS` exists to close).
     #[allow(unused_mut)]
-    let mut body_ingress: Vec<(&'static str, busbar_substrate::ingress::arrival::BodyIngress)> =
-        Vec::new();
+    let mut body_ingress: Vec<(
+        &'static str,
+        busbar_substrate::ingress::arrival::BodyIngress,
+    )> = Vec::new();
     #[cfg(feature = "proto-llm")]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
     busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);

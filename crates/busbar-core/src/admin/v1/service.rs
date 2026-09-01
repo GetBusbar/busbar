@@ -607,7 +607,13 @@ pub(crate) fn build_with_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.engine_tables_view().pools().iter().any(|(n, _)| *n == p),
+        &|p| {
+            current
+                .engine_tables_view()
+                .pools()
+                .iter()
+                .any(|(n, _)| *n == p)
+        },
         &mut errors,
     );
     if !errors.is_empty() {
@@ -690,7 +696,13 @@ pub(crate) fn build_without_group(
     let mut errors = Vec::new();
     crate::config::groups::validate_groups(
         &groups,
-        &|p| current.engine_tables_view().pools().iter().any(|(n, _)| *n == p),
+        &|p| {
+            current
+                .engine_tables_view()
+                .pools()
+                .iter()
+                .any(|(n, _)| *n == p)
+        },
         &mut errors,
     );
     if !errors.is_empty() {
@@ -910,7 +922,10 @@ impl AdminService {
                     .iter()
                     .map(|&(idx, weight)| PoolMemberView {
                         // `idx` is the stable lane handle; project the lane's model name.
-                        model: view.lane_view(idx).map(|l| l.model.to_string()).unwrap_or_default(),
+                        model: view
+                            .lane_view(idx)
+                            .map(|l| l.model.to_string())
+                            .unwrap_or_default(),
                         weight,
                     })
                     .collect(),
@@ -953,7 +968,10 @@ impl AdminService {
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
                 let snap = self.app.store.snapshot(idx, now);
                 PoolMemberStatusView {
-                    model: view.lane_view(idx).map(|l| l.model.to_string()).unwrap_or_default(),
+                    model: view
+                        .lane_view(idx)
+                        .map(|l| l.model.to_string())
+                        .unwrap_or_default(),
                     weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the
@@ -1015,7 +1033,8 @@ impl AdminService {
     /// through each. Read scope. Sorted by provider name.
     pub(crate) async fn list_providers(&self) -> Result<Page<ProviderView>, AdminError> {
         let view = self.app.engine_tables_view();
-        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for i in 0..view.lane_count() {
             if let Some(l) = view.lane_view(i) {
                 *counts.entry(l.provider.to_string()).or_insert(0) += 1;

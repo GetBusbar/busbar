@@ -196,13 +196,7 @@ impl AuditLog {
     /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap.
     /// WITH principal attribution: every mutation, success AND failure, is attributed to WHO attempted
     /// it. Feeds the SAME mutation onto the durable journal seam — the ONE durable path.
-    pub fn record_by(
-        &self,
-        action: &str,
-        resource: &str,
-        outcome: &'static str,
-        principal: &str,
-    ) {
+    pub fn record_by(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
         // Allocate `seq` INSIDE the entries lock so it matches insertion order: fetching it before
         // the lock let two concurrent recorders interleave (thread B takes the lock with the higher
         // seq and pushes first, thread A pushes its lower seq behind it), producing out-of-order

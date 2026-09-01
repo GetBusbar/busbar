@@ -12,10 +12,10 @@
 //! `stalled_guard_does_not_release_a_newer_probe` already uses to prove the primitive, applied here
 //! at the engine call-site level instead of directly against `ProbeGuard`.
 
-use busbar_core::store::LaneRuntime as _;
 use super::forward_with_pool;
-use busbar_core::store::BreakerState;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::store::BreakerState;
+use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -98,8 +98,11 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
     app.store.record_success_in("pa", 0);
     app.store.force_open_in("pa", 0, 0);
     assert!(
-        app.store
-            .acquire_for_dispatch_in("pa", 0, busbar_core::store::now().saturating_add(86_400)),
+        app.store.acquire_for_dispatch_in(
+            "pa",
+            0,
+            busbar_core::store::now().saturating_add(86_400)
+        ),
         "a NEW probe must be won on the re-opened cell"
     );
     let epoch_after = app.store.probe_epoch_in("pa", 0);
@@ -226,8 +229,11 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
     );
     // Concretely re-probeable: a later dispatch can win the probe again.
     assert!(
-        app.store
-            .acquire_for_dispatch_in("pa", 0, busbar_core::store::now().saturating_add(86_400)),
+        app.store.acquire_for_dispatch_in(
+            "pa",
+            0,
+            busbar_core::store::now().saturating_add(86_400)
+        ),
         "after the guard's release a later request must be able to win the probe again"
     );
 
