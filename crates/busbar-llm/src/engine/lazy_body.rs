@@ -12,7 +12,7 @@
 //!
 //! [`LazyBody`] replaces the eager parse with:
 //!   1. ONE validating scan over the bytes ([`LazyBody::parse`]) that PRESERVES the malformed-body
-//!      400 contract exactly (it goes through `busbar_core::json::parse`, so the depth security floor and
+//!      400 contract exactly (it goes through `busbar_substrate::json::parse`, so the depth security floor and
 //!      the accept/reject set are unchanged — every byte is still parsed; uncaptured values are
 //!      scanned via `serde::de::IgnoredAny` instead of allocated into a tree), and
 //!   2. a tiny HEAD projection of exactly the top-level fields the pristine path reads, captured
@@ -149,22 +149,22 @@ enum Body {
 pub struct LazyBody {
     body: Body,
     /// The request facts, projected from the DOM by the ingress operation's reader (through the
-    /// neutral [`busbar_core::handlers::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
-    /// one request costs one read. Held behind the [`busbar_core::ir::facts::IrFacts`] projection, NOT the
+    /// neutral [`busbar_substrate::handlers::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
+    /// one request costs one read. Held behind the [`busbar_substrate::ir::facts::IrFacts`] projection, NOT the
     /// concrete IR, so this seam never names the LLM plane's representation. `None` until
     /// [`Self::ensure_ir`] is called and successful, and dropped again whenever [`Self::ensure_dom`]
     /// hands out a mutable body — see that method for why that invalidation is the invariant rather
     /// than a precaution.
-    ir: Option<Box<dyn busbar_core::ir::facts::IrFacts + Send + Sync>>,
+    ir: Option<Box<dyn busbar_substrate::ir::facts::IrFacts + Send + Sync>>,
 }
 
 impl LazyBody {
     /// Validate `bytes` as JSON and capture the head projection — WITHOUT building a DOM. Goes
-    /// through `busbar_core::json::parse` so the depth security floor and the malformed-body reject set
+    /// through `busbar_substrate::json::parse` so the depth security floor and the malformed-body reject set
     /// are IDENTICAL to the old eager `parse::<Value>` (same guard, same parser, full-body scan).
     /// `Err` ⇒ the caller takes its existing malformed-body 400 path, exactly as before.
     pub fn parse(bytes: &Bytes) -> Result<Self, sonic_rs::Error> {
-        let head: Head = busbar_core::json::parse(bytes)?;
+        let head: Head = busbar_substrate::json::parse(bytes)?;
         Ok(LazyBody {
             body: Body::Head {
                 bytes: bytes.clone(), // refcount bump — the engine retains the same pristine bytes
@@ -207,7 +207,7 @@ impl LazyBody {
     pub(crate) fn ensure_dom(&mut self) -> Result<&mut Value, ()> {
         self.ir = None;
         if let Body::Head { bytes, .. } = &self.body {
-            let v: Value = busbar_core::json::parse(bytes).map_err(|_| ())?;
+            let v: Value = busbar_substrate::json::parse(bytes).map_err(|_| ())?;
             self.body = Body::Dom(v);
         }
         match &mut self.body {
@@ -219,10 +219,10 @@ impl LazyBody {
 
     /// Materialize (memoized) the request FACTS — the parse the PROTOCOL performs, as distinct from
     /// the JSON parse [`Self::ensure_dom`] performs — projected to the neutral
-    /// [`busbar_core::ir::facts::IrFacts`], and return it.
+    /// [`busbar_substrate::ir::facts::IrFacts`], and return it.
     ///
     /// The facts are read by the ingress operation's own handler through the single
-    /// [`busbar_core::handlers::TranslateCodec::read_facts_value`] entrypoint, so it is the SAME parse the
+    /// [`busbar_substrate::handlers::TranslateCodec::read_facts_value`] entrypoint, so it is the SAME parse the
     /// cross-protocol translate path and the hook seam perform, not a second reading of the wire.
     /// `None` when the body cannot be materialized or the ingress protocol/operation has no handler or
     /// rejects the body: a caller that cannot get the facts falls back to what it does today, never to
@@ -235,8 +235,8 @@ impl LazyBody {
         &mut self,
         ingress_protocol: &str,
         op: busbar_core::handlers::Op,
-    ) -> Option<&(dyn busbar_core::ir::facts::IrFacts + Send + Sync)> {
-        use busbar_core::handlers::TranslateCodec;
+    ) -> Option<&(dyn busbar_substrate::ir::facts::IrFacts + Send + Sync)> {
+        use busbar_substrate::handlers::TranslateCodec;
         if self.ir.is_none() {
             let handler = busbar_core::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))?;
@@ -253,7 +253,7 @@ impl LazyBody {
     pub(crate) fn into_value(self) -> Result<Value, ()> {
         match self.body {
             Body::Dom(v) => Ok(v),
-            Body::Head { bytes, .. } => busbar_core::json::parse(&bytes).map_err(|_| ()),
+            Body::Head { bytes, .. } => busbar_substrate::json::parse(&bytes).map_err(|_| ()),
         }
     }
 }

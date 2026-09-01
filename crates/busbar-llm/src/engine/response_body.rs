@@ -82,14 +82,14 @@ pub(crate) struct FirstByteBody<S, P> {
     pool: Box<str>,
     /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
     /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
-    /// [`busbar_core::proto::StreamTranslator`] seam so this streaming body never names the concrete
+    /// [`busbar_substrate::proto::StreamTranslator`] seam so this streaming body never names the concrete
     /// translator.
-    translate: Option<Box<dyn busbar_core::proto::StreamTranslator>>,
+    translate: Option<Box<dyn busbar_substrate::proto::StreamTranslator>>,
     /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
     /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
     /// `:streamGenerateContent` request expects (`[{...},{...}]`). Runs AFTER `translate`.
-    json_array: Option<Box<dyn busbar_core::proto::ArrayStreamFramer>>,
+    json_array: Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>>,
     /// When set, the token usage tapped from this response is charged to a virtual key's budget at
     /// stream end (token-accurate accounting). Taken (fired) exactly once when the stream completes.
     usage_sink: Option<UsageSink>,
@@ -162,8 +162,8 @@ where
         lane_idx: usize,
         breaker_cfg: Arc<busbar_core::store::BreakerCfg>,
         pool: &str,
-        translate: Option<Box<dyn busbar_core::proto::StreamTranslator>>,
-        json_array: Option<Box<dyn busbar_core::proto::ArrayStreamFramer>>,
+        translate: Option<Box<dyn busbar_substrate::proto::StreamTranslator>>,
+        json_array: Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>>,
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
     ) -> Self {

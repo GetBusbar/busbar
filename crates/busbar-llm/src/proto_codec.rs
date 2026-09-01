@@ -19,7 +19,7 @@ use axum::http::StatusCode;
 use busbar_substrate::proto as registry;
 use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec, IrError};
 
-// The six dialect NAMES, plane-local (no longer `busbar_core::proto::PROTO_*` — that was a backwards
+// The six dialect NAMES, plane-local (no longer `busbar_substrate::proto::PROTO_*` — that was a backwards
 // reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
 // compile shapes (this plugin standalone, and `#[path]`-netted into `core::proto`), and reads as a
 // const pattern in the `protocol_for` match below. The values are the interned dialect names.
@@ -39,7 +39,7 @@ use busbar_substrate::breaker::CanonicalSignal;
 /// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
 /// (chat's body affinity key). Declared ONCE here and referenced by all six `ProtocolDecl`s rather
 /// than spelled six times: they are one shared fact about the chat body shape. RELOCATED out of
-/// `busbar_core::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
+/// `busbar_substrate::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
 /// unions whatever `head_keys` each registered decl declares and names none. Reached by the dialects
 /// as a bare name through their `use super::proto_codec::*` (which resolves in both compile shapes).
 pub const LLM_CHAT_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];

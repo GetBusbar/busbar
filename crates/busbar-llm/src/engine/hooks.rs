@@ -79,7 +79,7 @@ pub(crate) fn apply_rewrite_to_body(
 
 /// What the hook seam knows about a request, read from the IR.
 //
-// `Chat` holds the request behind the neutral [`busbar_core::ir::facts::IrFacts`] trait, NOT a concrete
+// `Chat` holds the request behind the neutral [`busbar_substrate::ir::facts::IrFacts`] trait, NOT a concrete
 // `IrRequest`: this seam consumes only the projection (`shape`/`end_user`/`content`), so naming the
 // concrete chat type here would be core reaching into the LLM plane's representation for no gain. The
 // box is the price of the trait object, and it is the RIGHT price now — the concrete IR belongs to
@@ -89,9 +89,9 @@ pub(crate) enum HookFacts {
     /// A request the ingress OPERATION's reader understood, seen through its neutral facts. Named
     /// `Facts` and not `Chat` because the seam is operation-general now: a chat body reaches it as
     /// `IrReq::Chat`, an embeddings/image/audio/rerank/moderation/subscribe body as its own family's
-    /// IR, and every one of them is screened through the SAME [`busbar_core::ir::facts::IrFacts`] projection
+    /// IR, and every one of them is screened through the SAME [`busbar_substrate::ir::facts::IrFacts`] projection
     /// — closing the hole where a non-chat operation forwarded past a content gate that saw nothing.
-    Facts(Box<dyn busbar_core::ir::facts::IrFacts + Send + Sync>),
+    Facts(Box<dyn busbar_substrate::ir::facts::IrFacts + Send + Sync>),
     /// The body carries no readable facts for this seam: a JSON body with no resolvable operation
     /// handler, an unregistered protocol, or the engine's absent-body sentinel with no bytes to read.
     /// Projects as the zeroed shape with no content, which is exactly what the seam projected for such
@@ -152,7 +152,7 @@ pub(crate) fn read_hook_facts(
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
     // through the byte reader (FATAL-1), or the engine's absent-body sentinel with no bytes at all.
-    use busbar_core::handlers::TranslateCodec;
+    use busbar_substrate::handlers::TranslateCodec;
     // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
     // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
     // concrete IR. A JSON OBJECT body takes the value-codec fast path (chat calls its proto reader
@@ -176,10 +176,10 @@ pub(crate) fn read_hook_facts(
 
 impl HookFacts {
     /// The shape/size signal bucket every hook gets, granted or not.
-    pub(crate) fn shape(&self) -> busbar_core::ir::facts::Shape {
+    pub(crate) fn shape(&self) -> busbar_substrate::ir::facts::Shape {
         match self {
             HookFacts::Facts(ir) => ir.shape(),
-            HookFacts::Absent => busbar_core::ir::facts::Shape::EMPTY,
+            HookFacts::Absent => busbar_substrate::ir::facts::Shape::EMPTY,
         }
     }
 
@@ -205,7 +205,7 @@ impl HookFacts {
     /// yields no items still yields an entry with empty text: a screening hook must never see fewer
     /// turns than the provider does.
     pub(crate) fn prompt(&self) -> busbar_core::hooks::PromptProjection<'_> {
-        use busbar_core::ir::facts::{ContentItem, Slot};
+        use busbar_substrate::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let HookFacts::Facts(ir) = self else {
             return busbar_core::hooks::PromptProjection {
@@ -1013,7 +1013,7 @@ pub(crate) fn capture_stage_shape<'a>(
         operation,
     )
     .map(|f| f.shape())
-    .unwrap_or(busbar_core::ir::facts::Shape::EMPTY);
+    .unwrap_or(busbar_substrate::ir::facts::Shape::EMPTY);
     StageShape {
         request_id,
         pool,

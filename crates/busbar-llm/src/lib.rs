@@ -18,7 +18,7 @@
 //! feature, which carries the dependency edge too, so dropping the feature drops the whole LLM
 //! protocol and the deletion gate watches busbar refuse all six names at boot.
 //!
-//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_core::proto::openai_family` — the `ERR_TYPE_*` bank,
+//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_substrate::proto::openai_family` — the `ERR_TYPE_*` bank,
 //! `bearer_error_code`, `tool_arguments_to_string`, `MESSAGE_NAMES_SENTINEL` — reads like it should
 //! have travelled with the OpenAI dialects, and it must not: `busbar-core` itself consumes it in
 //! PRODUCTION (`proxy`'s whole `KIND_*` vocabulary, `admin`'s error envelopes, `auth`'s bearer error
@@ -190,7 +190,7 @@ pub(crate) mod leaf_codec;
 pub mod proto_codec;
 
 /// **G6 A4b relocation.** The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_core::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
+/// `busbar_substrate::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
 /// and reaches it in production via the installed factory.
 pub mod proto_stream;
 
@@ -231,13 +231,13 @@ pub(crate) fn ensure_test_protocols_registered() {
 /// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
 /// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
-/// `busbar_core::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
+/// `busbar_substrate::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
 /// `busbar-a2a` own theirs. The composition root installs it through
 /// `busbar_core::plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
 /// `proto-llm`); core's own test binary names it through the `#[cfg(test)]` row in
 /// `plane::registry::BUILTIN_PLANE_DECLS`, so both shapes boot the same `[llm, mcp, a2a]` plane list.
 ///
-/// `wire_format_names` is [`busbar_core::proto::known_protocols`] itself — the model plane's dialects
+/// `wire_format_names` is [`busbar_substrate::proto::known_protocols`] itself — the model plane's dialects
 /// ARE the registered protocols, so a seventh dialect moves that list with nothing edited here. Every
 /// other field is `None`/trivial (the fallback plane claims no path, mounts nothing and reconciles
 /// nothing). R3/R4 sub-phase B DID move the LLM data-plane runtime (lanes/pools/failover/egress) off its
@@ -374,7 +374,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 
 /// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_DECL`, pinned HERE because this is the crate
 /// that owns the declaration — and the only place its `wire_format_names` field and
-/// `busbar_core::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
+/// `busbar_substrate::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
 /// identity is meaningful (core's own test binary links two core instances and cannot check it — see
 /// `busbar_core`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
 /// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses

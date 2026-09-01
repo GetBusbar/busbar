@@ -16,7 +16,7 @@ use busbar_core::diagnostics::{
     REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED,
     ROUTING_POLICY_RESTRICT_REJECT, ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use busbar_core::handlers::TranslateCodec;
+use busbar_substrate::handlers::TranslateCodec;
 
 /// Bodies at or above this size run the (pure, synchronous) cross-protocol translate on the
 /// blocking pool instead of inline on the single-threaded worker — see the offload comment at the
@@ -140,12 +140,12 @@ pub(crate) fn forward_with_pool_keyed<'a>(
     usage_sink: Option<UsageSink>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
-    // eager parse — `LazyBody::parse` goes through the identical `busbar_core::json` guard + parser).
+    // eager parse — `LazyBody::parse` goes through the identical `busbar_substrate::json` guard + parser).
     let _parse = busbar_core::profile::start(busbar_core::profile::Stage::InboundParse);
     let v: LazyBody = match LazyBody::parse(&body) {
         Ok(v) => v,
         Err(_) => {
-            tracing::debug!(detail = %busbar_core::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
             return futures::future::Either::Left(std::future::ready(ingress_error(
                 ingress_protocol,
                 StatusCode::BAD_REQUEST,
@@ -506,11 +506,11 @@ pub(crate) async fn translate_response_cross_protocol(
     // `TranslateCodec::translate_response` entrypoint; the engine keeps telemetry, the
     // untranslatable-metadata warn, billing, budget accounting, native-metrics injection, the
     // gemini-array wrap, and all response building.
-    let body_json = busbar_core::json::parse::<Value>(&bytes);
+    let body_json = busbar_substrate::json::parse::<Value>(&bytes);
     if body_json.is_err() {
         if let Some(eh) = egress_op {
             match eh.translate_response(
-                busbar_core::handlers::TranslateRespInput::Opaque(&bytes),
+                busbar_substrate::handlers::TranslateRespInput::Opaque(&bytes),
                 ingress_op.is_some(),
                 ingress_protocol,
                 &app.engine_tables().lanes()[i].model,
@@ -573,7 +573,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 // independent clock reads the pre-cutover arm made.
                 let stream_elapsed_ms = u64::try_from(upstream_started.elapsed().as_millis()).ok();
                 match eh.translate_response(
-                    busbar_core::handlers::TranslateRespInput::Json(rv),
+                    busbar_substrate::handlers::TranslateRespInput::Json(rv),
                     ingress_op.is_some(),
                     ingress_protocol,
                     &app.engine_tables().lanes()[i].model,
@@ -714,7 +714,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                     );
                                     return rb
                                         .body(Body::from(
-                                            busbar_core::json::to_vec(&arr)
+                                            busbar_substrate::json::to_vec(&arr)
                                                 .unwrap_or_else(|_| arr.to_string().into_bytes()),
                                         ))
                                         .unwrap_or_else(|_| status.into_response());
@@ -737,7 +737,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                 );
                                 // sonic-rs: SIMD serialize of the translated client body (the
                                 // response-path hot spot); fall back on the impossible serialize error.
-                                let body_bytes = busbar_core::json::to_vec(&translated)
+                                let body_bytes = busbar_substrate::json::to_vec(&translated)
                                     .unwrap_or_else(|_| translated.to_string().into_bytes());
                                 return rb
                                     .body(Body::from(body_bytes))
@@ -822,7 +822,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // A request's identity is (operation, protocol): `ingress_protocol` is the wire language,
     // `op` is the kind of work. Everything below is the engine carrying that pair through pool
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
-    // spec, never its identity; `busbar_core::handlers::CHAT` reproduces today's behavior byte-for-byte.
+    // spec, never its identity; `busbar_substrate::handlers::CHAT` reproduces today's behavior byte-for-byte.
     op: busbar_core::handlers::Op,
     usage_sink: Option<UsageSink>,
     // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
@@ -992,7 +992,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // retained bytes so every downstream reader of `body` sees the effective request.
             // Cost only on the rewrite path (a no-op request never reaches this serialize).
             if applied {
-                match busbar_core::json::to_vec(parsed) {
+                match busbar_substrate::json::to_vec(parsed) {
                     Ok(bytes) => body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
@@ -1801,7 +1801,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // bytes (the parse the old eager path performed at ingress).
                     Some(l) => l.into_value(),
                     // Failover hops: re-parse from the retained pristine bytes (sonic-rs: SIMD parse).
-                    None => busbar_core::json::parse(&body).map_err(|_| ()),
+                    None => busbar_substrate::json::parse(&body).map_err(|_| ()),
                 };
                 match parsed {
                     Ok(v) => Some(v),
@@ -1993,7 +1993,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // so a shared read changes no observable value — the SigV4 timestamp is still taken INSIDE
         // the attempt loop, per attempt (the 5-minute-skew rule), never hoisted out of it.
         let attempt_wall = now();
-        let signing_ctx = busbar_core::proto::SigningContext {
+        let signing_ctx = busbar_substrate::proto::SigningContext {
             host: &app.engine_tables().lanes()[i].signing_host,
             canonical_uri: &target.canonical_uri,
             body: &payload,
@@ -2870,7 +2870,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 /// not busbar's to mangle, and the worst case is the pre-existing zero-usage billing gap rather than a
 /// corrupted request. A body that already opted in re-serializes identically in effect.
 fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
-    let mut v: Value = match busbar_core::json::parse(&payload) {
+    let mut v: Value = match busbar_substrate::json::parse(&payload) {
         Ok(v) => v,
         Err(_) => return payload,
     };
@@ -2886,7 +2886,7 @@ fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
         return payload;
     };
     so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match busbar_core::json::to_vec(&v) {
+    match busbar_substrate::json::to_vec(&v) {
         Ok(bytes) => Bytes::from(bytes),
         Err(_) => payload,
     }
@@ -3024,7 +3024,7 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_core::json::to_vec(&busbar_core::hooks::wire::build(
+        busbar_substrate::json::to_vec(&busbar_core::hooks::wire::build(
             busbar_core::hooks::wire::OP_NOTIFY,
             &req,
             &[],

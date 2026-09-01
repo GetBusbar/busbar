@@ -96,7 +96,7 @@ pub(crate) async fn operation_ingress_inner(
         match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_core::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return busbar_core::ingress::finish_rejected(
                     app,
                     gov,
@@ -185,7 +185,7 @@ struct NativePlane<'a> {
     app: &'a Arc<App>,
     proto: &'static str,
     operation: busbar_core::operation::Operation,
-    op_handler: &'static dyn busbar_core::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     headers: &'a HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
@@ -357,7 +357,7 @@ pub async fn run(
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_core::operation::Operation,
-    op_handler: &'static dyn busbar_core::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -404,7 +404,7 @@ pub async fn operation_resolved(
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_core::operation::Operation,
-    op_handler: &'static dyn busbar_core::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -505,13 +505,13 @@ async fn ingress_path_model_inner(
     let started = Instant::now();
     // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
     let charged_at = busbar_core::store::now();
-    let mut v: Value = match busbar_core::json::parse(&body) {
+    let mut v: Value = match busbar_substrate::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
             // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
             // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
             // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %busbar_core::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-routing failure (model never resolved): route through `finish_rejected` with the
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
@@ -578,7 +578,7 @@ async fn ingress_path_model_inner(
     // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
     // path stays panic-free even if a future change introduces a non-serializable injected value;
     // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_core::json::to_vec(&v) {
+    let injected: Bytes = match busbar_substrate::json::to_vec(&v) {
         Ok(b) => b.into(),
         Err(_e) => {
             // Same leak class as the parse arms above: the JSON library's error Display is a

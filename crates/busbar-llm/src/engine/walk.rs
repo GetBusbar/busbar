@@ -460,14 +460,14 @@ pub(crate) async fn forward_once(
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
-    let v: Option<Value> = match busbar_core::json::parse(body) {
+    let v: Option<Value> = match busbar_substrate::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // See the main forward path: log a sanitized note for operators; never the parser's raw
             // error (with sonic-rs it embeds a fragment of the input body — secrets/PII) nor leak it
             // into the client 400 body.
-            tracing::debug!(detail = %busbar_core::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard` above releases
             // the POOL-cell single-flight probe on drop (owner-checked, idempotent, a no-op on the
             // default `""` / a non-HalfOpen cell), so the cell never wedges HalfOpen on this early exit.
@@ -572,7 +572,7 @@ pub(crate) async fn forward_once(
             DETAIL_INTERNAL_ERROR,
         ));
     };
-    let signing_ctx = busbar_core::proto::SigningContext {
+    let signing_ctx = busbar_substrate::proto::SigningContext {
         host: &app.engine_tables().lanes()[i].signing_host,
         canonical_uri: &target.canonical_uri,
         body: &payload,

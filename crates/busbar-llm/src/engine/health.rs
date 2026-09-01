@@ -292,7 +292,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // shared `sign_and_wire_path` helper — the identical primitive the organic forward path uses —
     // and reuse it for both the signed canonical URI and the wire URL so signed == sent.
     let wire_path = crate::engine::sign_and_wire_path(&url_path);
-    let signing_ctx = busbar_core::proto::SigningContext {
+    let signing_ctx = busbar_substrate::proto::SigningContext {
         host: &lane.signing_host,
         canonical_uri: wire_path.split('?').next().unwrap_or(&wire_path),
         body: &body,

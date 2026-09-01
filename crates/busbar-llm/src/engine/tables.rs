@@ -62,7 +62,7 @@ pub(crate) struct Lane {
     /// Optional default max output tokens, injected at the cross-protocol translation seam when the
     /// source request omitted `max_tokens` (legal for OpenAI) but this lane's protocol REQUIRES it
     /// (Anthropic Messages — see `ProtocolWriter::requires_max_tokens`). Falls back to
-    /// `busbar_core::proto::DEFAULT_MAX_TOKENS` when unset.
+    /// `busbar_substrate::proto::DEFAULT_MAX_TOKENS` when unset.
     pub(crate) default_max_tokens: Option<u32>,
     /// Optional upstream model name override. When set, this value is sent to the provider as the
     /// model identifier in the body and URL path, instead of `self.model` (the config key).

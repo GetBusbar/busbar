@@ -8,7 +8,7 @@ use busbar_core::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 /// terminal `IrUsage` is available WITHOUT a separate byte-scan — bill straight from `ir.usage`.
 ///
 /// Billed tokens = the normalized billable total: `uncached_input + cache_read +
-/// cache_creation + output` (see [`busbar_core::ir::IrUsage::billable_tokens`]). Readers normalize
+/// cache_creation + output` (see [`busbar_substrate::ir::IrUsage::billable_tokens`]). Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so this sum is correct
 /// provider-agnostically. This matches the streaming billing arm.
 /// OPERATION-BLIND usage recording: project the response IR's neutral `Billing` and record token

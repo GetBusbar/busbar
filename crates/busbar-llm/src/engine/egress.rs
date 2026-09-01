@@ -232,7 +232,7 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 pub(crate) fn lane_auth_headers(
     lane: &crate::engine::Lane,
     key: &str,
-    ctx: &busbar_core::proto::SigningContext,
+    ctx: &busbar_substrate::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     lane.credential.headers_for(key, ctx)
 }

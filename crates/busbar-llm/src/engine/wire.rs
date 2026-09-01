@@ -1,5 +1,5 @@
 use super::*;
-use busbar_core::handlers::TranslateCodec;
+use busbar_substrate::handlers::TranslateCodec;
 
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
@@ -120,7 +120,7 @@ fn maybe_attach_route_policy_gated(
 // the re-exported `ingress_error`.
 pub(crate) use busbar_core::proxy::{agnostic_error_envelope, ingress_error};
 
-/// Project an [`busbar_core::handlers::IngressReject`] into the caller-dialect error response
+/// Project an [`busbar_substrate::handlers::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
 /// `read_request`/`read_request_value` call sites (the opaque-body branch and the JSON branch)
 /// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the second
@@ -128,10 +128,10 @@ pub(crate) use busbar_core::proxy::{agnostic_error_envelope, ingress_error};
 /// operation and the model so the caller knows what to stop asking for.
 pub(crate) fn ingress_reject_response(
     ingress_protocol: &str,
-    reject: &busbar_core::handlers::IngressReject,
+    reject: &busbar_substrate::handlers::IngressReject,
 ) -> Response {
     match reject {
-        busbar_core::handlers::IngressReject::BadRequest(_) => ingress_error(
+        busbar_substrate::handlers::IngressReject::BadRequest(_) => ingress_error(
             ingress_protocol,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -143,7 +143,7 @@ pub(crate) fn ingress_reject_response(
         // process, and the moment the axis grew a field it would have read
         // `Verb { op: Invoke, name: "image" }`. `name()` is the identifier this project publishes
         // and pins — the same word the metric label and the `paths:` key use.
-        busbar_core::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
+        busbar_substrate::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
@@ -312,26 +312,26 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 /// shaping failures (unknown ingress protocol, request translation error) and on the effectively
 /// infallible re-serialization, so neither caller can panic on the request path.
 ///
-/// Project a [`busbar_core::handlers::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
+/// Project a [`busbar_substrate::handlers::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
 /// the caller-dialect error response. The ONE place that maps each reject arm to an HTTP shape, so the
 /// opaque and JSON request branches cannot drift: a refused body renders `ingress_reject_response`
 /// (its own 400/404 split); an egress that does not serve the operation is the 404
 /// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`); an unrepresentable request is a 400 carrying the reason.
 fn map_translate_req_reject(
     ingress_protocol: &str,
-    reject: busbar_core::handlers::TranslateReqReject,
+    reject: busbar_substrate::handlers::TranslateReqReject,
 ) -> Response {
     match reject {
-        busbar_core::handlers::TranslateReqReject::Ingress(reject) => {
+        busbar_substrate::handlers::TranslateReqReject::Ingress(reject) => {
             ingress_reject_response(ingress_protocol, &reject)
         }
-        busbar_core::handlers::TranslateReqReject::EgressUnsupported => ingress_error(
+        busbar_substrate::handlers::TranslateReqReject::EgressUnsupported => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
             DETAIL_MODEL_UNSUPPORTED_OPERATION,
         ),
-        busbar_core::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
+        busbar_substrate::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
             ingress_protocol,
             StatusCode::BAD_REQUEST,
             KIND_INVALID_REQUEST,
@@ -374,7 +374,7 @@ pub(crate) fn translate_request_cross_protocol(
     // which lane facts gate `prepare_for_egress`, and the SINGLE site outside `ir/` that names
     // `EgressPrep` — `egress_prep.is_some()` is exactly "this hop is cross-protocol".
     let egress_prep =
-        (ingress_protocol != egress_name).then(|| busbar_core::ir::egress_prep::EgressPrep {
+        (ingress_protocol != egress_name).then(|| busbar_substrate::ir::egress_prep::EgressPrep {
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
             lane_default_max_tokens: app.engine_tables().lanes()[i].default_max_tokens,
@@ -415,7 +415,7 @@ pub(crate) fn translate_request_cross_protocol(
             // never surfaces `EgressUnsupported` here; a refused body still renders as its reject.
             let translated = ih
                 .translate_request(
-                    busbar_core::handlers::TranslateReqInput::Opaque {
+                    busbar_substrate::handlers::TranslateReqInput::Opaque {
                         bytes: hop_bytes,
                         content_type: req_content_type,
                     },
@@ -429,7 +429,7 @@ pub(crate) fn translate_request_cross_protocol(
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
                 // serialize it rather than panic on the request path.
                 busbar_core::handlers::EgressWire::Json(v) => Ok(Bytes::from(
-                    busbar_core::json::to_vec(&v).unwrap_or_default(),
+                    busbar_substrate::json::to_vec(&v).unwrap_or_default(),
                 )),
             };
         }
@@ -495,7 +495,7 @@ pub(crate) fn translate_request_cross_protocol(
         // BEHIND the entrypoint; the seam keeps telemetry (above), the audit-and-allow emission, and
         // the error shaping (`map_translate_req_reject`) — none of which are the codec's business.
         let translated = match ingress_handler.translate_request(
-            busbar_core::handlers::TranslateReqInput::Json(&body),
+            busbar_substrate::handlers::TranslateReqInput::Json(&body),
             egress_handler.map(|_| egress_name),
             prep,
             app.engine_tables().lanes()[i].wire_model(),
@@ -578,7 +578,7 @@ pub(crate) fn translate_request_cross_protocol(
         return Ok(hop_bytes.clone());
     }
     // sonic-rs: SIMD serialize of the (large, string-heavy) upstream body — the request-path hot spot.
-    match busbar_core::json::to_vec(&body) {
+    match busbar_substrate::json::to_vec(&body) {
         Ok(p) => Ok(Bytes::from(p)),
         // Re-serializing a Value parsed from valid JSON and rewritten only with serde_json values is
         // effectively infallible; return a shaped 500 rather than panic a worker on the request path
@@ -667,7 +667,7 @@ pub(crate) fn client_fault_kind(class: StatusClass) -> &'static str {
 /// not JSON or carries no recognizable message field, so the caller substitutes a generic detail
 /// rather than leaking the raw foreign body.
 pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
-    let v: Value = busbar_core::json::parse(bytes).ok()?;
+    let v: Value = busbar_substrate::json::parse(bytes).ok()?;
     v.get("error")
         .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
@@ -688,7 +688,7 @@ pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
 /// SSE `error` event, or a Gemini `google.rpc.Status` element carries generic service phrasing, never
 /// the word "upstream" — leaking it is a protocol-indistinguishability tell on the most-exercised
 /// cross-protocol error path. Keep this generic and free of any intermediary/translation vocabulary.
-pub(crate) const MID_STREAM_GENERIC_DETAIL: &str = busbar_core::proto::STREAM_ABORT_DETAIL;
+pub(crate) const MID_STREAM_GENERIC_DETAIL: &str = busbar_substrate::proto::STREAM_ABORT_DETAIL;
 
 /// Vendor-neutral fallback `error.message` for a NON-2xx response whose body carried no extractable
 /// human message. Rendered into the CLIENT's native error envelope via `ingress_error`, so it must
@@ -740,7 +740,7 @@ pub(crate) fn mid_stream_error_bytes(
     // frame at the bottom of this function — the same ruling `ingress_error` makes, for the same
     // reason: every LLM dialect is a droppable plugin now, so there is no resident writer to borrow
     // a shape from, and inventing one would put a foreign dialect's bytes on the wire.
-    let err = busbar_core::proto::IrError {
+    let err = busbar_substrate::proto::IrError {
         class: busbar_core::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
@@ -782,7 +782,7 @@ pub(crate) fn mid_stream_error_bytes(
     // which case we still emit a decodable bare `data:` error.
     match dialect.write_error_frame(&err) {
         Some((event_type, data)) => {
-            let data = busbar_core::json::to_string(&data).unwrap_or_else(|_| {
+            let data = busbar_substrate::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
                     .to_string()
             });
