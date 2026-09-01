@@ -2769,7 +2769,7 @@ pub enum OnExhausted {
 /// is unchanged from the pre-enum `String` field.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum AffinityMode {
+pub enum AffinityMode {
     #[default]
     Session,
 }
@@ -2780,10 +2780,10 @@ pub struct AffinityCfg {
     /// Affinity mode. `session` (the default and only supported mode) pins a session to a lane
     /// using the header named by `header_name`.
     #[serde(default)]
-    pub(crate) mode: AffinityMode,
+    pub mode: AffinityMode,
     /// Request header carrying the session id (defaults to `x-session-id` when unset).
     #[serde(default)]
-    pub(crate) header_name: Option<String>,
+    pub header_name: Option<String>,
 }
 
 /// Default listen address for the inbound HTTP server.

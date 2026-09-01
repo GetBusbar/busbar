@@ -139,7 +139,7 @@ pub type Op = OpDispatch;
 /// names `OpDispatch`/`OperationHandler` — the engine dispatch types, which stay in core. The
 /// transport is handed in whole and is not consulted, wrapped or re-implemented: a transport decides
 /// how a codec's bytes reach and leave a peer, never what those bytes say.
-pub(crate) const fn frame(
+pub const fn frame(
     transport: crate::transport::Transport,
     operation: Operation,
     op_handler: &'static dyn OperationHandler,

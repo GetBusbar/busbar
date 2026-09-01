@@ -67,6 +67,13 @@ pub mod openai_responses;
 /// item. Registered via [`PATH_INGRESS`].
 pub mod arrival;
 
+/// THE NATIVE-PLANE UNIVERSAL INGRESS (pool/model resolution + governance admission + the-one-engine
+/// forward), RELOCATED here from `busbar-core` — it reads the LLM routing tables so it lives in the
+/// plane and calls DOWN into core's neutral accounting. The two dialect arrival families
+/// ([`arrival`]) converge on its [`native_ingress::operation_ingress`] / [`native_ingress::
+/// ingress_path_model`] entry points.
+pub mod native_ingress;
+
 /// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
 /// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).
 pub(crate) mod synth_rng;
@@ -200,6 +207,12 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
     };
+
+/// SPAWN THE ACTIVE HEALTH PROBERS for a freshly-built/-swapped snapshot — the relocated
+/// `busbar-core::health::spawn_probers` (the prober loop reads the plane's own `Lane`/`NativeRuntime`
+/// tables, so it lives here). The composition root (the `busbar` binary) calls it at boot and the
+/// admin swap path re-attaches probers to each new generation. No-op when every lane is `mode: none`.
+pub use crate::engine::health::spawn_probers;
 
 pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
     &anthropic::DECL,

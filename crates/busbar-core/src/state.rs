@@ -169,7 +169,7 @@ impl UpstreamClients {
 /// timers, and the `redirect: none` SSRF posture) is a compile-time constant, so this snapshot is
 /// exhaustive over the client-affecting configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UpstreamClientSettings {
+pub struct UpstreamClientSettings {
     /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
     /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
     pub upstream_request_timeout_secs: u64,

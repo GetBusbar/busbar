@@ -707,7 +707,7 @@ pub(crate) use dispatch::protocol_dispatch;
 /// CORE'S IMPL of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the request-pipeline
 /// seam a path-model dialect (gemini/bedrock, now in `busbar-llm`) calls back through. Core owns the
 /// resolution/forward/error-shaping; the dialect owns its URL parsing.
-pub(crate) mod arrival_host;
+pub mod arrival_host;
 /// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
 /// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
 /// (`busbar_substrate::ingress::arrival`) so the dialect crate names the registration-pair type

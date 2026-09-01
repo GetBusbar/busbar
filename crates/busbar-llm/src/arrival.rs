@@ -213,7 +213,7 @@ async fn gemini_ingress(
             ),
         );
     };
-    host.ingress_path_model(
+    crate::native_ingress::ingress_path_model(
         &ctx,
         headers,
         body,
@@ -353,7 +353,7 @@ async fn bedrock_ingress(
 ) -> Response {
     // Bedrock never uses the gemini JSON-array framing, and a model-not-found 404 uses the canonical
     // (non-gemini) message, so no api_version is threaded.
-    host.ingress_path_model(
+    crate::native_ingress::ingress_path_model(
         &ctx,
         headers,
         body,
@@ -399,7 +399,7 @@ async fn bedrock_invoke(
             ),
         );
     };
-    host.operation_ingress(
+    crate::native_ingress::operation_ingress(
         &ctx,
         headers,
         body,

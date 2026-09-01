@@ -25,7 +25,7 @@ pub const OP_NOTIFY: &str = "notify";
 /// borrow prompt text and end-user identity, and a derived Debug would bypass the redacting
 /// impls on `PromptProjection`/`CallerIdentity`.
 #[derive(Serialize)]
-pub(crate) struct HookRequest<'a> {
+pub struct HookRequest<'a> {
     /// The message kind: `decide` (a gate's blocking decision), `transform` (a rewrite pass), or
     /// `notify` (a fire-and-forget tap — never answer it). See [`OP_DECIDE`].
     pub(crate) op: &'static str,
@@ -47,21 +47,21 @@ pub(crate) struct HookRequest<'a> {
 /// completion that lets an audit tap see denials) and the response status.
 #[derive(Serialize)]
 pub struct HookStageProjection<'a> {
-    pub(crate) at: &'static str,
+    pub at: &'static str,
     /// The dispatched candidate's model name (ONE name for one concept across the wire — the
     /// same string `candidates[].model` carries on decide payloads).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) model: Option<&'a str>,
+    pub model: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) attempt_number: Option<u32>,
+    pub attempt_number: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) remaining_candidates: Option<usize>,
+    pub remaining_candidates: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) previous_failure: Option<&'a str>,
+    pub previous_failure: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) outcome: Option<&'static str>,
+    pub outcome: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) status: Option<u16>,
+    pub status: Option<u16>,
 }
 
 /// The request projection sent to a hook. THE CONTRACT: a **default bucket** of shape/metadata

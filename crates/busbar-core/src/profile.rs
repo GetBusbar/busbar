@@ -234,7 +234,7 @@ pub(crate) fn record(stage: Stage, nanos: u64) {
 /// when disabled (it still takes an `Instant`, but that path is never hit in a release build with the
 /// env unset because the call sites gate construction on [`enabled`] — see the macro-free call
 /// convention in the hot path). Prefer explicit [`record`] where a scope guard would span a `?`.
-pub(crate) struct Timer {
+pub struct Timer {
     stage: Stage,
     start: Instant,
 }

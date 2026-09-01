@@ -80,6 +80,9 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 url = { workspace = true }
 smallvec = { workspace = true }
+# The relocated native-plane gauntlet (`native_ingress::NativePlane`) implements the async
+# `busbar_substrate::plane_host::GauntletPlane` trait.
+async-trait = { workspace = true }
 # Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
 # bytes, hex-encoded.
 getrandom = { workspace = true }

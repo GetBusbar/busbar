@@ -76,7 +76,7 @@ pub use busbar_api::{Signal, SignalBag, SignalValue};
 /// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
 /// contract here does not change either way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct RequestedSignals(u64);
+pub struct RequestedSignals(u64);
 
 impl RequestedSignals {
     /// A single `u64` AND + compare — the same order of magnitude as the pre-existing

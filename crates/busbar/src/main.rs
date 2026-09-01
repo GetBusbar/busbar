@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, health, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -1096,7 +1096,8 @@ async fn run(data_workers: usize) {
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. Re-spawned on every config reload/apply (see the admin
     // swap sites) so reloaded lanes get probed and the old generation exits.
-    health::spawn_probers(&app);
+    #[cfg(feature = "proto-llm")]
+    busbar_llm::spawn_probers(&app);
 
     // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
     // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
