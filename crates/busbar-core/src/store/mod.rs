@@ -232,7 +232,7 @@ pub struct LaneSnapshot {
 // Bin-target consumer is the config-apply core (next slice); tests exercise it now.
 #[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct LaneHealthSnapshot {
+pub struct LaneHealthSnapshot {
     pub(crate) model: String,
     pub(crate) provider: String,
     /// Remaining lifetime request budget (`-1` = unlimited).

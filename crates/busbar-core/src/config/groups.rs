@@ -80,7 +80,7 @@ impl Default for GroupCfg {
 /// The limit template a group hands to its auto-provisioned children (see `GroupCfg::child_default`).
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChildDefault {
+pub struct ChildDefault {
     /// Limits copied onto a newly auto-created child group. Same `{ <metric>: <amount>, per: <window> }`
     /// shape as any group's `limits`.
     #[serde(default)]

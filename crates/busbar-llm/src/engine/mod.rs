@@ -34,6 +34,7 @@ use serde_json::Value;
 
 use busbar_core::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use busbar_core::config::OnExhausted;
+#[cfg_attr(not(test), allow(unused_imports))]
 use busbar_core::proto::{convert_headers, openai_family, StatusClass};
 use busbar_core::state::App;
 use busbar_core::store::{now, Permit};
@@ -78,6 +79,7 @@ pub(crate) use busbar_core::proxy::{
 // NEUTRAL egress-engine primitives the pipeline drives, re-exported from core (which itself re-exports
 // them from `busbar_substrate::egress::engine`) at their historical short paths so the moved call sites
 // keep resolving.
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_core::proxy::{
     egress_request, install_proxy_tunnel_if_configured, EgressClient, EgressClientSpec,
     EgressConnector, EgressError,
@@ -87,6 +89,7 @@ pub(crate) use busbar_core::proxy::{
 // core (`busbar_core::proxy`, itself re-exporting the substrate leaf). Re-exported into the flattened
 // engine namespace so the moved classification/error-envelope call sites keep naming them at their
 // historical short paths (`crate::engine::{KIND_*, ERR_NET_*, DISPOSITION_*, APPLICATION_JSON, …}`).
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_core::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
     DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT, ERR_NET_TRANSPORT,
@@ -101,6 +104,7 @@ pub(crate) use busbar_core::proxy::{
 // The NEUTRAL hook-content ceiling knob + the egress-client builder that STAY in core — re-exported
 // into the flattened engine namespace so the relocated tests (which named them at `proxy::…`) keep
 // resolving at `crate::engine::…`.
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_core::proxy::{
     build_egress_client, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };

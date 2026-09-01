@@ -344,7 +344,7 @@ async fn bedrock_converse_stream(
 /// route-selected stream intent. The `modelId` segment arrives ALREADY percent-decoded by axum, so it
 /// is used verbatim (decoding twice corrupts ids whose first decode yields a literal `%XX`).
 async fn bedrock_ingress(
-    host: Arc<dyn ArrivalHost>,
+    _host: Arc<dyn ArrivalHost>,
     ctx: ArrivalCtx,
     model_id: String,
     operation: busbar_api::operation::Operation,

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg_attr(not(test), allow(unused_imports))]
 use busbar_core::proxy::EgressClient as Client;
 use busbar_core::state::UpstreamClients;
 
@@ -35,6 +36,7 @@ pub(crate) struct Lane {
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
     /// at boot from (protocol, auth). See `busbar_core::egress_auth`; the request path calls `headers_for`.
     pub(crate) credential: Arc<dyn busbar_core::egress_auth::CredentialProvider>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) max: usize,
     // error_map cloned into each lane at startup for Stage 1b normalization
     pub(crate) error_map: Arc<std::collections::HashMap<String, String>>,

@@ -35,6 +35,11 @@ path = "src/lib.rs"
 # test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
 # The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-core/test-support"]
+# Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
+# `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
+# guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
+# `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
+timing = ["busbar-timing/timing"]
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
 # this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through

@@ -126,6 +126,7 @@ pub(crate) async fn forward_with_pool(
 // one coroutine. The malformed-body 400 contract is unchanged (`Either::Left` resolves to the same
 // `ingress_error` on first poll).
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn forward_with_pool_keyed<'a>(
     app: &'a Arc<App>,
     cands: Vec<WeightedLane>,
