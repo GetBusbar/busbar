@@ -1434,10 +1434,22 @@ pub fn build_app_from_config(
     // locals move into the bundle. With the LLM plane compiled out (the featureless binary) there is no
     // decl and no slot is inserted; `App::llm_runtime` then reads the empty default — byte-identical to
     // the always-present-but-empty flat field that build carried.
+    // NEUTRAL label projections (money-path Phase 3-4 B): pool→member-idx list, the direct-model
+    // index, and a lane-idx→model resolver — so `AppSlots::build` banks this plane's label space
+    // without naming `Lane`/`WeightedLane`. Built BEFORE `lanes`/`pools`/`by_model` move into the
+    // runtime bundle below (the projections borrow them; NLL releases the borrows at the build call).
+    let ts_pools: Vec<(&str, Vec<usize>)> = pools
+        .iter()
+        .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+        .collect();
+    let ts_by_model: Vec<(&str, usize)> = by_model
+        .iter()
+        .map(|(model, &idx)| (model.as_str(), idx))
+        .collect();
     let tslots = Arc::new(telemetry::AppSlots::build(
-        &lanes,
-        &pools,
-        &by_model,
+        &ts_pools,
+        &ts_by_model,
+        |idx| lanes.get(idx).map(|lane| lane.model.as_str()),
         crate::plane::fallback_key(),
     ));
     let llm_runtime = crate::state::NativeRuntime {

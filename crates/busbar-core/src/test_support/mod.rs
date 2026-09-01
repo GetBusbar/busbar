@@ -1407,10 +1407,23 @@ impl TestApp {
                 &crate::config::AuthCfg::default_none(),
             ))
         });
+        // NEUTRAL label projections (money-path Phase 3-4 B) — pool→member-idx list, the direct-model
+        // index, and a lane-idx→model resolver — so `AppSlots::build` banks the label space without
+        // naming `Lane`/`WeightedLane`. Borrows `self.pools`/`by_model`/`lanes` before they move into
+        // the runtime bundle below (NLL releases the borrows at the build call).
+        let ts_pools: Vec<(&str, Vec<usize>)> = self
+            .pools
+            .iter()
+            .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+            .collect();
+        let ts_by_model: Vec<(&str, usize)> = by_model
+            .iter()
+            .map(|(model, &idx)| (model.as_str(), idx))
+            .collect();
         let tslots = std::sync::Arc::new(crate::telemetry::AppSlots::build(
-            &lanes,
-            &self.pools,
-            &by_model,
+            &ts_pools,
+            &ts_by_model,
+            |idx| lanes.get(idx).map(|lane| lane.model.as_str()),
             crate::plane::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));

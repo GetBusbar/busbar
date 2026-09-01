@@ -61,8 +61,8 @@ fn minimal_app() -> Arc<App> {
         agent_defs: std::sync::Arc::new(busbar_a2a::a2a::config::AgentsCfg::default()),
         tslots: Arc::new(crate::telemetry::AppSlots::build(
             &[],
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
+            &[],
+            |_idx| -> Option<&str> { None },
             crate::plane::fallback_key(),
         )),
         llm_runtime_key: crate::state::runtime_slot_key(crate::plane::fallback_key()),

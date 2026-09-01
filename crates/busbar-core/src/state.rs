@@ -893,6 +893,43 @@ impl NativeRuntime {
     }
 }
 
+/// NEUTRAL READ-SIDE PROJECTION of this runtime's routing tables for the core-resident scrape/
+/// discovery readers (1.6.0 money-path Phase 3-4 B). `NativeRuntime` is still a core type this commit
+/// (the pivot relocates it to `busbar-llm`); implementing the substrate trait now lets `/metrics`, the
+/// `/v1/models` listing, and the telemetry label bank read these tables through neutral projections —
+/// naming no `Lane`/`WeightedLane` — so they need not move when the tables do. Every projection is a
+/// cold/scrape-path read that may allocate; the hot engine path never touches this seam (it reads the
+/// concrete fields directly).
+impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
+    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
+        self.pools
+            .iter()
+            .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
+            .collect()
+    }
+    fn model_indices(&self) -> Vec<(&str, usize)> {
+        self.by_model
+            .iter()
+            .map(|(m, &idx)| (m.as_str(), idx))
+            .collect()
+    }
+    fn model_index(&self, model: &str) -> Option<usize> {
+        self.by_model.get(model).copied()
+    }
+    fn lane_view(&self, idx: usize) -> Option<busbar_substrate::plane_host::LaneView<'_>> {
+        self.lanes
+            .get(idx)
+            .map(|lane| busbar_substrate::plane_host::LaneView {
+                model: &lane.model,
+                provider: &lane.provider,
+                base_url: &lane.base_url,
+            })
+    }
+    fn queued_depth(&self, pool: &str) -> u64 {
+        self.queued_depth.depth(pool)
+    }
+}
+
 /// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
 /// every plane's runtime rides — the constructor `appbuild` calls to seed
 /// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
@@ -1021,6 +1058,25 @@ impl App {
     pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
         EngineTables {
             rt: self.llm_runtime(),
+        }
+    }
+
+    /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
+    /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
+    /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not relocate when the
+    /// tables move into `busbar-llm` (1.6.0 money-path Phase 3-4 B). This commit still SOURCES the view
+    /// by downcasting the in-core `NativeRuntime` slot (the pivot swaps this for the plane's viewer
+    /// fn-pointer); an ABSENT slot — the featureless zero-plane boot — yields the substrate-resident
+    /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (zero pools/models), so a scrape or
+    /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
+    /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
+    pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+        match self
+            .plane_slot(self.llm_runtime_key)
+            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+        {
+            Some(rt) => rt,
+            None => &busbar_substrate::plane_host::EMPTY_VIEW,
         }
     }
 

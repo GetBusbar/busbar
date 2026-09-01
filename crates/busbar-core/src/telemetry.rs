@@ -61,7 +61,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::diagnostics::{diag_warn, TELEMETRY_SLOT_TABLE_FULL};
 
-use crate::state::{App, Lane, WeightedLane};
+use crate::state::App;
 
 // ── Capacity ─────────────────────────────────────────────────────────────────────────────────────
 //
@@ -603,10 +603,16 @@ impl AppSlots {
     /// Register every hot-path slot for one config generation. Label spaces registered here are
     /// exactly the bounded sets the emission sites can produce: configured pool names, configured
     /// lane MODEL strings, the `"unresolved"` sentinel, and the fixed vocabularies above.
-    pub(crate) fn build(
-        lanes: &[Lane],
-        pools: &HashMap<String, Vec<WeightedLane>>,
-        by_model: &HashMap<String, usize>,
+    /// NEUTRAL LABEL PROJECTION inputs (money-path Phase 3-4 B): `pools` is each pool label paired
+    /// with its member lane indices, `by_model` is the direct-model index (model label → lane index),
+    /// and `lane_model` resolves a lane index to its model-string label. Expressed this way, banking
+    /// one plane's bounded label space names no `Lane`/`WeightedLane`, so telemetry need not relocate
+    /// when the routing tables move into `busbar-llm`. Byte-identical banking to the prior
+    /// table-typed form — the SAME pool/model/lane label sets.
+    pub(crate) fn build<'a>(
+        pools: &[(&'a str, Vec<usize>)],
+        by_model: &[(&'a str, usize)],
+        lane_model: impl Fn(usize) -> Option<&'a str>,
         plane: &'static str,
     ) -> AppSlots {
         use crate::metrics::{
@@ -621,8 +627,8 @@ impl AppSlots {
         let banked_plane = plane;
 
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
-        let mut ingress_labels: Vec<&str> = pools.keys().map(String::as_str).collect();
-        ingress_labels.extend(by_model.keys().map(String::as_str));
+        let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
+        ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
         ingress_labels.push(crate::proxy::POOL_LABEL_UNRESOLVED);
         ingress_labels.sort_unstable();
         ingress_labels.dedup();
@@ -655,19 +661,20 @@ impl AppSlots {
         // lane's model string (`metric_pool_label` resolves the empty cell key to the model).
         let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::new();
         let mut engine_labels: Vec<(&str, Vec<usize>)> = Vec::new();
-        for (pool, members) in pools {
-            engine_labels.push((pool.as_str(), members.iter().map(|wl| wl.idx).collect()));
+        for (pool, member_idxs) in pools {
+            engine_labels.push((*pool, member_idxs.clone()));
         }
-        for (model, &idx) in by_model {
-            engine_labels.push((model.as_str(), vec![idx]));
+        for (model, idx) in by_model {
+            engine_labels.push((*model, vec![*idx]));
         }
 
         let mut failover = HashMap::with_capacity(engine_labels.len());
         for (pool, member_idxs) in &engine_labels {
             let mut per_lane = HashMap::with_capacity(member_idxs.len());
             for &idx in member_idxs {
-                let Some(lane) = lanes.get(idx) else { continue };
-                let lane_label = lane.model.as_str();
+                let Some(lane_label) = lane_model(idx) else {
+                    continue;
+                };
                 per_lane.insert(
                     idx,
                     LaneFamily {

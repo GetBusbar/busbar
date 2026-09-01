@@ -22,6 +22,10 @@
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
 pub mod breaker;
+// THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
+// the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
+// readers name so they need not move when the tables relocate into `busbar-llm`.
+pub mod engine_view;
 // The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-certificate
 // SPKI DER walk — PURE host-side TLS helpers (process-atomic registries + an RFC 5280 length-skip; no
 // `App`, no engine, no FFI). They live here so the host egress chokepoint and the A2A plane both name
@@ -35,6 +39,9 @@ pub mod trust_anchor;
 use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
+pub use crate::plane_host::engine_view::{
+    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
+};
 pub use crate::plane_host::scope::{DispatchScope, DurableScope, SessionScope};
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
