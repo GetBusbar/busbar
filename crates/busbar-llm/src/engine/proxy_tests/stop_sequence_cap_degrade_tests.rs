@@ -13,8 +13,8 @@ use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> busbar_core::transport::Transport {
-    busbar_core::transport::Transport::Http
+fn http() -> busbar_substrate::transport::Transport {
+    busbar_substrate::transport::Transport::Http
 }
 
 // ---- CROSS-PROTOCOL over-cap stop list: CLAMPED to cap and forwarded at 200 (v1.5.4). ----
@@ -36,7 +36,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
@@ -74,7 +74,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
@@ -112,7 +112,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
@@ -151,7 +151,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
         "max_tokens": 16,
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,
@@ -192,7 +192,7 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop_sequences": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let out = translate_request_cross_protocol(
         &app,
         0,

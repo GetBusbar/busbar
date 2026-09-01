@@ -167,7 +167,7 @@ async fn capture_latency_metrics() {
     );
     // When `BUSBAR_PROFILE` is set, emit the per-stage breakdown accumulated across the run (the
     // `BUSBAR_PROFILE stage=...` lines). No-op otherwise.
-    busbar_core::profile::dump();
+    busbar_substrate::profile::dump();
     server.shutdown().await;
 }
 
@@ -2840,7 +2840,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
 #[cfg(test)]
 mod disposition_matrix_tests {
     use super::*;
-    use busbar_core::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
+    use busbar_substrate::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
     use std::collections::HashMap;
 
     #[test]
@@ -2849,35 +2849,35 @@ mod disposition_matrix_tests {
         // Exhaustive check: all valid StatusClass names must parse correctly
         assert_eq!(
             status_class_from_str("rate_limit"),
-            Some(busbar_core::breaker::StatusClass::RateLimit)
+            Some(busbar_substrate::breaker::StatusClass::RateLimit)
         );
         assert_eq!(
             status_class_from_str("overloaded"),
-            Some(busbar_core::breaker::StatusClass::Overloaded)
+            Some(busbar_substrate::breaker::StatusClass::Overloaded)
         );
         assert_eq!(
             status_class_from_str("server_error"),
-            Some(busbar_core::breaker::StatusClass::ServerError)
+            Some(busbar_substrate::breaker::StatusClass::ServerError)
         );
         assert_eq!(
             status_class_from_str("timeout"),
-            Some(busbar_core::breaker::StatusClass::Timeout)
+            Some(busbar_substrate::breaker::StatusClass::Timeout)
         );
         assert_eq!(
             status_class_from_str("network"),
-            Some(busbar_core::breaker::StatusClass::Network)
+            Some(busbar_substrate::breaker::StatusClass::Network)
         );
         assert_eq!(
             status_class_from_str("auth"),
-            Some(busbar_core::breaker::StatusClass::Auth)
+            Some(busbar_substrate::breaker::StatusClass::Auth)
         );
         assert_eq!(
             status_class_from_str("billing"),
-            Some(busbar_core::breaker::StatusClass::Billing)
+            Some(busbar_substrate::breaker::StatusClass::Billing)
         );
         assert_eq!(
             status_class_from_str("client_error"),
-            Some(busbar_core::breaker::StatusClass::ClientError)
+            Some(busbar_substrate::breaker::StatusClass::ClientError)
         );
 
         // Unknown values return None (no _ => fallback)
@@ -2901,7 +2901,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_core::breaker::StatusClass::Billing);
+        assert_eq!(sig.class, busbar_substrate::breaker::StatusClass::Billing);
 
         // Different code not in map → fallback to HTTP status classification
         let raw2 = RawUpstreamError {
@@ -2911,7 +2911,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, busbar_core::breaker::StatusClass::ServerError);
+        assert_eq!(sig2.class, busbar_substrate::breaker::StatusClass::ServerError);
     }
 
     #[test]
@@ -2927,7 +2927,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_core::breaker::StatusClass::Auth);
+        assert_eq!(sig.class, busbar_substrate::breaker::StatusClass::Auth);
 
         // HTTP 429 → RateLimit (universal spec)
         let raw2 = RawUpstreamError {
@@ -2937,7 +2937,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, busbar_core::breaker::StatusClass::RateLimit);
+        assert_eq!(sig2.class, busbar_substrate::breaker::StatusClass::RateLimit);
 
         // HTTP 500 → ServerError (universal spec)
         let raw3 = RawUpstreamError {
@@ -2947,7 +2947,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig3 = normalize_raw_error(&raw3, &error_map);
-        assert_eq!(sig3.class, busbar_core::breaker::StatusClass::ServerError);
+        assert_eq!(sig3.class, busbar_substrate::breaker::StatusClass::ServerError);
 
         // HTTP 400 → ClientError (universal spec)
         let raw4 = RawUpstreamError {
@@ -2957,7 +2957,7 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig4 = normalize_raw_error(&raw4, &error_map);
-        assert_eq!(sig4.class, busbar_core::breaker::StatusClass::ClientError);
+        assert_eq!(sig4.class, busbar_substrate::breaker::StatusClass::ClientError);
     }
 
     #[tokio::test]
@@ -3594,7 +3594,7 @@ mod disposition_matrix_tests {
         // This FAILS the correctness check: billing should map to HardDown, not TransientUpstream
         assert_eq!(
             sig.class,
-            busbar_core::breaker::StatusClass::RateLimit,
+            busbar_substrate::breaker::StatusClass::RateLimit,
             "Wrong mapping: 1113 incorrectly classified as rate_limit instead of billing"
         );
 
@@ -3604,7 +3604,7 @@ mod disposition_matrix_tests {
         let correct_sig = normalize_raw_error(&raw, &correct_map);
         assert_eq!(
             correct_sig.class,
-            busbar_core::breaker::StatusClass::Billing,
+            busbar_substrate::breaker::StatusClass::Billing,
             "Correct mapping: 1113 → billing"
         );
     }

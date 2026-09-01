@@ -24,13 +24,13 @@ struct CapturingCandidatesPolicy {
 impl RoutingPolicy for CapturingCandidatesPolicy {
     async fn decide(
         &self,
-        _req: &busbar_core::hooks::RoutingRequest<'_>,
+        _req: &busbar_api::RoutingRequest<'_>,
         candidates: &[Candidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
         *self.seen.lock().unwrap() = Some(candidates.iter().map(|c| c.signals.clone()).collect());
-        Ok(busbar_core::hooks::RoutingDecision::Abstain)
+        Ok(busbar_api::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "capture-candidates"

@@ -15,7 +15,7 @@ fn pristine_injector_splices_include_usage() {
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
     let v: serde_json::Value =
-        busbar_core::json::parse(&out).expect("spliced body must be valid JSON");
+        busbar_substrate::json::parse(&out).expect("spliced body must be valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),
@@ -44,7 +44,7 @@ fn pristine_injector_idempotent_when_stream_options_already_present() {
     // captured false: the pristine injector is (wrongly, per the stale flag) selected.
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("body must remain valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("body must remain valid JSON");
     // No duplicate top-level key: a single stream_options object survives.
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
@@ -73,7 +73,7 @@ fn pristine_injector_tolerates_leading_whitespace() {
     crate::testkit::install_test_seams();
     let body = b"  \n\t{\"model\":\"m\",\"stream\":true}";
     let out = inject_openai_stream_include_usage_pristine(Bytes::copy_from_slice(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true))
@@ -88,7 +88,7 @@ fn pristine_injector_falls_back_on_empty_or_non_object() {
     crate::testkit::install_test_seams();
     // `{}` - next non-space is `}`, not a key: DOM injector inserts stream_options.
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"{}"));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),
@@ -147,7 +147,7 @@ fn adds_include_usage_when_absent() {
     crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[]}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),
@@ -162,7 +162,7 @@ fn upgrades_existing_stream_options_preserving_siblings() {
     crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false,"foo":1},"messages":[]}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),
@@ -195,7 +195,7 @@ fn keeps_existing_true() {
     crate::testkit::install_test_seams();
     let body = br#"{"stream":true,"stream_options":{"include_usage":true}}"#;
     let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_core::json::parse(&out).expect("valid JSON");
+    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true))

@@ -977,7 +977,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     // The body must decode as a clean sequence of binary AWS event-stream frames.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame must decode; body len {}",
@@ -1102,7 +1102,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     // drain_frames with the buffer empty, carrying the native ConverseStream event names.
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "verbatim-relayed body must be a whole frame sequence (no trailing partial bytes); \
@@ -1319,7 +1319,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     // The body decodes as a whole sequence of CRC-valid binary frames (real frame(s) + the
     // appended exception frame), with no trailing partial bytes.
     let mut buf = body.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -1385,7 +1385,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     );
     // The body decodes as a sequence of binary frames, the LAST of which is an exception frame.
     let mut buf = body.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "body must be a whole sequence of CRC-valid frames; {} bytes left",
@@ -4441,7 +4441,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     );
     let body = resp.bytes().await.unwrap();
     let mut buf = body.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     assert!(
         !frames.is_empty(),
         "at least one binary eventstream frame decodes for the percent-encoded model"

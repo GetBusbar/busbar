@@ -608,15 +608,15 @@ struct CaptureTap {
 }
 
 #[async_trait::async_trait]
-impl busbar_core::hooks::RoutingPolicy for CaptureTap {
+impl busbar_api::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
-        _req: &busbar_core::hooks::RoutingRequest<'_>,
-        _cands: &[busbar_core::hooks::Candidate<'_>],
-        _ctx: &busbar_core::hooks::RoutingContext<'_>,
+        _req: &busbar_api::RoutingRequest<'_>,
+        _cands: &[busbar_api::Candidate<'_>],
+        _ctx: &busbar_api::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_core::hooks::PolicyResult {
-        Ok(busbar_core::hooks::RoutingDecision::Abstain)
+    ) -> busbar_api::PolicyResult {
+        Ok(busbar_api::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "capture-tap"
@@ -631,7 +631,7 @@ async fn webhook_tap() -> (Arc<CaptureTap>, busbar_core::hooks::TapEntry) {
     let cap = Arc::new(CaptureTap {
         last: std::sync::Mutex::new(None),
     });
-    let policy: Arc<dyn busbar_core::hooks::RoutingPolicy> = cap.clone();
+    let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
     (
         cap,
         (
@@ -863,7 +863,7 @@ impl RoutingPolicy for RewritingGate {
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        Ok(busbar_core::hooks::RoutingDecision::Abstain)
+        Ok(busbar_api::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "rewriter"
@@ -873,7 +873,7 @@ impl RoutingPolicy for RewritingGate {
         _req: &RoutingRequest<'_>,
         _budget: std::time::Duration,
     ) -> busbar_api::TransformOutcome {
-        busbar_api::TransformOutcome::Rewrite(busbar_core::hooks::wire::RewriteReply {
+        busbar_api::TransformOutcome::Rewrite(busbar_api::RewriteReply {
             messages: vec![serde_json::json!({"role": "user", "content": self.0})],
             tools: vec![],
         })
@@ -1864,7 +1864,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "p",
         None,
         "anthropic",
-        busbar_core::handlers::chat("anthropic", busbar_core::transport::Transport::Http),
+        busbar_core::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),
         None,
     )
     .await;

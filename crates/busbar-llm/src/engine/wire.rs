@@ -756,7 +756,7 @@ pub(crate) fn mid_stream_error_bytes(
         // `encode_exception_frame` is the generic binary framer. A protocol that reports
         // `ingress_is_eventstream` but declines an exception mapping (a contradiction) falls through.
         if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
-            return busbar_core::eventstream::encode_exception_frame(&exc_name, &msg);
+            return busbar_substrate::eventstream::encode_exception_frame(&exc_name, &msg);
         }
     }
     // SSE client: build the terminal error frame through the ingress protocol writer's STREAMING

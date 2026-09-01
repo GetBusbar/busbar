@@ -2497,7 +2497,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     // (b) body decodes into the native frame sequence.
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let mut buf = bytes.to_vec();
-    let frames = busbar_core::eventstream::drain_frames(&mut buf);
+    let frames = busbar_substrate::eventstream::drain_frames(&mut buf);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(names.first(), Some(&"messageStart"), "frames: {names:?}");
     assert!(names.contains(&"contentBlockDelta"), "frames: {names:?}");
@@ -3423,7 +3423,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     let usage_chunk =
         b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n"
             .to_vec();
-    let overflow = vec![b'x'; busbar_core::eventstream::MAX_FRAME_BYTES + 16];
+    let overflow = vec![b'x'; busbar_substrate::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
         Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
         Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
@@ -3650,7 +3650,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     let usage_chunk =
         b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n"
             .to_vec();
-    let overflow = vec![b'x'; busbar_core::eventstream::MAX_FRAME_BYTES + 16];
+    let overflow = vec![b'x'; busbar_substrate::eventstream::MAX_FRAME_BYTES + 16];
     let inner = Box::pin(futures::stream::iter(vec![
         Ok::<Bytes, hyper::Error>(Bytes::from(usage_chunk)),
         Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),

@@ -33,7 +33,7 @@ fn head_matches_dom_for_captured_keys() {
     for raw in bodies {
         let bytes = Bytes::from(raw.as_bytes().to_vec());
         let lazy = LazyBody::parse(&bytes).expect("valid JSON must head-parse");
-        let dom: Value = busbar_core::json::parse(&bytes).unwrap();
+        let dom: Value = busbar_substrate::json::parse(&bytes).unwrap();
         for key in captured_head_keys() {
             assert_eq!(
                 lazy.probe().get(key),
@@ -65,7 +65,7 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
     ];
     for raw in inputs {
         let bytes = Bytes::copy_from_slice(raw);
-        let dom_ok = busbar_core::json::parse::<Value>(&bytes).is_ok();
+        let dom_ok = busbar_substrate::json::parse::<Value>(&bytes).is_ok();
         let head_ok = LazyBody::parse(&bytes).is_ok();
         assert_eq!(
             head_ok,
@@ -125,14 +125,14 @@ fn head_pristine_matches_translate_output() {
         let app = TestApp::new()
             .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
             .build();
-        let hop_bytes = Bytes::from(busbar_core::json::to_vec(body).unwrap());
+        let hop_bytes = Bytes::from(busbar_substrate::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
         let head_says = head_provably_pristine(&app, 0, lazy.probe());
         let out = translate_request_cross_protocol(
             &app,
             0,
             name,
-            busbar_core::handlers::chat(name, busbar_core::transport::Transport::Http),
+            busbar_core::handlers::chat(name, busbar_substrate::transport::Transport::Http),
             Some(body.clone()),
             APPLICATION_JSON,
             true,
@@ -185,7 +185,7 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
         Some("a")
     );
     let dom = lazy.ensure_dom().expect("validated bytes must re-parse");
-    assert_eq!(*dom, busbar_core::json::parse::<Value>(&bytes).unwrap());
+    assert_eq!(*dom, busbar_substrate::json::parse::<Value>(&bytes).unwrap());
     dom.as_object_mut()
         .unwrap()
         .insert("model".into(), json!("b"));

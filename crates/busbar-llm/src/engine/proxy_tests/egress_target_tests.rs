@@ -18,7 +18,7 @@ use crate::test_support::{LaneSpec, TestApp};
 /// table covers chat for both stream intents (the hot path's keys).
 fn assert_table_matches_reference(app: &busbar_core::state::App, lane_idx: usize) {
     let lane = &app.engine_tables().lanes()[lane_idx];
-    let op = busbar_core::handlers::chat(lane.protocol, busbar_core::transport::Transport::Http);
+    let op = busbar_core::handlers::chat(lane.protocol, busbar_substrate::transport::Transport::Http);
     for wants_stream in [false, true] {
         let target = lane
             .egress_target(op.operation, wants_stream)
@@ -85,7 +85,7 @@ fn egress_targets_honor_azure_path_override_with_query() {
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op = busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http);
+    let op = busbar_core::handlers::chat("openai", busbar_substrate::transport::Transport::Http);
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();
@@ -117,7 +117,7 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op = busbar_core::handlers::chat("bedrock", busbar_core::transport::Transport::Http);
+    let op = busbar_core::handlers::chat("bedrock", busbar_substrate::transport::Transport::Http);
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();

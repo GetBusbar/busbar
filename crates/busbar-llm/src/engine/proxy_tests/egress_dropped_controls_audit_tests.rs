@@ -12,8 +12,8 @@ use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> busbar_core::transport::Transport {
-    busbar_core::transport::Transport::Http
+fn http() -> busbar_substrate::transport::Transport {
+    busbar_substrate::transport::Transport::Http
 }
 
 /// Cross-protocol OpenAI → Anthropic request carrying `response_format` STILL forwards (Ok, body
@@ -34,7 +34,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_object"}
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
@@ -89,7 +89,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         }],
         "tool_choice": "none"
     });
-    let hop_bytes = bytes::Bytes::from(busbar_core::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
     let out = translate_request_cross_protocol(
         &app,

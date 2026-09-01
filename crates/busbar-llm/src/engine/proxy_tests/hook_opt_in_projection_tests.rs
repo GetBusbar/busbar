@@ -747,7 +747,7 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     }
 
     // A hook that echoes exactly what it was projected (the common "pass through" rewrite shape).
-    let rewrite = busbar_core::hooks::wire::RewriteReply {
+    let rewrite = busbar_api::RewriteReply {
         messages: vec![serde_json::json!({
             "role": "assistant",
             "content": OPAQUE_CONTENT_MARKER,

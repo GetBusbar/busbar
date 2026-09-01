@@ -214,8 +214,8 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
         };
         return (wire, path.to_string());
     }
-    let wire_path = busbar_core::sigv4::uri_encode_path(path);
-    let canonical = busbar_core::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
+    let wire_path = busbar_substrate::sigv4::uri_encode_path(path);
+    let canonical = busbar_substrate::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
     let wire = match query {
         Some(q) => format!("{wire_path}?{q}"),
         None => wire_path,

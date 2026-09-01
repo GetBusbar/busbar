@@ -926,7 +926,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // this plane's `PoolRuntime` (they cannot cross the `build_runtime` downcast). Byte-identical.
     let pool_rewrites: &[(
         std::time::Duration,
-        std::sync::Arc<dyn busbar_core::hooks::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
     )] = app.pool_rewrites(pool_name);
     if !app.rewrite_hooks.is_empty() || !pool_rewrites.is_empty() {
         if let Some(lazy) = v.as_mut() {
@@ -2995,7 +2995,7 @@ fn fire_global_taps(
     let fires = |groups: &[String]| {
         busbar_core::config::caller_in_hook_groups(caller_group, groups, &app.groups_registry)
     };
-    let ctx = busbar_core::hooks::RoutingContext {
+    let ctx = busbar_api::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
         // Taps observe request shape; the budget-chain projection is a routing-policy signal

@@ -1,6 +1,6 @@
 use super::{record_token_usage, stable_hash, UsageSink};
 use crate::engine::AppEngineExt as _;
-use busbar_core::billing::TokenUsage;
+use busbar_substrate::billing::TokenUsage;
 use std::sync::Arc;
 
 /// `apply_rewrite_to_body` replaces the `messages` array + injects tools on a chat-shaped body,
@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[test]
 fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
     crate::testkit::install_test_seams();
-    use busbar_core::hooks::wire::RewriteReply;
+    use busbar_api::RewriteReply;
 
     // Chat-shaped body → messages replaced, tool injected (appended to existing tools).
     let mut v = serde_json::json!({
@@ -56,7 +56,7 @@ fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
 #[test]
 fn apply_rewrite_renders_per_dialect() {
     crate::testkit::install_test_seams();
-    use busbar_core::hooks::wire::RewriteReply;
+    use busbar_api::RewriteReply;
     let rw = RewriteReply {
         messages: vec![
             serde_json::json!({"role": "user", "content": "compressed"}),
@@ -102,7 +102,7 @@ fn apply_rewrite_renders_per_dialect() {
 #[test]
 fn gemini_rewrite_role_round_trips_model_and_assistant() {
     crate::testkit::install_test_seams();
-    use busbar_core::hooks::wire::RewriteReply;
+    use busbar_api::RewriteReply;
 
     // Projection canonicalizes the gemini-native `model` role to `assistant`.
     let g_body = serde_json::json!({
@@ -160,7 +160,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 #[tokio::test]
 async fn apply_global_rewrites_chains_in_order() {
     crate::testkit::install_test_seams();
-    use busbar_core::hooks::wire::RewriteReply;
+    use busbar_api::RewriteReply;
     use busbar_core::hooks::{
         Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     };

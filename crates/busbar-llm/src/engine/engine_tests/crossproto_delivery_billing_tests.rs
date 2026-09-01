@@ -198,7 +198,7 @@ async fn delivered_cross_protocol_response_bills_once() {
     crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http),
+        busbar_core::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
         "anthropic",
         body,
     )
@@ -231,7 +231,7 @@ async fn ingress_unsupported_404_does_not_charge() {
         busbar_core::handlers::op_for(
             "openai",
             busbar_core::operation::Operation::EMBEDDINGS,
-            busbar_core::transport::Transport::Http,
+            busbar_substrate::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
         "anthropic",
@@ -270,7 +270,7 @@ async fn untranslatable_500_does_not_charge() {
         busbar_core::handlers::op_for(
             "openai",
             busbar_core::operation::Operation::SPEECH,
-            busbar_core::transport::Transport::Http,
+            busbar_substrate::transport::Transport::Http,
         )
         .expect("openai serves speech"),
         "anthropic",

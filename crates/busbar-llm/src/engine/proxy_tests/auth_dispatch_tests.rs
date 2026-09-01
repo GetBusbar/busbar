@@ -11,7 +11,7 @@
 use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
 use busbar_core::auth::AuthMiddleware;
-use busbar_core::sigv4::{sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
+use busbar_substrate::sigv4::{sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
@@ -991,7 +991,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            generation_hash: busbar_core::sigv4::sha256_hex(persisted_secret.as_bytes()),
+            generation_hash: busbar_substrate::sigv4::sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,
@@ -1425,7 +1425,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     let body = serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
         .to_string();
     let amzdate = {
-        let (a, _d) = busbar_core::sigv4::format_amz_time(busbar_core::store::now());
+        let (a, _d) = busbar_substrate::sigv4::format_amz_time(busbar_core::store::now());
         a
     };
     let (auth, headers) = sign_bedrock_request(
