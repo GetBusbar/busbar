@@ -166,7 +166,7 @@ pub trait ProtocolWriter: Send + Sync {
     }
 
     // Outbound auth moved OFF the protocol writer (protocol is post-auth): a lane's credential is
-    // resolved by `busbar_core::egress_auth` and called via `lane.credential.headers_for`. Per-scheme logic
+    // resolved by `busbar_substrate::egress_auth` and called via `lane.credential.headers_for`. Per-scheme logic
     // lives in `pub(crate)` free fns (`bearer_auth_headers`, `anthropic::anthropic_auth_headers`,
     // `bedrock::sigv4_sign_headers`).
 
@@ -310,7 +310,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// `response` object the SDK's stream decoder locates via `event.response`, NOT the top-level
     /// `{"error":...}` HTTP body), so a native SDK on a stream must receive THIS shape.
     ///
-    /// This is the NEUTRAL seam for [`busbar_core::proxy::wire`]'s mid-stream error framer: core frames the
+    /// This is the NEUTRAL seam for [`busbar_substrate::proxy::wire`]'s mid-stream error framer: core frames the
     /// returned pair without naming any concrete stream-event type, so the concrete `IrStreamEvent`
     /// need not exist in core at all. Every SSE-framed writer overrides this to reproduce, byte for
     /// byte, what its `write_response_event` produces for an error event.

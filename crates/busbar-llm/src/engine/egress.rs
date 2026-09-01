@@ -262,7 +262,7 @@ pub(crate) fn lane_auth_headers(
 // (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // (`busbar_substrate::proxy::EGRESS_UA_DEFAULT`) so a codec-less protocol declaration in a plane
 // crate (`busbar-mcp`) states it as its `ProtocolDecl::egress_user_agent` default without reaching
-// into core. Re-exported through `busbar_core::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
+// into core. Re-exported through `busbar_substrate::proxy` (see `proxy/mod.rs`) so every `EGRESS_UA_DEFAULT`
 // call site here resolves unchanged.
 
 /// Plausible native-SDK `User-Agent` for the chosen EGRESS protocol. reqwest sends NO default

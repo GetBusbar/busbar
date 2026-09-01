@@ -32,7 +32,7 @@ use futures::Stream;
 use http::StatusCode;
 use serde_json::Value;
 
-use busbar_core::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
+use busbar_substrate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use busbar_core::config::OnExhausted;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_core::proto::{convert_headers, StatusClass};
@@ -85,7 +85,7 @@ pub(crate) use busbar_core::proxy::{
 };
 
 // The NEUTRAL error-KIND / network-transient / disposition / content-type vocabulary that STAYS in
-// core (`busbar_core::proxy`, itself re-exporting the substrate leaf). Re-exported into the flattened
+// core (`busbar_substrate::proxy`, itself re-exporting the substrate leaf). Re-exported into the flattened
 // engine namespace so the moved classification/error-envelope call sites keep naming them at their
 // historical short paths (`crate::engine::{KIND_*, ERR_NET_*, DISPOSITION_*, APPLICATION_JSON, …}`).
 pub(crate) use busbar_core::proxy::{

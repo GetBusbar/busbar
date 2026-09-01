@@ -270,7 +270,7 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 
 // The DEFAULT/effective content-ceiling knob (`DEFAULT_HOOK_CONTENT_MAX_BYTES`, the process-wide
 // `HOOK_CONTENT_MAX_BYTES` cell, `set_hook_content_max_bytes`/`hook_content_max_bytes`) is NEUTRAL
-// vocabulary that STAYS in core (`busbar_core::proxy::proxy_vocab`); the enforcer below reads the
+// vocabulary that STAYS in core (`busbar_substrate::proxy::proxy_vocab`); the enforcer below reads the
 // installed ceiling across the crate boundary via `busbar_core::proxy::hook_content_max_bytes()`.
 
 /// Enforce the content ceiling on a built projection, on SERIALIZED BYTES and BEFORE the call.
@@ -558,7 +558,7 @@ pub(crate) async fn decide_policy_order(
         {
             match (gov, caller_token) {
                 // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience).
-                (Some(g), Some(tok)) => g.verify_token(tok, busbar_core::store::now(), None),
+                (Some(g), Some(tok)) => g.verify_token(tok, busbar_substrate::store::now(), None),
                 _ => None,
             }
         }
@@ -659,9 +659,9 @@ pub(crate) async fn decide_policy_order(
                 // declared, never call-then-discard.
                 if requested.wants(busbar_core::hooks::Signal::CandidateBreakerState) {
                     let label = match app.store.breaker_state_snapshot_in(pool_name, wl.idx) {
-                        busbar_core::store::BreakerState::Closed => "closed",
-                        busbar_core::store::BreakerState::Open { .. } => "open",
-                        busbar_core::store::BreakerState::HalfOpen => "half_open",
+                        busbar_substrate::store::BreakerState::Closed => "closed",
+                        busbar_substrate::store::BreakerState::Open { .. } => "open",
+                        busbar_substrate::store::BreakerState::HalfOpen => "half_open",
                     };
                     signals.push(
                         busbar_core::hooks::Signal::CandidateBreakerState,
@@ -974,7 +974,7 @@ pub(crate) fn coerce_on_error(
 }
 
 // The STAGE-tap primitives are NEUTRAL vocabulary that STAYS in core
-// (`busbar_core::proxy::proxy_vocab`): the shape struct, the fire-and-forget tap fan-out, the bounded
+// (`busbar_substrate::proxy::proxy_vocab`): the shape struct, the fire-and-forget tap fan-out, the bounded
 // spawn guard, and the gate-rejection marker. Only `capture_stage_shape` below (which reads the LLM
 // IR to fill the shape) stays here, and it fills core's `StageShape` (its fields are `pub`) across
 // the crate boundary.
@@ -1027,5 +1027,5 @@ pub(crate) fn capture_stage_shape<'a>(
 }
 
 // `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), and the `GateRejected`
-// marker + `gate_rejected` tagger are NEUTRAL and now live in `busbar_core::proxy::proxy_vocab`
+// marker + `gate_rejected` tagger are NEUTRAL and now live in `busbar_substrate::proxy::proxy_vocab`
 // (imported above); the engine names them at their historical short paths through that re-export.

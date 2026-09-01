@@ -2240,7 +2240,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // `extract_error` only sees the body, so the cooldown floor would otherwise be
                     // silently dropped on a 429 carrying an explicit retry hint.
                     let ct = r.headers().get(CONTENT_TYPE).cloned();
-                    let retry_after_secs = busbar_core::breaker::parse_retry_after(r.headers());
+                    let retry_after_secs = busbar_substrate::breaker::parse_retry_after(r.headers());
                     // A real AWS Bedrock endpoint sends `x-amzn-requestid` and `x-amzn-errortype` on
                     // EVERY response, including 4xx. First-party AWS SDKs read `x-amzn-errortype`
                     // BEFORE the body `__type` for typed-exception dispatch; their absence on a
@@ -2339,11 +2339,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     let mut raw = busbar_core::handlers::op_for(
                         egress_name,
                         op.operation,
-                        busbar_core::transport::Transport::Http,
+                        busbar_substrate::transport::Transport::Http,
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        busbar_core::breaker::RawUpstreamError::from_status(status.as_u16())
+                        busbar_substrate::breaker::RawUpstreamError::from_status(status.as_u16())
                     });
                     // Inject the Retry-After header (which the body-only extract_error can't see) so
                     // normalize_raw_error propagates it into CanonicalSignal.retry_after and the

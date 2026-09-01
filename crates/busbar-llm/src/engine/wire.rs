@@ -115,7 +115,7 @@ fn maybe_attach_route_policy_gated(
 
 // The canonical per-protocol error-response builder (`ingress_error`) and core's own dialect-free
 // envelope (`agnostic_error_envelope`) are NEUTRAL vocabulary that STAYS in core
-// (`busbar_core::proxy::proxy_vocab`); the engine names them at their historical short paths through
+// (`busbar_substrate::proxy::proxy_vocab`); the engine names them at their historical short paths through
 // this re-export. `ingress_reject_response` (LLM-specific — it maps an `IngressReject`) delegates to
 // the re-exported `ingress_error`.
 pub(crate) use busbar_core::proxy::{agnostic_error_envelope, ingress_error};
@@ -593,10 +593,10 @@ pub(crate) fn translate_request_cross_protocol(
 }
 
 // The TIGHT upstream-error-body buffer cap (`max_upstream_buffered_bytes`) is NEUTRAL vocabulary that
-// STAYS in core (`busbar_core::proxy::proxy_vocab`); the engine names it at its historical short path
+// STAYS in core (`busbar_substrate::proxy::proxy_vocab`); the engine names it at its historical short path
 // through this re-export. (`max_translated_body_bytes` below is the SEPARATE, wider translate cap and
 // stays here.)
-pub(crate) use busbar_core::proxy::max_upstream_buffered_bytes;
+pub(crate) use busbar_substrate::proxy::max_upstream_buffered_bytes;
 
 /// Upper bound on a buffered cross-protocol non-stream SUCCESS (2xx) body that must be parsed and
 /// translated egress→IR→ingress. A real completion (large `max_tokens` output, big tool-call
@@ -618,7 +618,7 @@ pub(crate) fn max_translated_body_bytes() -> usize {
 // and a plane crate names them without reaching into core). Re-exported here so every
 // `crate::engine::{read_capped, ReadEnd}` call site — via `proxy/mod.rs`'s `pub(crate) use wire::*`
 // — resolves unchanged.
-pub use busbar_substrate::proxy::{read_capped, ReadEnd};
+pub use busbar_core::proxy::{read_capped, ReadEnd};
 
 /// Read an upstream ERROR / verbatim-relay body under the tight [`max_upstream_buffered_bytes()`] cap
 /// and the caller's wall-clock deadline. A truncated error body still classifies/relays correctly
@@ -741,7 +741,7 @@ pub(crate) fn mid_stream_error_bytes(
     // reason: every LLM dialect is a droppable plugin now, so there is no resident writer to borrow
     // a shape from, and inventing one would put a foreign dialect's bytes on the wire.
     let err = busbar_substrate::proto::IrError {
-        class: busbar_core::breaker::StatusClass::ServerError,
+        class: busbar_substrate::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };

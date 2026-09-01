@@ -45,7 +45,7 @@ pub(crate) async fn operation_ingress_inner(
     model_hint: Option<String>,
 ) -> Response {
     let started = Instant::now();
-    let charged_at = busbar_core::store::now();
+    let charged_at = busbar_substrate::store::now();
 
     let Some(rh) = busbar_core::handlers::request_handler(proto) else {
         return busbar_core::ingress::finish_rejected(
@@ -328,7 +328,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
             // and gRPC arrivals get their own entry points and frame the same codecs.
             busbar_core::handlers::frame(
-                busbar_core::transport::Transport::Http,
+                busbar_substrate::transport::Transport::Http,
                 operation,
                 op_handler,
             ),
@@ -504,7 +504,7 @@ async fn ingress_path_model_inner(
 ) -> Response {
     let started = Instant::now();
     // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
-    let charged_at = busbar_core::store::now();
+    let charged_at = busbar_substrate::store::now();
     let mut v: Value = match busbar_substrate::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {

@@ -154,7 +154,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_auth_headers: Some(egress_auth_headers),
     egress_auth_lane_constant: true,
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
-    // arrival (`busbar_core::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
+    // arrival (`busbar_substrate::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot
     // parity assert pairs with that registration; the arrival is no longer a field on this decl (it
     // named the core-only `Arrival`, which `ProtocolDecl`'s substrate home cannot).

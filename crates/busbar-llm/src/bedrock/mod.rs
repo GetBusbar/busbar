@@ -111,7 +111,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_auth_headers: Some(writer::sigv4_sign_headers),
     egress_auth_lane_constant: false,
     // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
-    // dialect registers its arrival (`busbar_core::ingress::bedrock_arrival`) through
+    // dialect registers its arrival (`busbar_substrate::ingress::bedrock_arrival`) through
     // `busbar_llm::PATH_INGRESS`, folded into the core side-table by the composition root.
     // `has_model_in_url: true` below is what the boot parity assert pairs with that registration.
     stream_usage_requires_opt_in: false,

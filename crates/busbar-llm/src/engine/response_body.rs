@@ -622,7 +622,7 @@ where
                     // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
-                    let token_usage: Option<busbar_core::billing::TokenUsage> =
+                    let token_usage: Option<busbar_substrate::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {

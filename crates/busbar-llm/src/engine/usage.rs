@@ -16,11 +16,11 @@ use busbar_core::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
 /// the additive-cache convention). Non-token meters (duration/characters/images/flat) are carried in
 /// the client-visible body today and priced by the 1.3 engine; nothing to record here yet.
 pub(crate) fn record_resp_usage(
-    usage: Option<busbar_core::billing::Billing>,
+    usage: Option<busbar_substrate::billing::Billing>,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
 ) {
-    if let Some(busbar_core::billing::Billing::Tokens(t)) = usage {
+    if let Some(busbar_substrate::billing::Billing::Tokens(t)) = usage {
         // `usage` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection the response codec
         // captured from the read IR (before `prepare_for_ingress`) and handed back through
         // `TranslateCodec::translate_response` — bill straight from it. This seam never holds the
@@ -46,7 +46,7 @@ pub(crate) fn record_resp_usage(
 /// Project the IR's normalized usage into the LEDGER'S four pricing tiers. Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping is direct:
 /// cache-creation is the rate card's `cache_write` tier.
-pub(crate) fn tier_tokens(u: &busbar_core::billing::TokenUsage) -> busbar_api::TierTokens {
+pub(crate) fn tier_tokens(u: &busbar_substrate::billing::TokenUsage) -> busbar_api::TierTokens {
     busbar_api::TierTokens {
         input: u.input,
         output: u.output,
@@ -81,7 +81,7 @@ pub(crate) fn tier_tokens(u: &busbar_core::billing::TokenUsage) -> busbar_api::T
 pub(crate) fn ledger_and_meter(
     sink: &UsageSink,
     lane: &crate::engine::Lane,
-    usage: Option<&busbar_core::billing::TokenUsage>,
+    usage: Option<&busbar_substrate::billing::TokenUsage>,
     tier: &busbar_api::TierTokens,
 ) {
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
@@ -112,7 +112,7 @@ pub(crate) fn ledger_and_meter(
 /// `None` (an unknown/unresolvable lane) can attribute tokens to no model, so nothing is ledgered
 /// or metered (unreachable in production: every delivered response has a serving lane).
 pub(crate) fn record_token_usage(
-    usage: &busbar_core::billing::TokenUsage,
+    usage: &busbar_substrate::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
 ) {

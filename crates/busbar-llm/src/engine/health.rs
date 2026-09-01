@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
-use busbar_core::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
+use busbar_substrate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
 use busbar_core::config::HealthMode;
 use busbar_core::state::App;
 use busbar_core::store::{now, BreakerCfg};
@@ -390,7 +390,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // vocabulary for all six protocols (chat's codec delegates to that very reader), and an
             // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
-            let retry_after_secs = busbar_core::breaker::parse_retry_after(r.headers());
+            let retry_after_secs = busbar_substrate::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r.into_body(), deadline).await;
             // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
             // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the

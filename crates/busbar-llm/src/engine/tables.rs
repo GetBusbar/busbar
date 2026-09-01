@@ -32,7 +32,7 @@ pub(crate) struct Lane {
     /// and its constant facts via `decl_for(self.protocol).<field>`. Copy-cheap, so `Lane: Clone` stays.
     pub(crate) protocol: &'static str,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
-    /// at boot from (protocol, auth). See `busbar_core::egress_auth`; the request path calls `headers_for`.
+    /// at boot from (protocol, auth). See `busbar_substrate::egress_auth`; the request path calls `headers_for`.
     pub(crate) credential: Arc<dyn busbar_core::egress_auth::CredentialProvider>,
     #[allow(dead_code)]
     pub(crate) max: usize,

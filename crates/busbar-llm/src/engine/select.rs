@@ -46,7 +46,7 @@ pub(crate) struct RequestCtx {
     // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
     // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) excluded_reasons: Vec<(usize, busbar_core::store::Unavailable)>,
+    pub(crate) excluded_reasons: Vec<(usize, busbar_substrate::store::Unavailable)>,
     /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]
     /// ONCE at ingress (see `forward_with_pool_parsed`), Copy-threaded everywhere `RequestCtx`
     /// already flows for the lifetime of the request (including every failover hop — it is NOT
@@ -298,7 +298,7 @@ pub(crate) async fn pick_among(
         .map(|(position, _)| position)
         .collect();
 
-    let attempt = busbar_core::failover::Attempt {
+    let attempt = busbar_substrate::failover::Attempt {
         tried: &tried,
         // THE MODEL PLANE'S REPEAT POSTURE, STATED RATHER THAN ASSUMED. A hop after the first is a
         // genuine `AfterDispatch` retry — the previous lane may already have received the request —
@@ -309,11 +309,11 @@ pub(crate) async fn pick_among(
         // refuses their after-dispatch hop. The rule is one; the answer differs because the operations
         // differ, which is exactly what the rule is for.
         stage: if tried.is_empty() {
-            busbar_core::failover::Stage::BeforeFirstByte
+            busbar_substrate::failover::Stage::BeforeFirstByte
         } else {
-            busbar_core::failover::Stage::AfterDispatch
+            busbar_substrate::failover::Stage::AfterDispatch
         },
-        repeatable: busbar_core::failover::Repeatable::Yes,
+        repeatable: busbar_substrate::failover::Repeatable::Yes,
         operation: "completion",
     };
 
@@ -358,12 +358,12 @@ pub(crate) async fn pick_among(
     // single-flight probe). Everything the loop decides — is there anything here, is this a repeat
     // and is that allowed, do the pins agree, will the breaker have it, and what is the refusal —
     // is decided in core, identically for all three planes.
-    let mut passed_over: Vec<(usize, busbar_core::store::Unavailable)> = Vec::new();
+    let mut passed_over: Vec<(usize, busbar_substrate::store::Unavailable)> = Vec::new();
     // ONE wall-clock read for every admission this walk tries: the breaker consults it at
     // second granularity and the whole walk (candidates × try_admit) spans microseconds, so a
     // per-candidate `clock_gettime` bought nothing over this shared read.
     let admit_now = now();
-    let admitted = busbar_core::failover::walk_with(
+    let admitted = busbar_substrate::failover::walk_with(
         pool_name,
         &members,
         &attempt,
@@ -397,14 +397,14 @@ pub(crate) async fn pick_among(
     }
 }
 
-/// THE MODEL PLANE'S [`busbar_core::failover::Candidate`] — a pool member, borrowed for one selection.
+/// THE MODEL PLANE'S [`busbar_substrate::failover::Candidate`] — a pool member, borrowed for one selection.
 struct LaneCandidate<'a> {
     wl: &'a WeightedLane,
     model: &'a str,
     pool: &'a str,
 }
 
-impl busbar_core::failover::Candidate for LaneCandidate<'_> {
+impl busbar_substrate::failover::Candidate for LaneCandidate<'_> {
     fn name(&self) -> &str {
         self.model
     }
@@ -429,7 +429,7 @@ impl busbar_core::failover::Candidate for LaneCandidate<'_> {
     }
 }
 
-/// THE MODEL PLANE'S [`busbar_core::failover::Order`]: session affinity first, then SWRR — or the routing
+/// THE MODEL PLANE'S [`busbar_substrate::failover::Order`]: session affinity first, then SWRR — or the routing
 /// policy's ranked walk — over what is left.
 ///
 /// ORDER ONLY. Nothing here admits anything: `ready_in` and `select_weighted_in` are read-only peeks
@@ -462,7 +462,7 @@ struct SwrrOrder<'a> {
     weights: smallvec::SmallVec<[u32; 8]>,
 }
 
-impl busbar_core::failover::Order for SwrrOrder<'_> {
+impl busbar_substrate::failover::Order for SwrrOrder<'_> {
     fn next(&mut self, refused: Option<usize>) -> Option<usize> {
         if let Some(position) = refused {
             // A REFUSED STICKY IS NOT LOCALLY EXCLUDED, and that is this plane's long-standing

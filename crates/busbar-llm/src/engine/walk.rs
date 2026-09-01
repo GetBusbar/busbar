@@ -1,7 +1,7 @@
 //! ON_EXHAUSTED DISPOSITION — what the model plane does AFTER the one selection loop finds nowhere
 //! to send a request. This file is NOT a selection loop and, since the one-loop unification (owner
 //! ruling R-I), nothing here selects: `handle_fallback_pool` re-enters `pick_among` — which is the
-//! model plane's [`busbar_core::failover::walk_with`] call site — for the spillover pool, `handle_queue`
+//! model plane's [`busbar_substrate::failover::walk_with`] call site — for the spillover pool, `handle_queue`
 //! waits for a permit and then re-asks the SAME `try_admit_breaker` every plane asks, and
 //! `handle_least_bad` is the ONE documented breaker bypass in the tree (a last-resort degraded route
 //! that owns no probe and says so). The candidate ordering, the pin check, the repeat-safety rule
@@ -28,7 +28,7 @@ use busbar_core::observability::HOTPATH_LEVEL;
 // path floors the whole-second `Retry-After` at that same value rather than a separate — and
 // regressing — literal.
 pub(crate) const AT_CAPACITY_RETRY_AFTER_SECS: u64 =
-    busbar_core::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
+    busbar_substrate::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
 
 /// Slack ε (milliseconds) for the `handle_queue` deadline-overrun `debug_assert`. Like
 /// `select::BUDGET_ASSERT_EPSILON` this is a dev/CI regression tripwire, not a runtime bound: the
@@ -200,7 +200,7 @@ pub(crate) async fn handle_queue(
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    use busbar_core::store::Unavailable;
+    use busbar_substrate::store::Unavailable;
 
     // Pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
     // drop. If every exclusion is Dead / BudgetExhausted / BreakerOpen / ProbeInFlight, nothing will
@@ -765,19 +765,19 @@ pub(crate) async fn forward_once(
                     let raw = busbar_core::handlers::op_for(
                         egress_name,
                         op.operation,
-                        busbar_core::transport::Transport::Http,
+                        busbar_substrate::transport::Transport::Http,
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        busbar_core::breaker::RawUpstreamError::from_status(status.as_u16())
+                        busbar_substrate::breaker::RawUpstreamError::from_status(status.as_u16())
                     });
-                    let sig = busbar_core::breaker::normalize_raw_error(
+                    let sig = busbar_substrate::breaker::normalize_raw_error(
                         &raw,
                         &app.engine_tables().lanes()[i].error_map,
                     );
                     matches!(
-                        busbar_core::breaker::classify(&sig),
-                        busbar_core::breaker::Disposition::TransientUpstream
+                        busbar_substrate::breaker::classify(&sig),
+                        busbar_substrate::breaker::Disposition::TransientUpstream
                     )
                 };
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a

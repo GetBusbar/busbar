@@ -157,7 +157,7 @@ pub mod test_support {
     /// back-edge); with the money-path tests relocated here it is built in-plane, naming its own cell —
     /// no cross-crate `#[cfg(test)]` reach, and no `busbar-core[test-support] → busbar-llm` cycle.
     pub const CHAT: busbar_core::handlers::Op = busbar_core::handlers::frame(
-        busbar_core::transport::Transport::Http,
+        busbar_substrate::transport::Transport::Http,
         busbar_core::operation::Operation::CHAT,
         &crate::chat_handle::ChatOperation("openai"),
     );
