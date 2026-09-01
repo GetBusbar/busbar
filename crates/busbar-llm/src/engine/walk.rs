@@ -13,9 +13,9 @@ use busbar_core::diagnostics::{
     diag_debug, ATTEMPT_TIMEOUT_DEGRADED, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
 };
 // See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
-// `busbar_core::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
+// `busbar_substrate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
 // rejects a leading `crate` keyword segment.
-use busbar_core::observability::HOTPATH_LEVEL;
+use busbar_substrate::observability::HOTPATH_LEVEL;
 
 /// Saturation Retry-After floor (whole seconds) for a 503 shed whose ONLY exhaustion cause is
 /// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
@@ -388,7 +388,7 @@ pub(crate) fn handle_status_503(
 /// crossed boundary. Same-protocol targets pass through verbatim.
 #[allow(clippy::too_many_arguments)]
 // plumbing: each arg is an independent request input
-// `level = busbar_core::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
+// `level = busbar_substrate::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
 // degraded-path attempt (fallback-pool routing + least-bad), so it must be filtered off at the
 // default `RUST_LOG=info` the same as the main `forward` span in `engine/mod.rs` — routed through
 // the ONE named constant rather than a second hand-picked `"debug"` literal, so the hot-path level

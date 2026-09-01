@@ -207,7 +207,10 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
-pub mod profile;
+// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so the
+// busbar-llm engine names it via the ABI. Re-exported here so `crate::profile::…` (the auth/ingress
+// stage spans) is unchanged and byte-identical.
+pub use busbar_substrate::profile;
 pub mod proto;
 pub mod proxy;
 pub mod session;

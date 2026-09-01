@@ -4,7 +4,7 @@ use super::*;
 // re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
-use busbar_core::observability::HOTPATH_LEVEL;
+use busbar_substrate::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
 use busbar_core::diagnostics::{
@@ -141,7 +141,7 @@ pub(crate) fn forward_with_pool_keyed<'a>(
 ) -> impl std::future::Future<Output = Response> + 'a {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
     // eager parse — `LazyBody::parse` goes through the identical `busbar_substrate::json` guard + parser).
-    let _parse = busbar_core::profile::start(busbar_core::profile::Stage::InboundParse);
+    let _parse = busbar_substrate::profile::start(busbar_substrate::profile::Stage::InboundParse);
     let v: LazyBody = match LazyBody::parse(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -232,7 +232,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-        let _wrap = busbar_core::profile::start(busbar_core::profile::Stage::WrapSetup);
+        let _wrap = busbar_substrate::profile::start(busbar_substrate::profile::Stage::WrapSetup);
         let request_id = app.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -834,7 +834,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep = busbar_core::profile::start(busbar_core::profile::Stage::Prepare);
+    let _prep = busbar_substrate::profile::start(busbar_substrate::profile::Stage::Prepare);
     // EGRESS deletion switch: every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
@@ -1642,7 +1642,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         }
 
-        let _pick = busbar_core::profile::start(busbar_core::profile::Stage::LanePick);
+        let _pick = busbar_substrate::profile::start(busbar_substrate::profile::Stage::LanePick);
         // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
         // synchronously by `pick_among` before any await), `None` for a Closed-ready no-op admit that
         // won none. The `probe_guard` built right below turns this into a RAII release that covers the
@@ -1720,7 +1720,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and translate_req — exclude, routing
         // taps (light path: none), metric-pool label, upstream-attempt telemetry.
-        let _asetup = busbar_core::profile::start(busbar_core::profile::Stage::AttemptSetup);
+        let _asetup = busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -1773,7 +1773,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
         // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
         drop(_asetup);
-        let _xlate = busbar_core::profile::start(busbar_core::profile::Stage::TranslateReq);
+        let _xlate = busbar_substrate::profile::start(busbar_substrate::profile::Stage::TranslateReq);
         // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol
         // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
         // fires re-emits the retained bytes verbatim — the exact bytes the translate seam's own
@@ -1933,7 +1933,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // TRANSLATE_REQ ends here (egress payload bytes in hand). CLIENT_BUILD spans the egress auth
         // + URL/path build + reqwest RequestBuilder construction that follows.
         drop(_xlate);
-        let _cbuild = busbar_core::profile::start(busbar_core::profile::Stage::ClientBuild);
+        let _cbuild = busbar_substrate::profile::start(busbar_substrate::profile::Stage::ClientBuild);
         let _t = busbar_timing::timeit!("egress_client_build");
         // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything
         // below that is NOT the network send — credential select, path/URI build, auth-header
@@ -1986,7 +1986,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 DETAIL_INTERNAL_ERROR,
             );
         };
-        let _cb_auth = busbar_core::profile::start(busbar_core::profile::Stage::CbAuth);
+        let _cb_auth = busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbAuth);
         // ONE wall-clock read for this attempt's assemble stage: the SigV4 timestamp here plus the
         // deadline-remaining reads at the timeout sites below. All three are second-granularity and
         // no await separates them (pick → translate → auth → build → send is one synchronous run),
@@ -2031,7 +2031,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .map(|h| h.egress_request_content_type())
                 .unwrap_or(APPLICATION_JSON)
         };
-        let _cb_reqwest = busbar_core::profile::start(busbar_core::profile::Stage::CbReqwest);
+        let _cb_reqwest = busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbReqwest);
         // Assemble the egress request from PRECOMPUTED parts: the lane's boot-parsed
         // `http::Uri`, the prebuilt/live auth map extended in place with the three per-request
         // constants, and the body as one owned buffer. No builder machinery, no per-send URL
@@ -2101,7 +2101,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // (`()`), and `drop`ping a `Copy` value does nothing — the `dropping_copy_types` lint.
         #[cfg(feature = "timing")]
         drop(_asm);
-        let _send = busbar_core::profile::start(busbar_core::profile::Stage::UpstreamSend);
+        let _send = busbar_substrate::profile::start(busbar_substrate::profile::Stage::UpstreamSend);
         // MEASUREMENT ONLY: `egress_send` spans ONLY the send round-trip below
         // (both the attempt-capped and uncapped arms), dropped right after the match resolves.
         let _snd = busbar_timing::timeit!("egress_send");
@@ -2194,7 +2194,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // POST_SEND: the last uncounted span inside `busbar;dur` — response status/StatusClass
         // classification + 2xx/failover branch selection, up to the RecordSuccess boundary on the
         // success arm (dropped there). On a failover `continue` it records that attempt's classify.
-        let _postsend = busbar_core::profile::start(busbar_core::profile::Stage::PostSend);
+        let _postsend = busbar_substrate::profile::start(busbar_substrate::profile::Stage::PostSend);
         match res {
             Err(e) => {
                 // Pre-response error: classify and potentially failover
@@ -2620,7 +2620,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // POST_SEND ends here (success arm reached); RECORD_SUCCESS begins.
                 drop(_postsend);
                 // RECORD_SUCCESS: the post-2xx breaker/latency/budget bookkeeping (store lock ops).
-                let _rec = busbar_core::profile::start(busbar_core::profile::Stage::RecordSuccess);
+                let _rec = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RecordSuccess);
                 // SUCCESS case: the upstream served a 2xx. Record the success for this lane (feeds
                 // the per-lane `ok` counter and the breaker's success window) and consume one unit
                 // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
@@ -2667,11 +2667,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
                 // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
                 drop(_rec);
-                let _resp = busbar_core::profile::start(busbar_core::profile::Stage::RespBuild);
+                let _resp = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
                 // RB_PRE sub-stage: header/CT/relay-id capture + SSE detection + translate resolution,
                 // up to `FirstByteBody::new`. (The cross-protocol buffered branch returns before the
                 // streaming builder, so on that path RB_PRE covers the pre-buffer work only.)
-                let _rb_pre = busbar_core::profile::start(busbar_core::profile::Stage::RbPre);
+                let _rb_pre = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
 
                 // stream the response body incrementally with first-byte boundary tracking
                 let ct = r.headers().get(CONTENT_TYPE).cloned();
@@ -2766,8 +2766,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 budget_guard.disarm();
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
                 drop(_rb_pre);
-                let _rb_body = busbar_core::profile::start(busbar_core::profile::Stage::RbBody);
-                let _rb_new = busbar_core::profile::start(busbar_core::profile::Stage::RbNew);
+                let _rb_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
+                let _rb_new = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
                 let upstream_stream = {
                     use http_body_util::BodyExt;
                     r.into_body().into_data_stream()
@@ -2790,9 +2790,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 );
                 let axum_body = guarded_body.into_body();
                 drop(_rb_new);
-                let _rb_finish = busbar_core::profile::start(busbar_core::profile::Stage::RbFinish);
+                let _rb_finish = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
 
-                let _rbf_build = busbar_core::profile::start(busbar_core::profile::Stage::RbfBuild);
+                let _rbf_build = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
                 let mut rb = Response::builder().status(status);
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
@@ -2818,7 +2818,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 }
                 drop(_rbf_build);
                 let _rbf_attach =
-                    busbar_core::profile::start(busbar_core::profile::Stage::RbfAttach);
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfAttach);
                 // Bedrock-ingress streaming 2xx must carry `x-amzn-RequestId` (a real ConverseStream
                 // always does, preferring the captured same-protocol upstream id else synthesizing);
                 // anthropic-ingress streaming 2xx must carry `request-id` (the SDK reads it into
@@ -2837,7 +2837,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     &app.engine_tables().lanes()[i].model,
                 );
                 drop(_rbf_attach);
-                let _rbf_body = busbar_core::profile::start(busbar_core::profile::Stage::RbfBody);
+                let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
                 return rb
                     .body(axum_body)
                     .unwrap_or_else(|_| status.into_response());
