@@ -8,7 +8,6 @@
 //! one and downcast by the other cannot match — these must run in the plugin's single-`busbar-core`
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
-use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
 use busbar_core::auth::AuthMiddleware;
@@ -91,30 +90,6 @@ fn sign_bedrock_request(
              SignedHeaders={signed_headers}, Signature={sig}"
     );
     (auth, headers)
-}
-
-/// A governance engine with ONE key that also carries AWS SigV4 credentials. Returns (gov, akid, secret).
-fn gov_with_aws_key() -> (
-    std::sync::Arc<busbar_core::governance::GovState>,
-    String,
-    String,
-) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
-    let (_key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "bedrock".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_core::store::now(),
-        )
-        .unwrap();
-    (gov, akid, secret)
 }
 
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).

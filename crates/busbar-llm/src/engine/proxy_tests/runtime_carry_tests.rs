@@ -8,7 +8,6 @@
 
 use crate::engine::AppEngineExt as _;
 use crate::test_support::{build_once, cfg_with_provider_api_key};
-use busbar_core::store::LaneRuntime as _;
 
 /// An unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild — otherwise a
 /// mutation cadence faster than the probe interval resets every generation before its first tick and

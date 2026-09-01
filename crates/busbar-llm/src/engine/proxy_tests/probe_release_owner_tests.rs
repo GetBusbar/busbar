@@ -15,7 +15,6 @@
 use super::forward_with_pool;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_core::store::BreakerState;
-use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 use std::sync::Arc;
 

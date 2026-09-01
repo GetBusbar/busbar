@@ -4902,7 +4902,6 @@ async fn openai_mock_handler(
 async fn test_openai_ingress_same_protocol_passthrough() {
     crate::testkit::install_test_seams();
     use axum::http::HeaderMap;
-    use busbar_core::ingress;
 
     // Create a custom mock server that listens at /v1/chat/completions (OpenAI endpoint)
     let state = Arc::new(MockServerState::new());
@@ -5014,7 +5013,6 @@ async fn test_openai_ingress_same_protocol_passthrough() {
 async fn test_openai_ingress_missing_model() {
     crate::testkit::install_test_seams();
     use axum::http::HeaderMap;
-    use busbar_core::ingress;
 
     // Build a minimal App (no lanes needed for this test)
     let app = TestApp::new().build();
@@ -5101,7 +5099,6 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 async fn test_openai_ingress_unknown_model() {
     crate::testkit::install_test_seams();
     use axum::http::HeaderMap;
-    use busbar_core::ingress;
 
     // Build a minimal App with no "nope" model
     let app = TestApp::new().build();
@@ -5227,7 +5224,6 @@ async fn test_cross_protocol_openai_to_anthropic() {
 #[tokio::test]
 async fn test_openai_ingress_single_model_anthropic_response_translated() {
     crate::testkit::install_test_seams();
-    use busbar_core::ingress;
 
     let state = Arc::new(MockServerState::new());
     // Backend returns a native Anthropic message response.
@@ -5291,8 +5287,6 @@ async fn forwarded_openai_to_anthropic(
     lane_default: Option<u32>,
     request_body: serde_json::Value,
 ) -> serde_json::Value {
-    use busbar_core::ingress;
-
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,

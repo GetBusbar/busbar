@@ -26,7 +26,6 @@
 
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 use std::sync::Arc;
 

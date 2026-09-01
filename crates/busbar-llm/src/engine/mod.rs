@@ -35,7 +35,7 @@ use serde_json::Value;
 use busbar_core::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use busbar_core::config::OnExhausted;
 #[cfg_attr(not(test), allow(unused_imports))]
-use busbar_core::proto::{convert_headers, openai_family, StatusClass};
+use busbar_core::proto::{convert_headers, StatusClass};
 use busbar_core::state::App;
 use busbar_core::store::{now, Permit};
 
@@ -81,8 +81,7 @@ pub(crate) use busbar_core::proxy::{
 // keep resolving.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_core::proxy::{
-    egress_request, install_proxy_tunnel_if_configured, EgressClient, EgressClientSpec,
-    EgressConnector, EgressError,
+    egress_request, install_proxy_tunnel_if_configured, EgressClientSpec, EgressError,
 };
 
 // The NEUTRAL error-KIND / network-transient / disposition / content-type vocabulary that STAYS in
@@ -99,7 +98,7 @@ pub(crate) use busbar_core::proxy::{
     DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
     ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
     KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
-    KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR, KIND_TIMEOUT,
+    KIND_TIMEOUT,
 };
 // The NEUTRAL hook-content ceiling knob + the egress-client builder that STAY in core — re-exported
 // into the flattened engine namespace so the relocated tests (which named them at `proxy::…`) keep

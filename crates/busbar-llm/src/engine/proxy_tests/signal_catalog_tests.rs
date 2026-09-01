@@ -13,7 +13,6 @@ use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{Signal, SignalValue};
 use busbar_core::hooks::{Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
-use busbar_core::store::LaneRuntime as _;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.

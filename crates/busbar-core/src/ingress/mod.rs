@@ -824,6 +824,7 @@ pub(crate) async fn named(
 /// surface used to run inline reads the LLM routing tables and now lives in `busbar-llm`; core
 /// threads its `App`/`GovCtx`/caller-token back opaquely through the
 /// [`arrival_host::ArrivalPayload`]. No plane linked → the honest no-handler 404.
+#[allow(clippy::too_many_arguments)]
 async fn delegate_body_arrival(
     app: Arc<App>,
     gov: crate::governance::GovCtx,

@@ -217,6 +217,7 @@ pub(crate) const LATENCY_EWMA_ALPHA: f64 = 0.2;
 impl HealthState {
     /// Read a (pool, lane) cell's cumulative error counter — for concurrency/isolation tests.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn cell_err_for_test(&self, pool: &str, lane: usize) -> u64 {
         self.cell(pool, lane).err().load(Ordering::Relaxed)
     }
@@ -434,6 +435,7 @@ impl HealthState {
 
     /// Attempt to acquire the single probe in HalfOpen state. True if this request wins the probe.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn try_acquire_probe(&self, lane: usize) -> bool {
         self.get_lane(lane)
             .probe_in_flight
@@ -443,6 +445,7 @@ impl HealthState {
 
     /// Clear the probe flag (called after probe completes).
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn clear_probe(&self, lane: usize) {
         self.get_lane(lane)
             .probe_in_flight
@@ -451,6 +454,7 @@ impl HealthState {
 
     /// Transition to Open state with escalated cooldown.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn open_state(&self, lane: usize, now_time: u64, cfg: &BreakerCfg) {
         Self::cell_open(
             self.get_lane(lane).as_ref(),
@@ -463,6 +467,7 @@ impl HealthState {
 
     /// Transition to Open state with escalated cooldown and optional Retry-After floor.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn open_state_with_retry_after(
         &self,
         lane: usize,
@@ -482,6 +487,7 @@ impl HealthState {
     /// Transition to Closed state (probe success). Mirrors the production recovery path: close the
     /// cell, then reset its SWRR accumulator (the lock-free generational bump).
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn closed_state(&self, lane: usize, _now_time: u64) {
         let cell = self.get_lane(lane);
         Self::cell_closed(cell.as_ref());
@@ -546,6 +552,7 @@ impl LaneData {
 
 /// Helper for weighted selection tests - creates a lane with specific weight.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (LaneData, u32) {
     let lane = LaneData {
         model: format!("model-{}", id),
@@ -1052,8 +1059,12 @@ impl HealthState {
 }
 
 // Test-only helpers: release code records outcomes via the cell-core fns; these give the unit
-// tests a lane-indexed handle to seed the default cell's outcome window directly.
+// tests a lane-indexed handle to seed the default cell's outcome window directly. `allow(dead_code)`:
+// this is a test-support surface whose money-path callers relocated to the `busbar-llm` plugin's
+// test binary (1.6.0 money-path Phase 3-4 C) — the helpers stay for core's own store tests + any
+// test-support consumer, so the whole test-only impl is exempt from the dead-code lint.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 impl HealthState {
     /// Record an error outcome in the sliding window with explicit time.
     pub(crate) fn record_outcome_error_with_time(&self, lane: usize, now_time: u64) {

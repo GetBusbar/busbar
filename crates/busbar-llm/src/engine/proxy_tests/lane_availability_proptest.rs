@@ -37,7 +37,6 @@ use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 use busbar_core::config::{FailoverCfg, OnExhausted};
 use busbar_core::state::now;
-use busbar_core::store::LaneRuntime as _;
 use proptest::prelude::*;
 use serde_json::json;
 use std::sync::Arc;

@@ -5,10 +5,8 @@
 //! cell reverts HalfOpen→Open and is re-probeable); DISARMING it (the live-permit dispatch paths)
 //! must LEAVE the probe held for the owning request.
 use super::ProbeGuard;
-use busbar_core::store::LaneRuntime as _;
 use busbar_core::store::{BreakerState, HealthState, LaneData, LaneRuntime};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 fn lane(max: usize) -> LaneData {
     LaneData::for_test("m0", "p0", max)

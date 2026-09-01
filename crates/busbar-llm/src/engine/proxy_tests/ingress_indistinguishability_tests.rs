@@ -4,7 +4,6 @@ use super::{
     KIND_AUTHENTICATION, KIND_INVALID_REQUEST, KIND_OVERLOADED, KIND_RATE_LIMIT,
 };
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::store::LaneRuntime as _;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;

@@ -351,6 +351,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         )
     }
 }
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: &Arc<App>,
     gov: &busbar_api::PlaneRequestCtx,

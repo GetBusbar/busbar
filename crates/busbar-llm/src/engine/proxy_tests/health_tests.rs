@@ -4,14 +4,12 @@
 //! Tests for `crates/busbar-core/src/health.rs`.
 
 use super::*;
-use crate::engine::AppEngineExt as _;
 use crate::test_support::{
     build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
 use axum::http::StatusCode;
 use busbar_core::config::{HealthCfg, HealthMode};
 use busbar_core::store::BreakerState;
-use busbar_core::store::LaneRuntime as _;
 use std::sync::Arc;
 
 fn health_active() -> HealthCfg {

@@ -40,6 +40,10 @@ test-support = ["busbar-core/test-support"]
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
 # `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
 timing = ["busbar-timing/timing"]
+# Passthrough to `busbar-core`'s built-in admin-tokens auth plugin, mirroring `busbar-core`'s feature:
+# a relocated money-path test (`forward_pool_integration_tests`) gates an admin-token assertion on
+# `#[cfg(feature = "auth-admin-tokens")]`, so this flag must resolve in lock-step with core's.
+auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
 # this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through

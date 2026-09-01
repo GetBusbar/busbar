@@ -71,10 +71,15 @@ mod alloc_gate_instrument {
 
     impl CountingJemalloc {
         /// Allocations observed on THIS thread since process start (or last `reset`).
+        // The alloc-count PERF gate that read these moved to `busbar-llm` (see `proxy/mod.rs`), so the
+        // read APIs are now unexercised in core's own test binary while the `#[global_allocator]`
+        // counting seam stays wired for parity; keep the seam intact rather than delete it.
+        #[allow(dead_code)]
         pub(crate) fn count() -> u64 {
             ALLOC_COUNT.with(|c| c.get())
         }
         /// Reset this thread's counter to zero, returning the previous value.
+        #[allow(dead_code)]
         pub(crate) fn reset() -> u64 {
             ALLOC_COUNT.with(|c| c.replace(0))
         }

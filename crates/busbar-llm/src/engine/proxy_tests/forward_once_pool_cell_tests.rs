@@ -1,6 +1,5 @@
 use super::{forward_with_pool, KIND_INVALID_REQUEST};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::store::LaneRuntime as _;
 use busbar_core::store::{now as store_now, BreakerState};
 use reqwest::StatusCode;
 use serde_json::json;

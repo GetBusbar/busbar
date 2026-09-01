@@ -3,16 +3,14 @@
 // crate: the engine namespace via the trait/fns it needs, the plane test_support harness, and the
 // common vocabulary core's `ingress` module re-exported into it.
 use crate::engine::AppEngineExt as _;
-use crate::engine::{forward_with_pool, WeightedLane};
+use crate::engine::WeightedLane;
 use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
-use crate::test_support::*;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use busbar_core::ingress::{
-    admit_check, fallback_pools_authorized, finish, finish_admitted, finish_rejected,
-    governance_guard, ingress_error, not_found_message, percent_decode, pool_authorized,
-    pool_label,
+    admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
+    not_found_message, percent_decode, pool_authorized, pool_label,
 };
 use busbar_core::state::App;
 use serde_json::Value;

@@ -8,8 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg_attr(not(test), allow(unused_imports))]
-use busbar_core::proxy::EgressClient as Client;
 use busbar_core::state::UpstreamClients;
 
 // ---------- lane (one per model) ----------
@@ -36,7 +34,7 @@ pub(crate) struct Lane {
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
     /// at boot from (protocol, auth). See `busbar_core::egress_auth`; the request path calls `headers_for`.
     pub(crate) credential: Arc<dyn busbar_core::egress_auth::CredentialProvider>,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) max: usize,
     // error_map cloned into each lane at startup for Stage 1b normalization
     pub(crate) error_map: Arc<std::collections::HashMap<String, String>>,
@@ -334,6 +332,7 @@ pub(crate) trait AppEngineExt {
     /// neutral `plane_slot_mut` seam + `Arc::get_mut` + downcast; panics (as the inherent method did)
     /// when the slot is absent or not uniquely owned, both test-setup invariants.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime;
 }
 
@@ -356,6 +355,7 @@ impl AppEngineExt for busbar_core::state::App {
             None => empty_native_runtime(),
         }
     }
+    #[allow(dead_code)]
     #[cfg(any(test, feature = "test-support"))]
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
         let key = self.llm_runtime_key();

@@ -104,12 +104,14 @@ thread_local! {
 }
 
 /// Test helper to inject time for unit tests (this thread only).
+#[allow(dead_code)]
 #[cfg(any(test, feature = "test-support"))]
 fn set_now_for_test(t: u64) {
     TEST_NOW.with(|c| c.set(t));
     IN_TEST.with(|c| c.set(true));
 }
 
+#[allow(dead_code)]
 #[cfg(any(test, feature = "test-support"))]
 fn now_for_test() -> u64 {
     // "Unset" is signalled SOLELY by the `IN_TEST` flag (set true by `set_now_for_test`), NOT by the

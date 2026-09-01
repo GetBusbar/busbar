@@ -17,7 +17,6 @@
 
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_core::store::LaneRuntime as _;
 use serde_json::json;
 
 fn member(idx: usize) -> WeightedLane {

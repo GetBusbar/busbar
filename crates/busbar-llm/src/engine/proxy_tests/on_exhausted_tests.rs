@@ -1,6 +1,5 @@
 use crate::engine::AppEngineExt as _;
 use busbar_core::config;
-use busbar_core::store::LaneRuntime as _;
 
 #[test]
 fn test_config_parsing_status_503() {

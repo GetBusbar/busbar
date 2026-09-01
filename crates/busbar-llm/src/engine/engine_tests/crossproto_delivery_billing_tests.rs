@@ -17,7 +17,6 @@
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_core::store::LaneRuntime as _;
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
