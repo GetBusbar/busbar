@@ -66,13 +66,13 @@ pub(crate) fn build_runtime(
     input: &dyn std::any::Any,
     prior: Option<&dyn PlaneSlots>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
-    // Under the test/test-support surface, ensure this plugin's protocols + plane + path-ingress are
-    // registered in the process registries before a runtime is lowered — the choke point every
-    // `TestApp`/`build_once` App build flows through, so a FILTERED test run (one that never happened
-    // to resolve a dialect codec first) still finds the residual chat protocol and the six dialects.
-    // Idempotent + `Once`-guarded; a no-op in a real composition-root binary.
+    // Under the test/test-support surface, ensure this plugin's six dialect declarations are in the
+    // process protocol registry before the lane loop resolves `lane_protocol_name` — the lowering
+    // reads `busbar_core::proto::decl_for` (folds `register_test_protocols`), and a `TestApp`/`build_once`
+    // build in a binary that has not yet folded them (core's own test binary, or a filtered plane run)
+    // would otherwise panic "unknown protocol". Idempotent (dedupes by name); a no-op in production.
     #[cfg(any(test, feature = "test-support"))]
-    crate::ensure_test_protocols_registered();
+    busbar_substrate::proto::register_test_protocols(crate::DECLS);
     let input = input
         .downcast_ref::<LlmBuildInput>()
         .expect("LlmBuildInput: the LLM plane's build_runtime received a foreign carrier");

@@ -217,12 +217,7 @@ pub mod testkit;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn ensure_test_protocols_registered() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
-    // FULL install (protocols + plane + path-ingress) — money-path Phase 3-4 C: the relocated
-    // money-path oracles resolve the residual chat protocol / plane fallback (`handlers::chat`,
-    // `residual_default_dialect`) as well as the six dialect codecs, so this ensure must register the
-    // whole seam, not just the protocol table. Idempotent (each substrate registration dedupes) and
-    // `Once`-guarded, so it stays a single atomic load after the first codec/op resolution.
-    REGISTER.call_once(crate::testkit::install_test_seams);
+    REGISTER.call_once(|| busbar_substrate::proto::register_test_protocols(DECLS));
 }
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
@@ -338,6 +333,42 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
     (
         crate::proto_codec::PROTO_BEDROCK,
         crate::arrival::bedrock_arrival,
+    ),
+];
+
+/// THE BODY-MODEL DIALECT ARRIVALS — the body-axis twin of [`PATH_INGRESS`]. The convenience surfaces
+/// (`named`/`adhoc` `/v1/messages`) and the generic body-model dispatch arm resolve a dialect's
+/// universal ingress by NAME through `busbar_substrate::ingress::arrival::body_ingress_for`; this slice
+/// states each dialect's NAME→arrival pairing. The composition root
+/// (`crates/busbar/src/main.rs::register_protocols`) hands it to
+/// `busbar_substrate::ingress::arrival::install_body_ingress`; the test-kit seeds it through
+/// `set_test_body_ingress`. Every dialect appears (each routes its body-model traffic through the ONE
+/// engine); the URL-model pair (gemini/bedrock) also carry a body entry for the dispatch arm's
+/// symmetry, even though their primary surface is [`PATH_INGRESS`].
+pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
+    (
+        crate::proto_codec::PROTO_ANTHROPIC,
+        crate::arrival::anthropic_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_OPENAI,
+        crate::arrival::openai_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_GEMINI,
+        crate::arrival::gemini_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_BEDROCK,
+        crate::arrival::bedrock_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_RESPONSES,
+        crate::arrival::responses_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_COHERE,
+        crate::arrival::cohere_body_arrival,
     ),
 ];
 

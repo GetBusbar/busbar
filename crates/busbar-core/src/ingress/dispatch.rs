@@ -117,7 +117,7 @@ pub(crate) async fn protocol_dispatch(
     // into the LLM plane (`busbar-llm`). Resolve that plane's universal body-arrival by protocol name
     // and hand it the neutral arrival, exactly like the path-model arm above — core names no LLM
     // type. No plane linked (core booted plane-agnostic) → the honest no-handler 404.
-    if let Some(body_ingress) = busbar_substrate::ingress::arrival::body_ingress_for(proto) {
+    if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
         let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
                 app,

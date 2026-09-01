@@ -617,6 +617,19 @@ fn register_protocols() {
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
     busbar_core::proto::registry::install_protocols_with_path_ingress(installed, path_ingress);
+
+    // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
+    // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's
+    // universal ingress by name through `body_ingress_for`; each protocol crate contributes its
+    // `(name, arrival)` pairs so the composition root registers the whole set once. Without this a
+    // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
+    // `BODY_INGRESS` exists to close).
+    #[allow(unused_mut)]
+    let mut body_ingress: Vec<(&'static str, busbar_substrate::ingress::arrival::BodyIngress)> =
+        Vec::new();
+    #[cfg(feature = "proto-llm")]
+    body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
+    busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis

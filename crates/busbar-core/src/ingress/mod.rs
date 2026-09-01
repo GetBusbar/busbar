@@ -13,6 +13,31 @@ use axum::{
 
 use crate::state::App;
 
+// PRODUCTION / `test-support`: the body-model arrival catch-all resolves straight off the installed
+// table (the composition root wrote it via `install_body_ingress`; a `test-support` consumer seeds the
+// hook through `busbar_llm::testkit`).
+#[cfg(not(test))]
+pub(crate) use busbar_substrate::ingress::arrival::body_ingress_for;
+
+/// CORE'S OWN `#[cfg(test)]` BINARY has no composition root, so — exactly as `path_ingress_for` seeds
+/// `set_test_path_ingress` and `proto::registry` seeds `set_test_builtins` — this seeds the neutral
+/// body-arrival hook with the extracted dialects' `BODY_INGRESS` slice (named in a `tests/` file the
+/// neutral-purity lint excludes) before every resolve, so a `/v1/messages` (named/adhoc) or body-model
+/// dispatch request in a core test resolves its universal ingress.
+#[cfg(test)]
+pub(crate) fn body_ingress_for(
+    name: &str,
+) -> Option<busbar_substrate::ingress::arrival::BodyIngress> {
+    busbar_substrate::ingress::arrival::set_test_body_ingress(test_body_ingress::test_body_ingress);
+    busbar_substrate::ingress::arrival::body_ingress_for(name)
+}
+
+/// The extracted-dialect body arrival list for core's OWN test binary — `busbar_llm::BODY_INGRESS`,
+/// named in a `tests/` file the neutral-purity lint excludes so the neutral source spells no crate.
+#[cfg(test)]
+#[path = "tests/body_ingress_builtins.rs"]
+mod test_body_ingress;
+
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
 /// to short-circuit when the key may not use this pool.
@@ -801,7 +826,7 @@ async fn delegate_body_arrival(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(body_ingress) = busbar_substrate::ingress::arrival::body_ingress_for(proto) {
+    if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
         let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {

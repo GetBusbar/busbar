@@ -410,6 +410,72 @@ async fn bedrock_invoke(
     .await
 }
 
+// ── BODY-MODEL DIALECT ARRIVALS ─────────────────────────────────────────────────────────────────
+// The four body-model dialects (anthropic/openai/cohere/responses) — and the body variants of the
+// URL-model pair — keep the model IN THE BODY: the convenience surfaces (`named`/`adhoc` `/v1/messages`)
+// and the generic `protocol_dispatch` body-model arm resolve them by protocol name through
+// `busbar_substrate::ingress::arrival::body_ingress_for(proto)`. This SIDE-TABLE is the body-axis twin
+// of [`crate::PATH_INGRESS`]: it maps each dialect NAME to a `BodyIngress` fn that resolves the
+// operation off the endpoint (its own `RequestHandler::resolve_operation`) and runs the universal
+// [`crate::native_ingress::operation_ingress`] forward. Registered by the composition root
+// (`register_protocols` → `install_body_ingress`) and by the test-kit ([`crate::testkit::install_test_seams`]
+// → `set_test_body_ingress`), the byte-identical successor to the pre-relocation in-core body arrival.
+
+/// Shared body-model arrival: resolve the operation for `proto` off the endpoint, then run the one
+/// engine. A body whose operation the dialect does not serve is the honest pre-routing 404 (accounted
+/// through `finish_rejected`, like every other pre-routing reject).
+async fn body_arrival(proto: &'static str, a: Arrival) -> Response {
+    let Arrival {
+        host,
+        ctx,
+        path: _,
+        uri,
+        headers,
+        body,
+    } = a;
+    let started = Instant::now();
+    let charged_at = busbar_substrate::store::now();
+    let Some(operation) =
+        request_handler(proto).and_then(|rh| rh.resolve_operation(uri.path(), &body))
+    else {
+        return host.finish_rejected(
+            &ctx,
+            proto,
+            POOL_LABEL_UNRESOLVED,
+            started,
+            charged_at,
+            host.ingress_error(
+                proto,
+                StatusCode::NOT_FOUND,
+                host.kind_not_found(),
+                "This endpoint does not support that operation.",
+            ),
+        );
+    };
+    crate::native_ingress::operation_ingress(&ctx, headers, body, proto, operation, None).await
+}
+
+/// Generate one `BodyIngress` fn-pointer target per dialect (a bare `fn(Arrival) -> Fut`, since the
+/// registry seam is a fn pointer that cannot capture the protocol name).
+macro_rules! body_arrivals {
+    ($(($name:ident, $proto:expr)),+ $(,)?) => {
+        $(
+            pub fn $name(a: Arrival) -> Fut {
+                Box::pin(body_arrival($proto, a))
+            }
+        )+
+    };
+}
+
+body_arrivals! {
+    (anthropic_body_arrival, crate::proto_codec::PROTO_ANTHROPIC),
+    (openai_body_arrival, crate::proto_codec::PROTO_OPENAI),
+    (gemini_body_arrival, crate::proto_codec::PROTO_GEMINI),
+    (bedrock_body_arrival, crate::proto_codec::PROTO_BEDROCK),
+    (responses_body_arrival, crate::proto_codec::PROTO_RESPONSES),
+    (cohere_body_arrival, crate::proto_codec::PROTO_COHERE),
+}
+
 #[cfg(test)]
 #[path = "tests/arrival_tests.rs"]
 mod arrival_tests;

@@ -26,4 +26,5 @@ pub fn install_test_seams() {
     busbar_substrate::proto::register_test_protocols(crate::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_substrate::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
+    busbar_substrate::ingress::arrival::set_test_body_ingress(|| crate::BODY_INGRESS);
 }
