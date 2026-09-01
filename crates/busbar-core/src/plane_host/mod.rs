@@ -320,7 +320,7 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// A line-for-line lift of the former `mcp::sampling::complete`'s pre-response body: the argument
 /// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — `proto = "openai"`,
 /// [`Transport::Http`](crate::transport::Transport), the `handlers::chat("openai", Http)` op,
-/// `caller_token = None`, `gemini_api_version = None`, `charged_at = crate::store::now()` (whole
+/// `caller_token = None`, `model_not_found_message = None`, `charged_at = crate::store::now()` (whole
 /// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside

@@ -222,8 +222,13 @@ async fn gemini_ingress(
         stream,
         gemini_json_array,
         PROTO_GEMINI,
-        // Thread the path-derived api_version so a model-not-found 404 says the native Gemini message.
-        Some(api_version.to_string()),
+        // The native Gemini model-not-found body, SHAPED HERE — this dialect owns its own not-found
+        // vocabulary (versioned with the path-derived api_version, no OpenAI "does not exist" copy) and
+        // core uses it verbatim on a model miss. Core names no dialect; the shaping lives with the dialect.
+        Some(format!(
+            "models/{model} is not found for API version {api_version}, \
+             or is not supported for the task you are trying to perform."
+        )),
     )
     .await
 }

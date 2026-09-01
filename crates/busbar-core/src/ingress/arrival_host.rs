@@ -55,22 +55,12 @@ impl ArrivalHost for CoreArrivalHost {
         stream: bool,
         gemini_json_array: bool,
         proto: &'static str,
-        gemini_api_version: Option<String>,
+        model_not_found_message: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
         let p = payload(ctx);
         let app = p.app.clone();
         let gov = p.gov.clone();
         let caller = p.caller.clone();
-        // A path-model dialect that echoes a non-neutral not-found body (Gemini) threads the version
-        // token it derived from the request path; SHAPE its native model-not-found copy here, once, so
-        // core's shared ingress carries only a PRE-SHAPED neutral `Option<String>` and names no dialect
-        // downstream. `None` for every dialect that shares the canonical OpenAI-style copy.
-        let model_not_found_message: Option<String> = gemini_api_version.map(|api_version| {
-            format!(
-                "models/{model} is not found for API version {api_version}, \
-                 or is not supported for the task you are trying to perform."
-            )
-        });
         Box::pin(async move {
             super::ingress_path_model(
                 &app,
