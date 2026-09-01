@@ -334,7 +334,6 @@ pub async fn synthesize_completion_over(
     body: bytes::Bytes,
     max_body_bytes: usize,
 ) -> Result<busbar_substrate::plane_host::HostCompletion, String> {
-    let parsed = crate::proxy::LazyBody::parse(&body).ok();
     // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
     // per-request parameters addressed to the caller's request, and replaying them onto a leg the
     // caller did not compose would let one exchange steer another.
@@ -343,29 +342,28 @@ pub async fn synthesize_completion_over(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
-    // THE DEFAULT CHAT PROTOCOL — the wire dialect an extracted plane's synthesized completion is
-    // driven as — is the registry's residual-default protocol (openai_chat declares
-    // `residual_default: true`), read by name so this neutral core spells no dialect. `None` is the
-    // all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect to
-    // drive, and the caller gets that as an error rather than a hard-coded protocol identity.
-    let proto = crate::proto::residual_default_dialect()
-        .ok_or_else(|| "no default chat protocol is installed".to_string())?;
-    let op = crate::handlers::chat(proto, crate::transport::Transport::Http);
-    let response = crate::ingress::operation_resolved(
-        &app,
-        gov,
-        proto,
-        op.operation,
-        op.op_handler,
-        model,
-        &headers,
+    // The resolved-completion synthesizer (`operation_resolved` over the residual-default chat
+    // dialect, `LazyBody::parse` over these bytes, `model` explicit, `caller_token = None`) reads the
+    // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
+    // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
+    // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
+    // to drive, and the caller gets that as an error rather than a hard-coded protocol identity.
+    let Some(synth) = busbar_substrate::ingress::arrival::completion_ingress() else {
+        return Err("no default chat protocol is installed".to_string());
+    };
+    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+        crate::ingress::arrival_host::ArrivalPayload {
+            app,
+            gov: gov.clone(),
+            caller_token: None,
+        },
+    );
+    let response = synth(busbar_substrate::ingress::arrival::CompletionArrival {
+        ctx,
+        model: model.to_string(),
+        headers,
         body,
-        parsed,
-        None,
-        std::time::Instant::now(),
-        crate::store::now(),
-        None,
-    )
+    })
     .await;
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), max_body_bytes)

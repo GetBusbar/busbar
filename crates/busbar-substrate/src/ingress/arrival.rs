@@ -260,3 +260,74 @@ pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
     }
     None
 }
+
+// ============================================================================
+// THE NEUTRAL RESOLVED-COMPLETION SEAM — the ABI core's `EngineHost::synthesize_completion` (the MCP
+// sampling re-entry) reaches the LLM plane's resolved-operation gauntlet through. The synthesizer
+// drives ONE non-streaming chat completion (a known model + body) through the SAME resolved-op path
+// (`operation_resolved` → the one engine) an arrival takes; that path reads the LLM routing tables
+// and so RELOCATED into `busbar-llm`. Unlike the arrival seams there is exactly one synthesizer (the
+// residual-default chat dialect's), so this is a single fn-pointer, not a protocol-keyed table.
+// ============================================================================
+
+/// One synthesize-completion request, as the LLM plane's relocated synthesizer receives it: the
+/// opaque core context ([`ArrivalCtx`] carrying `App`/`GovCtx`/caller-token, downcast in-plane), the
+/// resolved model, and the request headers + body. The plane resolves the residual-default chat
+/// dialect + op itself and drives `operation_resolved` with `model` explicit — byte-identical to the
+/// former core-resident `synthesize_completion_over`.
+pub struct CompletionArrival {
+    /// The opaque core context (`App`/`GovCtx`/caller-token) the plane downcasts in-plane.
+    pub ctx: ArrivalCtx,
+    /// The resolved model to route the synthesized completion through (passed explicitly, never read
+    /// from the body).
+    pub model: String,
+    pub headers: HeaderMap,
+    pub body: Bytes,
+}
+
+/// The LLM plane's resolved-completion synthesizer: one [`CompletionArrival`] in, one boxed response
+/// future out (core reads its status + body into the neutral `HostCompletion`).
+pub type CompletionIngress = fn(CompletionArrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+
+/// The synthesizer the COMPOSITION ROOT installed. Set once by [`install_completion_ingress`];
+/// consulted by [`completion_ingress`]. Single, not a table (one residual-default chat synthesizer).
+static INSTALLED_COMPLETION_INGRESS: std::sync::OnceLock<CompletionIngress> =
+    std::sync::OnceLock::new();
+
+/// INSTALL THE RESOLVED-COMPLETION SYNTHESIZER — the composition root's one write, mirroring
+/// [`install_body_ingress`]. Set-once.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+pub fn install_completion_ingress(f: CompletionIngress) {
+    assert!(
+        INSTALLED_COMPLETION_INGRESS.set(f).is_ok(),
+        "install_completion_ingress called twice: there is one composition root, and it registers once"
+    );
+}
+
+/// THE CORE-TEST/`test-support` SYNTHESIZER HOOK — a build with no composition root seeds the LLM
+/// plane's synthesizer here so [`completion_ingress`] resolves it without a set-once install.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_COMPLETION_INGRESS_HOOK: std::sync::OnceLock<CompletionIngress> =
+    std::sync::OnceLock::new();
+
+/// SEED THE CORE-TEST/`test-support` SYNTHESIZER HOOK. Idempotent (first writer wins).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_completion_ingress(f: CompletionIngress) {
+    let _ = TEST_COMPLETION_INGRESS_HOOK.set(f);
+}
+
+/// RESOLVE THE RESOLVED-COMPLETION SYNTHESIZER — the lookup `EngineHost::synthesize_completion`
+/// performs. `None` when no LLM plane is linked (core booted plane-agnostic): the caller then returns
+/// the honest "no chat dialect installed" error rather than a synthesized completion.
+pub fn completion_ingress() -> Option<CompletionIngress> {
+    if let Some(f) = INSTALLED_COMPLETION_INGRESS.get() {
+        return Some(*f);
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(f) = TEST_COMPLETION_INGRESS_HOOK.get() {
+        return Some(*f);
+    }
+    None
+}

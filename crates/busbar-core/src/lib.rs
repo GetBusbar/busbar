@@ -182,12 +182,10 @@ pub mod oauth_as;
 pub mod observability;
 // `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
 // from `busbar-api` so `crate::operation::Operation` and `busbar_core::operation::*` are unchanged
-// for every existing user. Core makes it a local module (rather than a bare `pub use`) to hang THE
-// ONE GAUNTLET on it: `operation::run` is the single canonical resolved-operation entry every
-// arrival converges on — the named seam the plane hooks (1.6 M2–M5) grow onto — with the body living
-// in `ingress::dispatch::run` where it can reach the ingress core's private helpers.
+// for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
+// every arrival converges on) RELOCATED with the LLM engine into `busbar-llm`; core reaches it only
+// through the neutral body-arrival seam, so this is now a plain re-export of the neutral vocabulary.
 pub mod operation {
-    pub use crate::ingress::dispatch::run;
     pub use busbar_api::operation::*;
 }
 

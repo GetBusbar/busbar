@@ -12,6 +12,7 @@
 //! owns the moved `HeaderMap`/`Bytes`, so the future it hands back over the `fn`-pointer arrival
 //! boundary borrows nothing.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::http::StatusCode;
