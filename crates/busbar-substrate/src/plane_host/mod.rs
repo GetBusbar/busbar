@@ -455,16 +455,18 @@ pub trait EngineHost: Send + Sync {
     /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
     fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 
-    /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
-    /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
-    /// operator's declared `model`, and return the raw wire outcome. Identical to calling
-    /// `busbar_core::ingress::operation_resolved` with the `openai` chat handler over the live App.
+    /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
+    /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
+    /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
+    /// driven as is NEUTRAL to this seam: the host resolves it from the registry's residual-default
+    /// chat protocol (`None` — no chat dialect installed — surfaces as an error, not a hard-coded
+    /// identity), so MCP's `sampling/complete` bridge names no LLM dialect to reach a completion.
     ///
     /// The ONE async method beside [`identity_admit`](EngineHost::identity_admit) — but simpler:
-    /// `operation_resolved` is a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this
-    /// only `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
+    /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
+    /// `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
     /// bounds the response body read.
-    async fn drive_openai_completion(
+    async fn synthesize_completion(
         &self,
         gov: &busbar_api::PlaneRequestCtx,
         model: &str,

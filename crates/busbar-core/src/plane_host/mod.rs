@@ -309,24 +309,25 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
-/// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress pipeline
-/// over the live `app` and return the raw wire outcome — the core-resident veneer behind
-/// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion).
+/// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved ingress
+/// pipeline over the live `app`, returning the raw wire outcome — the core-resident veneer behind
+/// [`EngineHost::synthesize_completion`](busbar_substrate::plane_host::EngineHost::synthesize_completion).
 /// This is the ONLY place the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
 /// reaches now live: an extracted plane hands a NEUTRAL request (gov + model + body bytes) and gets a
 /// NEUTRAL [`HostCompletion`](busbar_substrate::plane_host::HostCompletion) (status + body bytes) back,
 /// never naming a core type.
 ///
 /// A line-for-line lift of the former `mcp::sampling::complete`'s pre-response body: the argument
-/// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — `proto = "openai"`,
-/// [`Transport::Http`](crate::transport::Transport), the `handlers::chat("openai", Http)` op,
+/// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — the chat `proto` is the
+/// registry's residual-default dialect (read by NAME, so this neutral core spells none),
+/// [`Transport::Http`](crate::transport::Transport), the `handlers::chat(proto, Http)` op,
 /// `caller_token = None`, `model_not_found_message = None`, `charged_at = crate::store::now()` (whole
 /// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
 /// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
 #[allow(dead_code)]
-pub async fn drive_openai_completion_over(
+pub async fn synthesize_completion_over(
     app: Arc<App>,
     gov: &crate::governance::PlaneRequestCtx,
     model: &str,
@@ -706,7 +707,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
     }
 
-    async fn drive_openai_completion(
+    async fn synthesize_completion(
         &self,
         gov: &busbar_api::PlaneRequestCtx,
         model: &str,
@@ -716,7 +717,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
         // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
         // `.await` and the future stays `Send`.
-        drive_openai_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
+        synthesize_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
     }
 }
 
