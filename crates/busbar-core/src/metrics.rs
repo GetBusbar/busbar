@@ -921,7 +921,7 @@ pub fn render() -> String {
 /// No-op when governance is disabled (the governance arc is `None`). Pool and lane label spaces
 /// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
 /// keys the admin has created. No client-supplied label values are ever emitted.
-pub(crate) fn refresh_scrape_gauges(app: &App) {
+pub fn refresh_scrape_gauges(app: &App) {
     let now = crate::state::now();
 
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────

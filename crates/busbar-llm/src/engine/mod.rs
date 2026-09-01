@@ -128,6 +128,9 @@ mod egress_dropped_controls_audit_tests;
 #[path = "proxy_tests/egress_target_tests.rs"]
 mod egress_target_tests;
 #[cfg(test)]
+#[path = "proxy_tests/engine_identity_witness_tests.rs"]
+mod engine_identity_witness_tests;
+#[cfg(test)]
 #[path = "proxy_tests/forward_once_pool_cell_tests.rs"]
 mod forward_once_pool_cell_tests;
 #[cfg(test)]
@@ -184,6 +187,12 @@ mod reroute_pool_tests;
 #[cfg(test)]
 #[path = "proxy_tests/response_model_fill_tests.rs"]
 mod response_model_fill_tests;
+#[cfg(test)]
+#[path = "proxy_tests/runtime_carry_tests.rs"]
+mod runtime_carry_tests;
+#[cfg(test)]
+#[path = "proxy_tests/scrape_queued_depth_tests.rs"]
+mod scrape_queued_depth_tests;
 #[cfg(test)]
 #[path = "proxy_tests/signal_catalog_tests.rs"]
 mod signal_catalog_tests;

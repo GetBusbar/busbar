@@ -685,3 +685,7 @@ pub async fn ingress_path_model(
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "multipart_model_tests.rs"]
+mod multipart_model_tests;

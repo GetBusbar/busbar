@@ -4222,7 +4222,7 @@ fn default_probe_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)] // a typo'd limits key must fail boot, not be silently ignored.
 pub(crate) struct LimitsCfg {
     #[serde(default = "default_upstream_request_timeout_secs")]
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     /// Max accepted inbound body (bytes). COUPLED: also drives the egress translate-body cap
     /// (`crate::limits::translate_body_max_bytes`) — one knob feeds both so an accepted request is
     /// always buffer-translatable on egress.
@@ -4397,7 +4397,7 @@ impl Default for RoutingCfg {
 /// struct rather than re-walking optional config sections.
 #[derive(Debug, Clone)]
 pub struct LimitsResolved {
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     pub request_body_max_bytes: usize,
     pub(crate) pool_max_idle_per_host: usize,
     pub(crate) pool_idle_timeout_secs: u64,

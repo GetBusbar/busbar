@@ -154,8 +154,8 @@ impl UpstreamClients {
     /// when one was cloned from the other (a config apply that REUSED the prior client for pool
     /// warmth); false when the shards were freshly built. Lets the apply path — and its tests —
     /// distinguish "carried the warm pool forward" from "rebuilt with new client settings".
-    #[cfg(test)]
-    pub(crate) fn shares_pool_with(&self, other: &UpstreamClients) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn shares_pool_with(&self, other: &UpstreamClients) -> bool {
         Arc::ptr_eq(&self.shards, &other.shards)
     }
 }

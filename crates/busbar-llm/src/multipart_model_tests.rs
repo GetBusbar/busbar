@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/ingress/dispatch.rs`.
+//! Tests for `multipart_model` (relocated with the body-model ingress into `native_ingress`).
 
 use super::multipart_model;
 

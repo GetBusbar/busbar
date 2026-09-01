@@ -144,6 +144,3 @@ pub(crate) async fn protocol_dispatch(
     )
 }
 
-#[cfg(test)]
-#[path = "tests/multipart_model_tests.rs"]
-mod multipart_model_tests;
