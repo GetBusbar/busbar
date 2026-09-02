@@ -1998,6 +1998,8 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "anthropic",
         busbar_substrate::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),
         None,
+        // No client beta/version headers under test here.
+        Vec::new(),
     )
     .await;
     let captured = seen.lock().unwrap().clone().expect("pool policy ran");

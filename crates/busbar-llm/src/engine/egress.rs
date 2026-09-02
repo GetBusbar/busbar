@@ -300,6 +300,56 @@ pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'stat
     }
 }
 
+// ── CLIENT-HEADER FORWARDING — THE DIALECT POLICY (plane knowledge) ────────────────────────────────
+//
+// busbar rebuilds the egress header map fresh (lane creds + CT/UA/Accept) and historically DROPPED
+// every client-supplied request header — silently discarding the caller's GA/beta/version selectors
+// (`anthropic-beta`, `OpenAI-Beta`, `anthropic-version`). Restoring that fidelity is a two-part split:
+// the NEUTRAL mechanism (`busbar_substrate::proxy::{collect,apply}_client_headers`) forwards exactly a
+// caller-supplied SET of header names it never hard-codes, and THIS table — the DIALECT policy — is
+// the set. It lives in the LLM plane because the header names and their dialect scoping are LLM
+// knowledge; the neutral crate names none of them.
+//
+// Each entry pairs a lowercase client header name with the egress DIALECT(s) it is meaningful for.
+// That dialect scoping is the no-cross-dialect-leak guard: a beta header the caller sent for one
+// upstream dialect is NOT forwarded when the request is routed (or fails over) to a DIFFERENT
+// dialect's lane — an `anthropic-beta` never rides to an OpenAI upstream, and vice versa.
+// `anthropic-version` is scoped to the native `anthropic` dialect only (Bedrock carries its version as
+// a BODY field, not a header, so it is deliberately absent). The table NEVER contains hop-by-hop,
+// `host`, or auth/credential headers — forwarding is strictly opt-in on this list.
+pub(crate) const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
+    ("anthropic-beta", &[crate::proto_codec::PROTO_ANTHROPIC]),
+    ("anthropic-version", &[crate::proto_codec::PROTO_ANTHROPIC]),
+    (
+        "openai-beta",
+        &[
+            crate::proto_codec::PROTO_OPENAI,
+            crate::proto_codec::PROTO_RESPONSES,
+        ],
+    ),
+];
+
+/// The UNION of every forwardable client-header name — the set the neutral collector captures off the
+/// inbound request at ingress (before the egress dialect is known: routing/failover may pick a
+/// cross-protocol lane after collection, so the dialect scoping is applied LATER, at egress assembly).
+pub(crate) fn forwardable_client_header_names() -> Vec<&'static str> {
+    FORWARDED_CLIENT_HEADERS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// The client-header names allowlisted for `egress_protocol` — the per-destination allowlist the
+/// neutral apply narrows to at the egress assembly site (the no-cross-dialect-leak guard). Empty for a
+/// dialect no forwardable header names, or an unknown/dropped protocol.
+pub(crate) fn client_header_names_for_egress(egress_protocol: &str) -> Vec<&'static str> {
+    FORWARDED_CLIENT_HEADERS
+        .iter()
+        .filter(|(_, dialects)| dialects.contains(&egress_protocol))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
 /// THE REFERENCE `(protocol × operation)` UPSTREAM-PATH COMPOSITION — relocated from core's inherent
 /// `Op::upstream_path(&Lane, …)` with the engine (money-path Phase 3-4 C): it names the plane's
 /// [`Lane`], which core no longer holds, so it now rides an extension over the core [`Op`] handle
