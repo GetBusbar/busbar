@@ -858,7 +858,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     .build()
                     .map_err(|e| format!("fetch runtime: {e}"))?;
                 rt.block_on(async {
-                    // The ENGINE, on a cold one-shot posture (`llm_lane` values, one idle slot):
+                    // The ENGINE, on a cold one-shot posture (`pooled_webpki` values, one idle slot):
                     // webpki trust, system DNS, boot-env proxy — and redirect non-following is
                     // STRUCTURAL now (hyper follows nothing), where reqwest needed
                     // `Policy::none()`: the SSRF guard above only vets the ORIGINAL url, so a 3xx
@@ -867,7 +867,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     // redirect-SSRF vector the OTLP exporter and provider clients already close.
                     // A redirect arrives as a 3xx status and falls into the non-success arm below.
                     let client = crate::proxy::build_egress_client(
-                        &crate::proxy::EgressClientSpec::llm_lane(1, 4, false, false),
+                        &crate::proxy::EgressClientSpec::pooled_webpki(1, 4, false, false),
                     );
                     let uri: http::Uri = url
                         .parse()

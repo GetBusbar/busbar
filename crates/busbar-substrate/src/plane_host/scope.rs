@@ -356,7 +356,8 @@ impl Drop for DispatchScope {
 }
 
 /// The CONNECTION-lifetime scope (DESIGN-v5-taxonomy Axis 2). Reclaims on connection close; holds
-/// per-connection state, a pooled backend connection, and in-flight leases (a2a session; DB-wire).
+/// per-connection state, a pooled backend connection, and in-flight leases — for any plane that owns a
+/// connection for longer than one exchange (a duplex/session plane; a DB-wire plane).
 ///
 /// STUB: minimal by design. The riders that add a duplex/session plane wire this out (a per-connection
 /// opaque-state slot joins the per-plane one); until then it exists only to NAME the scope in the

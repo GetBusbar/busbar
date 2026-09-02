@@ -129,7 +129,7 @@ async fn delivery_failure_masks_userinfo() {
 
     // Transport-error arm: a POST to an unroutable RFC 5737 TEST-NET-1 host fails fast (the
     // 200ms deadline bounds it), through the same engine client + send the exporter uses.
-    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
         1, 4, false, false,
     ));
     let req = busbar_substrate::egress::engine::request(

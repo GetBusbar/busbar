@@ -106,7 +106,7 @@ pub(super) fn plain_connector(
     http.enforce_http(false);
     http.set_nodelay(true);
     let http = tunnel::TunnelConnector::new(http, None, dial_bound);
-    let tls = rustls_client_config(&EngineSpec::llm_lane(4, 300, false, false)).expect("tls");
+    let tls = rustls_client_config(&EngineSpec::pooled_webpki(4, 300, false, false)).expect("tls");
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
         .https_or_http()
@@ -224,7 +224,8 @@ fn dial_bound_resolution_pinned_undivided_sharded_divided() {
         pinned.dial_bound_for_tests(),
         tunnel::CONNECTS_PER_AUTHORITY_GLOBAL
     );
-    let sharded = build_client(&EngineSpec::llm_lane(4, 300, false, false)).expect("llm build");
+    let sharded =
+        build_client(&EngineSpec::pooled_webpki(4, 300, false, false)).expect("llm build");
     assert_eq!(sharded.dial_bound_for_tests(), dial_bound_for(None));
 }
 

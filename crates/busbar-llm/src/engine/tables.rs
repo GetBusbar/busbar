@@ -438,7 +438,7 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         any_pool_upstream_creds_override: false,
         client: UpstreamClients::build(1, || {
             busbar_substrate::proxy::build_egress_client(
-                &crate::engine::EgressClientSpec::llm_lane(4, 300, false, false),
+                &crate::engine::EgressClientSpec::pooled_webpki(4, 300, false, false),
             )
         }),
         // The empty runtime's client is the never-dialled default shard; its settings key exists only

@@ -29,9 +29,9 @@ async fn hyper_transport_err() -> hyper::Error {
             .expect("write partial");
         // Drop: the connection dies with 93 declared bytes undelivered.
     });
-    let client = crate::engine::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
-        1, 1, false, false,
-    ));
+    let client = crate::engine::build_egress_client(
+        &crate::engine::EgressClientSpec::pooled_webpki(1, 1, false, false),
+    );
     let req = crate::engine::egress_request(
         format!("http://{addr}/").parse().expect("err fixture uri"),
         axum::http::HeaderMap::new(),

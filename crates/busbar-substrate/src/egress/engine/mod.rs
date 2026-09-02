@@ -92,7 +92,7 @@ pub use client::EngineClient;
 pub use pool::EngineError;
 
 /// The engine's posture, one value per client build. Composed ONLY through the blessed
-/// constructors ([`EngineSpec::llm_lane`] today; the pinned-plane posture joins it as the
+/// constructors ([`EngineSpec::pooled_webpki`] today; the pinned-plane posture joins it as the
 /// migration proceeds), so no call site ever assembles a posture by hand and "no new knobs" stays
 /// structural rather than reviewed.
 pub struct EngineSpec {
@@ -162,12 +162,12 @@ pub enum Dns {
 }
 
 impl EngineSpec {
-    /// TODAY'S LLM-LANE POSTURE, exactly: webpki trust, system DNS, no pin, no observation, no
+    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS, no pin, no observation, no
     /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
     /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
     /// four inputs `UpstreamClientSettings` snapshots (plus the per-shard idle division the
     /// caller already computes).
-    pub fn llm_lane(
+    pub fn pooled_webpki(
         idle_per_host: usize,
         pool_idle_timeout_secs: u64,
         http1_only: bool,

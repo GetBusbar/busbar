@@ -816,7 +816,7 @@ const HOP_TIMEOUT_SECS: u64 = 10;
 fn hop_client() -> &'static crate::proxy::EgressClient {
     static CLIENT: std::sync::OnceLock<crate::proxy::EgressClient> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
             usize::MAX,
             90,
             false,

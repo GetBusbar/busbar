@@ -8,7 +8,7 @@
 #[test]
 fn worker_ids_index_distinct_shards_and_unset_falls_back() {
     let clients = super::UpstreamClients::build(3, || {
-        crate::proxy::build_egress_client(&crate::egress::engine::EngineSpec::llm_lane(
+        crate::proxy::build_egress_client(&crate::egress::engine::EngineSpec::pooled_webpki(
             1, 1, false, false,
         ))
     });
