@@ -252,3 +252,14 @@ fn a_zero_cap_is_refuse_all_exhausted_from_the_outset_and_distinct_from_no_cap()
     assert!(!uncapped.is_exhausted());
     assert_eq!(uncapped.remaining(), None);
 }
+
+#[test]
+fn cost_amount_addition_saturates_instead_of_wrapping() {
+    // C1 regression: a hostile/huge breakdown or a long run of partial settles must NOT wrap the
+    // u128 accumulator to ~0 (silent under-settlement in release, debug panic). Add + Sum saturate.
+    let big = CostAmount(u128::MAX);
+    assert_eq!(big + CostAmount(1), CostAmount(u128::MAX), "Add must saturate, not wrap to 0");
+    assert_eq!(big + big, CostAmount(u128::MAX));
+    let summed: CostAmount = [big, CostAmount(1), big].into_iter().sum();
+    assert_eq!(summed, CostAmount(u128::MAX), "Sum must saturate, not wrap");
+}

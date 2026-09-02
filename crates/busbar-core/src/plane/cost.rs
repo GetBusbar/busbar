@@ -55,13 +55,18 @@ impl std::ops::Add for CostAmount {
     type Output = CostAmount;
     #[inline]
     fn add(self, rhs: CostAmount) -> CostAmount {
-        CostAmount(self.0 + rhs.0)
+        // Saturating, matching the fail-closed money-path discipline (`finalize` uses
+        // saturating_sub, `derive_spend_cents` saturating_add). A hostile/buggy plugin
+        // breakdown or a long run of partial settles must NOT wrap the accumulator to ~0
+        // (silent under-settlement in release, debug panic) — it caps at the ceiling instead.
+        CostAmount(self.0.saturating_add(rhs.0))
     }
 }
 
 impl std::iter::Sum for CostAmount {
     fn sum<I: Iterator<Item = CostAmount>>(iter: I) -> CostAmount {
-        CostAmount(iter.map(|c| c.0).sum())
+        // Saturating fold — see the `Add` impl above; a summed sequence cannot wrap to under-charge.
+        iter.fold(CostAmount(0), |acc, c| acc + c)
     }
 }
 
