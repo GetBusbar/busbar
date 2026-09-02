@@ -152,6 +152,11 @@ pub mod catalogue;
 pub mod failover;
 pub mod store;
 pub mod telemetry;
+// The neutral METRIC-NAME facade: the `&'static str` Prometheus names a plane's engine emits. Pure
+// data, no registry/`App`; core re-exports each from `crate::metrics`. The recorder + `render()` +
+// scrape-time gauges stay in core (they flush the core-resident telemetry bank), so only the NAMES
+// are neutral and the scrape stays ONE registry, byte-identical.
+pub mod metrics;
 // The neutral GOVERNANCE value families — the busbar-signed token crypto, the mint-parameter struct
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
 // each from its old `busbar_core::governance::…` path.

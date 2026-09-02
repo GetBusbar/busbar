@@ -305,7 +305,7 @@ pub(crate) fn enforce_content_cap(
     if bytes <= cap {
         return Some(p);
     }
-    metrics::counter!(busbar_core::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(busbar_substrate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     // Per-request condition on a configured ceiling; the HOOK_CONTENT_TRUNCATED_TOTAL counter above
     // is the operator-facing signal, so log the detail at `debug!` rather than warn-spamming per call.
     tracing::debug!(

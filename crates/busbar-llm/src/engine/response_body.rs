@@ -333,7 +333,7 @@ where
                                 // unrecognized protocol, or a usage object so large it doesn't fit in
                                 // `cap` itself) is still observable here, not silent.
                                 this.nonstream_buf_truncated = true;
-                                metrics::counter!(busbar_core::metrics::BILLING_TRUNCATED_TOTAL)
+                                metrics::counter!(busbar_substrate::metrics::BILLING_TRUNCATED_TOTAL)
                                     .increment(1);
                                 diag_debug!(
                                     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,

@@ -1228,7 +1228,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     name,
                 } => {
                     metrics::counter!(
-                        busbar_core::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                        busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                         "status" => status.to_string(),
@@ -1307,7 +1307,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // leave `cands` unchanged and continue reconciling the next restrict.
                     } else {
                         metrics::counter!(
-                            busbar_core::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                            busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                             "policy" => *name,
                             "pool" => pool_name.to_string(),
                             "status" => "503".to_string(),
@@ -1330,7 +1330,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 } else {
                     cands = restricted;
                     metrics::counter!(
-                        busbar_core::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                        busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                         "policy" => *name,
                         "pool" => pool_name.to_string(),
                     )
@@ -1361,7 +1361,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
         if let Some((_, name)) = &gate_order {
             metrics::counter!(
-                busbar_core::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                 "policy" => *name,
                 "pool" => pool_name.to_string(),
             )
@@ -1424,7 +1424,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     PolicyOutcome::Order { order, name } => {
                         chosen_policy_name = Some(name);
                         metrics::counter!(
-                            busbar_core::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                            busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                             "policy" => name,
                             "pool" => pool_name.to_string(),
                         )
@@ -1458,7 +1458,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // outcome clamps it to 400..=499 for every producer, so the worst-case series
                         // fan-out is 100 per (policy, pool).
                         metrics::counter!(
-                            busbar_core::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                            busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                             "policy" => name,
                             "pool" => pool_name.to_string(),
                             "status" => status.to_string(),
@@ -1535,7 +1535,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 None
                             } else {
                                 metrics::counter!(
-                                    busbar_core::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+                                    busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
                                     "policy" => name,
                                     "pool" => pool_name.to_string(),
                                     "status" => "503".to_string(),
@@ -1561,7 +1561,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             cands = restricted;
                             chosen_policy_name = Some(name);
                             metrics::counter!(
-                                busbar_core::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+                                busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
                                 "policy" => name,
                                 "pool" => pool_name.to_string(),
                             )
