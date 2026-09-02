@@ -222,6 +222,36 @@ pub fn runtime_slot_key(plane_key: &str) -> &'static str {
 /// so a config swap between calls is seen. Handed to transports that re-mint per frame.
 pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// OPAQUE GOVERNANCE HANDLES (App-retype WEDGE 2) — the neutral carrier tokens a plane HOLDS on its
+// per-request sink so the sink's field types stop naming `busbar_core::governance::GovState` /
+// `busbar_core::cost::CostModel` / `busbar_core::governance::AdmitGrant`. Each wraps an
+// `Arc<dyn Any + Send + Sync>` the host minted over the concrete engine value; the plane never
+// introspects it — it hands [`GovHandle`]/[`CostHandle`] BACK to the metering seams
+// ([`EngineHost::meter_ledger`]/[`EngineHost::meter_series`]), which downcast host-side. This keeps
+// the byte-identical `sink.gov`/`sink.cost` the plane minted (a custom test cost, the live app cost —
+// whichever the sink was built from), NOT a re-read of the host snapshot.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An OPAQUE, cheaply-cloned (one `Arc` bump) handle to the deployment's governance state — minted
+/// host-side ([`EngineHost::governance`]) and consumed host-side ([`EngineHost::meter_ledger`] /
+/// [`EngineHost::meter_series`]). The plane holds it on its per-request sink WITHOUT naming
+/// `busbar_core::governance::GovState`.
+#[derive(Clone)]
+pub struct GovHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
+/// The cost-model twin of [`GovHandle`] — an opaque handle to the resolved `CostModel` the sink was
+/// built from, produced by [`EngineHost::cost`] and consumed by [`EngineHost::meter_ledger`].
+#[derive(Clone)]
+pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
+/// An opaque handle to a governance ADMISSION grant (`AdmitGrant`), held DROP-ONLY on a plane's
+/// per-request sink so the admission's in-flight concurrency holds release when the last sink clone
+/// drops. The plane never introspects it; it exists purely so its `Drop` (on the last clone) releases
+/// the gauges — byte-identical to the sink's current `Option<Arc<busbar_core::governance::AdmitGrant>>`.
+#[derive(Clone)]
+pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -468,6 +498,55 @@ pub trait EngineHost: Send + Sync {
     /// `&App::groups_registry` argument HOST-side means the engine reads group membership without naming
     /// `busbar_core::config` or `App::groups_registry`.
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool;
+
+    /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
+    /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane
+    /// holds the handle on its per-request sink and hands it back to the metering seams.
+    ///
+    /// WEDGE 2 (App-retype): additive — the neutral producer of the sink's `gov` field, so wedge 3 can
+    /// retype `sink.gov: Arc<busbar_core::governance::GovState>` to [`GovHandle`].
+    fn governance(&self) -> Option<GovHandle>;
+
+    /// Mint the OPAQUE [`CostHandle`] for this deployment's resolved cost model — one `Arc` bump, no
+    /// `HostCtx`. Byte-identical to cloning `App::cost`; the twin of [`governance`](Self::governance)
+    /// for the sink's `cost` field.
+    fn cost(&self) -> CostHandle;
+
+    /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
+    /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
+    /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /
+    /// [`cost`](Self::cost)); the host downcasts them to the concrete `GovState`/`CostModel` and drives
+    /// the SAME accrual. A no-op on an all-zero tier, exactly as `record_usage`. No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs::ledger_and_meter` flip targets.
+    #[allow(clippy::too_many_arguments)]
+    fn meter_ledger(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: &str,
+        model: &str,
+        tokens: &busbar_api::TierTokens,
+        now: u64,
+    );
+
+    /// Record one delivered response's RAW consumption into the per-(key, bucket, model, provider)
+    /// metering series — the host-driven form of
+    /// `sink.gov.record_metering(key_id, model, provider, usage, now)`. `gov` is the opaque handle the
+    /// sink minted; the host downcasts it and drives the SAME write-behind accrual (a zero-token
+    /// response still counts its request). No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs` metering flips target.
+    fn meter_series(
+        &self,
+        gov: &GovHandle,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        usage: Option<&crate::billing::TokenUsage>,
+        now: u64,
+    );
 
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it

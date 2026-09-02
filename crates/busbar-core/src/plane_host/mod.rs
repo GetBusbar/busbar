@@ -657,6 +657,56 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
     }
 
+    fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
+        // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
+        self.app
+            .governance
+            .clone()
+            .map(|g| busbar_substrate::plane_host::GovHandle(g as Arc<dyn std::any::Any + Send + Sync>))
+    }
+
+    fn cost(&self) -> busbar_substrate::plane_host::CostHandle {
+        busbar_substrate::plane_host::CostHandle(
+            self.app.cost.clone() as Arc<dyn std::any::Any + Send + Sync>
+        )
+    }
+
+    fn meter_ledger(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: &str,
+        model: &str,
+        tokens: &busbar_api::TierTokens,
+        now: u64,
+    ) {
+        // Recover the concrete gov/cost the plane's sink minted these handles from and drive the SAME
+        // accrual `sink.gov.record_usage(&sink.cost, …)` did — byte-identical, no re-read of the host
+        // snapshot. A downcast miss (never in practice — the handles are minted here) is a silent no-op,
+        // matching `record_usage`'s own fail-soft posture.
+        if let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) {
+            g.record_usage(&c, key, pool, model, tokens, now);
+        }
+    }
+
+    fn meter_series(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        usage: Option<&busbar_substrate::billing::TokenUsage>,
+        now: u64,
+    ) {
+        if let Ok(g) = gov.0.clone().downcast::<crate::governance::GovState>() {
+            g.record_metering(key_id, model, provider, usage, now);
+        }
+    }
+
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
         self.app.plane_slot(key).cloned()
