@@ -43,7 +43,9 @@ fn anthropic_body() -> bytes::Bytes {
 
 /// Build the collected forwarded-header set from a client HeaderMap exactly as an ingress handler
 /// does — exercising the real `collect_forwarded_client_headers` allowlist filter (opt-in).
-fn collect(pairs: &[(&'static str, &str)]) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+fn collect(
+    pairs: &[(&'static str, &str)],
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     let mut hm = axum::http::HeaderMap::new();
     for (name, value) in pairs {
         hm.insert(
@@ -119,7 +121,9 @@ async fn client_anthropic_beta_reaches_matching_anthropic_upstream() {
         "the client anthropic-beta must reach the matching Anthropic upstream verbatim"
     );
     assert_eq!(
-        state.get_last_request_header("anthropic-version").as_deref(),
+        state
+            .get_last_request_header("anthropic-version")
+            .as_deref(),
         Some(CLIENT_ANTHROPIC_VERSION),
         "the caller's explicit anthropic-version must OVERRIDE busbar's pinned default"
     );
@@ -153,7 +157,12 @@ async fn client_openai_beta_reaches_matching_openai_upstream() {
         .pool("p", &[(0, 1)])
         .build();
 
-    drive(&app, "openai", collect(&[("openai-beta", CLIENT_OPENAI_BETA)])).await;
+    drive(
+        &app,
+        "openai",
+        collect(&[("openai-beta", CLIENT_OPENAI_BETA)]),
+    )
+    .await;
 
     assert_eq!(
         state.get_last_request_header("openai-beta").as_deref(),

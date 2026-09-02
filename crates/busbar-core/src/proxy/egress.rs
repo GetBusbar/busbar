@@ -300,7 +300,7 @@ pub(crate) fn apply_forwarded_client_headers(
         if !allowed {
             continue;
         }
-        if replaced.iter().any(|seen| *seen == name) {
+        if replaced.contains(&name) {
             egress_headers.append(name.clone(), value.clone());
         } else {
             // Replaces any busbar-default value for this name (`insert` clears prior values).

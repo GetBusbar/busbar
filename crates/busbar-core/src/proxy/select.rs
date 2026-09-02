@@ -67,8 +67,7 @@ pub(crate) struct RequestCtx {
     /// guard) is applied at the egress assembly site by
     /// [`crate::proxy::apply_forwarded_client_headers`], NOT here — a request may fail over to a
     /// different dialect's lane after this is captured.
-    pub(crate) forwarded_client_headers:
-        Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    pub(crate) forwarded_client_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 }
 
 impl RequestCtx {
