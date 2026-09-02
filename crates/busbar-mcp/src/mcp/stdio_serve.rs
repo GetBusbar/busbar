@@ -11,9 +11,22 @@
 //! notification observer, and the same [`super::envelope::rpc_dispatch`] behind it. There is no
 //! stdio method table, no stdio refusal shaper and no stdio `_meta` reader: a request that the HTTP
 //! plane would refuse is refused here with the same code and the same sentence, because it runs the
-//! same code. What this module owns is exactly what a TRANSPORT owns — framing (one JSON-RPC
-//! message per line), the carrier for server-originated messages (the same stdout, since stdio has
-//! no second channel), and the session lifecycle (EOF on stdin ends the process).
+//! same code.
+//!
+//! ## THE TRANSPORT IS NEUTRAL: this module owns only MCP SEMANTICS, not the carrier
+//!
+//! What a stdio-class transport owns — framing (one frame per line), the single write lock, the
+//! `CallRef`-keyed correlation table that pairs a server-issued request with its answer, and the
+//! EOF-drain session lifecycle — is NOT re-implemented here. It lives in the substrate as
+//! [`busbar_substrate::ingress::byte_duplex`], a protocol-blind byte pump, and this module BINDS it
+//! by supplying the two callbacks a plane owes: [`DuplexPlane::classify`] ("is this frame a reply,
+//! and to which call I issued?") and [`DuplexPlane::handle`] ("dispatch one non-reply frame,
+//! writing answers back through the [`DuplexHandle`]"). Every MCP-specific meaning — the JSON-RPC
+//! id ⇄ [`CallRef`] spelling, the stdio-era verbs (`initialize`/`ping`/`logging/setLevel`/
+//! `resources/subscribe`), `notifications/cancelled`, the live MRTR asks, the SEP-1036 out-of-band
+//! elicitation reply, and the server-originated notifications a persistent channel can carry — sits
+//! on the PLANE side of those two callbacks. The substrate names none of it; it moves `Vec<u8>`
+//! frames and pairs a `u64` call with its answer, and reads nothing of what those bytes mean.
 //!
 //! The mirrored routing headers (`Mcp-Method`, `Mcp-Name`, `MCP-Protocol-Version`) are an HTTP
 //! statement — they exist so an intermediary can route without parsing the body, and a pipe has no
@@ -91,13 +104,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::response::Response;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use busbar_substrate::ingress::byte_duplex::{self, CallRef, DuplexHandle, DuplexPlane};
 
 use super::envelope::{
     self, McpWords, H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, META_PROTOCOL_VERSION,
@@ -233,9 +248,9 @@ pub async fn serve_stdio(factory: busbar_substrate::plane_host::LiveHostFactory)
     0
 }
 
-/// The transport loop over ANY reader/writer pair — generic so the tests drive it over an
-/// in-memory duplex with a REAL governed `App`, which is the only way the budget refusal can be
-/// watched on an instrument without a network.
+/// SERVE the session over ANY reader/writer pair — generic so the tests drive it over an in-memory
+/// duplex with a REAL governed `App`, which is the only way the budget refusal can be watched on an
+/// instrument without a network. The pair is handed straight to the neutral byte-duplex pump.
 pub(crate) async fn serve_io<R, W>(
     factory: busbar_substrate::plane_host::LiveHostFactory,
     identity: SessionIdentity,
@@ -245,29 +260,25 @@ pub(crate) async fn serve_io<R, W>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let session = new_session(factory, identity, writer);
-    run_session(session, reader).await;
+    let session = new_session(factory, identity);
+    run_session(session, reader, writer).await;
 }
 
 /// Construct one live session (and start its watchers). Split from [`run_session`] so the
 /// in-process battery can hold the session while driving the loop — nothing but tests and
-/// [`serve_io`] call either.
-fn new_session<W>(
+/// [`serve_io`] call either. The writer is NOT held here: it belongs to the neutral pump, which
+/// hands this session a [`DuplexHandle`] onto it with the first frame ([`Session::out`]).
+fn new_session(
     factory: busbar_substrate::plane_host::LiveHostFactory,
     identity: SessionIdentity,
-    writer: W,
-) -> Arc<Session<W>>
-where
-    W: AsyncWrite + Unpin + Send + 'static,
-{
+) -> Arc<Session> {
     let session = Arc::new(Session {
         factory,
         principal: identity.principal,
         gov: identity.gov,
-        out: tokio::sync::Mutex::new(writer),
+        out: OnceLock::new(),
         level: std::sync::Mutex::new(None),
         inflight: std::sync::Mutex::new(HashMap::new()),
-        pending: std::sync::Mutex::new(HashMap::new()),
         ask_seq: AtomicU64::new(0),
         resource_subs: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         background: std::sync::Mutex::new(Vec::new()),
@@ -276,93 +287,121 @@ where
     session
 }
 
-/// The read loop: frames in, the one pathway, shutdown on EOF.
-async fn run_session<R, W>(session: Arc<Session<W>>, reader: R)
+/// DRIVE the neutral byte-duplex pump for this session until EOF, then reap the plane's own
+/// background watchers. The pump ([`byte_duplex::serve`]) owns framing, the single write lock, the
+/// server-issued-call correlation table, and the bounded EOF drain of in-flight [`DuplexPlane::handle`]
+/// dispatches; all this module adds after EOF is aborting the session-scoped watchers the pump does
+/// not know about (the resource/tasks watchers and keepalive pings the plane spawned).
+async fn run_session<R, W>(session: Arc<Session>, reader: R, writer: W)
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let mut lines = tokio::io::BufReader::new(reader);
-    let mut buf: Vec<u8> = Vec::new();
-    loop {
-        buf.clear();
-        // One frame per line, split on 0x0A exactly as the client leg reads a child. EOF — zero
-        // bytes read — is the shutdown signal (`STDIO.EXIT-ON-EOF`); a final unterminated line is
-        // still one frame, matching the battery's own byte-level driver.
-        match lines.read_until(b'\n', &mut buf).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => {
-                busbar_substrate::diag_debug!(crate::diagnostics::MCP_STDIO_READ_ERROR, error = %e, "mcp stdio serve: read error on stdin; shutting down");
-                break;
-            }
-        }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        }
-        if buf.iter().all(|b| b.is_ascii_whitespace()) {
-            continue; // a blank line is not a frame — same rule the bridge and the client leg apply
-        }
-        let line = std::mem::take(&mut buf);
-        // A RESPONSE is routed to the busbar-originated request awaiting it; it never reaches the
-        // serve sequence, whose envelope reader rightly says a response is not a request. Anything
-        // else — requests, notifications, garbage — takes the one pathway.
-        if session.route_reply(&line) {
-            continue;
-        }
-        let caller_id = envelope_id(&line);
-        let key = caller_id.as_ref().map(id_key);
-        let task_session = session.clone();
-        let task_key = key.clone();
-        let handle = tokio::spawn(async move {
-            task_session.handle_frame(line, caller_id).await;
-            if let Some(k) = task_key {
-                task_session.inflight.lock().unwrap().remove(&k);
-            }
-        });
-        // Registered by the caller's OWN id so a `notifications/cancelled` naming it can abort the
-        // work and suppress every further message for it (`CANCEL.NO-FURTHER-MESSAGES`). The
-        // register-after-spawn window is the cancellation race the specification tells both
-        // parties to take gracefully: a cancel that wins it aborts nothing, exactly as a cancel
-        // arriving after the answer does.
-        if let Some(k) = key {
-            session
-                .inflight
-                .lock()
-                .unwrap()
-                .insert(k, handle.abort_handle());
-        }
-    }
-    // EOF: DRAIN the in-flight dispatches before exiting, bounded. A client that pipes one request
-    // and closes stdin — the ordinary one-shot invocation — has EOF arrive ahead of the answer,
-    // and aborting the dispatch there would serve nothing to exactly the caller who asked for
-    // exactly one thing. The client-side shutdown sequence is close-then-WAIT-then-kill, so a
-    // bounded drain is the shape it expects; a dispatch that outlives the bound (a hung upstream)
-    // is abandoned rather than allowed to hold the process open indefinitely.
-    let drain_deadline = tokio::time::Instant::now() + EOF_DRAIN;
-    while !session.inflight.lock().unwrap().is_empty()
-        && tokio::time::Instant::now() < drain_deadline
-    {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    // The watchers (and any still-running dispatch) die with the loop.
+    byte_duplex::serve(reader, writer, session.clone()).await;
+    // EOF: the pump has drained its own in-flight handlers; the plane's standing watchers (spawned
+    // onto the runtime, unknown to the pump) die here so the loop ends cleanly rather than leaking
+    // them past the session.
     for h in session.background.lock().unwrap().drain(..) {
         h.abort();
     }
-    for (_, h) in session.inflight.lock().unwrap().drain() {
-        h.abort();
+    for (_, tx) in session.inflight.lock().unwrap().drain() {
+        drop(tx); // dropping a cancel sender is harmless: its handler already returned at EOF
     }
-    let mut out = session.out.lock().await;
-    let _ = out.flush().await;
 }
 
-/// How long EOF waits for in-flight dispatches to finish before the process exits anyway.
-/// "Promptly" (`STDIO.EXIT-ON-EOF`) and "answer what was asked" meet here: enough for the
-/// one-shot-pipe invocation (a request whose answer is computed in milliseconds, with EOF already
-/// on the pipe), and short enough that a session closed with a subscription or a slow upstream
-/// still in flight — dispatches that cannot or will not finish — exits on a bound a supervising
-/// client's close-wait-kill sequence reads as prompt.
-const EOF_DRAIN: Duration = Duration::from_secs(3);
+/// THE TWO CALLBACKS the neutral pump drives. Everything MCP-specific — what a reply looks like,
+/// which verbs mean what, the id ⇄ [`CallRef`] spelling — is here, on the plane side of the seam.
+#[async_trait::async_trait]
+impl DuplexPlane for Session {
+    /// Is this inbound frame a REPLY to a request busbar issued on the channel, and to which? Two
+    /// shapes answer a busbar ask, and both are MCP semantics the substrate cannot see:
+    ///
+    /// * a genuine JSON-RPC RESPONSE (no `method`, a `result`/`error`) whose `id` is one busbar
+    ///   minted — spelled `busbar:<callref>`, the [`CallRef`] embedded the only way this wire has;
+    /// * SEP-1036's OUT-OF-BAND `notifications/elicitation/response`, a NOTIFICATION whose
+    ///   `params.requestId` names the elicitation busbar issued — admissible only because this one
+    ///   authenticated single-caller channel is the binding HTTP lacks.
+    ///
+    /// Everything else — a client's own request or notification, a response to no busbar call,
+    /// garbage — is not a reply and returns `None`, taking the one dispatch pathway through
+    /// [`handle`](Self::handle).
+    fn classify(&self, frame: &[u8]) -> Option<CallRef> {
+        let value: Value = serde_json::from_slice(frame).ok()?;
+        let obj = value.as_object()?;
+        match obj.get("method").and_then(Value::as_str) {
+            // A response: no method member, a result or error, and an id busbar spells its calls in.
+            None => {
+                if !(obj.contains_key("result") || obj.contains_key("error")) {
+                    return None;
+                }
+                call_ref_of_id(obj.get("id")?)
+            }
+            // The out-of-band elicitation reply correlates through `params.requestId`.
+            Some("notifications/elicitation/response") => {
+                call_ref_of_id(value.pointer("/params/requestId")?)
+            }
+            // Any other request or notification is the dispatch pathway's business.
+            Some(_) => None,
+        }
+    }
+
+    /// Handle ONE non-reply frame and write its answer(s) back through `out`. The first `out` this
+    /// session ever sees is cached ([`Session::out`]) so the standing watchers — spawned before any
+    /// frame — can push server-originated notifications onto the SAME channel.
+    ///
+    /// A frame carrying a caller id is run under a cancellation gate registered by that id, so a
+    /// `notifications/cancelled` naming it (processed on its own frame's handler) aborts the work and
+    /// suppresses every further message for it (`CANCEL.NO-FURTHER-MESSAGES`). Registering BEFORE the
+    /// dispatch begins closes the race the hand-rolled loop documented: a cancel that arrives before
+    /// the dispatch starts still fires the gate.
+    async fn handle(self: Arc<Self>, frame: Vec<u8>, out: DuplexHandle) {
+        let _ = self.out.set(out);
+        let caller_id = envelope_id(&frame);
+        match caller_id.as_ref().map(id_key) {
+            Some(key) => {
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                self.inflight.lock().unwrap().insert(key.clone(), cancel_tx);
+                tokio::select! {
+                    () = self.handle_frame(frame, caller_id) => {}
+                    _ = cancel_rx => {} // cancelled: the dispatch future is dropped, its answer suppressed
+                }
+                self.inflight.lock().unwrap().remove(&key);
+            }
+            // A notification or an id-less frame cannot be cancelled — nothing names it.
+            None => self.handle_frame(frame, caller_id).await,
+        }
+    }
+}
+
+/// Read the [`CallRef`] busbar embedded in a JSON-RPC id it minted. busbar spells its own calls
+/// `busbar:<n>` (see [`Session::issue_request`]); the bare `n` is the ref the pump minted. A
+/// non-string id, or one this plane did not mint, correlates to nothing.
+fn call_ref_of_id(id: &Value) -> Option<CallRef> {
+    let n: u64 = id.as_str()?.strip_prefix("busbar:")?.parse().ok()?;
+    Some(CallRef(n))
+}
+
+/// Read the answer out of whichever frame the pump routed back to an [`issue`](DuplexHandle::issue).
+/// [`classify`](Session::classify) admits two shapes, so this reads both: the SEP-1036 out-of-band
+/// `notifications/elicitation/response` (the answer is `params.response`), and — the ordinary case —
+/// a genuine JSON-RPC response read through the shared [`read_response`](busbar_substrate::ingress::jsonrpc::read_response)
+/// vocabulary, so a client error or a non-answer becomes the same sentence the HTTP leg would log.
+fn interpret_reply(frame: &[u8], sent_id: &Value) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(frame).map_err(|e| e.to_string())?;
+    if value.get("method").and_then(Value::as_str) == Some("notifications/elicitation/response") {
+        return Ok(value
+            .pointer("/params/response")
+            .cloned()
+            .unwrap_or(Value::Null));
+    }
+    match busbar_substrate::ingress::jsonrpc::read_response(&value, sent_id) {
+        Ok(busbar_substrate::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
+        Ok(busbar_substrate::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
+            "the client answered with an error ({code:?}): {message}"
+        )),
+        Err(not_answer) => Err(not_answer.to_string()),
+    }
+}
 
 /// The `id` member of one raw frame, when it parses as an object carrying a legible one.
 fn envelope_id(line: &[u8]) -> Option<Value> {
@@ -380,7 +419,7 @@ fn id_key(id: &Value) -> String {
     }
 }
 
-struct Session<W> {
+struct Session {
     /// THE NEUTRAL LIVE-HOST FACTORY. Each frame and each watch tick calls it to mint a fresh
     /// live-capable `EngineHost`, whose BOUND snapshot is that frame/tick's current load and whose
     /// `plane_slot_live` re-reads the CURRENT snapshot — so a config swap between frames is seen. The
@@ -388,17 +427,24 @@ struct Session<W> {
     factory: busbar_substrate::plane_host::LiveHostFactory,
     principal: busbar_api::AuthPrincipal,
     gov: busbar_api::PlaneRequestCtx,
-    /// ONE writer, one lock: two concurrent responses interleaving inside a line would be a frame
-    /// no reader could parse, which is the transport's one absolute rule.
-    out: tokio::sync::Mutex<W>,
+    /// THE WRITE-AND-CALL HANDLE onto the one channel, handed to this session by the neutral pump
+    /// with the FIRST frame it dispatches ([`DuplexPlane::handle`]) and cached here so the standing
+    /// watchers — which predate any frame — can emit server-originated notifications too. The pump
+    /// owns the single write lock and the correlation table behind it; this session never touches a
+    /// raw writer. Unset until the first frame; a real client opens with `initialize`, so every
+    /// server-originated push (which can only follow a subscribe/ask/task result) has it by then.
+    out: OnceLock<DuplexHandle>,
     /// The session logging floor `logging/setLevel` sets. Injected into a request's `_meta` only
     /// when the request names none of its own — the per-request spelling still wins, so an HTTP
     /// client's semantics are unchanged by the session having a default.
     level: std::sync::Mutex<Option<String>>,
-    /// In-flight dispatches by the caller's request id, for `notifications/cancelled`.
-    inflight: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
-    /// Busbar-originated requests awaiting the client's response, by id key.
-    pending: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Value, String>>>>,
+    /// Cancellation gates for in-flight dispatches, keyed by the caller's request id: firing one
+    /// (for `notifications/cancelled`) makes that frame's [`DuplexPlane::handle`] select drop its
+    /// dispatch and answer nothing further.
+    inflight: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// The internal id sequence for a live-ask RETRY (`busbar:retry:<n>`), an independent request
+    /// dispatched in-process and mapped back to the caller's id at delivery — never a wire
+    /// correlation (the pump mints those refs), so it keeps its own counter.
     ask_seq: AtomicU64,
     /// URIs the client subscribed to with `resources/subscribe`, each with the LAST fingerprint of
     /// its caller-visible registration — `None` for a subscription whose subject is not (or not
@@ -409,70 +455,45 @@ struct Session<W> {
     background: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
-impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
-    /// Write ONE JSON-RPC message as one line. `serde_json` emits no raw newline, so the framing
-    /// MUST (`STDIO.NO-EMBEDDED-NEWLINES`) holds by construction.
+impl Session {
+    /// The cached channel handle, once the pump has handed us one. Every emit path runs only after a
+    /// frame (an answer to it, or a push that a prior subscribe/ask/task result set in motion), so in
+    /// a live session it is always present; a push racing ahead of the first frame is simply dropped.
+    fn channel(&self) -> Option<&DuplexHandle> {
+        self.out.get()
+    }
+
+    /// Write ONE JSON-RPC message as one frame. `serde_json` emits no raw newline, so the framing
+    /// MUST (`STDIO.NO-EMBEDDED-NEWLINES`) holds by construction; the pump appends the one line
+    /// terminator under its single write lock.
     async fn emit(&self, value: &Value) {
-        let mut bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
-        bytes.push(b'\n');
-        let mut out = self.out.lock().await;
-        let _ = out.write_all(&bytes).await;
-        let _ = out.flush().await;
+        let Some(out) = self.channel() else { return };
+        let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
+        out.emit(bytes).await;
     }
 
-    /// Route a frame that is a RESPONSE to a busbar-originated request. `true` when consumed.
-    fn route_reply(&self, line: &[u8]) -> bool {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            return false;
-        };
-        let Some(obj) = value.as_object() else {
-            return false;
-        };
-        if obj.contains_key("method") {
-            return false; // a request or notification — the serve sequence's business
-        }
-        if !(obj.contains_key("result") || obj.contains_key("error")) {
-            return false;
-        }
-        let Some(id) = obj.get("id").filter(|i| i.is_string() || i.is_number()) else {
-            return false;
-        };
-        let Some(tx) = self.pending.lock().unwrap().remove(&id_key(id)) else {
-            // A response to a request nobody sent. Not consumed: the core envelope reader owns the
-            // complaint, and answers it in the shared vocabulary.
-            return false;
-        };
-        let outcome = match busbar_substrate::ingress::jsonrpc::read_response(&value, id) {
-            Ok(busbar_substrate::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
-            Ok(busbar_substrate::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
-                "the client answered with an error ({code:?}): {message}"
-            )),
-            Err(not_answer) => Err(not_answer.to_string()),
-        };
-        let _ = tx.send(outcome);
-        true
-    }
-
-    /// Issue ONE busbar-originated request on the channel and await the client's answer.
+    /// Issue ONE busbar-originated request on the channel and await the client's answer, through the
+    /// pump's correlation table. The id is spelled `busbar:<callref>` so [`classify`](Self::classify)
+    /// can read the pump-minted [`CallRef`] back out of whichever frame answers — a genuine JSON-RPC
+    /// response or the out-of-band elicitation notification.
     async fn issue_request(&self, method: &str, params: &Value) -> Result<Value, String> {
-        let id = Value::from(format!(
-            "busbar:{}",
-            self.ask_seq.fetch_add(1, Ordering::Relaxed)
-        ));
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending.lock().unwrap().insert(id_key(&id), tx);
-        self.emit(&serde_json::json!({
+        let Some(out) = self.channel() else {
+            return Err("the session channel is not open".to_string());
+        };
+        let call = out.mint();
+        let id = Value::from(format!("busbar:{}", call.0));
+        let frame = serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
         }))
-        .await;
-        let outcome = tokio::time::timeout(ASK_TIMEOUT, rx).await;
-        self.pending.lock().unwrap().remove(&id_key(&id));
-        match outcome {
-            Ok(Ok(reply)) => reply,
-            Ok(Err(_)) => Err("the session ended before the client answered".to_string()),
+        .unwrap_or_else(|_| b"null".to_vec());
+        // The pump registers `call` before writing the frame, so a reply that races back cannot find
+        // an empty table; `ASK_TIMEOUT` bounds a client that never answers.
+        match tokio::time::timeout(ASK_TIMEOUT, out.issue(call, frame)).await {
+            Ok(Some(reply)) => interpret_reply(&reply, &id),
+            Ok(None) => Err("the session ended before the client answered".to_string()),
             Err(_) => Err(format!(
                 "the client did not answer `{method}` within {}s",
                 ASK_TIMEOUT.as_secs()
@@ -695,64 +716,39 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
                 tracing::debug!("mcp stdio serve: client completed the initialize handshake");
             }
             // `CANCEL.STDIO-CLIENT-SENDS`: on stdio there is no per-request stream to close, so
-            // the notification IS the cancellation. The in-flight dispatch is aborted and its
-            // response suppressed with it (`CANCEL.NO-FURTHER-MESSAGES`); a request already
-            // answered has nothing to abort, which is the race both parties must take gracefully.
+            // the notification IS the cancellation. Firing the caller's cancellation gate makes
+            // that frame's handler `select` drop its dispatch and suppress its response
+            // (`CANCEL.NO-FURTHER-MESSAGES`); a request already answered cleared its gate, which is
+            // the race both parties must take gracefully.
             "notifications/cancelled" => {
                 let request_id = value
                     .get("params")
                     .and_then(|p| p.get("requestId"))
                     .filter(|i| i.is_string() || i.is_number());
                 if let Some(rid) = request_id {
-                    if let Some(handle) = self.inflight.lock().unwrap().remove(&id_key(rid)) {
-                        handle.abort();
+                    if let Some(cancel) = self.inflight.lock().unwrap().remove(&id_key(rid)) {
+                        let _ = cancel.send(());
                         tracing::debug!(request = %rid, "mcp stdio serve: request cancelled by the client");
                     }
                 }
             }
             // The client's progress on an exchange busbar originated. There is no deadline to
             // extend — busbar's asks are bounded by ASK_TIMEOUT, deliberately — so the honest
-            // meaning is the record: correlated to the pending ask when the token names one.
+            // meaning is the record. The pump owns the correlation table now, so whether the token
+            // names a live ask is its business, not a fact this observer reads.
             "notifications/progress" => {
-                let token = value.get("params").and_then(|p| p.get("progressToken"));
-                let pending = token
-                    .map(id_key)
-                    .map(|k| self.pending.lock().unwrap().contains_key(&k))
-                    .unwrap_or(false);
-                tracing::debug!(
-                    correlated = pending,
-                    "mcp stdio serve: client progress noted"
-                );
+                tracing::debug!("mcp stdio serve: client progress noted");
             }
-            // SEP-1036's out-of-band elicitation reply, admissible HERE and refused over HTTP for
-            // a reason worth restating: over HTTP it arrives on no request and could be anyone's;
-            // on stdio it arrives on the ONE authenticated single-caller channel, naming the id of
-            // an elicitation busbar itself issued on that same channel, so the binding the HTTP
-            // waiver said was impossible is exactly what the transport provides. It resolves the
-            // pending ask as if the client had answered the request directly.
+            // SEP-1036's out-of-band elicitation reply resolves its pending ask through the pump:
+            // [`classify`](Session::classify) reads the `params.requestId` as the [`CallRef`] the
+            // ask was issued under and the pump routes THIS notification frame straight to the
+            // waiting `issue`, so a correlated one never reaches this observer. One that names no
+            // (or an unknown) request is the only case that arrives here — nothing to resolve, and
+            // dropping it is the whole implementation.
             "notifications/elicitation/response" => {
-                let request_id = value
-                    .get("params")
-                    .and_then(|p| p.get("requestId"))
-                    .filter(|i| i.is_string() || i.is_number());
-                let Some(rid) = request_id else {
-                    tracing::debug!(
-                        "mcp stdio serve: elicitation response named no `params.requestId`; dropped"
-                    );
-                    return;
-                };
-                let Some(tx) = self.pending.lock().unwrap().remove(&id_key(rid)) else {
-                    tracing::debug!(
-                        "mcp stdio serve: elicitation response named no pending ask; dropped"
-                    );
-                    return;
-                };
-                let content = value
-                    .get("params")
-                    .and_then(|p| p.get("response"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let _ = tx.send(Ok(content));
+                tracing::debug!(
+                    "mcp stdio serve: elicitation response named no pending ask; dropped"
+                );
             }
             _ => {}
         }
