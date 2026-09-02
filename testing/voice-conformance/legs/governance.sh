@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
+#
 # LEG: governance — the 5 vision checkpoints. NOT A CONFORMANCE RESULT.
 #
 # This leg observes busbar's voice PRODUCT POLICY, not the voice PROTOCOL. Exactly as
@@ -22,18 +25,22 @@
 #                               CLOSE, not degrade open. A soft-degrade here is the exact failure D2
 #                               exists to forbid.
 #
-# STATUS: pending. DROP-IN: flip LEG_STATUS to `ready` and implement `leg_execute` to probe each
-# checkpoint and emit one `RESULT <checkpoint> <PASS|FAIL> <observation>` line. The verdict will
-# record these as observations and will NOT let them fail conformance.
+# STATUS: ready. Each checkpoint is probed over the REAL T2 runtime (feature `runtime`) and recorded
+# as an OBSERVATION — the runner records these but never lets a governance finding move the
+# conformance verdict (proven by `--selftest`). The load-bearing one is D2-hard-close-on-exhaustion:
+# it settles a real `LocalLease` past its cap and asserts the carrier HARD-closes (response.cancel
+# upstream, no post-close audio reaches the client), reusing the runtime's actual exhaustion path.
+
+# shellcheck source=../lib/conform-bin.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
 
 LEG_KIND=governance
-LEG_STATUS=pending
+LEG_STATUS=ready
 LEG_SLICES=(V1-barge-in-preemption V2-turn-budget-enforcement V3-metering-lease-settled V4-dialect-downscope D2-hard-close-on-exhaustion)
 
 leg_execute() {
   local checkpoint="$1"
-  # DROP-IN: observe the checkpoint and record it (never gates conformance):
-  #   echo "RESULT $checkpoint PASS <what was observed>"
-  #   echo "RESULT $checkpoint FAIL <what was observed>"
-  die "governance[$checkpoint]: not implemented — governance probe has no runtime to observe yet (scaffold)"
+  local bin
+  bin="$(voice_conform_bin)" || { echo "RESULT $checkpoint FAIL harness build failed"; return 0; }
+  "$bin" governance "$checkpoint"
 }

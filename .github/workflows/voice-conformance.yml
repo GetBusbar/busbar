@@ -1,28 +1,25 @@
 name: Voice conformance
 
 # THE 4th-PLANE (VOICE) CONFORMANCE BATTERY — at structural parity with the MCP and A2A workflows,
-# but in an HONEST SCAFFOLD state. The voice runtime does not exist yet, so no leg can assert real
-# conformance. What lands today is the SHAPE and its enforcement, green, so that filling a leg later
-# is a drop-in and the accounting cannot silently rot in the meantime.
+# now WIRED: every leg drives the real `busbar-voice` plane (its OpenAI-Realtime and Gemini-Live
+# codecs, the captured fixtures, the cross-dialect map, and the T2 runtime's D2 hard-close path) via
+# the `voice-conform` harness bin, and the verdict reflects REAL leg results.
 #
-# WHY A SCAFFOLD IS A LEGITIMATE GREEN HERE, AND NOT IN THE SIBLING WORKFLOWS.
+# THE ANTI-VACUITY DISCIPLINE, INHERITED FROM THE SIBLING WORKFLOWS.
 #
-#   The MCP and A2A workflows make `NOT ARMED, SO NOT RUN` a RED state, because for those planes the
-#   runtime EXISTS and a disarmed subject leg renders as the identical green tick a leg that judged
-#   busbar would produce. That false green is the whole disease they treat.
-#
-#   Voice has no runtime to arm against yet, so the honest report is PENDING — stated per leg and
-#   never dressed as a conformance pass. Following the MCP workflow's own guidance, the transition
-#   from PENDING to a real armed-or-red leg is EXERCISED by `voice-conformance.sh --selftest` rather
-#   than asserted by a real run that cannot happen. The self-test proves that the moment a leg claims
-#   to be READY it is held to the anti-vacuity discipline the other batteries use: a ready leg that
-#   executed nothing is RED.
+#   The MCP and A2A workflows make `NOT ARMED, SO NOT RUN` a RED state, because a disarmed subject leg
+#   renders as the identical green tick a leg that judged busbar would produce. That false green is the
+#   whole disease they treat. Here the same rule holds one plane over: a READY leg that executed
+#   nothing is RED (the vacuous-ready trap), and `voice-conformance.sh --selftest` proves that
+#   accounting bites — planting runs it MUST refuse and runs it MUST accept — before any verdict is
+#   believed. A leg that genuinely cannot assert an item keeps it an HONEST PENDING sub-item with a
+#   precise reason, rather than a faked green.
 #
 # THE LEGS (each a job; the matrix `spec-per-dialect` job is one job to the coverage linter):
-#   gate-selftest      the scaffold's own accounting, and the verdict-coverage lint, each made to bite
-#   spec-per-dialect   the voice spec battery, per dialect. MATRIX: openai, gemini. PENDING today.
-#   replay             captured-transcript replay. PENDING today.
-#   cross-parity       the 4 ordered OpenAI<->Gemini pairs. PENDING today.
+#   gate-selftest      the runner's own accounting, and the verdict-coverage lint, each made to bite
+#   spec-per-dialect   the voice spec battery, per dialect. MATRIX: openai, gemini.
+#   replay             captured-transcript replay (both dialect goldens).
+#   cross-parity       the 4 ordered OpenAI<->Gemini pairs, judged against the cross-dialect map.
 #   governance-probe   the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). NOT A
 #                      CONFORMANCE RESULT — separated in the runner, exactly as a2a-governance is.
 #
@@ -50,13 +47,21 @@ concurrency:
 
 jobs:
   gate-selftest:
-    name: gate self-test (the scaffold's accounting cannot be lied to)
+    name: gate self-test (the accounting cannot be lied to)
     runs-on: ubuntu-latest
+    env:
+      # The self-test's final step re-runs the REAL (now READY) legs through `emit_verdict`, which
+      # shells out to the conformance harness — so this job builds it too and points the legs at it.
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
       # FIRST, and separately from any verdict: never trust a gate's verdict before proving the gate
       # still works. The self-test plants runs that MUST be refused (a ready leg that executed
       # nothing; a dropped leg; a gutted tree) and runs that must be accepted (the all-pending
@@ -88,19 +93,25 @@ jobs:
           if-no-files-found: warn
 
   spec-per-dialect:
-    name: spec battery · ${{ matrix.dialect }} (PENDING — scaffold)
+    name: spec battery · ${{ matrix.dialect }}
     needs: gate-selftest
     runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     strategy:
       fail-fast: false
       matrix:
         dialect: [openai, gemini]
     steps:
       - uses: actions/checkout@v7
-      # The spec leg is scaffolded: it reports PENDING per dialect and exits 0. When the voice
-      # runtime and testing/voice-conformance/fixtures/${{ matrix.dialect }}/ land, flip the leg to
-      # READY in its scaffold and this job asserts real per-dialect conformance with nothing else
-      # changed here.
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
+      # The spec leg drives every captured fixture under
+      # testing/voice-conformance/fixtures/${{ matrix.dialect }}/ through the real dialect codec and
+      # asserts wire→IR→wire round-trip stability (the vacuous-ready trap holds a ready-but-empty run
+      # to RED automatically).
       - name: Run the ${{ matrix.dialect }} spec leg
         run: |
           set -euo pipefail
@@ -115,11 +126,17 @@ jobs:
           if-no-files-found: warn
 
   replay:
-    name: captured-transcript replay (PENDING — scaffold)
+    name: captured-transcript replay
     needs: gate-selftest
     runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
       - name: Run the replay leg
         run: |
           set -euo pipefail
@@ -132,11 +149,17 @@ jobs:
           if-no-files-found: warn
 
   cross-parity:
-    name: cross-parity · 4 ordered OpenAI<->Gemini pairs (PENDING — scaffold)
+    name: cross-parity · 4 ordered OpenAI<->Gemini pairs
     needs: gate-selftest
     runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
       - name: Run the cross-parity leg
         run: |
           set -euo pipefail
@@ -152,8 +175,14 @@ jobs:
     name: governance probe · 5 vision checkpoints (NOT a conformance result)
     needs: gate-selftest
     runs-on: ubuntu-latest
+    env:
+      VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the voice conformance harness
+        run: cargo build -p busbar-voice --features runtime --bin voice-conform
       # SEPARATE FROM THE CONFORMANCE VERDICT BY CONSTRUCTION. The runner records governance findings
       # as observations and refuses to let them move the conformance verdict; --selftest proves that
       # separation bites. A green here is not a governance PASS, and it is never a conformance one.
@@ -181,9 +210,9 @@ jobs:
     steps:
       # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. Every leg above is required to have reached
       # `success` — `skipped` and `cancelled` are failures here, because the failure mode this whole
-      # workflow exists to prevent is a tick over a job that executed nothing. In the scaffold state
-      # every leg reaches `success` by honestly reporting PENDING, so this verdict is green today and
-      # tightens automatically as legs light up.
+      # workflow exists to prevent is a tick over a job that executed nothing. Every leg is now WIRED
+      # and reaches `success` only by asserting real conformance (or is honestly RED), so this verdict
+      # is green only when every declared leg actually executed and passed.
       - name: Every leg must have EXECUTED
         env:
           GATE_SELFTEST: ${{ needs.gate-selftest.result }}
@@ -210,5 +239,5 @@ jobs:
 
           [ "$fail" -eq 0 ] || exit 1
           echo
-          echo "Voice conformance verdict: every leg executed. SCAFFOLD state — legs are PENDING, not"
-          echo "yet a conformance pass; the shape is enforced and every declared leg is accounted for."
+          echo "Voice conformance verdict: every leg executed and passed. Real conformance holds for the"
+          echo "ready legs; the shape is enforced and every declared leg is accounted for."

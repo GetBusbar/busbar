@@ -167,7 +167,7 @@ emit_verdict() {
     || die "FLOOR: the battery declares only ${#declared[@]} leg(s) (minimum $MIN_LEGS). A gutted battery satisfies every equality below, so the count is checked first."
 
   say "== VOICE conformance battery — verdict =="
-  say "   (SCAFFOLD: the voice runtime does not exist yet; pending legs are honest, not passing)"
+  say "   (pending legs are honest, not passing; a READY leg asserts real conformance or is RED)"
   say ""
 
   local name rc problems=0 pending=0 ready_ok=0 conformance_fail=0 governance_legs=0
@@ -341,7 +341,7 @@ selftest() {
   ( emit_verdict ) >/dev/null 2>&1 || die "the shipped scaffold does not self-account cleanly: $shipped"
   local n; n="$(declared_legs | grep -c . || true)"
   say ""
-  say "scaffold self-test PASS, $n legs pending: $shipped"
+  say "self-test PASS, $n legs accounted for: $shipped"
 }
 
 main() {

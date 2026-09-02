@@ -26,6 +26,17 @@ license = "Apache-2.0"
 name = "busbar_voice"
 path = "src/lib.rs"
 
+# THE VOICE CONFORMANCE HARNESS — the real driver the `testing/voice-conformance/` battery legs shell
+# out to. It reuses THIS crate's codecs (`OpenAiRealtimeCodec` / `GeminiLiveCodec`) and the T2 runtime
+# (`SessionCore` / `LocalLease` hard-close) to decode/encode the captured fixtures and diff — the legs
+# never reimplement a codec in shell. Gated on `runtime` (the D2 governance probe needs the async
+# session engine + tokio); the default / prod build never compiles it, so voice stays dev-only until
+# DoD exactly as the rest of the crate does.
+[[bin]]
+name = "voice-conform"
+path = "src/bin/voice-conform.rs"
+required-features = ["runtime"]
+
 [dependencies]
 # THE SEAL (mirrors busbar-mcp): busbar-core is NOT a production dependency of this plugin. The default
 # build compiles with NO busbar-core in its closure — the neutral surface the plane names is

@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
+#
 # LEG: cross-parity — the 4 ORDERED OpenAI<->Gemini pairs.
 #
 # The cross-dialect mapping (docs/design/voice-cross-dialect-mapping.*, authored by another agent)
@@ -17,18 +20,26 @@
 # it. That is the cross-parity analogue of the sibling batteries' "a control that exercises a
 # different path from the subject proves less than it appears to".
 #
-# STATUS: pending. DROP-IN: flip LEG_STATUS to `ready` and implement `leg_execute` to run the pair
-# named by the slice and emit one RESULT line per mapped behaviour.
+# STATUS: ready. Each ordered pair is driven as read(A) → shared IR → write(B) → IR against the
+# machine-readable `docs/design/voice-cross-dialect-map.json`. For every SHARED concept the map
+# declares, the load-bearing fields must survive the bridge (compared on a correlation-collapsed
+# fingerprint, so a streamed⟷atomic tool-call reframing counts as agreement, and documented
+# non-survivors — text modality, VAD specifics, truncate ms — are excluded per the map). And EVERY
+# row of the asymmetry table is exercised as a documented drop+warn in its origin→other direction, so
+# a one-dialect-only concept is accounted for, never silently lost. Concepts whose source-dialect
+# fixture cannot decode (the one genuine codec gap, or a documented drop) are printed as PENDING
+# sub-items, never faked green.
+
+# shellcheck source=../lib/conform-bin.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
 
 LEG_KIND=conformance
-LEG_STATUS=pending
+LEG_STATUS=ready
 LEG_SLICES=(oo og go gg)
 
 leg_execute() {
   local pair="$1"
-  # DROP-IN: resolve $pair (oo/og/go/gg) to (from,to) dialects, drive the pair, and check each
-  # behaviour the cross-dialect mapping marks equivalent:
-  #   echo "RESULT $pair PASS <behaviour-id>"
-  #   echo "RESULT $pair FAIL <behaviour-id> — <from> and <to> disagree"
-  die "cross-parity[$pair]: not implemented — no cross-dialect mapping consumed / no runtime yet (scaffold)"
+  local bin
+  bin="$(voice_conform_bin)" || { echo "RESULT $pair FAIL harness build failed"; return 0; }
+  "$bin" cross "$pair" "$VC_FIXTURES/openai" "$VC_FIXTURES/gemini" "$VC_MAP"
 }
