@@ -10,6 +10,7 @@
 //! plane crate names it without reaching into `busbar-core`. Core's `proxy::wire` re-exports it
 //! unchanged.
 
+pub mod proxy_vocab;
 pub mod sse;
 
 use bytes::Bytes;

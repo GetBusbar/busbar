@@ -975,14 +975,20 @@ pub(crate) fn coerce_on_error(
     }
 }
 
-// The STAGE-tap primitives are NEUTRAL vocabulary that STAYS in core
-// (`busbar_substrate::proxy::proxy_vocab`): the shape struct, the fire-and-forget tap fan-out, the bounded
-// spawn guard, and the gate-rejection marker. Only `capture_stage_shape` below (which reads the LLM
-// IR to fill the shape) stays here, and it fills core's `StageShape` (its fields are `pub`) across
-// the crate boundary.
-pub(crate) use busbar_core::proxy::{
-    fire_stage_taps, gate_rejected, spawn_bounded_tap, GateRejected, StageShape,
-};
+// The STAGE-tap primitives are NEUTRAL vocabulary that lives in `busbar_substrate::proxy::proxy_vocab`:
+// the shape struct, the fire-and-forget tap fan-out, the bounded spawn guard, and the gate-rejection
+// marker. Only `capture_stage_shape` below (which reads the LLM IR to fill the shape) stays here, and
+// it fills the neutral `StageShape` (its fields are `pub`) across the crate boundary.
+//
+// WEDGE 2e: `StageShape`, `gate_rejected`, and `GateRejected` are named straight off the neutral
+// substrate. `fire_stage_taps` and `spawn_bounded_tap` are still named off `busbar_core::proxy`:
+// - `fire_stage_taps` — the substrate twin takes `host: &dyn EngineHost` (for the group-scope seam),
+//   which only the wedge-3 forward thread provides; core's `groups_tree`-taking version is what the
+//   pipeline call sites still pass `&app.groups_registry` to, so it stays until wedge 3 flips them.
+// - `spawn_bounded_tap` — kept on core so the global (`fire_global_taps`) and stage taps keep sharing
+//   core's ONE 1024-permit admission gate; repointing only this reach would split that cap into two.
+pub(crate) use busbar_core::proxy::{fire_stage_taps, spawn_bounded_tap};
+pub(crate) use busbar_substrate::proxy::proxy_vocab::{gate_rejected, GateRejected, StageShape};
 
 /// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
 /// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader
@@ -1028,6 +1034,8 @@ pub(crate) fn capture_stage_shape<'a>(
     }
 }
 
-// `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), and the `GateRejected`
-// marker + `gate_rejected` tagger are NEUTRAL and now live in `busbar_substrate::proxy::proxy_vocab`
-// (imported above); the engine names them at their historical short paths through that re-export.
+// `fire_stage_taps`, the bounded-tap spawn guard (`spawn_bounded_tap`), the `GateRejected` marker, and
+// the `gate_rejected` tagger are NEUTRAL vocabulary; the `StageShape`/`GateRejected`/`gate_rejected`
+// trio is named straight off `busbar_substrate::proxy::proxy_vocab` (imported above), while
+// `fire_stage_taps`/`spawn_bounded_tap` are named off `busbar_core::proxy` until wedge 3 (see the
+// import note above for why each stays). The engine names all of them at their historical short paths.

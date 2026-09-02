@@ -654,6 +654,126 @@ async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
     panic!("tap was never delivered");
 }
 
+/// WEDGE 2e: the SUBSTRATE `fire_stage_taps` (host-taking; group-scope resolved through the neutral
+/// `EngineHost::caller_in_hook_groups` seam) is byte-behavior-identical to core's raw-tree-walk
+/// version — a group-scoped tap FIRES for an in-group caller and does NOT fire for an out-of-group
+/// one. Exercises the real `engine_host_value(app)` host end-to-end (the same seam the wedge-3
+/// pipeline flip will thread), guarding against a broken host-seam filter mis-firing governance/audit
+/// taps.
+#[tokio::test]
+async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
+    use busbar_core::config::GroupCfg;
+    crate::testkit::install_test_seams();
+    // engineering / sales branches, one caller leaf each (parent is the only field the scope walk
+    // reads). `user:bob` ∈ engineering; `user:sue` ∈ sales.
+    let tree: std::collections::BTreeMap<String, GroupCfg> = [
+        (
+            "engineering".to_string(),
+            GroupCfg {
+                parent: None,
+                ..Default::default()
+            },
+        ),
+        (
+            "sales".to_string(),
+            GroupCfg {
+                parent: None,
+                ..Default::default()
+            },
+        ),
+        (
+            "user:bob".to_string(),
+            GroupCfg {
+                parent: Some("engineering".to_string()),
+                ..Default::default()
+            },
+        ),
+        (
+            "user:sue".to_string(),
+            GroupCfg {
+                parent: Some("sales".to_string()),
+                ..Default::default()
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            "http://127.0.0.1:1/",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    Arc::get_mut(&mut app).expect("sole owner").groups_registry = tree;
+    let host = busbar_core::plane_host::engine_host_value(&app);
+
+    let shape = busbar_substrate::proxy::proxy_vocab::StageShape::zeroed(
+        1,
+        "p",
+        crate::proto_codec::PROTO_ANTHROPIC,
+        false,
+    );
+    let stage = || busbar_substrate::hooks::wire::HookStageProjection {
+        at: "response",
+        model: None,
+        attempt_number: None,
+        remaining_candidates: None,
+        previous_failure: None,
+        outcome: Some("ok"),
+        status: Some(200),
+    };
+    // A tap SCOPED to `engineering`.
+    let scoped_tap = |cap: &Arc<CaptureTap>| -> Vec<busbar_core::hooks::TapEntry> {
+        let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
+        vec![(
+            std::time::Duration::from_millis(500),
+            false,
+            policy,
+            vec!["engineering".to_string()],
+        )]
+    };
+
+    // IN-group caller (`user:bob` ∈ engineering) → the tap FIRES.
+    let cap_in = Arc::new(CaptureTap {
+        last: std::sync::Mutex::new(None),
+    });
+    busbar_substrate::proxy::proxy_vocab::fire_stage_taps(
+        &scoped_tap(&cap_in),
+        &shape,
+        stage(),
+        Some("user:bob"),
+        &host,
+    );
+    let payload = wait_for_tap_body(&cap_in).await; // panics if the in-group tap never delivered
+    assert_eq!(
+        payload["stage"]["at"], "response",
+        "the in-group caller's group-scoped stage tap must fire with the notify wire: {payload}"
+    );
+
+    // OUT-of-group caller (`user:sue` ∈ sales) → the tap does NOT fire.
+    let cap_out = Arc::new(CaptureTap {
+        last: std::sync::Mutex::new(None),
+    });
+    busbar_substrate::proxy::proxy_vocab::fire_stage_taps(
+        &scoped_tap(&cap_out),
+        &shape,
+        stage(),
+        Some("user:sue"),
+        &host,
+    );
+    // Give any (erroneously) spawned tap ample time to deliver, then assert it never did.
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        cap_out.last.lock().unwrap().is_none(),
+        "an out-of-group caller must NOT fire a group-scoped stage tap"
+    );
+}
+
 /// STAGE TAPS: an UNAUTHENTICATED request fires the synthetic `rejected_by_auth` completion
 /// (through the real auth middleware) - audit taps see auth denials too. Uses the test-only
 /// data-plane module (a non-empty chain with no matching credential denies fail-closed).

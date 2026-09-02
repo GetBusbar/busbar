@@ -10,8 +10,6 @@
 //! engine names them across the crate boundary as `busbar_core::proxy::*` — neither reaches for a
 //! dialect, so the plane can be dropped from the build without taking any of this with it.
 
-use axum::response::Response;
-
 // THE CAPPED READ and its `ReadEnd` outcome live in the neutral `busbar-substrate` crate (both
 // core's egress/auth paths and the relocated proxy engine read upstream bodies this way, and a plane
 // crate names them without reaching into core). Re-exported here so every core `crate::proxy::{
@@ -35,51 +33,11 @@ pub use busbar_substrate::proxy::{
     hook_content_max_bytes, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };
 
-/// Shape scalars captured ONCE per request for the STAGE tap payloads (candidate/routing/response).
-/// All owned/`'static`-free scalars except the pool/protocol names (which outlive the request), so
-/// the capture survives `v` being consumed by the first dispatch hop. Stage taps are SHAPE-ONLY in
-/// this increment: the default signal bucket plus the stage object — never prompt content or caller
-/// identity, regardless of grant.
-///
-/// Fields are `pub` so the relocated engine's `capture_stage_shape` (which reads the IR to fill them)
-/// builds the shape across the crate boundary, and core's own auth-denial tap builds the zeroed shape
-/// directly via [`StageShape::zeroed`].
-pub struct StageShape<'a> {
-    /// The request correlation id (`RequestCtx::request_id`) — carried on the shape so every stage
-    /// tap notification for this request stamps the SAME join-key value a `decide`/`transform`
-    /// payload for the same request carries.
-    pub request_id: u64,
-    pub pool: &'a str,
-    pub ingress_protocol: &'a str,
-    pub message_count: usize,
-    pub has_tools: bool,
-    pub total_chars: usize,
-    pub max_tokens: Option<u32>,
-    pub stream: bool,
-}
-
-impl<'a> StageShape<'a> {
-    /// The ZEROED shape: the default signal bucket for a request with no readable body / no resolved
-    /// operation (a pre-routing auth denial). Only the correlation id and the pool/protocol labels are
-    /// carried; every shape scalar is its empty default.
-    pub fn zeroed(
-        request_id: u64,
-        pool: &'a str,
-        ingress_protocol: &'a str,
-        stream: bool,
-    ) -> StageShape<'a> {
-        StageShape {
-            request_id,
-            pool,
-            ingress_protocol,
-            message_count: 0,
-            has_tools: false,
-            total_chars: 0,
-            max_tokens: None,
-            stream,
-        }
-    }
-}
+// THE PER-REQUEST STAGE SHAPE CAPTURE relocated DOWN to `busbar_substrate::proxy::proxy_vocab`
+// (App-retype WEDGE 2e), so a plane crate builds the shape without reaching into `busbar-core`.
+// Re-exported here so every core `crate::proxy::StageShape` call site — and core's own
+// `fire_stage_taps` below, which takes `&StageShape` — resolves unchanged.
+pub use busbar_substrate::proxy::proxy_vocab::StageShape;
 
 /// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: serialize the shape-only
 /// projection + stage object ONCE, then spawn one detached task per tap. A tap can never delay,
@@ -168,17 +126,11 @@ where
     });
 }
 
-/// Response-extension marker set by every GATE-produced rejection return, so the response-stage
-/// taps can report the SYNTHETIC `rejected_by_gate` outcome (audit taps see denials) instead of a
-/// generic `failed`.
-#[derive(Clone)]
-pub struct GateRejected;
-
-/// Tag a gate-produced rejection response with the [`GateRejected`] marker.
-pub fn gate_rejected(mut resp: Response) -> Response {
-    resp.extensions_mut().insert(GateRejected);
-    resp
-}
+// THE GATE-REJECTION MARKER + tagger relocated DOWN to `busbar_substrate::proxy::proxy_vocab`
+// (App-retype WEDGE 2e), so a plane crate tags/reads the marker without reaching into `busbar-core`.
+// Re-exported here so every core `crate::proxy::{GateRejected, gate_rejected}` call site resolves
+// unchanged.
+pub use busbar_substrate::proxy::proxy_vocab::{gate_rejected, GateRejected};
 
 // THE AGNOSTIC INGRESS-ERROR SHAPER and its neutral fallback envelope RELOCATED DOWN to
 // `busbar_substrate::proxy` (the extracted `busbar-llm` native-ingress path shapes an ingress error
