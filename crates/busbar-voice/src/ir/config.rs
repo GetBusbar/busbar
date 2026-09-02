@@ -91,6 +91,14 @@ mod opt_audio_fmt {
 /// to explicit `null`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionConfig {
+    /// THE UPSTREAM MODEL ID the session targets. OpenAI Realtime carries this SERVER-SIDE (it appears
+    /// on `session.created`, not the writable `session.update` patch), so it stays `None` for the
+    /// OpenAI dialect; Gemini Live carries it as `setup.model`. Modeled here as the genuinely-shared
+    /// field the SECOND dialect (Gemini) earns into the superset IR (§1.4). Optional — an OpenAI
+    /// `session.update` omits it (decodes to `None`, skipped on re-encode, so the OpenAI round-trip is
+    /// unaffected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Requested modalities (e.g. `["audio", "text"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modalities: Vec<String>,

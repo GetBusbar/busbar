@@ -573,5 +573,10 @@ fn usage_to_wire(u: &IrDuplexUsage) -> Value {
     })
 }
 
+/// THE SECOND DIALECT — Gemini Live (`BidiGenerateContent`). Its codec maps the Gemini wire to/from
+/// the SAME shared IR this file's [`OpenAiRealtimeCodec`] targets; earning the superset IR is exactly
+/// what a second dialect does (§1.4). See [`gemini::GeminiLiveCodec`].
+pub mod gemini;
+
 #[cfg(test)]
 mod tests;

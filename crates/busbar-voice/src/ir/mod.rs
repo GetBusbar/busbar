@@ -32,6 +32,7 @@ pub mod media;
 pub mod tool;
 pub mod usage;
 
+pub use codec::gemini::GeminiLiveCodec;
 pub use codec::{DecodeState, DuplexReader, DuplexWriter, OpenAiRealtimeCodec, WireEvent};
 pub use config::{MaxOutputTokens, SessionConfig};
 pub use control::{Eagerness, IrDuplexControl, IrVad};
