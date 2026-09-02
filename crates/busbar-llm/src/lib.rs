@@ -144,7 +144,7 @@ pub mod native_ingress;
 
 /// THE MONEY-PATH TEST FIXTURE, re-exported from core's now-plane-agnostic `test_support` (money-path
 /// Phase 3-4 C M4). The relocated engine tests name `crate::test_support::{LaneSpec, TestApp,
-/// MockServer, …}`; the fixture builds the LLM runtime through the neutral `LlmBuildInput` +
+/// MockServer, …}`; the fixture builds the LLM runtime through the neutral `PlaneBuildInput` +
 /// `build_runtime` seam (naming no `Lane`/`NativeRuntime`), so it lives ONCE in core and the plane's
 /// tests reach it here. Gated exactly as core's is.
 #[cfg(any(test, feature = "test-support"))]

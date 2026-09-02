@@ -22,7 +22,7 @@
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
 pub mod breaker;
-// THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `LlmBuildInput`
+// THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
 // DTO `busbar-core`'s `appbuild` populates and hands to the LLM plane's `build_runtime` seam.
 pub mod build_input;
 // THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
@@ -43,9 +43,9 @@ use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
 pub use crate::plane_host::build_input::{
-    LlmAffinityInput, LlmAuthStyle, LlmBreakerInput, LlmBuildInput, LlmClientSettings,
-    LlmFailoverInput, LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput,
-    LlmPoolMemberInput, LlmTripInput, LlmTripMode,
+    AffinityInput, AuthStyleInput, BreakerInput, PlaneBuildInput, ClientSettingsInput,
+    FailoverInput, HealthInput, HealthModeInput, LaneInput, OnExhaustedInput, PoolInput,
+    PoolMemberInput, TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,

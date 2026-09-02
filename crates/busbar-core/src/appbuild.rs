@@ -31,8 +31,8 @@ use crate::{
     telemetry, tls, transport, trust,
 };
 use busbar_substrate::plane_host::{
-    LlmAffinityInput, LlmAuthStyle, LlmBuildInput, LlmClientSettings, LlmFailoverInput,
-    LlmHealthInput, LlmHealthMode, LlmLaneInput, LlmOnExhausted, LlmPoolInput, LlmPoolMemberInput,
+    AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
+    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
 };
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
@@ -125,55 +125,57 @@ pub fn stateful_plane_ephemeral_store_warn(
     }
 }
 
-/// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`LlmAuthStyle`] the carrier holds
+/// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
 /// (`None` ⇒ the protocol's native auth). The LLM plane maps it back to drive `egress_auth::*`.
-fn auth_style_of(auth: Option<config::ProviderAuth>) -> LlmAuthStyle {
+fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
-        None => LlmAuthStyle::Default,
-        Some(config::ProviderAuth::Bearer) => LlmAuthStyle::Bearer,
-        Some(config::ProviderAuth::ApiKey) => LlmAuthStyle::ApiKey,
-        Some(config::ProviderAuth::JwtBearer) => LlmAuthStyle::JwtBearer,
-        Some(config::ProviderAuth::OAuthClientCredentials) => LlmAuthStyle::OAuthClientCredentials,
+        None => AuthStyleInput::Default,
+        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
+        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
+        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
+        Some(config::ProviderAuth::OAuthClientCredentials) => {
+            AuthStyleInput::OAuthClientCredentials
+        }
     }
 }
 
-/// Mirror a provider `health:` block into the neutral [`LlmHealthInput`] carrier field.
-fn health_input_of(h: &config::HealthCfg) -> LlmHealthInput {
-    LlmHealthInput {
+/// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
+fn health_input_of(h: &config::HealthCfg) -> HealthInput {
+    HealthInput {
         mode: match h.mode {
-            config::HealthMode::None => LlmHealthMode::None,
-            config::HealthMode::Dead => LlmHealthMode::Dead,
-            config::HealthMode::Active => LlmHealthMode::Active,
+            config::HealthMode::None => HealthModeInput::None,
+            config::HealthMode::Dead => HealthModeInput::Dead,
+            config::HealthMode::Active => HealthModeInput::Active,
         },
         interval_secs: h.interval_secs,
         timeout_secs: h.timeout_secs,
     }
 }
 
-/// Mirror a pool `failover:` block into the neutral [`LlmFailoverInput`] carrier field.
-fn failover_input_of(f: &config::FailoverCfg) -> LlmFailoverInput {
-    LlmFailoverInput {
+/// Mirror a pool `failover:` block into the neutral [`FailoverInput`] carrier field.
+fn failover_input_of(f: &config::FailoverCfg) -> FailoverInput {
+    FailoverInput {
         timeout_secs: f.timeout_secs,
         exclusions: f.exclusions.clone(),
         max_hops: f.max_hops,
     }
 }
 
-/// Mirror a pool `affinity:` block into the neutral [`LlmAffinityInput`] carrier field (the single
+/// Mirror a pool `affinity:` block into the neutral [`AffinityInput`] carrier field (the single
 /// supported `session` mode is implied by presence; only the header name is carried).
-fn affinity_input_of(a: &config::AffinityCfg) -> LlmAffinityInput {
-    LlmAffinityInput {
+fn affinity_input_of(a: &config::AffinityCfg) -> AffinityInput {
+    AffinityInput {
         header_name: a.header_name.clone(),
     }
 }
 
-/// Mirror a pool `on_exhausted:` policy into the neutral [`LlmOnExhausted`] carrier field.
-fn on_exhausted_input_of(o: &config::OnExhausted) -> LlmOnExhausted {
+/// Mirror a pool `on_exhausted:` policy into the neutral [`OnExhaustedInput`] carrier field.
+fn on_exhausted_input_of(o: &config::OnExhausted) -> OnExhaustedInput {
     match o {
-        config::OnExhausted::Status503 => LlmOnExhausted::Status503,
-        config::OnExhausted::FallbackPool(name) => LlmOnExhausted::FallbackPool(name.clone()),
-        config::OnExhausted::LeastBad => LlmOnExhausted::LeastBad,
-        config::OnExhausted::Queue { max_ms } => LlmOnExhausted::Queue { max_ms: *max_ms },
+        config::OnExhausted::Status503 => OnExhaustedInput::Status503,
+        config::OnExhausted::FallbackPool(name) => OnExhaustedInput::FallbackPool(name.clone()),
+        config::OnExhausted::LeastBad => OnExhaustedInput::LeastBad,
+        config::OnExhausted::Queue { max_ms } => OnExhaustedInput::Queue { max_ms: *max_ms },
     }
 }
 
@@ -638,14 +640,14 @@ pub fn build_app_from_config(
     // loud on a genuine conflict instead.
     let model_context_max = resolve_model_context_max(&cfg.pools)?;
 
-    // Every lane, flattened into the NEUTRAL `LlmLaneInput` carrier (1.6.0 money-path Phase 3-4 C):
+    // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
     // the LLM plane's `build_runtime` reconstructs the concrete `Lane` (egress targets, resolved
     // credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
     // `egress_auth::*` calls that used to run here moved in-plane (the allowed plane→core edge), so
     // core names no `Lane`/`EgressTarget`/`CredentialProvider`. This loop keeps only the NEUTRAL work:
     // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
     // provider's config into neutral scalars.
-    let mut lane_inputs: Vec<LlmLaneInput> = Vec::new();
+    let mut lane_inputs: Vec<LaneInput> = Vec::new();
     for (idx, ld) in lanes_data.iter().enumerate() {
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
@@ -673,7 +675,7 @@ pub fn build_app_from_config(
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
         // egress-target build + SigV4 signed-host derivation).
         let base_url = provider_cfg.base_url.trim_end_matches('/').to_string();
-        lane_inputs.push(LlmLaneInput {
+        lane_inputs.push(LaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
             protocol: protocol.to_string(),
@@ -700,16 +702,16 @@ pub fn build_app_from_config(
         });
     }
 
-    // Every pool, flattened into the NEUTRAL `LlmPoolInput` carrier: member (weight/meta) projections
+    // Every pool, flattened into the NEUTRAL `PoolInput` carrier: member (weight/meta) projections
     // plus the pool's neutral `failover`/`affinity`/`on_exhausted`/`upstream_credentials` config. The
     // plane's `build_runtime` rebuilds the `WeightedLane`/`PoolRuntime` tables from these; the pool's
     // ROUTING POLICY / gates / rewrites are NOT carried (they resolve core-side behind
     // `App::resolve_pool_*` — their value is the core-owned `ResolvedPolicy`, which must not cross the
     // downcast). The member `by_model` lookup stays here so an unknown-model pool member fails boot
     // LOUD at the composition root (not deep inside the plane).
-    let mut pool_inputs: Vec<LlmPoolInput> = Vec::with_capacity(cfg.pools.len());
+    let mut pool_inputs: Vec<PoolInput> = Vec::with_capacity(cfg.pools.len());
     for (name, pool) in &cfg.pools {
-        let mut members: Vec<LlmPoolMemberInput> = Vec::with_capacity(pool.members.len());
+        let mut members: Vec<PoolMemberInput> = Vec::with_capacity(pool.members.len());
         for m in pool.members.iter() {
             let Some(&lane_idx) = by_model.get(&m.model) else {
                 return Err(format!(
@@ -717,7 +719,7 @@ pub fn build_app_from_config(
                     m.model
                 ));
             };
-            members.push(LlmPoolMemberInput {
+            members.push(PoolMemberInput {
                 model: m.model.clone(),
                 lane_idx,
                 weight: m.weight, // from config PoolMember.weight (default 1)
@@ -734,7 +736,7 @@ pub fn build_app_from_config(
                 tags: m.tags.clone(),
             });
         }
-        pool_inputs.push(LlmPoolInput {
+        pool_inputs.push(PoolInput {
             name: name.clone(),
             members,
             failover: pool.failover.as_ref().map(failover_input_of),
@@ -836,7 +838,7 @@ pub fn build_app_from_config(
 
     // The global default failover config, the fallback-pool routing table, and the upstream HTTP
     // client (with its warm-pool carry-over) are all part of the LLM data-plane runtime bundle now —
-    // rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral `LlmBuildInput` carrier
+    // rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral `PlaneBuildInput` carrier
     // (1.6.0 money-path Phase 3-4 C). Core no longer names `FailoverCfg`/`UpstreamClients`/the moved
     // egress-client builders here; it carries only the neutral client-affecting scalars below.
 
@@ -846,7 +848,7 @@ pub fn build_app_from_config(
     // client build reads from config. The plane's `build_runtime` reuses the prior warm client iff
     // its own copy of these scalars is unchanged.
     let new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
-    let llm_client_settings = LlmClientSettings {
+    let llm_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
@@ -899,7 +901,7 @@ pub fn build_app_from_config(
     // The per-pool runtime bundle (member metadata + resolved failover/affinity/breaker), the
     // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the LLM
     // data-plane runtime now — rebuilt IN-PLANE by the LLM plane's `build_runtime` from the neutral
-    // `LlmPoolInput` members of the carrier (1.6.0 money-path Phase 3-4 C). The pool ROUTING POLICIES
+    // `PoolInput` members of the carrier (1.6.0 money-path Phase 3-4 C). The pool ROUTING POLICIES
     // (`resolve_pool_{ordering,gates,rewrites}`) stay resolved-and-read core-side behind the
     // `App::resolve_pool_*` down-facade (their value is the core-owned `ResolvedPolicy`, which must not
     // cross the neutral downcast), so they are NOT resolved here into a plane type either.
@@ -1321,7 +1323,7 @@ pub fn build_app_from_config(
     // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<llm plane
     // key>)`), the SAME opaque slot MCP/A2A ride, now composed through the LLM plane's OWN type-erasing
     // `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core populates the neutral
-    // `LlmBuildInput` carrier from the resolved config and hands it across the `&dyn Any` seam; the
+    // `PlaneBuildInput` carrier from the resolved config and hands it across the `&dyn Any` seam; the
     // plane rebuilds its `Lane`/`WeightedLane`/`PoolRuntime`/`NativeRuntime` tables IN-PLANE. Core names
     // no plane runtime type here, exactly as it composes the MCP runtime above.
     //
@@ -1350,7 +1352,7 @@ pub fn build_app_from_config(
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
-    let llm_build_input = LlmBuildInput {
+    let llm_build_input = PlaneBuildInput {
         lanes: lane_inputs,
         pools: pool_inputs,
         upstream_credentials: cfg.upstream_credentials,
@@ -1361,7 +1363,7 @@ pub fn build_app_from_config(
         // The FIXED global-default failover (production has no operator knob for it) — carried so the
         // plane's `build_runtime` sets `NativeRuntime.failover_cfg` identically to the pre-pivot inline
         // lowering, and so the test fixture can override the whole-App deadline.
-        default_failover: Some(busbar_substrate::plane_host::LlmFailoverInput {
+        default_failover: Some(busbar_substrate::plane_host::FailoverInput {
             timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
             exclusions: None,
             max_hops: crate::config::DEFAULT_FAILOVER_CAP,

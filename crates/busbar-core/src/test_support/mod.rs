@@ -660,18 +660,18 @@ impl LaneSpec {
         self
     }
 
-    /// Emit this lane's NEUTRAL [`LlmLaneInput`] — the carrier field the LLM plane's `build_runtime`
-    /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `LlmBuildInput` to the
+    /// Emit this lane's NEUTRAL [`LaneInput`] — the carrier field the LLM plane's `build_runtime`
+    /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
-    fn to_lane_input(&self) -> busbar_substrate::plane_host::LlmLaneInput {
+    fn to_lane_input(&self) -> busbar_substrate::plane_host::LaneInput {
         let auth_style = match self.auth.as_deref() {
-            None => busbar_substrate::plane_host::LlmAuthStyle::Default,
-            Some("api-key") => busbar_substrate::plane_host::LlmAuthStyle::ApiKey,
-            Some("bearer") => busbar_substrate::plane_host::LlmAuthStyle::Bearer,
+            None => busbar_substrate::plane_host::AuthStyleInput::Default,
+            Some("api-key") => busbar_substrate::plane_host::AuthStyleInput::ApiKey,
+            Some("bearer") => busbar_substrate::plane_host::AuthStyleInput::Bearer,
             Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
         };
-        busbar_substrate::plane_host::LlmLaneInput {
+        busbar_substrate::plane_host::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
@@ -688,16 +688,16 @@ impl LaneSpec {
             health: self
                 .health
                 .as_ref()
-                .map(|h| busbar_substrate::plane_host::LlmHealthInput {
+                .map(|h| busbar_substrate::plane_host::HealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
-                            busbar_substrate::plane_host::LlmHealthMode::None
+                            busbar_substrate::plane_host::HealthModeInput::None
                         }
                         crate::config::HealthMode::Dead => {
-                            busbar_substrate::plane_host::LlmHealthMode::Dead
+                            busbar_substrate::plane_host::HealthModeInput::Dead
                         }
                         crate::config::HealthMode::Active => {
-                            busbar_substrate::plane_host::LlmHealthMode::Active
+                            busbar_substrate::plane_host::HealthModeInput::Active
                         }
                     },
                     interval_secs: h.interval_secs,
@@ -770,7 +770,7 @@ type PlaneContainerHooks =
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
     /// Pool member lists as NEUTRAL `(lane_idx, weight)` pairs (money-path Phase 3-4 C — the fixture is
-    /// plane-agnostic: it hands `LlmBuildInput` to the registered `build_runtime`, naming no
+    /// plane-agnostic: it hands `PlaneBuildInput` to the registered `build_runtime`, naming no
     /// `WeightedLane`). The per-pool `failover:`/`affinity:`/`breaker:`/`upstream_credentials:` overrides
     /// and member metadata ride the sibling maps below.
     pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
@@ -799,14 +799,14 @@ pub struct TestApp {
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
-    /// Per-pool NEUTRAL overrides the `LlmPoolInput` carrier fields the fixture assembles: the pool's
+    /// Per-pool NEUTRAL overrides the `PoolInput` carrier fields the fixture assembles: the pool's
     /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
     /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
     /// carrier default (`None` / no metadata). The former `.pool_runtime(PoolRuntime{…})` fixture method
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
     pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker: std::collections::HashMap<String, busbar_substrate::plane_host::LlmBreakerInput>,
+    pool_breaker: std::collections::HashMap<String, busbar_substrate::plane_host::BreakerInput>,
     pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
@@ -1369,7 +1369,7 @@ impl TestApp {
     }
     /// Set a pool's own `failover:` override (deadline / exclusions / hop cap) — the granular successor
     /// to the former `.pool_runtime(PoolRuntime{ failover: … })` (the fixture is plane-agnostic now, so
-    /// it fills the neutral `LlmPoolInput.failover` the registered `build_runtime` reconstructs from).
+    /// it fills the neutral `PoolInput.failover` the registered `build_runtime` reconstructs from).
     pub fn pool_failover(mut self, name: &str, f: crate::config::FailoverCfg) -> Self {
         self.pool_failover.insert(name.into(), f);
         self
@@ -1485,8 +1485,8 @@ impl TestApp {
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
         let mcp_durable_store = self.mcp_durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
-        // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LlmLaneInput`, not `Lane`,
-        // and hands `LlmBuildInput` to the registered `build_runtime` fn-pointer (production parity).
+        // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LaneInput`, not `Lane`,
+        // and hands `PlaneBuildInput` to the registered `build_runtime` fn-pointer (production parity).
         // `lane_data` (the breaker/permit view) stays core — it seeds the `HealthState` store.
         let mut lane_inputs = Vec::with_capacity(self.lanes.len());
         let mut lane_data = Vec::with_capacity(self.lanes.len());
@@ -1567,13 +1567,13 @@ impl TestApp {
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
         if crate::plane::is_fallback(crate::plane::fallback_key()) {
-            // Assemble the NEUTRAL `LlmBuildInput` (money-path Phase 3-4 C) exactly as production
+            // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
             // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
             // lowering production runs (egress targets, credentials, upstream client, probe schedule).
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_substrate::plane_host::LlmPoolMemberInput {
+                busbar_substrate::plane_host::PoolMemberInput {
                     model: lane_inputs
                         .get(idx)
                         .map(|l| l.model.clone())
@@ -1594,69 +1594,65 @@ impl TestApp {
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
                 pool_map.insert(name.clone(), members.clone());
             }
-            let pool_inputs: Vec<busbar_substrate::plane_host::LlmPoolInput> = pool_map
+            let pool_inputs: Vec<busbar_substrate::plane_host::PoolInput> = pool_map
                 .into_iter()
-                .map(
-                    |(name, members)| busbar_substrate::plane_host::LlmPoolInput {
-                        members: members
-                            .iter()
-                            .map(|(idx, w)| member_input(&name, *idx, *w))
-                            .collect(),
-                        failover: self.pool_failover.get(&name).map(|f| {
-                            busbar_substrate::plane_host::LlmFailoverInput {
-                                timeout_secs: f.timeout_secs,
-                                exclusions: f.exclusions.clone(),
-                                max_hops: f.max_hops,
+                .map(|(name, members)| busbar_substrate::plane_host::PoolInput {
+                    members: members
+                        .iter()
+                        .map(|(idx, w)| member_input(&name, *idx, *w))
+                        .collect(),
+                    failover: self.pool_failover.get(&name).map(|f| {
+                        busbar_substrate::plane_host::FailoverInput {
+                            timeout_secs: f.timeout_secs,
+                            exclusions: f.exclusions.clone(),
+                            max_hops: f.max_hops,
+                        }
+                    }),
+                    affinity: self.pool_affinity.get(&name).map(|a| {
+                        busbar_substrate::plane_host::AffinityInput {
+                            header_name: a.header_name.clone(),
+                        }
+                    }),
+                    on_exhausted: match self.on_exhausted_cfgs.get(&name) {
+                        Some(crate::config::OnExhausted::FallbackPool(p)) => {
+                            busbar_substrate::plane_host::OnExhaustedInput::FallbackPool(p.clone())
+                        }
+                        Some(crate::config::OnExhausted::LeastBad) => {
+                            busbar_substrate::plane_host::OnExhaustedInput::LeastBad
+                        }
+                        Some(crate::config::OnExhausted::Queue { max_ms }) => {
+                            busbar_substrate::plane_host::OnExhaustedInput::Queue {
+                                max_ms: *max_ms,
                             }
-                        }),
-                        affinity: self.pool_affinity.get(&name).map(|a| {
-                            busbar_substrate::plane_host::LlmAffinityInput {
-                                header_name: a.header_name.clone(),
-                            }
-                        }),
-                        on_exhausted: match self.on_exhausted_cfgs.get(&name) {
-                            Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                                busbar_substrate::plane_host::LlmOnExhausted::FallbackPool(
-                                    p.clone(),
-                                )
-                            }
-                            Some(crate::config::OnExhausted::LeastBad) => {
-                                busbar_substrate::plane_host::LlmOnExhausted::LeastBad
-                            }
-                            Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                                busbar_substrate::plane_host::LlmOnExhausted::Queue {
-                                    max_ms: *max_ms,
-                                }
-                            }
-                            _ => busbar_substrate::plane_host::LlmOnExhausted::Status503,
-                        },
-                        upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
-                        breaker: self.pool_breaker.get(&name).cloned(),
-                        name,
+                        }
+                        _ => busbar_substrate::plane_host::OnExhaustedInput::Status503,
                     },
-                )
+                    upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
+                    breaker: self.pool_breaker.get(&name).cloned(),
+                    name,
+                })
                 .collect();
             let default_failover = self
                 .failover_cfg
                 .as_ref()
-                .map(|f| busbar_substrate::plane_host::LlmFailoverInput {
+                .map(|f| busbar_substrate::plane_host::FailoverInput {
                     timeout_secs: f.timeout_secs,
                     exclusions: f.exclusions.clone(),
                     max_hops: f.max_hops,
                 })
-                .unwrap_or(busbar_substrate::plane_host::LlmFailoverInput {
+                .unwrap_or(busbar_substrate::plane_host::FailoverInput {
                     timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
                     exclusions: None,
                     max_hops: crate::config::DEFAULT_FAILOVER_CAP,
                 });
-            let build_input = busbar_substrate::plane_host::LlmBuildInput {
+            let build_input = busbar_substrate::plane_host::PlaneBuildInput {
                 lanes: lane_inputs,
                 pools: pool_inputs,
                 upstream_credentials: self.upstream_credentials,
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
-                client_settings: busbar_substrate::plane_host::LlmClientSettings {
+                client_settings: busbar_substrate::plane_host::ClientSettingsInput {
                     upstream_request_timeout_secs: 0,
                     pool_max_idle_per_host: 4,
                     pool_idle_timeout_secs: 300,

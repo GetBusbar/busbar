@@ -483,7 +483,7 @@ pub(crate) fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str 
         .and_then(|r| r.affinity.as_ref())
     {
         // The affinity block's presence IS the `session` mode fact (the only supported mode, so the
-        // neutral LlmAffinityInput carries no mode enum); honour the configured header name.
+        // neutral AffinityInput carries no mode enum); honour the configured header name.
         Some(a) => a.header_name.as_deref().unwrap_or(DEFAULT_AFFINITY_HEADER),
         None => DEFAULT_AFFINITY_HEADER,
     }

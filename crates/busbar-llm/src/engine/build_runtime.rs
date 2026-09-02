@@ -3,7 +3,7 @@
 
 //! THE LLM PLANE'S `build_runtime` SEAM (1.6.0 money-path Phase 3-4 C — THE PIVOT).
 //!
-//! `busbar-core`'s `appbuild` populates the neutral [`LlmBuildInput`] carrier from the resolved config
+//! `busbar-core`'s `appbuild` populates the neutral [`PlaneBuildInput`] carrier from the resolved config
 //! and hands it across the `PlaneDecl::build_runtime` fn-pointer as `&dyn Any` (single-compiled-safe —
 //! the carrier holds NO `busbar_core::` type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use busbar_substrate::plane_host::{
-    LlmAuthStyle, LlmBuildInput, LlmOnExhausted, PlaneSlots,
+    AuthStyleInput, PlaneBuildInput, OnExhaustedInput, PlaneSlots,
 };
 
 use busbar_core::egress_auth::{self, MetadataSsrfPolicy};
@@ -31,15 +31,15 @@ use crate::engine::{
     QueuedDepth, WeightedLane,
 };
 
-/// Map the neutral [`LlmAuthStyle`] back to the core `Option<ProviderAuth>` the sync
+/// Map the neutral [`AuthStyleInput`] back to the core `Option<ProviderAuth>` the sync
 /// `egress_auth::resolve` reads (the OAuth styles never route through `resolve` — they mint at boot).
-fn provider_auth(style: LlmAuthStyle) -> Option<busbar_substrate::config::ProviderAuth> {
+fn provider_auth(style: AuthStyleInput) -> Option<busbar_substrate::config::ProviderAuth> {
     match style {
-        LlmAuthStyle::Default => None,
-        LlmAuthStyle::Bearer => Some(busbar_substrate::config::ProviderAuth::Bearer),
-        LlmAuthStyle::ApiKey => Some(busbar_substrate::config::ProviderAuth::ApiKey),
-        LlmAuthStyle::JwtBearer => Some(busbar_substrate::config::ProviderAuth::JwtBearer),
-        LlmAuthStyle::OAuthClientCredentials => {
+        AuthStyleInput::Default => None,
+        AuthStyleInput::Bearer => Some(busbar_substrate::config::ProviderAuth::Bearer),
+        AuthStyleInput::ApiKey => Some(busbar_substrate::config::ProviderAuth::ApiKey),
+        AuthStyleInput::JwtBearer => Some(busbar_substrate::config::ProviderAuth::JwtBearer),
+        AuthStyleInput::OAuthClientCredentials => {
             Some(busbar_substrate::config::ProviderAuth::OAuthClientCredentials)
         }
     }
@@ -59,8 +59,8 @@ pub(crate) fn build_runtime(
     #[cfg(any(test, feature = "test-support"))]
     busbar_substrate::proto::register_test_protocols(crate::DECLS);
     let input = input
-        .downcast_ref::<LlmBuildInput>()
-        .expect("LlmBuildInput: the LLM plane's build_runtime received a foreign carrier");
+        .downcast_ref::<PlaneBuildInput>()
+        .expect("PlaneBuildInput: the LLM plane's build_runtime received a foreign carrier");
 
     // The PRIOR generation's runtime (for the warm-client + probe-schedule carry-over), read through
     // the neutral slot seam then downcast to THIS plane's own NativeRuntime.
@@ -97,14 +97,14 @@ pub(crate) fn build_runtime(
         };
         let api_key = li.api_key_plaintext.clone();
         let credential = match li.auth_style {
-            LlmAuthStyle::JwtBearer => egress_auth::jwt_bearer::build(
+            AuthStyleInput::JwtBearer => egress_auth::jwt_bearer::build(
                 &api_key,
                 li.scope.as_deref(),
                 li.subject.as_deref(),
                 &ssrf,
             )
             .unwrap_or_else(|e| panic!("provider for '{}' (jwt-bearer auth): {e}", li.model)),
-            LlmAuthStyle::OAuthClientCredentials => {
+            AuthStyleInput::OAuthClientCredentials => {
                 let token_url = li
                     .token_url
                     .as_deref()
@@ -196,10 +196,10 @@ pub(crate) fn build_runtime(
             p.name.clone(),
             PoolRuntime {
                 members,
-                // ABI-purity P5: store the neutral LlmFailoverInput / LlmAffinityInput carriers
+                // ABI-purity P5: store the neutral FailoverInput / AffinityInput carriers
                 // DIRECTLY — byte-identical mirrors of the retired config::FailoverCfg / AffinityCfg
                 // (affinity's only mode is `session`, so its presence IS the fact). Collapses the
-                // LlmBuildInput -> core-config -> runtime round-trip to a clone.
+                // PlaneBuildInput -> core-config -> runtime round-trip to a clone.
                 failover: p.failover.clone(),
                 upstream_credentials: p.upstream_credentials,
                 affinity: p.affinity.clone(),
@@ -219,11 +219,11 @@ pub(crate) fn build_runtime(
     let fallback_pools = pools.clone();
 
     // Per-pool on_exhausted policy table. The plane RUNTIME stores the neutral
-    // `LlmOnExhausted` carried on `LlmBuildInput` DIRECTLY — its variants are the byte-identical
+    // `OnExhaustedInput` carried on `PlaneBuildInput` DIRECTLY — its variants are the byte-identical
     // mirror of the retired `busbar_core::config::OnExhausted` round-trip, so the lowering is a
-    // clone rather than a re-map (ABI-purity P5: the LlmBuildInput -> core-config -> runtime
-    // round-trip collapses to LlmBuildInput -> runtime).
-    let mut on_exhausted_cfgs: HashMap<String, LlmOnExhausted> =
+    // clone rather than a re-map (ABI-purity P5: the PlaneBuildInput -> core-config -> runtime
+    // round-trip collapses to PlaneBuildInput -> runtime).
+    let mut on_exhausted_cfgs: HashMap<String, OnExhaustedInput> =
         HashMap::with_capacity(input.pools.len());
     for p in &input.pools {
         on_exhausted_cfgs.insert(p.name.clone(), p.on_exhausted.clone());

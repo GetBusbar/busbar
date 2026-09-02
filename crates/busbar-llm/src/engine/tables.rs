@@ -48,7 +48,7 @@ pub(crate) struct Lane {
     pub(crate) path_base: Option<String>,
     /// Optional active health-probe settings (from the provider's `health:` block). `None` or
     /// `mode: none` means no background probing for this lane.
-    pub(crate) health: Option<busbar_substrate::plane_host::LlmHealthInput>,
+    pub(crate) health: Option<busbar_substrate::plane_host::HealthInput>,
     /// Model-level per-ATTEMPT time-to-response-headers cap (ms) — the hang detector. A pool
     /// member's `attempt_timeout_ms` overrides it per workload; see `ModelCfg::attempt_timeout_ms`.
     pub(crate) attempt_timeout_ms: Option<u64>,
@@ -137,13 +137,13 @@ pub(crate) struct PoolRuntime {
     /// never touches it. Empty for a pool with no members declaring metadata.
     pub(crate) members: std::collections::HashMap<usize, MemberMeta>,
     /// Per-pool failover settings (deadline, cap, and member exclusions).
-    pub(crate) failover: Option<busbar_substrate::plane_host::LlmFailoverInput>,
+    pub(crate) failover: Option<busbar_substrate::plane_host::FailoverInput>,
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3).
     /// `None` = inherit `App::upstream_credentials`. Read per request by
     /// [`App::pool_upstream_creds`].
     pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// Per-pool session-affinity settings (which request header pins a session to a lane).
-    pub(crate) affinity: Option<busbar_substrate::plane_host::LlmAffinityInput>,
+    pub(crate) affinity: Option<busbar_substrate::plane_host::AffinityInput>,
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
     /// runtime `store::BreakerCfg` the FSM evaluates. `None` falls back to ADR-0002 defaults.
     pub(crate) breaker: Option<busbar_substrate::store::BreakerCfg>,
@@ -221,8 +221,8 @@ pub(crate) struct NativeRuntime {
     pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
     pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
     pub(crate) on_exhausted_cfgs:
-        std::collections::HashMap<String, busbar_substrate::plane_host::LlmOnExhausted>,
-    pub(crate) failover_cfg: Option<busbar_substrate::plane_host::LlmFailoverInput>,
+        std::collections::HashMap<String, busbar_substrate::plane_host::OnExhaustedInput>,
+    pub(crate) failover_cfg: Option<busbar_substrate::plane_host::FailoverInput>,
     pub(crate) queued_depth: Arc<QueuedDepth>,
     pub(crate) probe_schedule: Arc<crate::engine::health::ProbeSchedule>,
     pub(crate) upstream_credentials: busbar_api::UpstreamCreds,
@@ -232,7 +232,7 @@ pub(crate) struct NativeRuntime {
     /// warm-pool-reuse compare in [`build_runtime`](crate::engine::build_runtime) reads: the next
     /// generation reuses this generation's warm `client` (its kept-alive upstream sockets) iff these
     /// are unchanged. Moved IN-PLANE from core's `App::client_settings` with the client build itself.
-    pub(crate) client_settings: busbar_substrate::plane_host::LlmClientSettings,
+    pub(crate) client_settings: busbar_substrate::plane_host::ClientSettingsInput,
 }
 
 impl NativeRuntime {
@@ -302,7 +302,7 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
     }
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String> {
         match self.on_exhausted_cfgs.get(pool) {
-            Some(busbar_substrate::plane_host::LlmOnExhausted::FallbackPool(fallback)) => {
+            Some(busbar_substrate::plane_host::OnExhaustedInput::FallbackPool(fallback)) => {
                 Some(fallback.clone())
             }
             _ => None,
@@ -402,7 +402,7 @@ fn empty_native_runtime() -> &'static NativeRuntime {
         }),
         // The empty runtime's client is the never-dialled default shard; its settings key exists only
         // so the warm-reuse compare has a value to read (it never matches a real generation's).
-        client_settings: busbar_substrate::plane_host::LlmClientSettings {
+        client_settings: busbar_substrate::plane_host::ClientSettingsInput {
             upstream_request_timeout_secs: 0,
             pool_max_idle_per_host: 4,
             pool_idle_timeout_secs: 300,
@@ -441,7 +441,7 @@ impl<'a> EngineTables<'a> {
 
     /// The global default failover config (the fallback for pools that set none), if configured.
     /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
-    pub(crate) fn failover_cfg(&self) -> &'a Option<busbar_substrate::plane_host::LlmFailoverInput> {
+    pub(crate) fn failover_cfg(&self) -> &'a Option<busbar_substrate::plane_host::FailoverInput> {
         &self.rt.failover_cfg
     }
 
@@ -474,7 +474,7 @@ impl<'a> EngineTables<'a> {
     /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
     pub(crate) fn on_exhausted_cfgs(
         &self,
-    ) -> &'a std::collections::HashMap<String, busbar_substrate::plane_host::LlmOnExhausted> {
+    ) -> &'a std::collections::HashMap<String, busbar_substrate::plane_host::OnExhaustedInput> {
         &self.rt.on_exhausted_cfgs
     }
 

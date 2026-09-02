@@ -127,7 +127,7 @@ fn chat_body(pool: &str) -> Vec<u8> {
 }
 
 // Pool-hook facade (money-path Phase 3-4 C): the per-pool `failover:` override is a NEUTRAL pool spec
-// now (the fixture lowers it through `LlmBuildInput` → `build_runtime`), so this returns the config the
+// now (the fixture lowers it through `PlaneBuildInput` → `build_runtime`), so this returns the config the
 // `.pool_failover(...)` setter takes instead of a hand-built `PoolRuntime`.
 fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_core::config::FailoverCfg {
     busbar_core::config::FailoverCfg {

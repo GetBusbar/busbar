@@ -263,16 +263,16 @@ impl BreakerCfg {
     /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
     /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
     /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_llm(&self) -> crate::plane_host::LlmBreakerInput {
-        crate::plane_host::LlmBreakerInput {
+    pub fn to_llm(&self) -> crate::plane_host::BreakerInput {
+        crate::plane_host::BreakerInput {
             base_cooldown_secs: self.base_cooldown_secs,
             max_cooldown_secs: self.max_cooldown_secs,
             honor_retry_after: self.honor_retry_after,
             bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: crate::plane_host::LlmTripInput {
+            trip: crate::plane_host::TripInput {
                 mode: match self.trip.mode {
-                    TripMode::ErrorRate => crate::plane_host::LlmTripMode::ErrorRate,
-                    TripMode::Consecutive => crate::plane_host::LlmTripMode::Consecutive,
+                    TripMode::ErrorRate => crate::plane_host::TripModeInput::ErrorRate,
+                    TripMode::Consecutive => crate::plane_host::TripModeInput::Consecutive,
                 },
                 window_s: self.trip.window_s,
                 threshold: self.trip.threshold,
@@ -287,7 +287,7 @@ impl BreakerCfg {
     /// names only this pub constructor and the neutral input type).
     ///
     /// [`to_llm`]: Self::to_llm
-    pub fn from_llm(i: &crate::plane_host::LlmBreakerInput) -> Self {
+    pub fn from_llm(i: &crate::plane_host::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,
             max_cooldown_secs: i.max_cooldown_secs,
@@ -295,8 +295,8 @@ impl BreakerCfg {
             bench_below_trip_threshold: i.bench_below_trip_threshold,
             trip: TripConfig {
                 mode: match i.trip.mode {
-                    crate::plane_host::LlmTripMode::ErrorRate => TripMode::ErrorRate,
-                    crate::plane_host::LlmTripMode::Consecutive => TripMode::Consecutive,
+                    crate::plane_host::TripModeInput::ErrorRate => TripMode::ErrorRate,
+                    crate::plane_host::TripModeInput::Consecutive => TripMode::Consecutive,
                 },
                 window_s: i.trip.window_s,
                 threshold: i.trip.threshold,
