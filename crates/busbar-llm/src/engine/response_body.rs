@@ -345,8 +345,10 @@ where
                                 // unrecognized protocol, or a usage object so large it doesn't fit in
                                 // `cap` itself) is still observable here, not silent.
                                 this.nonstream_buf_truncated = true;
-                                metrics::counter!(busbar_substrate::metrics::BILLING_TRUNCATED_TOTAL)
-                                    .increment(1);
+                                metrics::counter!(
+                                    busbar_substrate::metrics::BILLING_TRUNCATED_TOTAL
+                                )
+                                .increment(1);
                                 diag_debug!(
                                     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
                                     cap,
@@ -699,9 +701,9 @@ where
                                 .unwrap_or_default();
                             if let (Some(host), Some(lane)) = (
                                 this.host.as_ref(),
-                                this.rt
-                                    .as_ref()
-                                    .and_then(|rt| EngineTables::new(rt).lanes().get(this.lane_idx)),
+                                this.rt.as_ref().and_then(|rt| {
+                                    EngineTables::new(rt).lanes().get(this.lane_idx)
+                                }),
                             ) {
                                 crate::engine::usage::ledger_and_meter(
                                     host,

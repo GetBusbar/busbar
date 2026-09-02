@@ -152,8 +152,8 @@ pub use busbar_substrate::store::Permit;
 // engine's `impl LaneRuntime for HealthState`, `/stats`, the `/metrics` scrape, and the config-apply
 // export/restore path resolve `crate::store::…` unchanged. `PoolCellHealthSnapshot` is re-exported
 // `pub(crate)` to preserve its original core-private visibility (it is only ever named inside core).
-pub use busbar_substrate::store::{Admit, LaneHealthSnapshot, LaneRuntime, LaneSnapshot};
 pub(crate) use busbar_substrate::store::PoolCellHealthSnapshot;
+pub use busbar_substrate::store::{Admit, LaneHealthSnapshot, LaneRuntime, LaneSnapshot};
 
 mod in_memory;
 pub use in_memory::*;

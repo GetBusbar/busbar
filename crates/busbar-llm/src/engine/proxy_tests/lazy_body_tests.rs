@@ -188,7 +188,10 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
         Some("a")
     );
     let dom = lazy.ensure_dom().expect("validated bytes must re-parse");
-    assert_eq!(*dom, busbar_substrate::json::parse::<Value>(&bytes).unwrap());
+    assert_eq!(
+        *dom,
+        busbar_substrate::json::parse::<Value>(&bytes).unwrap()
+    );
     dom.as_object_mut()
         .unwrap()
         .insert("model".into(), json!("b"));

@@ -241,16 +241,12 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 
         // STAGE 3–4 — THE single budget-admission door charges the chain buckets, through the host seam.
         // On rejection nothing was charged (the door finished it).
-        let (admit, downgraded) = match host.admission_door(
-            req.gov,
-            proto,
-            req.destination,
-            req.started,
-            req.charged_at,
-        ) {
-            Err(resp) => return *resp,
-            Ok(admitted) => admitted,
-        };
+        let (admit, downgraded) =
+            match host.admission_door(req.gov, proto, req.destination, req.started, req.charged_at)
+            {
+                Err(resp) => return *resp,
+                Ok(admitted) => admitted,
+            };
         let charged = admit.is_some();
         // A budget downgrade re-pooled the admission: dispatch through the pool the charge actually
         // landed on, not the one the client asked for.

@@ -2937,7 +2937,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, busbar_substrate::breaker::StatusClass::ServerError);
+        assert_eq!(
+            sig2.class,
+            busbar_substrate::breaker::StatusClass::ServerError
+        );
     }
 
     #[test]
@@ -2963,7 +2966,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig2 = normalize_raw_error(&raw2, &error_map);
-        assert_eq!(sig2.class, busbar_substrate::breaker::StatusClass::RateLimit);
+        assert_eq!(
+            sig2.class,
+            busbar_substrate::breaker::StatusClass::RateLimit
+        );
 
         // HTTP 500 → ServerError (universal spec)
         let raw3 = RawUpstreamError {
@@ -2973,7 +2979,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig3 = normalize_raw_error(&raw3, &error_map);
-        assert_eq!(sig3.class, busbar_substrate::breaker::StatusClass::ServerError);
+        assert_eq!(
+            sig3.class,
+            busbar_substrate::breaker::StatusClass::ServerError
+        );
 
         // HTTP 400 → ClientError (universal spec)
         let raw4 = RawUpstreamError {
@@ -2983,7 +2992,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig4 = normalize_raw_error(&raw4, &error_map);
-        assert_eq!(sig4.class, busbar_substrate::breaker::StatusClass::ClientError);
+        assert_eq!(
+            sig4.class,
+            busbar_substrate::breaker::StatusClass::ClientError
+        );
     }
 
     #[tokio::test]
@@ -3012,7 +3024,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3074,7 +3086,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3139,7 +3151,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3199,7 +3211,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3259,7 +3271,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3319,7 +3331,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3664,7 +3676,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3746,7 +3758,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1), (1, 1)])
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -4161,7 +4173,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
             .pool("leastbad", &[(0, 1)])
             .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
             .build();
-    let (_host, _rt) = crate::engine::test_host_rt(&app);
+        let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward_with_pool(
@@ -4731,7 +4743,12 @@ async fn test_health_probe_recovers_tripped_lane() {
         "lane should be tripped before the probe"
     );
 
-    crate::engine::health::probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    crate::engine::health::probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
 
     assert_eq!(
         app.store.breaker_state(0),
@@ -4771,7 +4788,12 @@ async fn test_health_probe_failure_records_transient() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let before = app.store.snapshot(0, busbar_core::store::now()).err;
-    crate::engine::health::probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    crate::engine::health::probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
     let after = app.store.snapshot(0, busbar_core::store::now()).err;
     assert_eq!(
         after,

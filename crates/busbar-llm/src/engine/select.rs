@@ -122,7 +122,10 @@ impl RequestCtx {
                 .cloned()
                 .collect();
             if restricted.is_empty() {
-                if matches!(r.on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
+                if matches!(
+                    r.on_empty,
+                    busbar_substrate::config::PolicyOnError::Weighted
+                ) {
                     continue; // advisory escape — skip this restrict on this hop
                 }
                 return Err(r.name); // fail closed — no eligible lane satisfies a required restrict
@@ -369,7 +372,9 @@ pub(crate) async fn pick_among(
         &attempt,
         &mut order,
         &mut passed_over,
-        &mut |_position, c: &LaneCandidate<'_>| host.lane_store().try_admit(pool_name, c.wl.idx, admit_now),
+        &mut |_position, c: &LaneCandidate<'_>| {
+            host.lane_store().try_admit(pool_name, c.wl.idx, admit_now)
+        },
     );
 
     // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`), replaced

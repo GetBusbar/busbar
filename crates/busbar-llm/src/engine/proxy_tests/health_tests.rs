@@ -39,7 +39,12 @@ async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockSe
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
     (app, server)
 }
 
@@ -68,7 +73,12 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
     // The probe carries the protocol's native-SDK User-Agent and Accept (non-streaming), exactly
     // as the organic forward path does (egress_user_agent / egress_accept).
     assert_eq!(
@@ -170,7 +180,12 @@ async fn test_probe_skips_lane_without_key() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(1)).await;
+    probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(1),
+    )
+    .await;
     assert!(matches!(app.store.breaker_state(0), BreakerState::Closed));
 }
 
@@ -208,7 +223,12 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             status: StatusCode::OK,
             body: serde_json::json!({ "ok": true }),
         });
-        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+        probe_lane(
+            busbar_core::plane_host::engine_host(&app).as_ref(),
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
     }
     // 5 failing (503 transient) probes. The failure path records into the SAME cells. Even at the
     // 5th failure the windows hold 7 successes + 5 errors → 5/12 < 0.5 → no trip.
@@ -217,7 +237,12 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             status: StatusCode::SERVICE_UNAVAILABLE,
             body: serde_json::json!({ "error": "upstream down" }),
         });
-        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+        probe_lane(
+            busbar_core::plane_host::engine_host(&app).as_ref(),
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     assert!(
@@ -266,7 +291,12 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
         status: StatusCode::OK,
         body: serde_json::json!({ "ok": true }),
     });
-    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
     // 4 failing probes. With the success recorded the window is 1 success + 4 errors = 5 outcomes
     // (>= min_requests) at 4/5 = 0.8 >= 0.5 → trips Open. Without the success it would be 4 errors
     // only (< min_requests) → stays Closed.
@@ -275,7 +305,12 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
             status: StatusCode::SERVICE_UNAVAILABLE,
             body: serde_json::json!({ "error": "upstream down" }),
         });
-        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+        probe_lane(
+            busbar_core::plane_host::engine_host(&app).as_ref(),
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     assert!(
@@ -323,7 +358,12 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
             status: StatusCode::OK,
             body: serde_json::json!({ "ok": true }),
         });
-        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+        probe_lane(
+            busbar_core::plane_host::engine_host(&app).as_ref(),
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     assert_eq!(
@@ -361,7 +401,12 @@ async fn test_probe_uses_upstream_model_override() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
+    probe_lane(
+        busbar_core::plane_host::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Path must carry the upstream model ID (with SigV4-safe percent encoding for reserved `:`).
     let path = state

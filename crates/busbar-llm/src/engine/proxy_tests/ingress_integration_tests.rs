@@ -111,9 +111,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
             upstream_credentials: None,
             members: Default::default(),
             failover: None,
-            affinity: Some(busbar_substrate::plane_host::AffinityInput {
-                header_name: None,
-            }),
+            affinity: Some(busbar_substrate::plane_host::AffinityInput { header_name: None }),
             breaker: None,
         },
     );

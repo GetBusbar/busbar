@@ -29,7 +29,8 @@ async fn over_cap_response_is_reported_as_truncated() {
     let oversized_token = "a".repeat(300 * 1024);
     let body =
         serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }).to_string();
-    let server = crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
+    let server =
+        crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
 
     let (resp, deadline) = fetch(&format!("http://{}", server.addr)).await;
     let err = super::read_capped_token_response(resp, deadline)

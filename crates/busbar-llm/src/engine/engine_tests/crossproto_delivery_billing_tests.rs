@@ -90,7 +90,11 @@ struct Outcome {
 /// governed fixture. Before the call we consume ONE unit of the lane budget — the headers-time spend
 /// the guard is responsible for refunding — then arm a `BudgetSpendGuard` exactly as the live caller
 /// does. The guard is dropped (its refund seam) before we read the budget back.
-async fn drive(op: busbar_substrate::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
+async fn drive(
+    op: busbar_substrate::handlers::Op,
+    ingress: &'static str,
+    body: Vec<u8>,
+) -> Outcome {
     let (app, gov, cost, key) = fixture();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let sink = Some(crate::engine::UsageSink {

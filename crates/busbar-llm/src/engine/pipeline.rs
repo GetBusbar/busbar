@@ -16,8 +16,8 @@ use busbar_substrate::diagnostics::{
     REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use busbar_substrate::{diag_debug, diag_error, diag_warn};
 use busbar_substrate::handlers::TranslateCodec;
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 /// Bodies at or above this size run the (pure, synchronous) cross-protocol translate on the
 /// blocking pool instead of inline on the single-threaded worker — see the offload comment at the
@@ -454,8 +454,9 @@ pub(crate) async fn translate_response_cross_protocol(
             "cross-protocol non-stream upstream body failed mid-transfer; \
              not recording success/usage, refunding budget, returning ingress-native error"
         );
-        let tripped = host.lane_store()
-            .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
+        let tripped =
+            host.lane_store()
+                .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
         // A threshold-based Closed→Open trip here is a breaker trip too (#29).
         if tripped {
             emit_breaker_trip(host, rt, pool, i);
@@ -541,7 +542,12 @@ pub(crate) async fn translate_response_cross_protocol(
                         // Delivered: bill + disarm the spend guard here (tokens are now committed to
                         // this key; keep the lane unit too rather than refund it out from under an
                         // already-billed request).
-                        record_resp_usage(host, usage, &usage_sink, EngineTables::new(rt).lanes().get(i));
+                        record_resp_usage(
+                            host,
+                            usage,
+                            &usage_sink,
+                            EngineTables::new(rt).lanes().get(i),
+                        );
                         budget_guard.disarm();
                         let rb = Response::builder()
                             .status(status)
@@ -571,7 +577,9 @@ pub(crate) async fn translate_response_cross_protocol(
             // `protocol_for(ingress_protocol)` guard did; the neutral `translate_response` now takes
             // the ingress protocol by NAME + a `serves-op` flag and reaches its writer through the
             // codec cell, so the concrete `ProtocolWriter` is no longer named at this call site.
-            if busbar_substrate::proto::decl_for(ingress_protocol).is_some_and(|d| d.codec.is_some()) {
+            if busbar_substrate::proto::decl_for(ingress_protocol)
+                .is_some_and(|d| d.codec.is_some())
+            {
                 // Read the wall-clock elapsed once for the wants-stream frame-synthesis fork (a
                 // Bedrock ConverseStream client served a buffered Converse body); the JSON-body path
                 // reads its own fresh elapsed for `inject_response_metrics` below, matching the two
@@ -783,8 +791,9 @@ pub(crate) async fn translate_response_cross_protocol(
     // The 2xx headers optimistically recorded a breaker SUCCESS, but an undecodable body is exactly as
     // much a lane fault as a transport failure — without this, a lane returning undecodable 200s
     // forever never trips (unlike its TransportError sibling above, which already compensates).
-    let tripped = host.lane_store()
-        .record_transient_in(pool, i, "untranslatable-2xx", breaker_cfg, None);
+    let tripped =
+        host.lane_store()
+            .record_transient_in(pool, i, "untranslatable-2xx", breaker_cfg, None);
     if tripped {
         emit_breaker_trip(host, rt, pool, i);
     }
@@ -852,9 +861,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // removed (the deletion test).
     let mut cands: Vec<WeightedLane> = {
         let supports = |wl: &WeightedLane| {
-            busbar_substrate::handlers::request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
-                .and_then(|rh| rh.operation_handler(op.operation))
-                .is_some()
+            busbar_substrate::handlers::request_handler(
+                EngineTables::new(rt).lanes()[wl.idx].protocol,
+            )
+            .and_then(|rh| rh.operation_handler(op.operation))
+            .is_some()
         };
         // Fast path (the norm: every registered protocol serves every 1.x operation): all candidates
         // support the operation, so keep the caller's Vec as-is — no partition, no re-allocation.
@@ -1185,8 +1196,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     if !host.global_gates().is_empty() || !pool_gates.is_empty() {
         // The chain: globals (pre-sorted ascending by priority) then pool gates (config order),
         // stable-sorted by priority — ties keep globals-first, then config order.
-        let mut chain: Vec<&(u16, busbar_substrate::hooks::ResolvedPolicy)> =
-            host.global_gates().iter().chain(pool_gates.iter()).collect();
+        let mut chain: Vec<&(u16, busbar_substrate::hooks::ResolvedPolicy)> = host
+            .global_gates()
+            .iter()
+            .chain(pool_gates.iter())
+            .collect();
         chain.sort_by_key(|(p, _)| *p);
         // Every concurrently-firing gate borrows the same parsed body; the shared Null stands in
         // for a non-JSON body (the same projection the sequential path used). Gates project
@@ -1527,7 +1541,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // Empty intersection → the gate's `on_empty`. `Weighted` is the advisory escape
                             // (leave `cands` as the full pool → SWRR); default (and `First`, which has no
                             // eligible "first") is fail-closed reject.
-                            if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
+                            if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted)
+                            {
                                 diag_debug!(
                                 ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
                                 policy = name,
@@ -1585,26 +1600,27 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
     // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
     // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
-    let stage_shape = if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
-        None
-    } else {
-        // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
-        // configured, so this request always paid the parse).
-        let dom: Option<&Value> = match v.as_mut() {
-            Some(l) => l.ensure_dom().ok().map(|m| &*m),
-            None => None,
+    let stage_shape =
+        if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
+            None
+        } else {
+            // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
+            // configured, so this request always paid the parse).
+            let dom: Option<&Value> = match v.as_mut() {
+                Some(l) => l.ensure_dom().ok().map(|m| &*m),
+                None => None,
+            };
+            Some(capture_stage_shape(
+                dom,
+                &body,
+                req_content_type,
+                pool_name,
+                ingress_protocol,
+                Some(op.operation),
+                wants_stream,
+                request_ctx.request_id,
+            ))
         };
-        Some(capture_stage_shape(
-            dom,
-            &body,
-            req_content_type,
-            pool_name,
-            ingress_protocol,
-            Some(op.operation),
-            wants_stream,
-            request_ctx.request_id,
-        ))
-    };
     if let Some(shape) = &stage_shape {
         fire_stage_taps(
             host.tap_hooks_candidate(),
@@ -1619,7 +1635,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 status: None,
             },
             resolved_gov_key.and_then(|k| k.group.as_deref()),
-                &**host,
+            &**host,
         );
     }
     // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
@@ -1731,7 +1747,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and translate_req — exclude, routing
         // taps (light path: none), metric-pool label, upstream-attempt telemetry.
-        let _asetup = busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
+        let _asetup =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -1784,7 +1801,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
         // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
         drop(_asetup);
-        let _xlate = busbar_substrate::profile::start(busbar_substrate::profile::Stage::TranslateReq);
+        let _xlate =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::TranslateReq);
         // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol
         // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
         // fires re-emits the retained bytes verbatim — the exact bytes the translate seam's own
@@ -1948,7 +1966,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // TRANSLATE_REQ ends here (egress payload bytes in hand). CLIENT_BUILD spans the egress auth
         // + URL/path build + reqwest RequestBuilder construction that follows.
         drop(_xlate);
-        let _cbuild = busbar_substrate::profile::start(busbar_substrate::profile::Stage::ClientBuild);
+        let _cbuild =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::ClientBuild);
         let _t = busbar_timing::timeit!("egress_client_build");
         // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything
         // below that is NOT the network send — credential select, path/URI build, auth-header
@@ -1989,7 +2008,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // lookup miss is the exact condition the old `upstream_path` `None` arm caught: the
         // lane's protocol has no registered handler — bail safely, releasing any single-flight
         // probe this lane won so it cannot wedge HalfOpen.
-        let Some(target) = EngineTables::new(rt).lanes()[i].egress_target(op.operation, wants_stream)
+        let Some(target) =
+            EngineTables::new(rt).lanes()[i].egress_target(op.operation, wants_stream)
         else {
             // Pre-dispatch bail (protocol has no handler for this op): the armed `probe_guard`
             // releases any won single-flight probe on drop (owner-checked).
@@ -2046,7 +2066,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .map(|h| h.egress_request_content_type())
                 .unwrap_or(APPLICATION_JSON)
         };
-        let _cb_reqwest = busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbReqwest);
+        let _cb_reqwest =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::CbReqwest);
         // Assemble the egress request from PRECOMPUTED parts: the lane's boot-parsed
         // `http::Uri`, the prebuilt/live auth map extended in place with the three per-request
         // constants, and the body as one owned buffer. No builder machinery, no per-send URL
@@ -2103,7 +2124,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         //     either arm classifies as a transport timeout — what reqwest's is_timeout() reported.
         let send_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(if wants_stream {
-                EngineTables::new(rt).client_settings().upstream_request_timeout_secs.max(1)
+                EngineTables::new(rt)
+                    .client_settings()
+                    .upstream_request_timeout_secs
+                    .max(1)
             } else {
                 request_ctx.remaining(attempt_wall).max(1)
             });
@@ -2116,7 +2140,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // (`()`), and `drop`ping a `Copy` value does nothing — the `dropping_copy_types` lint.
         #[cfg(feature = "timing")]
         drop(_asm);
-        let _send = busbar_substrate::profile::start(busbar_substrate::profile::Stage::UpstreamSend);
+        let _send =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::UpstreamSend);
         // MEASUREMENT ONLY: `egress_send` spans ONLY the send round-trip below
         // (both the attempt-capped and uncapped arms), dropped right after the match resolves.
         let _snd = busbar_timing::timeit!("egress_send");
@@ -2173,10 +2198,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(host, rt, pool_name, i);
                 }
-                host.telemetry_upstream_failure(metric_pool,
-                    i,
-                    DISPOSITION_ATTEMPT_TIMEOUT,
-                );
+                host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
                 host.telemetry_failover(metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
                 diag_debug!(
                     ATTEMPT_TIMEOUT_FAILOVER,
@@ -2207,7 +2229,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // POST_SEND: the last uncounted span inside `busbar;dur` — response status/StatusClass
         // classification + 2xx/failover branch selection, up to the RecordSuccess boundary on the
         // success arm (dropped there). On a failover `continue` it records that attempt's classify.
-        let _postsend = busbar_substrate::profile::start(busbar_substrate::profile::Stage::PostSend);
+        let _postsend =
+            busbar_substrate::profile::start(busbar_substrate::profile::Stage::PostSend);
         match res {
             Err(e) => {
                 // Pre-response error: classify and potentially failover
@@ -2216,9 +2239,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 } else {
                     ERR_NET_CONNECT
                 };
-                let tripped =
-                    host.lane_store()
-                        .record_transient_in(pool_name, i, err_type, &breaker_cfg, None);
+                let tripped = host.lane_store().record_transient_in(
+                    pool_name,
+                    i,
+                    err_type,
+                    &breaker_cfg,
+                    None,
+                );
                 // A threshold-based Closed→Open trip is a breaker trip for this (pool, lane) — emit
                 // BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29). `record_transient_in`
                 // returns `true` only on a logical trip (not a HalfOpen reopen or already-Open no-op),
@@ -2226,10 +2253,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(host, rt, pool_name, i);
                 }
-                host.telemetry_upstream_failure(metric_pool,
-                    i,
-                    DISPOSITION_TRANSIENT,
-                );
+                host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_TRANSIENT);
                 host.telemetry_failover(metric_pool, err_type);
                 last_failure = Some(err_type);
                 drop(permit);
@@ -2251,7 +2275,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // `extract_error` only sees the body, so the cooldown floor would otherwise be
                     // silently dropped on a 429 carrying an explicit retry hint.
                     let ct = r.headers().get(CONTENT_TYPE).cloned();
-                    let retry_after_secs = busbar_substrate::breaker::parse_retry_after(r.headers());
+                    let retry_after_secs =
+                        busbar_substrate::breaker::parse_retry_after(r.headers());
                     // A real AWS Bedrock endpoint sends `x-amzn-requestid` and `x-amzn-errortype` on
                     // EVERY response, including 4xx. First-party AWS SDKs read `x-amzn-errortype`
                     // BEFORE the body `__type` for typed-exception dispatch; their absence on a
@@ -2360,7 +2385,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // normalize_raw_error propagates it into CanonicalSignal.retry_after and the
                     // store honors it as a cooldown floor.
                     raw.retry_after_secs = retry_after_secs;
-                    let sig = normalize_raw_error(&raw, &EngineTables::new(rt).lanes()[i].error_map);
+                    let sig =
+                        normalize_raw_error(&raw, &EngineTables::new(rt).lanes()[i].error_map);
                     let disposition = classify_disposition(&sig);
 
                     // Exhaustive match on Disposition - no `_` arm, so a new disposition breaks the build
@@ -2457,13 +2483,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             if tripped {
                                 emit_breaker_trip(host, rt, pool_name, i);
                             }
-                            host.telemetry_upstream_failure(metric_pool,
-                                i,
-                                DISPOSITION_TRANSIENT,
-                            );
-                            host.telemetry_failover(metric_pool,
-                                DISPOSITION_TRANSIENT,
-                            );
+                            host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_TRANSIENT);
+                            host.telemetry_failover(metric_pool, DISPOSITION_TRANSIENT);
                             last_failure = Some(DISPOSITION_TRANSIENT);
                             drop(permit);
                             continue;
@@ -2500,7 +2521,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // only `pool_name`'s cell left the same dead upstream Closed in the other
                             // cells, so legacy/cross-protocol routes kept hammering it until the
                             // out-of-band prober caught it (the asymmetry this fixes).
-                            let newly_tripped = host.lane_store().record_hard_down_all_cells(i, &reason);
+                            let newly_tripped =
+                                host.lane_store().record_hard_down_all_cells(i, &reason);
                             // A hard-down is a breaker trip for this lane — but only count a LOGICAL
                             // Closed→Open trip. A persistently-dead auth/billing lane re-enters this arm
                             // on every recovery-probe cycle (a HalfOpen reopen, not a fresh trip); gating
@@ -2517,10 +2539,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             } else {
                                 diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
-                            host.telemetry_upstream_failure(metric_pool,
-                                i,
-                                DISPOSITION_HARD_DOWN,
-                            );
+                            host.telemetry_upstream_failure(metric_pool, i, DISPOSITION_HARD_DOWN);
                             drop(permit);
 
                             // For auth failures: return error to caller. In NON-passthrough mode the
@@ -2566,9 +2585,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             }
 
                             // For billing hard downs: continue to next lane (failover)
-                            host.telemetry_failover(metric_pool,
-                                DISPOSITION_HARD_DOWN,
-                            );
+                            host.telemetry_failover(metric_pool, DISPOSITION_HARD_DOWN);
                             last_failure = Some(DISPOSITION_HARD_DOWN);
                             continue;
                         }
@@ -2596,13 +2613,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 }
                             }
 
-                            host.telemetry_upstream_failure(metric_pool,
+                            host.telemetry_upstream_failure(
+                                metric_pool,
                                 i,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
-                            host.telemetry_failover(metric_pool,
-                                DISPOSITION_CONTEXT_LENGTH,
-                            );
+                            host.telemetry_failover(metric_pool, DISPOSITION_CONTEXT_LENGTH);
                             // ContextLength is a client-fault variant (the request is too large for
                             // THIS lane's window) — no breaker penalty, so nothing records an outcome
                             // to clear `probe_in_flight`. The still-armed `probe_guard` releases any
@@ -2619,7 +2635,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // POST_SEND ends here (success arm reached); RECORD_SUCCESS begins.
                 drop(_postsend);
                 // RECORD_SUCCESS: the post-2xx breaker/latency/budget bookkeeping (store lock ops).
-                let _rec = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RecordSuccess);
+                let _rec = busbar_substrate::profile::start(
+                    busbar_substrate::profile::Stage::RecordSuccess,
+                );
                 // SUCCESS case: the upstream served a 2xx. Record the success for this lane (feeds
                 // the per-lane `ok` counter and the breaker's success window) and consume one unit
                 // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
@@ -2666,11 +2684,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
                 // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
                 drop(_rec);
-                let _resp = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
+                let _resp =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
                 // RB_PRE sub-stage: header/CT/relay-id capture + SSE detection + translate resolution,
                 // up to `FirstByteBody::new`. (The cross-protocol buffered branch returns before the
                 // streaming builder, so on that path RB_PRE covers the pre-buffer work only.)
-                let _rb_pre = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
+                let _rb_pre =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
 
                 // stream the response body incrementally with first-byte boundary tracking
                 let ct = r.headers().get(CONTENT_TYPE).cloned();
@@ -2766,8 +2786,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 budget_guard.disarm();
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
                 drop(_rb_pre);
-                let _rb_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
-                let _rb_new = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
+                let _rb_body =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
+                let _rb_new =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
                 let upstream_stream = {
                     use http_body_util::BodyExt;
                     r.into_body().into_data_stream()
@@ -2791,9 +2813,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 );
                 let axum_body = guarded_body.into_body();
                 drop(_rb_new);
-                let _rb_finish = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
+                let _rb_finish =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
 
-                let _rbf_build = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
+                let _rbf_build =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
                 let mut rb = Response::builder().status(status);
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
@@ -2838,7 +2862,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     &EngineTables::new(rt).lanes()[i].model,
                 );
                 drop(_rbf_attach);
-                let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
+                let _rbf_body =
+                    busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
                 return rb
                     .body(axum_body)
                     .unwrap_or_else(|_| status.into_response());
@@ -2994,8 +3019,7 @@ fn fire_global_taps(
         return;
     }
     // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
-    let fires =
-        |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
+    let fires = |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
     let ctx = busbar_api::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
@@ -3037,10 +3061,12 @@ fn fire_global_taps(
     // Shape-only is needed whenever any FIRING tap lacks the prompt grant; the prompt projection only
     // when at least one FIRING tap holds `prompt: ro`. Build each at most once. A tap filtered out by
     // its caller-group scope is not counted (it will not fire, so its projection need not be built).
-    let any_prompt = host.tap_hooks()
+    let any_prompt = host
+        .tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| *send_prompt && fires(groups));
-    let any_shape = host.tap_hooks()
+    let any_shape = host
+        .tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| !*send_prompt && fires(groups));
     let shape_proj = if any_shape { build_proj(false) } else { None };
@@ -3083,8 +3109,9 @@ pub(crate) fn resolve_breaker_cfg(
     {
         Some(cfg) => std::sync::Arc::new(cfg.clone()),
         None => {
-            static DEFAULT: std::sync::OnceLock<std::sync::Arc<busbar_substrate::store::BreakerCfg>> =
-                std::sync::OnceLock::new();
+            static DEFAULT: std::sync::OnceLock<
+                std::sync::Arc<busbar_substrate::store::BreakerCfg>,
+            > = std::sync::OnceLock::new();
             DEFAULT
                 .get_or_init(|| std::sync::Arc::new(busbar_substrate::store::BreakerCfg::default()))
                 .clone()

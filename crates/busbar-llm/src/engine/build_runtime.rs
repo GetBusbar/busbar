@@ -19,9 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_substrate::plane_host::{
-    AuthStyleInput, PlaneBuildInput, OnExhaustedInput, PlaneSlots,
-};
+use busbar_substrate::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use busbar_substrate::egress_auth::{self, MetadataSsrfPolicy};
 
@@ -76,12 +74,13 @@ pub(crate) fn build_runtime(
     let mut by_model: HashMap<String, usize> = HashMap::with_capacity(input.lanes.len());
     for (i, li) in input.lanes.iter().enumerate() {
         by_model.insert(li.model.clone(), i);
-        let protocol = busbar_substrate::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
-            panic!(
-                "lane '{}' names unknown protocol '{}' (validated core-side)",
-                li.model, li.protocol
-            )
-        });
+        let protocol =
+            busbar_substrate::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
+                panic!(
+                    "lane '{}' names unknown protocol '{}' (validated core-side)",
+                    li.model, li.protocol
+                )
+            });
         // SSRF posture: this provider's allow list ∪ the global one, plus the nuclear allow-all and
         // the operator's denylist — the SAME union config_validate builds.
         let allow_overrides: Vec<String> = li
@@ -266,12 +265,14 @@ pub(crate) fn build_runtime(
             .max(1);
         let cs = input.client_settings;
         let make_one = || {
-            busbar_substrate::proxy::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
-                idle_per_host_per_shard,
-                cs.pool_idle_timeout_secs,
-                cs.http1_only,
-                cs.h2_prior_knowledge,
-            ))
+            busbar_substrate::proxy::build_egress_client(
+                &crate::engine::EgressClientSpec::llm_lane(
+                    idle_per_host_per_shard,
+                    cs.pool_idle_timeout_secs,
+                    cs.http1_only,
+                    cs.h2_prior_knowledge,
+                ),
+            )
         };
         busbar_substrate::topology::UpstreamClients::build(shard_count, make_one)
     };

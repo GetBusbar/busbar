@@ -43,9 +43,9 @@ use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
 pub use crate::plane_host::build_input::{
-    AffinityInput, AuthStyleInput, BreakerInput, PlaneBuildInput, ClientSettingsInput,
-    FailoverInput, HealthInput, HealthModeInput, LaneInput, OnExhaustedInput, PoolInput,
-    PoolMemberInput, TripInput, TripModeInput,
+    AffinityInput, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput, HealthInput,
+    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
+    TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
@@ -514,13 +514,20 @@ pub trait EngineHost: Send + Sync {
     fn pool_rewrites(
         &self,
         pool: &str,
-    ) -> &[(std::time::Duration, std::sync::Arc<dyn busbar_api::RoutingPolicy>)];
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+    )];
 
     /// The GLOBAL (all-pools) rewrite chain `(timeout, policy)` fired in the phase-1 transform pass
     /// BEFORE any pool rewrites — the borrow of `App::rewrite_hooks`. Empty (the default) ⇒ no globals.
     /// Same neutral tuple shape as [`pool_rewrites`](Self::pool_rewrites).
-    fn rewrite_hooks(&self)
-        -> &[(std::time::Duration, std::sync::Arc<dyn busbar_api::RoutingPolicy>)];
+    fn rewrite_hooks(
+        &self,
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+    )];
 
     /// Whether ANY registered hook holds a prompt-CONTENT grant (`prompt: ro`/`rw`) this generation —
     /// the deployment gate that decides whether the request IR is built for the hook seam. A single

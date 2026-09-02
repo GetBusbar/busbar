@@ -44,7 +44,8 @@ fn pristine_injector_idempotent_when_stream_options_already_present() {
     // captured false: the pristine injector is (wrongly, per the stale flag) selected.
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
     let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
-    let v: serde_json::Value = busbar_substrate::json::parse(&out).expect("body must remain valid JSON");
+    let v: serde_json::Value =
+        busbar_substrate::json::parse(&out).expect("body must remain valid JSON");
     // No duplicate top-level key: a single stream_options object survives.
     assert_eq!(
         v.pointer("/stream_options/include_usage"),

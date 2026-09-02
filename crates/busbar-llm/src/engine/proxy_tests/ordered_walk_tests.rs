@@ -132,9 +132,10 @@ async fn ordered_walk_picks_first_preferred_when_healthy() {
     let (host, rt) = crate::engine::test_host_rt(&app);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
-        .await
-        .expect("a healthy preferred lane is selected");
+    let (idx, _permit, _probe_epoch) =
+        pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
+            .await
+            .expect("a healthy preferred lane is selected");
     assert_eq!(idx, 2, "the #1 ranked healthy lane must be chosen");
 }
 
@@ -151,9 +152,10 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
         .force_open_in("p", 2, busbar_core::state::now() + 1_000_000);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
-        .await
-        .expect("falls to the next ranked lane");
+    let (idx, _permit, _probe_epoch) =
+        pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
+            .await
+            .expect("falls to the next ranked lane");
     assert_eq!(
         idx, 0,
         "a tripped #1 preference is skipped to the #2 (lane 0)"
@@ -169,9 +171,10 @@ async fn ordered_walk_skips_excluded_preferred() {
     let mut rc = RequestCtx::new(60, 1);
     rc.exclude(2); // lane 2 already tried
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
-        .await
-        .expect("excluded #1 falls to next");
+    let (idx, _permit, _probe_epoch) =
+        pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
+            .await
+            .expect("excluded #1 falls to next");
     assert_eq!(idx, 0, "an excluded #1 preference is skipped");
 }
 
@@ -186,9 +189,10 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
         .force_open_in("p", 2, busbar_core::state::now() + 1_000_000); // the only ranked lane is tripped
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize]; // ranked subset of one, now unhealthy
-    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
-        .await
-        .expect("SWRR finds an unranked healthy lane");
+    let (idx, _permit, _probe_epoch) =
+        pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
+            .await
+            .expect("SWRR finds an unranked healthy lane");
     assert!(
         idx == 0 || idx == 1,
         "an unranked-but-healthy lane (0 or 1) must still be reachable via SWRR, got {idx}"
@@ -290,9 +294,10 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
     let mut rc = RequestCtx::new(60, 1);
     // Policy ranks the drained lane #1.
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands, &mut rc, None, "p", Some(&order))
-        .await
-        .expect("a non-drained ranked lane is selected");
+    let (idx, _permit, _probe_epoch) =
+        pick_among(&host, &rt, &cands, &mut rc, None, "p", Some(&order))
+            .await
+            .expect("a non-drained ranked lane is selected");
     assert_ne!(
         idx, 2,
         "a weight-0 (drained) lane must NOT be dispatched to"

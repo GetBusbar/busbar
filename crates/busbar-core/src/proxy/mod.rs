@@ -23,7 +23,8 @@ pub use proxy_vocab::{
 // without reaching into busbar-core; re-exported here for core's own `crate::proxy::*` call sites
 // (`router.rs`, `admin`, `main.rs`'s `configure_route_policy_headers`).
 pub use busbar_substrate::proxy::{
-    configure_route_policy_headers, route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET,
+    configure_route_policy_headers, route_policy_headers_enabled, HDR_ROUTE_POLICY,
+    HDR_ROUTE_TARGET,
 };
 
 // APPLICATION_JSON, TEXT_EVENT_STREAM, DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED and

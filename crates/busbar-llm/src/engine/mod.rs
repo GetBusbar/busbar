@@ -32,10 +32,12 @@ use futures::Stream;
 use http::StatusCode;
 use serde_json::Value;
 
-use busbar_substrate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
-use busbar_substrate::plane_host::OnExhaustedInput as OnExhausted;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::breaker::{
+    classify as classify_disposition, normalize_raw_error, Disposition,
+};
+use busbar_substrate::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_substrate::proto::convert_headers;
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names `busbar_core::state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and

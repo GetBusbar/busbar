@@ -624,7 +624,11 @@ pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
 /// ONE HTTP LLM PROTOCOL'S ERROR ENVELOPE, SHARED BY EVERY OPERATION IT SERVES. Through the neutral
 /// dialect seam: the concrete reader relocated to the busbar-llm plugin, so this names it by protocol
 /// only. Falls back to the status alone when the name resolves to no protocol.
-pub fn protocol_error(protocol: &str, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+pub fn protocol_error(
+    protocol: &str,
+    status: u16,
+    body: &[u8],
+) -> crate::breaker::RawUpstreamError {
     match crate::proto::decl_for(protocol).and_then(|d| d.dialect()) {
         Some(dc) => dc.extract_error(status, body),
         None => crate::breaker::RawUpstreamError::from_status(status),

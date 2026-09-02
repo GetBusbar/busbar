@@ -354,54 +354,54 @@ pub(crate) use app_engine_ext_impl::test_host_rt;
 mod app_engine_ext_impl {
     use super::*;
 
-/// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over a `TestApp`'s
-/// `Arc<App>` — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
-/// `decide_policy_order`, `forward_with_pool_parsed_inner`, …) hands it the SAME host/runtime seam
-/// production does. Lives in this `#[cfg(…)] mod` so its `busbar_core::` reaches stay off the neutral
-/// surface (scanner-exempt test scope). Byte-identical to what the arrival path builds.
-pub(crate) fn test_host_rt(
-    app: &Arc<busbar_core::state::App>,
-) -> (
-    Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    Arc<NativeRuntime>,
-) {
-    let host = busbar_core::plane_host::engine_host(app);
-    let rt = super::native_runtime_arc(host.as_ref());
-    (host, rt)
-}
+    /// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over a `TestApp`'s
+    /// `Arc<App>` — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
+    /// `decide_policy_order`, `forward_with_pool_parsed_inner`, …) hands it the SAME host/runtime seam
+    /// production does. Lives in this `#[cfg(…)] mod` so its `busbar_core::` reaches stay off the neutral
+    /// surface (scanner-exempt test scope). Byte-identical to what the arrival path builds.
+    pub(crate) fn test_host_rt(
+        app: &Arc<busbar_core::state::App>,
+    ) -> (
+        Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        Arc<NativeRuntime>,
+    ) {
+        let host = busbar_core::plane_host::engine_host(app);
+        let rt = super::native_runtime_arc(host.as_ref());
+        (host, rt)
+    }
 
-impl AppEngineExt for busbar_core::state::App {
-    fn engine_tables(&self) -> EngineTables<'_> {
-        EngineTables {
-            rt: self.llm_runtime(),
+    impl AppEngineExt for busbar_core::state::App {
+        fn engine_tables(&self) -> EngineTables<'_> {
+            EngineTables {
+                rt: self.llm_runtime(),
+            }
+        }
+        fn llm_runtime(&self) -> &NativeRuntime {
+            // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored in
+            // `App::llm_runtime_key` at build (`runtime_slot_key(fallback_key())`, which resolves to THIS
+            // plane's `"llm"` key in every production and core-`cfg(test)` build), so this reads the same
+            // slot the deleted inherent `App::llm_runtime` did.
+            match self
+                .plane_slot(self.llm_runtime_key())
+                .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
+            {
+                Some(rt) => rt,
+                None => empty_native_runtime(),
+            }
+        }
+        #[allow(dead_code)]
+        #[cfg(any(test, feature = "test-support"))]
+        fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
+            let key = self.llm_runtime_key();
+            std::sync::Arc::get_mut(
+                self.plane_slot_mut(key)
+                    .expect("fallback-plane runtime slot present for in-place test mutation"),
+            )
+            .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
+            .downcast_mut::<NativeRuntime>()
+            .expect("fallback-plane runtime slot is a NativeRuntime")
         }
     }
-    fn llm_runtime(&self) -> &NativeRuntime {
-        // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored in
-        // `App::llm_runtime_key` at build (`runtime_slot_key(fallback_key())`, which resolves to THIS
-        // plane's `"llm"` key in every production and core-`cfg(test)` build), so this reads the same
-        // slot the deleted inherent `App::llm_runtime` did.
-        match self
-            .plane_slot(self.llm_runtime_key())
-            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
-        {
-            Some(rt) => rt,
-            None => empty_native_runtime(),
-        }
-    }
-    #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-support"))]
-    fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
-        let key = self.llm_runtime_key();
-        std::sync::Arc::get_mut(
-            self.plane_slot_mut(key)
-                .expect("fallback-plane runtime slot present for in-place test mutation"),
-        )
-        .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
-        .downcast_mut::<NativeRuntime>()
-        .expect("fallback-plane runtime slot is a NativeRuntime")
-    }
-}
 }
 
 // `compose_native_runtime_slot` (the core-local runtime-slot constructor `appbuild` used while

@@ -754,10 +754,9 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
         // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
-        self.app
-            .governance
-            .clone()
-            .map(|g| busbar_substrate::plane_host::GovHandle(g as Arc<dyn std::any::Any + Send + Sync>))
+        self.app.governance.clone().map(|g| {
+            busbar_substrate::plane_host::GovHandle(g as Arc<dyn std::any::Any + Send + Sync>)
+        })
     }
 
     fn cost(&self) -> busbar_substrate::plane_host::CostHandle {
@@ -810,7 +809,10 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         started: std::time::Instant,
         charged_at: u64,
     ) -> Result<
-        (Option<busbar_substrate::plane_host::AdmitHandle>, Option<String>),
+        (
+            Option<busbar_substrate::plane_host::AdmitHandle>,
+            Option<String>,
+        ),
         Box<axum::response::Response>,
     > {
         // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
@@ -908,10 +910,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(
-        &self,
-        token: &str,
-    ) -> Option<Arc<busbar_api::VirtualKey>> {
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
         self.app
             .governance
             .as_ref()
@@ -1043,7 +1042,9 @@ pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_substrate::plane_host::Engi
 /// (`identity_admit`/`synthesize_completion`) still work — they `Arc::clone` internally — but the
 /// engine hot path calls only the SYNC methods, so this borrowed carrier is the right one there.
 #[must_use]
-pub fn engine_host_value(app: &Arc<App>) -> impl busbar_substrate::plane_host::EngineHost + 'static {
+pub fn engine_host_value(
+    app: &Arc<App>,
+) -> impl busbar_substrate::plane_host::EngineHost + 'static {
     EngineHostImpl::new(Arc::clone(app))
 }
 

@@ -308,7 +308,8 @@ pub(crate) fn head_provably_pristine(rt: &Arc<NativeRuntime>, i: usize, probe: &
     // A dialect that reshapes its body at a path-model URL always mutates an object body, so such
     // a request can never be a pristine passthrough. Asked of the WRITER before any DOM exists.
     if lane.path_base.is_some()
-        && busbar_substrate::proto::decl_for(lane.protocol).is_some_and(|d| d.reshapes_body_at_path_base)
+        && busbar_substrate::proto::decl_for(lane.protocol)
+            .is_some_and(|d| d.reshapes_body_at_path_base)
     {
         return false;
     }

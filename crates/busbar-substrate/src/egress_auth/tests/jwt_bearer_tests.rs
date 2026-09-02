@@ -248,7 +248,8 @@ async fn mint_rejects_a_response_body_over_the_cap() {
     let oversized_token = "a".repeat(300 * 1024);
     let body =
         serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }).to_string();
-    let server = crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
+    let server =
+        crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
 
     let signer = test_signer(format!("http://{}", server.addr));
     let result = signer.mint().await;

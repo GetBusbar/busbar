@@ -58,7 +58,12 @@ const QUEUE_WAIT_ASSERT_EPSILON_MS: u64 = 250;
 ///     the very signal the "never 1" rule was introduced to eliminate.
 ///
 /// Always floored at 1 (a 0 Retry-After is meaningless).
-fn retry_after_secs(host: &Arc<dyn EngineHost>, cands: &[WeightedLane], now: u64, pool: &str) -> u64 {
+fn retry_after_secs(
+    host: &Arc<dyn EngineHost>,
+    cands: &[WeightedLane],
+    now: u64,
+    pool: &str,
+) -> u64 {
     let soonest_genuine_cooldown = cands
         .iter()
         // Deadness lives outside the cell FSM (a dead/budget-exhausted lane reports cooldown 0), so
@@ -559,9 +564,7 @@ pub(crate) async fn forward_once(
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
         busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_api::UpstreamCreds::Own => {
-            EngineTables::new(rt).lanes()[i].api_key.expose_secret()
-        }
+        busbar_api::UpstreamCreds::Own => EngineTables::new(rt).lanes()[i].api_key.expose_secret(),
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
@@ -659,7 +662,10 @@ pub(crate) async fn forward_once(
     // walk fires precisely when lanes are unhealthy, exactly where black-holing upstreams live.
     let send_deadline = tokio::time::Instant::now()
         + std::time::Duration::from_secs(if wants_stream {
-            EngineTables::new(rt).client_settings().upstream_request_timeout_secs.max(1)
+            EngineTables::new(rt)
+                .client_settings()
+                .upstream_request_timeout_secs
+                .max(1)
         } else {
             timeout_secs.max(1)
         });
@@ -908,8 +914,11 @@ pub(crate) async fn forward_once(
             }
             // Mirror the main path: fold time-to-headers into the lane's latency EWMA (routing
             // `fastest` signal). Lane-global; off the selection path.
-            host.lane_store()
-                .record_latency_in(pool, i, upstream_started.elapsed().as_secs_f64() * 1000.0);
+            host.lane_store().record_latency_in(
+                pool,
+                i,
+                upstream_started.elapsed().as_secs_f64() * 1000.0,
+            );
             // BIND the spend result (#21): a paired post-headers body TransportError below refunds the
             // budget, but `refund_budget` UNCONDITIONALLY fetch_adds — so refunding a spend that was a
             // no-op (budget already 0) would raise the budget ABOVE its cap. Only refund if this spend
@@ -973,8 +982,11 @@ pub(crate) async fn forward_once(
             // so the two cannot drift): cross-protocol SSE builds the reframing translator,
             // same-protocol SSE the verbatim same-proto translator (byte-exact re-emit + IR usage
             // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough.
-            let translate =
-                busbar_substrate::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
+            let translate = busbar_substrate::proto::new_stream_translator(
+                ingress_protocol,
+                egress_name,
+                is_sse,
+            );
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
                     busbar_substrate::proto::decl_for(ingress_protocol)
@@ -1055,9 +1067,13 @@ pub(crate) async fn forward_once(
             } else {
                 ERR_NET_CONNECT
             };
-            let tripped =
-                host.lane_store()
-                    .record_transient_in(pool, i, err_type, forward_once_cfg.as_ref(), None);
+            let tripped = host.lane_store().record_transient_in(
+                pool,
+                i,
+                err_type,
+                forward_once_cfg.as_ref(),
+                None,
+            );
             if tripped {
                 emit_breaker_trip(host, rt, pool, i);
             }
@@ -1100,7 +1116,11 @@ pub(crate) async fn handle_fallback_pool(
         return handle_status_503(&host, &[], now(), pool_name, ingress_protocol);
     }
 
-    let Some(fallback_cands) = EngineTables::new(&rt).fallback_pools().get(pool_name).cloned() else {
+    let Some(fallback_cands) = EngineTables::new(&rt)
+        .fallback_pools()
+        .get(pool_name)
+        .cloned()
+    else {
         // Fallback pool not configured — cascade to Status503.
         return handle_status_503(&host, &[], now(), pool_name, ingress_protocol);
     };

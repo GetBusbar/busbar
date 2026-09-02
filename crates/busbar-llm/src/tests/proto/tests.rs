@@ -533,8 +533,11 @@ fn test_cache_control_preserved() {
 fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let anthropic = crate::proto_codec::protocol_for("anthropic").unwrap();
     let bedrock = crate::proto_codec::protocol_for("bedrock").unwrap();
-    assert!(busbar_substrate::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
-    assert!(busbar_substrate::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
+    assert!(
+        busbar_substrate::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated)
+    );
+    assert!(busbar_substrate::proto::decl_for("anthropic")
+        .is_some_and(|d| !d.cache_markers_model_gated));
 
     let body = serde_json::json!({
         "model": "claude", "max_tokens": 64,

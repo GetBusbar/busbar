@@ -828,8 +828,7 @@ pub struct AppHandle {
     /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
     /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
     /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
-    snapshot_host:
-        std::sync::Mutex<Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>>,
+    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>>,
 }
 
 impl AppHandle {
@@ -847,14 +846,8 @@ impl AppHandle {
     /// spawned against this same host, so the handle owns the only strong reference the probers depend
     /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
     /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
-    pub fn set_snapshot_host(
-        &self,
-        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    ) {
-        *self
-            .snapshot_host
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(host);
+    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_substrate::plane_host::EngineHost>) {
+        *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
     /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only

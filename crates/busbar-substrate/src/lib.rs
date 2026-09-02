@@ -153,8 +153,8 @@ pub mod trust;
 // `busbar_core::egress_auth::*` path so every in-core caller is unchanged. Secret material stays
 // `busbar_api::Redacted` and the mint wire form is byte-identical — proven by the migrated mint
 // suite (`jwt_bearer` / `oauth_client_credentials` / `helper` / `bearer_token` tests).
-pub mod egress_auth;
 pub mod catalogue;
+pub mod egress_auth;
 pub mod failover;
 pub mod store;
 pub mod telemetry;

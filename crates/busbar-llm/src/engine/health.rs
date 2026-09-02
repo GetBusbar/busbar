@@ -470,12 +470,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
                     .and_then(|r| r.breaker.clone())
                     .unwrap_or_default()
             };
-            store.record_probe_failure_all_cells(
-                i,
-                "health-probe",
-                &resolve_cfg,
-                retry_after_secs,
-            );
+            store.record_probe_failure_all_cells(i, "health-probe", &resolve_cfg, retry_after_secs);
         }
         // The lane is healthy; the probe REQUEST was rejected (malformed / too large for the model).
         // Record nothing — do not bench a working lane over a probe-construction issue.

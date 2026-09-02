@@ -60,7 +60,8 @@ pub(crate) fn apply_rewrite_to_body(
     let Some(obj) = v.as_object_mut() else {
         return false;
     };
-    let Some(dialect) = busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+    let Some(dialect) =
+        busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
     else {
         return false;
     };
@@ -663,7 +664,10 @@ pub(crate) async fn decide_policy_order(
                 // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
                 if requested.wants(busbar_api::Signal::CandidateBreakerState) {
-                    let label = match host.lane_store().breaker_state_snapshot_in(pool_name, wl.idx) {
+                    let label = match host
+                        .lane_store()
+                        .breaker_state_snapshot_in(pool_name, wl.idx)
+                    {
                         busbar_substrate::store::BreakerState::Closed => "closed",
                         busbar_substrate::store::BreakerState::Open { .. } => "open",
                         busbar_substrate::store::BreakerState::HalfOpen => "half_open",
@@ -706,11 +710,11 @@ pub(crate) async fn decide_policy_order(
     // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays
     // off the default hot path. Busbar exposes the READ surface only; downshifting to a cheaper
     // model on it is the hook's policy, never core's.
-    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (gov_handle.as_ref(), gov_key.as_ref())
-    {
-        (Some(g), Some(key)) => host.budget_state(g, &cost_handle, key, now()),
-        _ => Vec::new(),
-    };
+    let budget_chain: Vec<busbar_api::BudgetBucketState> =
+        match (gov_handle.as_ref(), gov_key.as_ref()) {
+            (Some(g), Some(key)) => host.budget_state(g, &cost_handle, key, now()),
+            _ => Vec::new(),
+        };
     let ctx = RoutingContext {
         pool: pool_name,
         // Lane-health-shaped budget signal (legacy v1 field): still not fed - the per-request
