@@ -632,6 +632,15 @@ fn register_protocols() {
     #[cfg(feature = "proto-llm")]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
     busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
+
+    // THE RESOLVED-COMPLETION SYNTHESIZER — the LLM plane's single re-entry the MCP sampling path drives
+    // a synthesized chat completion through (`EngineHost::synthesize_completion`). Installed here beside
+    // the body arrivals, gated on the LLM plane exactly as they are: with no LLM plane linked there is
+    // no chat dialect to synthesize, and core returns the honest "no default chat protocol" error.
+    #[cfg(feature = "proto-llm")]
+    busbar_substrate::ingress::arrival::install_completion_ingress(
+        busbar_llm::native_ingress::synthesize_completion,
+    );
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis

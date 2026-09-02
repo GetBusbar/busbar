@@ -96,6 +96,12 @@ async fn app_with_provider(
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
+    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
+    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
+    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+        busbar_llm::native_ingress::synthesize_completion,
+    );
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
@@ -298,6 +304,12 @@ async fn an_ungranted_sampling_ask_is_still_refused_and_spends_nothing() {
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
+    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
+    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
+    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+        busbar_llm::native_ingress::synthesize_completion,
+    );
     let app = TestApp::new()
         .lane(LaneSpec::new(
             MODEL,
@@ -362,6 +374,12 @@ async fn a_granted_ask_with_no_policy_refuses_and_names_the_key() {
     // field into that slot, populated only when a fallback LLM plane is registered).
     busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
+    // The resolved-completion synthesizer the sampling re-entry drives (`EngineHost::synthesize_
+    // completion`) — the same seam the composition root installs via `install_completion_ingress`,
+    // seeded here as a test through the neutral `set_test_completion_ingress` hook.
+    busbar_substrate::ingress::arrival::set_test_completion_ingress(
+        busbar_llm::native_ingress::synthesize_completion,
+    );
     let app = TestApp::new()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", cfg)

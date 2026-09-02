@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use busbar_substrate::ingress::arrival::ArrivalCtx;
@@ -646,6 +646,59 @@ async fn ingress_path_model_inner(
 fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayload {
     ctx.downcast_ref::<busbar_substrate::ingress::arrival::ArrivalPayload>()
         .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
+}
+
+/// THE LLM PLANE'S RESOLVED-COMPLETION SYNTHESIZER — installed into the substrate completion seam
+/// (`install_completion_ingress` in production `main.rs`, `set_test_completion_ingress` in a
+/// `test-support` build) and reached by core's `EngineHost::synthesize_completion` (the MCP-sampling
+/// re-entry). Drives ONE non-streaming chat completion (a known `model` + body) through the SAME
+/// resolved-op path (`operation_resolved`) a first-party arrival takes, so governance attribution and
+/// metering are byte-identical to an arrival. The successor to the former core-resident
+/// `synthesize_completion_over` body: the residual-default chat dialect is read by NAME off the
+/// registry (so this spells no dialect), `Transport::Http`, `caller_token` from the arrival, model
+/// explicit, `model_not_found_message = None`. Matches the `CompletionIngress` fn-pointer shape.
+pub fn synthesize_completion(
+    a: busbar_substrate::ingress::arrival::CompletionArrival,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    Box::pin(async move {
+        let busbar_substrate::ingress::arrival::CompletionArrival {
+            ctx,
+            model,
+            headers,
+            body,
+        } = a;
+        let p = payload(&ctx);
+        let parsed = crate::engine::LazyBody::parse(&body).ok();
+        // THE DEFAULT CHAT PROTOCOL the synthesized completion is driven as — the registry's
+        // residual-default protocol, read by NAME so no dialect literal appears here. `None` is the
+        // all-planes-off configuration with no chat dialect to drive; the caller reads the non-2xx
+        // body as an unsatisfiable ask, the same honest error the neutral seam returns when unlinked.
+        let Some(proto) = busbar_substrate::proto::residual_default_protocol() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "no default chat protocol is installed",
+            )
+                .into_response();
+        };
+        let op =
+            busbar_substrate::handlers::chat(proto, busbar_substrate::transport::Transport::Http);
+        operation_resolved(
+            &p.host,
+            &p.gov,
+            proto,
+            op.operation,
+            op.op_handler,
+            &model,
+            &headers,
+            body,
+            parsed,
+            p.caller_token.as_deref(),
+            Instant::now(),
+            busbar_substrate::store::now(),
+            None,
+        )
+        .await
+    })
 }
 
 /// BODY-MODEL UNIVERSAL INGRESS -- every operation whose model rides IN THE BODY.
