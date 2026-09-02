@@ -33,7 +33,7 @@ pub(crate) struct Lane {
     pub(crate) protocol: &'static str,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
     /// at boot from (protocol, auth). See `busbar_substrate::egress_auth`; the request path calls `headers_for`.
-    pub(crate) credential: Arc<dyn busbar_core::egress_auth::CredentialProvider>,
+    pub(crate) credential: Arc<dyn busbar_substrate::egress_auth::CredentialProvider>,
     #[allow(dead_code)]
     pub(crate) max: usize,
     // error_map cloned into each lane at startup for Stage 1b normalization

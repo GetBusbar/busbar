@@ -8,7 +8,7 @@
 //! the carrier holds NO `busbar_core::` type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
 //! the egress-target/credential/upstream-client/probe-schedule resolution against the widened core
-//! down-primitives (`busbar_core::egress_auth`, `busbar_substrate::topology::UpstreamClients`, this plane's own
+//! down-primitives (`busbar_substrate::egress_auth`, `busbar_substrate::topology::UpstreamClients`, this plane's own
 //! `EgressTarget`/`ProbeSchedule`) — the allowed plane→core edge. Byte-identical to the pre-pivot
 //! core-resident lowering (old `appbuild`'s lane/pool build loop).
 //!
@@ -23,7 +23,7 @@ use busbar_substrate::plane_host::{
     AuthStyleInput, PlaneBuildInput, OnExhaustedInput, PlaneSlots,
 };
 
-use busbar_core::egress_auth::{self, MetadataSsrfPolicy};
+use busbar_substrate::egress_auth::{self, MetadataSsrfPolicy};
 
 use crate::engine::health::ProbeSchedule;
 use crate::engine::{
