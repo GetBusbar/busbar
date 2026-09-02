@@ -12,8 +12,10 @@
 //! | [`SessionScope`] | the connection closes | per-connection state, pooled backend conn, in-flight leases |
 //! | [`DurableScope`] | explicit complete / expire (SURVIVES the process) | durable work-handles, deferred-callback context |
 //!
-//! Only [`DispatchScope`] is built out here — it is the leak-safety KEYSTONE. [`SessionScope`] and
-//! [`DurableScope`] are documented minimal stubs the riders wire later.
+//! [`DispatchScope`] is the leak-safety KEYSTONE. [`DurableScope`] is the survives-the-process
+//! handoff scope. [`SessionScope`] is a live stateful session bound to one durable handle in the
+//! [`DurableHandleEngine`](crate::plane::handle_engine::DurableHandleEngine) — a thin neutral binding
+//! that carries the engine's owner-scoped anti-enumeration contract up to the session surface.
 //!
 //! ## Why the dispatch arena exists (the leak fix)
 //!
@@ -27,10 +29,16 @@
 //! killing subprocesses — no matter how the dispatch future ends. RAII across the FFI seam, scoped to
 //! exactly what core controls.
 
+use crate::plane::handle_engine::{
+    ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
+    ScopedMutateError, SubmitRecord, SweepBounds,
+};
+use busbar_api::StoreError;
 use busbar_plugin::hot::{
     AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
 };
-use std::sync::Mutex;
+use std::any::Any;
+use std::sync::{Arc, Mutex};
 
 /// The neutral FAILURE detail the host stashes when an `egress_open` fails, so the plane can read it
 /// back through `egress_fault` and compose its OWN operator string. Held in the [`DispatchScope`] (not
@@ -355,22 +363,123 @@ impl Drop for DispatchScope {
     }
 }
 
-/// The CONNECTION-lifetime scope (DESIGN-v5-taxonomy Axis 2). Reclaims on connection close; holds
-/// per-connection state, a pooled backend connection, and in-flight leases — for any plane that owns a
-/// connection for longer than one exchange (a duplex/session plane; a DB-wire plane).
+/// The CONNECTION-lifetime scope (DESIGN-v5-taxonomy Axis 2): ONE live stateful session that owns a
+/// single durable handle in the [`DurableHandleEngine`] for longer than one exchange (a duplex/session
+/// plane; a DB-wire plane). It is a thin, NEUTRAL binding — an `Arc` on the process-wide engine plus
+/// the session's `(owner, id)` coordinates — and nothing about any one plane's record. It NAMES no
+/// engine mechanic of its own; every method delegates to the engine the substrate already owns.
 ///
-/// STUB: minimal by design. The riders that add a duplex/session plane wire this out (a per-connection
-/// opaque-state slot joins the per-plane one); until then it exists only to NAME the scope in the
-/// hierarchy so a future add is append-only, never a reshape.
-#[derive(Default)]
-#[non_exhaustive]
-pub struct SessionScope {}
+/// The owner is load-bearing, not decorative: the session's whole lifecycle keys on it. [`get`] reads
+/// through the engine's SCOPED anti-enumeration lookup and [`mutate`]/[`close`] gate on ownership, so a
+/// SECOND session bound to the same `id` under a DIFFERENT owner collapses to the exact same
+/// indistinguishable refusal ([`HandleDenied::NotYours`] / [`ScopedMutateError::NotYours`]) the engine
+/// enforces — a foreign owner can neither read, resume, nor evict the handle, and cannot even tell it
+/// exists. That is the anti-enumeration contract carried up to the session surface unchanged.
+///
+/// [`get`]: SessionScope::get
+/// [`mutate`]: SessionScope::mutate
+/// [`close`]: SessionScope::close
+pub struct SessionScope {
+    /// The process-wide durable-handle engine this session's handle lives in.
+    engine: Arc<DurableHandleEngine>,
+    /// The principal the handle is attributed to — the ONLY key the engine's scoped read/write match
+    /// on. Every [`get`](Self::get)/[`mutate`](Self::mutate)/[`close`](Self::close) passes this owner,
+    /// so a session under the wrong owner is refused identically to a missing handle.
+    owner: String,
+    /// The opaque handle id this session is bound to (the engine's working-set key).
+    id: String,
+}
 
 impl SessionScope {
-    /// Open an empty session scope.
+    /// Bind a session to the durable handle keyed by `id`, attributed to `owner`, living in `engine`.
+    /// Pure binding — it touches the engine only on the later [`open`](Self::open) /
+    /// [`get`](Self::get) / [`mutate`](Self::mutate) / [`close`](Self::close). Use this to attach to a
+    /// handle the engine already holds (a boot-rehydrated one, or a second live view), or as the first
+    /// step before [`open`](Self::open) submits a fresh one.
     #[must_use]
-    pub fn new() -> Self {
-        SessionScope {}
+    pub fn new(
+        engine: Arc<DurableHandleEngine>,
+        owner: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Self {
+        SessionScope {
+            engine,
+            owner: owner.into(),
+            id: id.into(),
+        }
+    }
+
+    /// The principal this session's handle is attributed to.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// The opaque handle id this session is bound to.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// OPEN this session's handle: submit a fresh durable handle to the engine at the genesis position.
+    /// Delegates straight to [`DurableHandleEngine::submit`]; `plan` builds the row + records + optional
+    /// genesis event (the plane computes any digest), `abandon` is the retention-sweep transition, and
+    /// `report_fail` receives a sweep-time durable failure. Returns the installed opaque row.
+    ///
+    /// The caller's `plan` MUST stamp the returned [`SubmitRecord`] with THIS session's [`id`](Self::id)
+    /// and a [`HandleMeta`](crate::plane::handle_engine::HandleMeta) owner equal to this session's
+    /// [`owner`](Self::owner): the session keys every later scoped call on that pair, so a genesis under
+    /// a diverging owner/id would leave this session unable to read or resume what it just opened.
+    pub fn open<P, A, R>(
+        &self,
+        now: u64,
+        bounds: SweepBounds,
+        plan: P,
+        abandon: A,
+        report_fail: R,
+    ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
+    where
+        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, StoreError>,
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &StoreError),
+    {
+        self.engine.submit(now, bounds, plan, abandon, report_fail)
+    }
+
+    /// GET this session's current opaque row through the engine's SCOPED read — a session bound under a
+    /// foreign owner (or to a since-evicted id) is refused with the one indistinguishable
+    /// [`HandleDenied::NotYours`], never learning whether the handle exists.
+    pub fn get(&self) -> Result<Arc<dyn Any + Send + Sync>, HandleDenied> {
+        self.engine.scoped_get(&self.owner, &self.id)
+    }
+
+    /// MUTATE this session's handle through [`DurableHandleEngine::scoped_mutate`], always under THIS
+    /// session's owner: the engine runs its owner gate FIRST, so a foreign-owner session is refused with
+    /// [`ScopedMutateError::NotYours`] BEFORE `plan` ever runs — identically to a missing handle, leaking
+    /// nothing. Only an owner match runs `plan` (which sees the current row + chain position) and the
+    /// engine's persist-then-update path. Returns the resulting opaque row.
+    pub fn mutate<F>(&self, plan: F) -> Result<Arc<dyn Any + Send + Sync>, ScopedMutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        self.engine.scoped_mutate(&self.owner, &self.id, plan)
+    }
+
+    /// CLOSE this session: evict its handle from the working set once it has reached a TERMINAL state,
+    /// leaving its durable rows in the store. Ownership-gated the same way as [`mutate`](Self::mutate) —
+    /// a foreign-owner session evicts nothing and returns `false`, indistinguishable from a missing
+    /// handle. Returns `true` only when this session owns the handle AND it was terminal (so it was
+    /// evicted); a still-ACTIVE handle is refused eviction and returns `false`.
+    pub fn close(&self) -> bool {
+        // Prove ownership through the same scoped read the engine gates on: a foreign owner sees
+        // NotYours and evicts nothing, so close cannot become an enumeration oracle either.
+        if self.engine.scoped_get(&self.owner, &self.id).is_err() {
+            return false;
+        }
+        self.engine.evict_if_terminal(&self.id)
     }
 }
 
