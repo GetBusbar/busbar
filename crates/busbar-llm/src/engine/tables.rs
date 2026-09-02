@@ -332,8 +332,10 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) trait AppEngineExt {
     /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam.
+    #[allow(dead_code)]
     fn engine_tables(&self) -> EngineTables<'_>;
     /// This snapshot's LLM data-plane runtime, read through the opaque plane slot; EMPTY on absence.
+    #[allow(dead_code)]
     fn llm_runtime(&self) -> &NativeRuntime;
     /// MUTABLE access to this snapshot's LLM data-plane runtime for IN-PLACE TEST mutation — the
     /// successor to the deleted inherent `App::llm_runtime_mut`. Reaches the runtime through the
@@ -348,6 +350,7 @@ pub(crate) trait AppEngineExt {
 // (which treats a `#[cfg(test)] mod` as test scope) never counts this `busbar_core::state::App` name —
 // the reach is test-only, so it must not appear on the enforced neutral surface.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(unused_imports)]
 pub(crate) use app_engine_ext_impl::test_host_rt;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -359,6 +362,7 @@ mod app_engine_ext_impl {
     /// `decide_policy_order`, `forward_with_pool_parsed_inner`, …) hands it the SAME host/runtime seam
     /// production does. Lives in this `#[cfg(…)] mod` so its `busbar_core::` reaches stay off the neutral
     /// surface (scanner-exempt test scope). Byte-identical to what the arrival path builds.
+    #[allow(dead_code)]
     pub(crate) fn test_host_rt(
         app: &Arc<busbar_core::state::App>,
     ) -> (
@@ -371,11 +375,13 @@ mod app_engine_ext_impl {
     }
 
     impl AppEngineExt for busbar_core::state::App {
+        #[allow(dead_code)]
         fn engine_tables(&self) -> EngineTables<'_> {
             EngineTables {
                 rt: self.llm_runtime(),
             }
         }
+        #[allow(dead_code)]
         fn llm_runtime(&self) -> &NativeRuntime {
             // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored in
             // `App::llm_runtime_key` at build (`runtime_slot_key(fallback_key())`, which resolves to THIS
