@@ -407,3 +407,88 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
     assert!(engine.get_unscoped("act").is_some());
     assert!(engine.get_unscoped("done").is_none());
 }
+
+#[test]
+fn scoped_mutate_owner_gates_the_write_with_one_indistinguishable_refusal() {
+    use std::cell::Cell;
+
+    let engine = DurableHandleEngine::new();
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "a".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    // A plan that would bump the cursor to 9 — and RECORDS (into `plan_ran`) whether it was ever
+    // invoked, so we can prove an unauthorized scoped_mutate refuses BEFORE running the plan (no side
+    // channel). The plan closure borrows `plan_ran` by shared reference each call.
+    let plan_ran = Cell::new(false);
+    macro_rules! bump {
+        () => {
+            |row: &(dyn std::any::Any + Send + Sync), _pos: &ChainPosition| {
+                plan_ran.set(true);
+                let row = row.downcast_ref::<DemoRow>().unwrap();
+                let mut next = row.clone();
+                next.cursor = 9;
+                let record = next.record();
+                let meta = next.meta();
+                Ok(Some(Mutation {
+                    row: Some(next.arc()),
+                    meta: Some(meta),
+                    row_record: Some(record),
+                    event: None,
+                }))
+            }
+        };
+    }
+
+    // A foreign owner, a missing id, and an empty owner all refuse identically — and the plan never
+    // runs, so the refusal cannot leak whether the handle exists.
+    plan_ran.set(false);
+    assert!(matches!(
+        engine.scoped_mutate("bob", "a", bump!()),
+        Err(ScopedMutateError::NotYours)
+    ));
+    assert!(
+        !plan_ran.get(),
+        "a foreign owner is refused before the plan runs"
+    );
+
+    plan_ran.set(false);
+    assert!(matches!(
+        engine.scoped_mutate("alice", "nope", bump!()),
+        Err(ScopedMutateError::NotYours)
+    ));
+    assert!(
+        !plan_ran.get(),
+        "a missing id is refused before the plan runs"
+    );
+
+    plan_ran.set(false);
+    assert!(matches!(
+        engine.scoped_mutate("", "a", bump!()),
+        Err(ScopedMutateError::NotYours)
+    ));
+    assert!(
+        !plan_ran.get(),
+        "an empty owner is refused before the plan runs"
+    );
+
+    // The refused writes left the row untouched.
+    assert_eq!(engine.meta("a").unwrap().cursor, 0);
+
+    // The rightful owner's scoped_mutate runs the plan and applies the write.
+    plan_ran.set(false);
+    let out = engine
+        .scoped_mutate("alice", "a", bump!())
+        .expect("the owner's scoped_mutate succeeds");
+    assert!(plan_ran.get(), "the owner's plan runs");
+    assert_eq!(out.downcast_ref::<DemoRow>().unwrap().cursor, 9);
+    assert_eq!(engine.meta("a").unwrap().cursor, 9);
+}

@@ -216,6 +216,35 @@ impl std::fmt::Display for HandleEngineError {
     }
 }
 
+/// What went wrong servicing a SCOPED mutation ([`DurableHandleEngine::scoped_mutate`]). The AUTH
+/// refusal is collapsed to a single [`NotYours`](Self::NotYours) — a missing handle and a handle owned
+/// by someone else are indistinguishable, exactly as [`HandleDenied`] is for a scoped READ, so an
+/// untrusted write-by-correlation-id (the T3 inbound webhook receiver) cannot become the enumeration
+/// oracle the read path deliberately is not. Only AFTER ownership is proven do the plane's own domain
+/// [`Rejected`](Self::Rejected) and durable [`Store`](Self::Store) failures surface distinctly — those
+/// facts belong to an already-authorized caller.
+#[derive(Debug)]
+pub enum ScopedMutateError {
+    /// The handle does not exist, OR it belongs to somebody else, OR the owner is empty. ONE variant on
+    /// purpose — a distinguishable refusal is an enumeration oracle.
+    NotYours,
+    /// The plane's mutation planner refused the move — carried as its already-rendered message. Only
+    /// reachable once ownership is proven.
+    Rejected(String),
+    /// A durable write failed. Only reachable once ownership is proven.
+    Store(StoreError),
+}
+
+impl std::fmt::Display for ScopedMutateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopedMutateError::NotYours => write!(f, "not yours"),
+            ScopedMutateError::Rejected(e) => write!(f, "{e}"),
+            ScopedMutateError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// One live handle in the working set: its opaque row, its neutral projection, and its chain position.
 struct HandleSlot {
     row: Arc<dyn Any + Send + Sync>,
@@ -375,6 +404,12 @@ impl DurableHandleEngine {
     /// position and returns the [`Mutation`] to apply (or `None` for a no-op that touches nothing). The
     /// engine persists then updates memory; a domain rejection and a durable failure are returned
     /// distinctly. Returns the resulting opaque row.
+    ///
+    /// UNSCOPED — keyed by `id` alone, authorization is the caller's to enforce upstream. This is the
+    /// right primitive for a TRUSTED internal caller that has already scoped (A2A's front door scopes at
+    /// its edge). An UNTRUSTED write-by-correlation-id (the T3 inbound webhook receiver) MUST instead go
+    /// through [`scoped_mutate`](Self::scoped_mutate), which owner-gates the write with the same
+    /// indistinguishable refusal the read path uses.
     pub fn mutate<F>(
         &self,
         id: &str,
@@ -405,6 +440,59 @@ impl DurableHandleEngine {
         };
         self.apply_mutation_locked(&mut handles, id, m)
             .map_err(HandleEngineError::Store)?;
+        Ok(handles
+            .get(id)
+            .map(|s| s.row.clone())
+            .expect("slot present: apply_mutation_locked only skips on a vanished slot, impossible under this lock"))
+    }
+
+    /// SCOPED MUTATE — the authorization gate on the WRITE/RESUME path, mirroring
+    /// [`scoped_get`](Self::scoped_get) on the read path. The ownership check runs FIRST, under the
+    /// working-set lock and BEFORE `plan` is ever invoked: an empty owner, a missing handle, and a
+    /// handle owned by someone else all collapse to one [`ScopedMutateError::NotYours`], so `plan`'s
+    /// side effects and timing never leak whether the id exists. Only once `owner` matches the slot's
+    /// [`HandleMeta::owner`] does it run the identical persist-then-update path as
+    /// [`mutate`](Self::mutate) (durable row upsert, event append, chain advance), surfacing the plane's
+    /// domain [`Rejected`](ScopedMutateError::Rejected) and durable [`Store`](ScopedMutateError::Store)
+    /// failures to the now-authorized caller. This is the exact primitive the T3 inbound webhook
+    /// receiver's untrusted resume-by-correlation-id needs; the same lock discipline as `mutate` applies
+    /// (see the module note on the lock-across-I/O asymmetry).
+    pub fn scoped_mutate<F>(
+        &self,
+        owner: &str,
+        id: &str,
+        plan: F,
+    ) -> Result<Arc<dyn Any + Send + Sync>, ScopedMutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        if owner.is_empty() {
+            return Err(ScopedMutateError::NotYours);
+        }
+        let mut handles = self.lock();
+        let plan_out = {
+            // Owner gate BEFORE plan: a foreign, missing, or empty-owner target is one refusal.
+            let slot = match handles.get(id) {
+                Some(s) if s.meta.owner == owner => s,
+                _ => return Err(ScopedMutateError::NotYours),
+            };
+            plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
+                MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
+                MutateError::Store(e) => ScopedMutateError::Store(e),
+            })?
+        };
+        let Some(m) = plan_out else {
+            // No-op: return the current row unchanged.
+            return Ok(handles
+                .get(id)
+                .map(|s| s.row.clone())
+                .expect("slot present: it was read one statement earlier under the same lock"));
+        };
+        self.apply_mutation_locked(&mut handles, id, m)
+            .map_err(ScopedMutateError::Store)?;
         Ok(handles
             .get(id)
             .map(|s| s.row.clone())
