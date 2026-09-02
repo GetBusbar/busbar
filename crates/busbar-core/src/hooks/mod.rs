@@ -75,31 +75,11 @@ pub use busbar_api::{Signal, SignalBag, SignalValue};
 /// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
 /// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
 /// contract here does not change either way.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RequestedSignals(u64);
-
-impl RequestedSignals {
-    /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
-    /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
-    #[inline]
-    pub fn wants(self, s: Signal) -> bool {
-        debug_assert!(
-            s.bit() < 64,
-            "Signal::bit() exceeded the u64 bitmask width; grow RequestedSignals to a bitset"
-        );
-        self.0 & (1u64 << s.bit()) != 0
-    }
-
-    /// True iff NOTHING is declared anywhere — the zero-cost default generation.
-    #[inline]
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    fn insert(&mut self, s: Signal) {
-        self.0 |= 1u64 << s.bit();
-    }
-}
+// The `RequestedSignals` bitmask itself is the NEUTRAL plain-data layer — relocated to
+// `busbar_substrate::hooks` (App-retype WEDGE 2d) so the engine's `EngineHost::requested_signals`
+// seam returns it without naming core. Re-exported by identity here so `crate::hooks::RequestedSignals`
+// (and `App::requested_signals`) are unchanged; only the config-time builder below stays in core.
+pub use busbar_substrate::hooks::RequestedSignals;
 
 /// Build the config generation's [`RequestedSignals`] from the UNION of every registered hook's
 /// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
@@ -1404,12 +1384,10 @@ pub(crate) fn resolve_rewrite_hooks(
 /// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
 /// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
 /// `proxy::engine` / `proxy::hooks`.
-pub type TapEntry = (
-    std::time::Duration,
-    bool,
-    Arc<dyn RoutingPolicy>,
-    Vec<String>,
-);
+// Relocated to `busbar_substrate::hooks::TapEntry` (App-retype WEDGE 2d) so the engine's tap-facet
+// host seams (`EngineHost::tap_hooks*`) can name it neutrally; re-exported by identity (a transparent
+// alias) so `crate::hooks::TapEntry` and every consumer are unchanged.
+pub use busbar_substrate::hooks::TapEntry;
 
 /// Resolve the GLOBAL TAP hooks observing at ONE stage — the all-pools (`global_hooks`) names whose
 /// registry entry is a `kind: tap` firing at `stage` (per its `phase:` list / legacy `at:`) — into

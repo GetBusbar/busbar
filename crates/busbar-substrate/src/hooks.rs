@@ -17,8 +17,63 @@
 
 pub mod wire;
 
-use busbar_api::RoutingPolicy;
+use busbar_api::{RoutingPolicy, Signal};
 use std::sync::Arc;
+
+/// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
+/// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
+/// the tap only for a caller in that scope (empty = every caller).
+///
+/// Relocated here off `busbar_core::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
+/// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait
+/// object (busbar-api), `Vec<String>` — so the engine's tap-facet host seams
+/// (`EngineHost::tap_hooks*`) can name it without reaching back into core. Core re-exports this alias
+/// so `busbar_core::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).
+pub type TapEntry = (
+    std::time::Duration,
+    bool,
+    Arc<dyn RoutingPolicy>,
+    Vec<String>,
+);
+
+/// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
+/// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
+/// with a single `AND`+compare BEFORE any compute fn runs ([`RequestedSignals::wants`]), never
+/// call-then-discard.
+///
+/// Relocated here off `busbar_core::hooks::RequestedSignals` (App-retype WEDGE 2d) so the engine's
+/// `EngineHost::requested_signals` seam returns a NEUTRAL type; core re-exports it (identity) and its
+/// config-time builder (`busbar_core::hooks::requested_signals`, which takes core's `HookCfg`) stays
+/// in core and drives [`insert`](RequestedSignals::insert).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestedSignals(u64);
+
+impl RequestedSignals {
+    /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
+    /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
+    #[inline]
+    pub fn wants(self, s: Signal) -> bool {
+        debug_assert!(
+            s.bit() < 64,
+            "Signal::bit() exceeded the u64 bitmask width; grow RequestedSignals to a bitset"
+        );
+        self.0 & (1u64 << s.bit()) != 0
+    }
+
+    /// True iff NOTHING is declared anywhere — the zero-cost default generation.
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Set the bit for `s`. `pub` (rather than the former core-private visibility) only because the
+    /// config-time builder that calls it — `busbar_core::hooks::requested_signals` — now lives across
+    /// the crate boundary from the type; it is otherwise the same one-line bit-OR.
+    #[inline]
+    pub fn insert(&mut self, s: Signal) {
+        self.0 |= 1u64 << s.bit();
+    }
+}
 
 /// The per-pool routing policy resolved ONCE at config load. `None` is the zero-cost default
 /// (`route: weighted` / absent): no policy object, no projection, the inline SWRR hot path. Stored
