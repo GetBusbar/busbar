@@ -14,6 +14,8 @@ fn empty_vtable_grants_nothing() {
     assert!(vt.journal_register.is_none());
     assert!(vt.journal_append_scoped.is_none());
     assert!(vt.journal_verify_scoped.is_none());
+    assert!(vt.cost_reserve.is_none());
+    assert!(vt.cost_settle.is_none());
     assert_eq!(crate::check_preamble(&vt.abi), Ok(()));
 }
 
@@ -55,7 +57,26 @@ fn stub_vtable_populates_every_slot() {
     assert!(vt.guard_url.is_some());
     assert!(vt.identity_admit.is_some());
     assert!(vt.gate_decide.is_some());
+    assert!(vt.cost_reserve.is_some());
+    assert!(vt.cost_settle.is_some());
     assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
+}
+
+/// The minor-19 METERING-LEASE seam: the two stub slots are real, well-typed `extern "C-unwind"`
+/// fn-pointers that panic when invoked (the type-level proof the surface compiles). We drive
+/// `cost_reserve` with an over-estimate/fee/cap and a null out-param — it must reach the `unimplemented!`.
+#[test]
+#[should_panic(expected = "cost_reserve")]
+fn stub_cost_reserve_is_unimplemented() {
+    let vt = &PlaneHostVtable::STUB;
+    (vt.cost_reserve.unwrap())(
+        core::ptr::null_mut(),
+        1_000,
+        0,
+        10_000,
+        true,
+        core::ptr::null_mut(),
+    );
 }
 
 #[test]

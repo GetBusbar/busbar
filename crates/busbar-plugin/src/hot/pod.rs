@@ -77,6 +77,16 @@ handle_newtype!(
     /// opaque-handle pattern, applied to inbound admission). Reserved `0` = no identity (a refusal).
     IdentityId
 );
+handle_newtype!(
+    /// An open reserve-then-settle metering LEASE the host owns (a live `CostHold`): the plane opens
+    /// it with `cost_reserve` (debiting a coarse over-estimate + any flat fee against the grant up
+    /// front), settles EXACT increments against it with `cost_settle` as a high-rate carrier consumes,
+    /// and reads back exhaustion so it can hard-close a live session mid-stream. The (sensitive)
+    /// grant/budget state stays host-side behind this opaque `u64`; only the handle crosses. Reserved
+    /// `0` = no lease (a reserve refusal). This is the continuous-metering analogue of the one-shot
+    /// `meter_charge`, for carriers a plane cannot price after the fact.
+    CostLeaseId
+);
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Small `#[repr(u8)]` outcome/kind enums returned BY VALUE or embedded in POD structs.
@@ -1653,6 +1663,23 @@ pub struct GateVerdictOut {
     /// The number of hook-name bytes the host copied into the caller's `hook_buf` (`0` on a proceed).
     /// Read `hook_buf[..hook_len]`.
     pub hook_len: u32,
+}
+
+/// The out-param a `cost_settle` writes on [`StatusClass::Ok`]: the state of the lease's budget cell
+/// AFTER the just-settled increment is accrued. A plane reads `exhausted` to decide whether to
+/// hard-close a live carrier mid-stream — the one thing post-hoc metering structurally cannot do.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CostSettleOut {
+    /// `size_of::<CostSettleOut>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// `1` = the lease's budget is now DRY (settled ≥ cap) ⇒ the plane must hard-close the carrier;
+    /// `0` = budget remains. An uncapped lease is never exhausted.
+    pub exhausted: u8,
+    /// Preamble tail padding.
+    pub _reserved: u8,
 }
 
 /// A metric sample a plane emits (label passthrough; the host interprets no label).
