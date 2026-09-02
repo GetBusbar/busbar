@@ -234,8 +234,16 @@ pub(crate) fn server_cfg(
         verify_ttl: None,
         timeout: None,
         url: peer.mcp_url(),
+        // `pinned_pubkey`, NOT `cert_spki`: this fixture serves PLAIN HTTP (see `Peer::start`), so
+        // there is no TLS peer identity for `connect::refresh` to observe. `cert_spki`/`mtls` now
+        // compare against a REAL observation (`connect::observed_pin`) and would correctly refuse a
+        // plaintext hop — "we could not look" is not "it matched". This battery is about the
+        // CAPABILITY axis (the digests), not the identity one, so it roots itself on the one
+        // mechanism that still degrades to the declared pin: there is no MCP-native manifest
+        // signature to independently verify, so `pinned_pubkey` was never observable and stays that
+        // way. The transport-observed axis has its own battery: `client::tests::transport_pin_tests`.
         pin: ServerPinCfg {
-            mechanism: McpPinMechanism::CertSpki,
+            mechanism: McpPinMechanism::PinnedPubkey,
             key: Some("sha256/PEER=".to_string()),
         },
         tools_allow: allow,

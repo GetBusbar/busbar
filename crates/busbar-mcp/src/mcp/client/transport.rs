@@ -131,7 +131,13 @@ impl HttpTransport {
                 headers: &headers,
                 body: &body,
                 client_identity_ref: 0,
-                trust_anchor_ref: 0,
+                // `0` IN PRODUCTION: MCP has no config-shaped way to name a private CA for a
+                // registration (unlike A2A's `client_identity:` path), so every hop trusts only the
+                // platform roots. TEST BUILDS additionally trust the one throw-away CA
+                // `test_ca::TEST_CA` registers, so `connect`'s `cert_spki`/`mtls` observation tests
+                // can drive a REAL TLS handshake rather than asserting a fabricated `peer_spki`. See
+                // that module for why one CA suffices for both the matching and mismatched cases.
+                trust_anchor_ref: hop_trust_anchor_ref(),
                 timeout,
                 addr: resolved,
             };
@@ -195,7 +201,11 @@ impl HttpTransport {
         } else {
             raw
         };
-        Ok(TransportResponse { status, body })
+        Ok(TransportResponse {
+            status,
+            body,
+            peer_spki: buffered.peer_spki,
+        })
     }
 }
 
@@ -212,6 +222,83 @@ mod test_egress_boot {
             &busbar_core::egress::seam::CoreHostlessEgress,
         );
     }
+}
+
+/// TEST-ONLY: the `trust_anchor_ref` a hop should carry. `0` (no extra roots) outside a test build;
+/// [`test_ca::TEST_CA`]'s registered ref inside one. See that module.
+#[cfg(all(test, feature = "test-support"))]
+fn hop_trust_anchor_ref() -> u64 {
+    test_ca::TEST_CA.trust_anchor_ref
+}
+
+#[cfg(not(all(test, feature = "test-support")))]
+fn hop_trust_anchor_ref() -> u64 {
+    0
+}
+
+/// TEST-ONLY: the ONE throw-away CA this build's HTTPS tests trust — registered ONCE, at first use,
+/// as a `trust_anchor_ref` every test-build hop now carries (see [`hop_trust_anchor_ref`]).
+///
+/// ## Why ONE shared CA rather than one per test
+///
+/// MCP has no config-shaped way to name a private CA for a registration (A2A's `client_identity:`
+/// path is the seam this plane does not have), so there is nowhere to plumb a PER-TEST root without
+/// adding a production config surface this increment does not ask for. A single root registered once
+/// and trusted by every test-build hop sidesteps that: it is immutable after first access, so
+/// concurrently-running tests never race a mutable "current ref", and it is `LazyLock`, so the cost
+/// is paid once per test binary rather than once per test.
+///
+/// One CA is also ENOUGH to prove both directions a `cert_spki`/`mtls` pin cares about: a MATCHING
+/// case declares `pin.key: TEST_CA.expected_pin`, and a MISMATCHED case declares any other value —
+/// the certificate served is the same real one either way, so what moves is the operator's
+/// expectation, exactly as an operator's config would move under a real rotation.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) mod test_ca {
+    use std::sync::LazyLock;
+
+    pub(crate) struct TestCa {
+        pub(crate) leaf_pem: String,
+        pub(crate) leaf_key_pem: String,
+        /// The `sha256/…` pin, computed from `rcgen`'s OWN SPKI encoding of the leaf key — NOT from
+        /// anything in this plane's transport walk — so a test whose expectation came from the code
+        /// under test cannot agree with a walk that read the wrong member.
+        pub(crate) expected_pin: String,
+        pub(crate) trust_anchor_ref: u64,
+    }
+
+    pub(crate) static TEST_CA: LazyLock<TestCa> = LazyLock::new(|| {
+        use base64::Engine as _;
+        use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData};
+        use sha2::{Digest, Sha256};
+
+        let ca_kp = KeyPair::generate().expect("ca key");
+        let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+        ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_kp).expect("self-signed ca");
+        let ca_der = busbar_substrate::egress::fixtures::certs_from_pem(&ca_cert.pem());
+
+        let issuer = Issuer::from_params(&ca_params, ca_kp);
+        let leaf_kp = KeyPair::generate().expect("leaf key");
+        // The loopback fixture dials `127.0.0.1` literally, so the leaf's SAN has to name the IP
+        // rather than a DNS label for the production hostname/cert-name check to accept it.
+        let leaf_cert = CertificateParams::new(vec!["127.0.0.1".to_string()])
+            .expect("leaf params")
+            .signed_by(&leaf_kp, &issuer)
+            .expect("signed leaf");
+
+        let trust_anchor_ref = busbar_substrate::plane_host::trust_anchor::register(ca_der);
+        let expected_pin = format!(
+            "sha256/{}",
+            base64::engine::general_purpose::STANDARD
+                .encode(Sha256::digest(leaf_kp.subject_public_key_info()))
+        );
+        TestCa {
+            leaf_pem: leaf_cert.pem(),
+            leaf_key_pem: leaf_kp.serialize_pem(),
+            expected_pin,
+            trust_anchor_ref,
+        }
+    });
 }
 
 // ── WHAT AN UPSTREAM SAYS BACK, ON THIS CARRIER ─────────────────────────────────────────────────

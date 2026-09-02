@@ -914,7 +914,16 @@ impl McpWire for StdioWire {
         // caller's payload.
         slot.guarded_call(&req.body, leg.timeout, &policy)
             .await
-            .map(|body| TransportResponse { status: 200, body })
+            .map(|body| TransportResponse {
+                status: 200,
+                body,
+                // NO TLS HOP EXISTS ON THIS CARRIER: a child process's stdin/stdout is not a network
+                // connection, so there is no certificate to have observed. A `cert_spki`/`mtls` pin
+                // on a stdio registration therefore never sees a matching observation and is
+                // quarantined by `connect::refresh` rather than silently treated as satisfied —
+                // exactly the fail-closed answer a meaningless pin on this carrier should get.
+                peer_spki: None,
+            })
             .map_err(TransportError::Io)
     }
 

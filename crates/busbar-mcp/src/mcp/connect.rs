@@ -31,16 +31,25 @@
 //! never read — an attacker-controlled trigger may not choose the moment freely and may not choose
 //! the content at all.
 //!
-//! ## STATED GAP: the IDENTITY axis is not independently observed on this transport
+//! ## THE IDENTITY AXIS, for `cert_spki` and `mtls`
 //!
-//! Drift has two axes and only one of them is exercised from here. The capability axis — the digests
-//! over name, description and input schema — is fully observed: it is re-hashed from the bytes the
-//! upstream actually sent. The IDENTITY axis is not: the shared HTTP client does not surface the
-//! peer's certificate SPKI to this layer, so a refresh has no independent evidence of who answered.
-//! Rather than fabricate an observation, the observation carries the pin the operator DECLARED, and
-//! this comment is the statement that a certificate rotation is therefore invisible to this path.
-//! It is invisible; it is not silently reported as verified. Closing it needs the transport to
-//! surface the peer certificate, which is engine surface this increment does not add.
+//! Drift has two axes. The capability axis — the digests over name, description and input schema —
+//! is fully observed: it is re-hashed from the bytes the upstream actually sent. The identity axis is
+//! now observed too, for the two mechanisms MCP can actually check it on: [`observed_pin`] builds a
+//! [`TransportPin`] from the SPKI the live HTTP hop presented
+//! (`super::client::wire::TransportResponse::peer_spki`, itself
+//! `busbar_substrate::egress::seam::Buffered::peer_spki`) and hands THAT to [`ServerCatalogue::observe`], never
+//! the declared pin echoed back as its own proof. A rotated or substituted certificate now disagrees
+//! with the locked pin exactly as a changed tool digest does, and `Approval::drift`'s `pin_changed`
+//! demotes the server to `Quarantined` — dispatch refuses via `Approval::serves` until an operator
+//! re-approves.
+//!
+//! `pinned_pubkey` still degrades to the declared value: it names an MCP-native manifest signature
+//! this build does not verify, so there is no independent observation to build one from, and
+//! `observed_pin` says so rather than fabricating one. stdio has no TLS hop at all, so
+//! `peer_spki` is always `None` there — a `cert_spki`/`mtls` pin on a stdio registration therefore
+//! never observes a match and stays quarantined, which is the fail-closed answer to a network-layer
+//! pin configured on a carrier with no network layer.
 
 use super::catalogue::ServerEntry;
 use super::client::catalogue::{CatalogueCache, ServerCatalogue, ToolDef, TransportPin};
@@ -50,7 +59,7 @@ use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
 use super::client::wire::WireLeg;
-use busbar_substrate::trust::{Drift, TrustState};
+use busbar_substrate::trust::{Drift, PinnedArtifact, TrustState};
 use std::time::Duration;
 
 /// The wall-clock budget for one refresh leg. The same order as a dispatch leg, for the same reason:
@@ -339,11 +348,9 @@ pub(crate) async fn refresh(
     };
 
     let observed = tools.len();
-    // THE OBSERVED IDENTITY. See the module header's stated gap: the transport surfaces no peer
-    // certificate to this layer, so the observation carries the DECLARED pin. The capability axis
-    // below is genuinely observed; this axis is not, and the header says so rather than the value
-    // implying otherwise.
-    let presented = server.approval.pin().cloned();
+    // THE OBSERVED IDENTITY: see the module header. `cert_spki`/`mtls` compare against what THIS hop
+    // actually presented; everything else still degrades to the declared pin.
+    let presented = observed_pin(server, response.peer_spki.as_deref());
     let entry = publish(cache, server, &server_id, |sc| sc.observe(presented, tools));
     Ok(ConnectReport {
         server: server.id.clone(),
@@ -352,6 +359,37 @@ pub(crate) async fn refresh(
         observed,
         failure: None,
     })
+}
+
+/// THE PIN A REFRESH ACTUALLY OBSERVED on this hop, for the sighting `refresh` publishes.
+///
+/// `None` when there is nothing to compare: no pin declared (an unpinned or still-pending
+/// registration — there is no root to check drift against), or a `cert_spki`/`mtls` registration
+/// whose hop presented no SPKI at all (plaintext, a certificate that could not be walked, or a
+/// carrier with no TLS hop such as stdio). That last case is deliberately NOT "no observation, so
+/// keep believing the declared pin": `Sighting::Seen`'s `pin: None` disagrees with a locked
+/// `Some(_)` in `Approval::drift_against`, which is `pin_changed = true` — a demotion. A pin whose
+/// peer went dark is refused exactly as one that rotated, because "we could not look" and "it
+/// matched" are the two answers a pin exists to keep apart, and only one of them may serve.
+///
+/// `cert_spki` and `mtls` are the only mechanisms an MCP hop can independently attest: both degrade
+/// to the same peer-certificate SPKI check, because this plane has no client-identity presentation
+/// to check `mtls`'s mutual half against (see [`super::client::catalogue::TransportPin::mtls`]).
+/// `pinned_pubkey` names an MCP-native manifest signature this build does not verify, so it has no
+/// independent observation source and degrades to the declared pin, unchanged from before this hop
+/// was wired up — see the module header.
+fn observed_pin(server: &ServerEntry, peer_spki: Option<&str>) -> Option<TransportPin> {
+    let declared = server.approval.pin()?;
+    match declared.mechanism() {
+        "cert_spki" | "mtls" => {
+            let spki = peer_spki.map(str::trim).filter(|s| !s.is_empty())?;
+            Some(match declared.mechanism() {
+                "cert_spki" => TransportPin::cert_spki(spki),
+                _ => TransportPin::mtls(spki),
+            })
+        }
+        _ => Some(declared.clone()),
+    }
 }
 
 /// Record a failed contact and derive the report from it.
