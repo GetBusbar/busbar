@@ -76,19 +76,21 @@ pub(crate) use busbar_core::proxy::{
     route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET, UPSTREAM_RTT_US,
 };
 
-// NEUTRAL egress-engine primitives the pipeline drives, re-exported from core (which itself re-exports
-// them from `busbar_substrate::egress::engine`) at their historical short paths so the moved call sites
-// keep resolving.
+// NEUTRAL egress-engine primitives the pipeline drives. Named at their TRUE substrate home
+// (`busbar_substrate::egress::engine`) — core merely re-exports these verbatim, so the plane names the
+// neutral ABI crate directly rather than reaching backwards through `busbar_core::proxy`. The
+// historical `EgressClientSpec`/`EgressError` short names are preserved via the same aliases core used.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_core::proxy::{
-    egress_request, install_proxy_tunnel_if_configured, EgressClientSpec, EgressError,
+pub(crate) use busbar_substrate::egress::engine::{
+    egress_request, install_proxy_tunnel_if_configured, EngineError as EgressError,
+    EngineSpec as EgressClientSpec,
 };
 
-// The NEUTRAL error-KIND / network-transient / disposition / content-type vocabulary that STAYS in
-// core (`busbar_substrate::proxy`, itself re-exporting the substrate leaf). Re-exported into the flattened
-// engine namespace so the moved classification/error-envelope call sites keep naming them at their
-// historical short paths (`crate::engine::{KIND_*, ERR_NET_*, DISPOSITION_*, APPLICATION_JSON, …}`).
-pub(crate) use busbar_core::proxy::{
+// The NEUTRAL content-type / disposition / error-KIND vocabulary named at its TRUE substrate home
+// (`busbar_substrate::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
+// flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
+// their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
+pub(crate) use busbar_substrate::proxy::{
     APPLICATION_JSON, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
     TEXT_EVENT_STREAM,
 };
