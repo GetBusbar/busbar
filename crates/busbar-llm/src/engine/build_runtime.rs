@@ -301,8 +301,16 @@ pub(crate) fn build_runtime(
 pub(crate) fn viewer(
     slot: &(dyn std::any::Any + Send + Sync),
 ) -> &dyn busbar_substrate::plane_host::EngineTablesView {
-    // Core invokes this ONLY on THIS plane's present runtime slot (an absent slot short-circuits to
-    // the core-resident `EMPTY_VIEW` before the pointer is reached), so the downcast never misses.
-    slot.downcast_ref::<NativeRuntime>()
-        .expect("viewer: the LLM plane's viewer received a foreign runtime slot")
+    // Core resolves the viewer fn-pointer off the LIVE fallback-plane decl but reads the slot off the
+    // App snapshot's own baked `llm_runtime_key`. In production the registry is set once at boot, so the
+    // slot the App carries is always THIS plane's `NativeRuntime` and the downcast hits. In a MULTI-TEST
+    // binary, though, `register_test_plane` mutates the registry across tests, so a non-LLM App (e.g. an
+    // MCP-only fixture) scraping `/metrics` can meet this plane's viewer over a slot that is not a
+    // `NativeRuntime`. A cold scrape/discovery read must DEGRADE to the zero-plane `EMPTY_VIEW` (empty
+    // pools/models — the honest answer for an App with no LLM runtime), never 500 on a foreign slot, so
+    // this is the same graceful fallback `engine_tables_view`'s own absent-slot branch already returns.
+    match slot.downcast_ref::<NativeRuntime>() {
+        Some(rt) => rt,
+        None => &busbar_substrate::plane_host::EMPTY_VIEW,
+    }
 }
