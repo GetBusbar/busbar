@@ -335,21 +335,34 @@ impl DuplexReader for GeminiLiveCodec {
         }
 
         if let Some(ri) = v.get(wire::REALTIME_INPUT) {
+            // Uplink audio arrives in TWO Gemini spellings, both decoded to `IrAudioFrame{dir:Up}` with
+            // a monotonic seq: the GA (`v1beta`) `realtimeInput.audio` SINGLE inline blob, and the
+            // legacy `realtimeInput.mediaChunks[]` ARRAY. A `{mimeType,data}` blob whose mime is not a
+            // modeled audio format has no shared frame (drop).
             let mut out = Vec::new();
-            if let Some(chunks) = ri.get("mediaChunks").and_then(Value::as_array) {
+            let mut push_blob = |blob: &Value, out: &mut Vec<IrClientEvent>| {
+                if audio_format_from_mime(str_at(blob, "mimeType")).is_none() {
+                    return; // non-audio realtime input has no shared frame (drop).
+                }
+                let media = decode_audio(str_at(blob, "data"));
+                out.push(IrClientEvent::AudioFrame(IrAudioFrame {
+                    dir: UpDown::Up,
+                    seq: st.next_up_seq(),
+                    media,
+                }));
+            };
+            // Prefer the GA single blob when present so a GA peer never double-decodes; else fall back
+            // to the legacy per-chunk array (one frame each).
+            if let Some(audio) = ri.get("audio") {
+                push_blob(audio, &mut out);
+            } else if let Some(chunks) = ri.get("mediaChunks").and_then(Value::as_array) {
                 for chunk in chunks {
-                    let mime = str_at(chunk, "mimeType");
-                    if audio_format_from_mime(mime).is_none() {
-                        continue; // non-audio realtime input has no shared frame (drop).
-                    }
-                    let media = decode_audio(str_at(chunk, "data"));
-                    out.push(IrClientEvent::AudioFrame(IrAudioFrame {
-                        dir: UpDown::Up,
-                        seq: st.next_up_seq(),
-                        media,
-                    }));
+                    push_blob(chunk, &mut out);
                 }
             }
+            // `realtimeInput.audioStreamEnd` is a manual end-of-stream marker with no shared IR home
+            // (drop+warn): the cross-dialect map aspires to a commit-mapping, but the asymmetry table
+            // exercises it as a documented drop, so it yields no IR here.
             return out;
         }
 

@@ -269,6 +269,91 @@ fn realtime_input_multiple_chunks_frame_each() {
     assert!(matches!(&ir[1], IrClientEvent::AudioFrame(f) if f.seq == 1));
 }
 
+#[test]
+fn realtime_input_ga_audio_blob_decodes_and_frames_up() {
+    // GA (`v1beta`) shape: realtimeInput.audio is a SINGLE inline blob (not the legacy mediaChunks[]).
+    let payload = b"ga-uplink-audio-bytes";
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "realtimeInput": { "audio": { "mimeType": "audio/pcm;rate=16000", "data": b64(payload) } }
+    });
+    let ir = codec.read_up(wire(&src.to_string()), &mut st);
+    assert_eq!(ir.len(), 1, "one uplink frame from the GA audio blob");
+    let IrClientEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(f.dir, UpDown::Up);
+    assert_eq!(f.seq, 0);
+    assert_eq!(&f.media[..], payload, "base64 decoded to the exact bytes");
+}
+
+#[test]
+fn realtime_input_ga_audio_is_ir_fixpoint() {
+    // The codec's uplink-audio guarantee is IR-fixpoint: decode GA audio → write → decode yields the
+    // same frame (the stateless writer frames a universally-accepted realtimeInput shape).
+    let payload = b"ga-fixpoint-audio";
+    let codec = GeminiLiveCodec;
+    let ir1 = codec.read_up(
+        wire(
+            &json!({ "realtimeInput": { "audio": { "mimeType": "audio/pcm;rate=16000", "data": b64(payload) } } })
+                .to_string(),
+        ),
+        &mut DecodeState::default(),
+    );
+    let back = codec.write_up(ir1[0].clone());
+    let ir2 = codec.read_up(back, &mut DecodeState::default());
+    let (IrClientEvent::AudioFrame(f1), IrClientEvent::AudioFrame(f2)) = (&ir1[0], &ir2[0]) else {
+        panic!("expected AudioFrame on both decodes");
+    };
+    assert_eq!(f1.dir, UpDown::Up);
+    assert_eq!(
+        f1.media, f2.media,
+        "uplink audio survives the IR round-trip"
+    );
+    assert_eq!(&f2.media[..], payload);
+}
+
+#[test]
+fn realtime_input_prefers_ga_audio_over_media_chunks() {
+    // When BOTH spellings are present the GA single blob wins (one frame), so a GA peer never
+    // double-decodes the same audio.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "realtimeInput": {
+            "audio": { "mimeType": "audio/pcm;rate=16000", "data": b64(b"ga") },
+            "mediaChunks": [ { "mimeType": "audio/pcm;rate=16000", "data": b64(b"legacy") } ]
+        }
+    });
+    let ir = codec.read_up(wire(&src.to_string()), &mut st);
+    assert_eq!(
+        ir.len(),
+        1,
+        "GA audio blob is preferred; mediaChunks not additionally decoded"
+    );
+    let IrClientEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(&f.media[..], b"ga");
+}
+
+#[test]
+fn realtime_input_audio_stream_end_yields_no_ir() {
+    // A GA manual end-of-stream marker has no shared IR home (documented drop+warn), even though the
+    // realtimeInput envelope is recognized.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let ir = codec.read_up(
+        wire(&json!({ "realtimeInput": { "audioStreamEnd": true } }).to_string()),
+        &mut st,
+    );
+    assert!(
+        ir.is_empty(),
+        "audioStreamEnd is dropped (no shared IR home)"
+    );
+}
+
 // ── serverContent (downlink audio, turn/interrupt) ───────────────────────────────────────────────
 
 #[test]

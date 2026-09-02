@@ -207,9 +207,13 @@ fn reencode_down<C: DuplexReader + DuplexWriter>(
 /// to a streamed open/args/close triple, and the stateless writer re-frames per event — so frame counts
 /// legitimately differ across a re-encode; the correlation join is what must survive, not the arity).
 /// Everything else is compared verbatim (audio payloads, config essentials, usage, items).
+/// One correlated tool call, keyed by call_id: `(name, args, result)`, each present only once its
+/// event has been seen (open→name, args, result).
+type CallEntry = (Option<String>, Option<Value>, Option<Value>);
+
 #[derive(Debug, Default, PartialEq)]
 struct Fingerprint {
-    calls: BTreeMap<String, (Option<String>, Option<Value>, Option<Value>)>, // id -> (name, args, result)
+    calls: BTreeMap<String, CallEntry>, // id -> (name, args, result)
     other: Vec<Norm>,
 }
 
@@ -277,18 +281,6 @@ fn drop_reason(dialect: &str, fixture: &str) -> Option<&'static str> {
     }
 }
 
-/// Fixtures whose decode we KNOW the shipped codec cannot perform — a genuine, reported gap. These are
-/// NOT dressed as a pass: `spec` prints a `SUBITEM PENDING` (non-RESULT) line and skips the fixture.
-fn known_gap(dialect: &str, fixture: &str) -> Option<&'static str> {
-    match (dialect, fixture) {
-        ("gemini", "realtimeInput.json") => Some(
-            "codec reads realtimeInput.mediaChunks[]; fixture uses the newer realtimeInput.audio{} \
-             shape — uplink-audio decode gap (codec change, out of this leg's scope)",
-        ),
-        _ => None,
-    }
-}
-
 fn spec(dialect: &str, dir: &Path) -> i32 {
     let mut fixtures: Vec<String> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read fixtures dir {}: {e}", dir.display()))
@@ -305,10 +297,6 @@ fn spec(dialect: &str, dir: &Path) -> i32 {
 
     let mut fails = 0;
     for f in &fixtures {
-        if let Some(reason) = known_gap(dialect, f) {
-            println!("SUBITEM {f} PENDING — {reason}");
-            continue;
-        }
         let v: Value = serde_json::from_str(&fs::read_to_string(dir.join(f)).unwrap())
             .unwrap_or_else(|e| panic!("parse fixture {f}: {e}"));
         let (verdict, detail) = match dialect {
@@ -494,6 +482,7 @@ fn replay(dir: &Path) -> i32 {
     let gexp = [
         "config",
         "connect",
+        "audio-in",
         "tool-open",
         "tool-args",
         "tool-close",
@@ -505,7 +494,7 @@ fn replay(dir: &Path) -> i32 {
     ];
     match ordered_subsequence(&gtags, &gexp) {
         Ok(()) => println!(
-            "RESULT default PASS gemini-transcript — {gd} IR events, {gr} re-encoded, skeleton [config→connect→tool→result→audio-out→barge-in→turn-complete→usage] in order"
+            "RESULT default PASS gemini-transcript — {gd} IR events, {gr} re-encoded, skeleton [config→connect→audio-in→tool→result→audio-out→barge-in→turn-complete→usage] in order"
         ),
         Err(e) => {
             fails += 1;
@@ -513,8 +502,9 @@ fn replay(dir: &Path) -> i32 {
         }
     }
     println!(
-        "NOTE: gemini uplink audio frames (realtimeInput.audio{{}}) are not in the skeleton — the \
-         shipped codec reads realtimeInput.mediaChunks[]; documented replay sub-item (see spec-per-dialect)."
+        "NOTE: gemini uplink audio frames (realtimeInput.audio{{}}) now decode and are asserted in the \
+         skeleton above — the codec reads BOTH the GA realtimeInput.audio{{}} blob and the legacy \
+         realtimeInput.mediaChunks[] array."
     );
     if fails > 0 {
         1
@@ -678,10 +668,9 @@ where
 /// codec gap from the several legitimate documented drops / dialect-only concepts.
 fn none_reason(concept: &str, from_d: &str) -> &'static str {
     match (concept, from_d) {
-        ("input audio frame", "gemini") => {
-            "GENUINE CODEC GAP — gemini realtimeInput.json uses realtimeInput.audio{} but the codec \
-             reads realtimeInput.mediaChunks[]; the openai→gemini direction (og) DOES exercise this concept"
-        }
+        // NOTE: "input audio frame" for gemini is no longer a codec gap — realtimeInput.json (GA
+        // realtimeInput.audio{}) now decodes, so the go/gg pairs take the RESULT-PASS branch and this
+        // reason is never reached for it.
         ("input turn commit / end-of-audio", "gemini") => {
             "documented drop — gemini audioStreamEnd is dropped by the codec (map aspires to commit-mapping)"
         }
