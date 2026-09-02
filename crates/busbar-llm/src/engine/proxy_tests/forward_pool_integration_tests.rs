@@ -3346,7 +3346,7 @@ mod disposition_matrix_tests {
         let msg = v["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             msg,
-            busbar_core::proto::vendor_auth_failure_message("anthropic"),
+            busbar_substrate::proto::vendor_auth_failure_message("anthropic"),
             "auth message must be vendor-plausible copy, not busbar-internal vocabulary: {v}"
         );
         assert!(

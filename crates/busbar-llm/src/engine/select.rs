@@ -589,7 +589,7 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
     // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
     // set is a registry aggregate folded once at boot from the declarations, so naming no
     // protocol/MIME literal here keeps the agnostic core clean.
-    busbar_core::proto::streaming_content_types()
+    busbar_substrate::proto::streaming_content_types()
         .iter()
         .any(|p| ct.starts_with(p))
 }
@@ -606,5 +606,5 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
 /// a fact the protocol DECLARED, not the name string, and reading a declaration allocates nothing
 /// where building a writer to ask it allocated two boxes.
 pub(crate) fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    busbar_core::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
+    busbar_substrate::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
 }

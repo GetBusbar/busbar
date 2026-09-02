@@ -207,7 +207,7 @@ pub mod testkit;
 /// It exists because the deleted `#[path]` witness re-includes used to make `busbar-core`'s
 /// `test`/`test-support` builds carry these dialects as built-ins AUTOMATICALLY. With the witnesses
 /// gone, `busbar-core`'s built-in table is empty and the process registry is populated only by
-/// registration — so a codec that resolves a protocol fact through `busbar_core::proto::decl_for`
+/// registration — so a codec that resolves a protocol fact through `busbar_substrate::proto::decl_for`
 /// (the `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
 /// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling this
 /// at those few entry points makes every codec-exercising test in THIS crate's binary

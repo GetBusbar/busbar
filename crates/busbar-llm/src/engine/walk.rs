@@ -493,7 +493,7 @@ pub(crate) async fn forward_once(
     // Gemini ingress streaming WITHOUT `?alt=sse` → JSON-array streamed body (see main path). GATED
     // on `uses_array_stream_shim()` (true only for GeminiWriter) so a body-model client cannot
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
-    let ingress_decl = busbar_core::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
     let gemini_json_array = ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl
             .and_then(|d| d.dialect())
@@ -972,7 +972,7 @@ pub(crate) async fn forward_once(
                 busbar_core::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
-                    busbar_core::proto::decl_for(ingress_protocol)
+                    busbar_substrate::proto::decl_for(ingress_protocol)
                         .and_then(|d| d.dialect())
                         .and_then(|dc| dc.make_array_stream_framer())
                 })

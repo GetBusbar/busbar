@@ -145,7 +145,7 @@ pub fn build_egress_targets(
     let ops = family_ops
         .iter()
         .chain(Operation::ALL.iter())
-        .chain(busbar_core::proto::registry::declared_verbs().iter());
+        .chain(busbar_substrate::proto::declared_verbs().iter());
     for &op in ops {
         for stream in [false, true] {
             if out.contains_key(&(op, stream)) {
@@ -277,7 +277,7 @@ pub(crate) fn lane_auth_headers(
 /// writer (`writer.egress_user_agent()`) bypass this wrapper; it exists for test-code paths that
 /// look up by name.
 pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
-    busbar_core::proto::decl_for(egress_protocol)
+    busbar_substrate::proto::decl_for(egress_protocol)
         .map(|d| d.egress_user_agent)
         .unwrap_or(crate::engine::EGRESS_UA_DEFAULT)
 }
@@ -294,7 +294,7 @@ pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
 /// `application/json`. The by-name lookup path (probes, forward-header assembly).
 pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'static str {
     if wants_stream {
-        busbar_core::proto::decl_for(egress_protocol)
+        busbar_substrate::proto::decl_for(egress_protocol)
             .map(|d| d.egress_stream_accept)
             .unwrap_or(TEXT_EVENT_STREAM)
     } else {

@@ -53,7 +53,7 @@ pub(crate) fn build_runtime(
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     // Under the test/test-support surface, ensure this plugin's six dialect declarations are in the
     // process protocol registry before the lane loop resolves `lane_protocol_name` — the lowering
-    // reads `busbar_core::proto::decl_for` (folds `register_test_protocols`), and a `TestApp`/`build_once`
+    // reads `busbar_substrate::proto::decl_for` (folds `register_test_protocols`), and a `TestApp`/`build_once`
     // build in a binary that has not yet folded them (core's own test binary, or a filtered plane run)
     // would otherwise panic "unknown protocol". Idempotent (dedupes by name); a no-op in production.
     #[cfg(any(test, feature = "test-support"))]
@@ -76,7 +76,7 @@ pub(crate) fn build_runtime(
     let mut by_model: HashMap<String, usize> = HashMap::with_capacity(input.lanes.len());
     for (i, li) in input.lanes.iter().enumerate() {
         by_model.insert(li.model.clone(), i);
-        let protocol = busbar_core::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
+        let protocol = busbar_substrate::proto::lane_protocol_name(&li.protocol).unwrap_or_else(|| {
             panic!(
                 "lane '{}' names unknown protocol '{}' (validated core-side)",
                 li.model, li.protocol

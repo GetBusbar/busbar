@@ -84,12 +84,12 @@ fn the_derived_protocol_list_is_not_empty() {
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     crate::ensure_test_protocols_registered();
     assert_eq!(
-        busbar_core::proto::streaming_content_types(),
+        busbar_substrate::proto::streaming_content_types(),
         &["application/vnd.amazon.eventstream", "text/event-stream"],
         "absorbed proto::streaming_content_types()"
     );
     assert_eq!(
-        busbar_core::proto::array_stream_shim_keys(),
+        busbar_substrate::proto::array_stream_shim_keys(),
         &[crate::gemini::GEMINI_JSON_ARRAY_SHIM_KEY],
         "absorbed proto::array_stream_shim_keys()"
     );
@@ -197,7 +197,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     // extracted crate (`busbar-mcp`), and the deleted `#[path]` witness used to net its codec into
     // core's test binary. `busbar-llm` dev-depends on `busbar-mcp` solely for this assertion.
     busbar_substrate::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
-    let d = busbar_core::proto::decl_for("mcp").expect("mcp declares itself");
+    let d = busbar_substrate::proto::decl_for("mcp").expect("mcp declares itself");
     assert!(d.codec.is_none());
     assert!(d.handler.is_some(), "mcp serves operations");
     assert!(
@@ -445,7 +445,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     //    still knows only the built-ins, which is the proof that admitting `telex` above required
     //    no edit here rather than a hidden one.
     assert!(
-        busbar_core::proto::decl_for("telex").is_none(),
+        busbar_substrate::proto::decl_for("telex").is_none(),
         "the built-in table was not touched"
     );
 }

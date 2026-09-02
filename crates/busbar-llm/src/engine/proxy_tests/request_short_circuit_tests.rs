@@ -131,7 +131,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
     // registry (`decl_for(name).dialect()`), as production does — never the witnessed
     // `protocol_for(name).writer()`. `DialectCodec::upstream_path_for_stream` delegates to
     // `writer().upstream_path_for_stream`, so this is byte-identical to the pre-relocation path.
-    let dialect = busbar_core::proto::decl_for(app.engine_tables().lanes()[0].protocol)
+    let dialect = busbar_substrate::proto::decl_for(app.engine_tables().lanes()[0].protocol)
         .and_then(|d| d.dialect())
         .expect("lane protocol resolves");
     assert_eq!(
@@ -231,7 +231,7 @@ fn invalidator_1_gemini_array_shim_key_forces_non_pristine() {
     // Use a body-model ingress so only #1 fires (the key is stripped on EVERY egress).
     // The never-native array shim key, reached through the NEUTRAL registry accessor (it is a
     // Gemini-declared marker; core names no dialect module to obtain it).
-    let gemini_array_shim_key = busbar_core::proto::array_stream_shim_key_for("gemini")
+    let gemini_array_shim_key = busbar_substrate::proto::array_stream_shim_key_for("gemini")
         .expect("gemini declares a json-array shim key");
     let body = json!({"model":"gpt-4o","messages":[],(gemini_array_shim_key):true});
     let hop_bytes = busbar_substrate::json::to_vec(&body).unwrap();

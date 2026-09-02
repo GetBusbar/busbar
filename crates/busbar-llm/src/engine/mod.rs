@@ -35,7 +35,8 @@ use serde_json::Value;
 use busbar_substrate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use busbar_substrate::plane_host::LlmOnExhausted as OnExhausted;
 #[cfg_attr(not(test), allow(unused_imports))]
-use busbar_core::proto::{convert_headers, StatusClass};
+use busbar_substrate::breaker::StatusClass;
+use busbar_substrate::proto::convert_headers;
 use busbar_core::state::App;
 use busbar_substrate::store::{now, Permit};
 

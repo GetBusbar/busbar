@@ -550,7 +550,7 @@ async fn ingress_path_model_inner(
             // before the upstream call (`proxy::strip_router_shim_keys`); cross-protocol egress
             // drops it via the IR.
             if gemini_json_array {
-                if let Some(shim_key) = busbar_core::proto::array_stream_shim_key_for(proto) {
+                if let Some(shim_key) = busbar_substrate::proto::array_stream_shim_key_for(proto) {
                     obj.insert(shim_key.to_string(), Value::Bool(true));
                 }
             }

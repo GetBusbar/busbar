@@ -567,7 +567,7 @@ pub(crate) async fn translate_response_cross_protocol(
             // `protocol_for(ingress_protocol)` guard did; the neutral `translate_response` now takes
             // the ingress protocol by NAME + a `serves-op` flag and reaches its writer through the
             // codec cell, so the concrete `ProtocolWriter` is no longer named at this call site.
-            if busbar_core::proto::decl_for(ingress_protocol).is_some_and(|d| d.codec.is_some()) {
+            if busbar_substrate::proto::decl_for(ingress_protocol).is_some_and(|d| d.codec.is_some()) {
                 // Read the wall-clock elapsed once for the wants-stream frame-synthesis fork (a
                 // Bedrock ConverseStream client served a buffered Converse body); the JSON-body path
                 // reads its own fresh elapsed for `inject_response_metrics` below, matching the two
@@ -603,7 +603,7 @@ pub(crate) async fn translate_response_cross_protocol(
                         // AND knows the hop is cross-protocol, so it is where the drop gets named.
                         // Same-protocol routes never reach this function.
                         if let Ok(ref upstream_body) = body_json {
-                            busbar_core::proto::warn_untranslatable_response_metadata(
+                            busbar_substrate::proto::warn_untranslatable_response_metadata(
                                 egress_name,
                                 ingress_protocol,
                                 upstream_body,
@@ -690,7 +690,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                 // reached by protocol NAME through `decl_for(name).dialect()`, so the
                                 // concrete `ProtocolWriter` is no longer named here (G6 A4b).
                                 if let Some(dialect) =
-                                    busbar_core::proto::decl_for(ingress_protocol)
+                                    busbar_substrate::proto::decl_for(ingress_protocol)
                                         .and_then(|d| d.dialect())
                                 {
                                     dialect.inject_response_metrics(
@@ -1068,7 +1068,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // no native backend exhibits. False for every other protocol and for the `?alt=sse` gemini variant.
     // Additionally gated on `op.streaming()`: a non-streaming operation never frames a JSON-array
     // stream (chat streams, so this is a no-op for chat — `true && x == x`).
-    let ingress_decl = busbar_core::proto::decl_for(ingress_protocol);
+    let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
     let gemini_json_array = op.streaming()
         && ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
         && ingress_decl
@@ -1924,7 +1924,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // injection never leaks an unsolicited usage chunk to an opted-out client.
         let payload = if wants_stream
             && body_is_json
-            && busbar_core::proto::decl_for(egress_name)
+            && busbar_substrate::proto::decl_for(egress_name)
                 .is_some_and(|d| d.stream_usage_requires_opt_in)
             && !client_include_usage
         {
@@ -2550,7 +2550,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                     ingress_protocol,
                                     auth_status,
                                     auth_kind,
-                                    busbar_core::proto::vendor_auth_failure_message(
+                                    busbar_substrate::proto::vendor_auth_failure_message(
                                         ingress_protocol,
                                     ),
                                 );
@@ -2745,7 +2745,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // reaches the streaming builder).
                 let json_array = (gemini_json_array && is_sse)
                     .then(|| {
-                        busbar_core::proto::decl_for(ingress_protocol)
+                        busbar_substrate::proto::decl_for(ingress_protocol)
                             .and_then(|d| d.dialect())
                             .and_then(|dc| dc.make_array_stream_framer())
                     })

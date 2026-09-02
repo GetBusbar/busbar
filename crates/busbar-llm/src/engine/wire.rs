@@ -28,7 +28,7 @@ pub(crate) fn maybe_attach_response_request_id(
     ingress_protocol: &str,
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
-    match busbar_core::proto::decl_for(ingress_protocol)
+    match busbar_substrate::proto::decl_for(ingress_protocol)
         .and_then(|d| d.dialect())
         .and_then(|di| di.ingress_response_request_id(upstream_request_id))
     {
@@ -43,7 +43,7 @@ pub(crate) fn maybe_attach_response_request_id(
 /// `"bedrock"`, so the agnostic forward path never contains a hard-coded protocol string for this
 /// decision. Unknown protocols fall back to `false` (no `x-amzn-*` headers emitted).
 pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
-    busbar_core::proto::decl_for(ingress_protocol)
+    busbar_substrate::proto::decl_for(ingress_protocol)
         .map(|d| d.ingress_relays_amzn_headers)
         .unwrap_or(false)
 }
@@ -56,7 +56,7 @@ pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
 pub(crate) fn ingress_relayed_response_header_names(
     ingress_protocol: &str,
 ) -> &'static [&'static str] {
-    busbar_core::proto::decl_for(ingress_protocol)
+    busbar_substrate::proto::decl_for(ingress_protocol)
         .map(|d| d.ingress_relayed_response_header_names)
         .unwrap_or(&[])
 }
@@ -237,7 +237,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // smuggles a key in its own controlled body). Iterating the cached registry set keeps this
         // strip from naming any shim-key literal (and from re-sweeping `protocol_for` per request).
         // `remove` returns the previous value iff the key was present → a real mutation (#1).
-        for &key in busbar_core::proto::array_stream_shim_keys() {
+        for &key in busbar_substrate::proto::array_stream_shim_keys() {
             if obj.remove(key).is_some() {
                 changed = true;
             }
@@ -246,7 +246,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
         // `stream` is the writer-authored field the backend needs to start streaming, so it must be
         // PRESERVED. Gate on egress, never ingress.
-        if busbar_core::proto::decl_for(egress_protocol)
+        if busbar_substrate::proto::decl_for(egress_protocol)
             .map(|d| d.has_model_in_url)
             .unwrap_or(false)
             && obj.remove("stream").is_some()
@@ -275,7 +275,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
 /// original carries a `model` the native backend must not see). A same-proto path-model request that
 /// arrived without a body `model` is left untouched and stays pristine.
 pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &str) -> bool {
-    let model_in_url = busbar_core::proto::decl_for(ingress_protocol)
+    let model_in_url = busbar_substrate::proto::decl_for(ingress_protocol)
         .map(|d| d.has_model_in_url)
         .unwrap_or(false);
     if model_in_url {
@@ -367,7 +367,7 @@ pub(crate) fn translate_request_cross_protocol(
     let egress_name = app.engine_tables().lanes()[i].protocol;
     // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
     // four separate registry scans of the same name).
-    let egress_decl = busbar_core::proto::decl_for(egress_name);
+    let egress_decl = busbar_substrate::proto::decl_for(egress_name);
     // The neutral cross-protocol egress-preparation param bag, built ONCE from RESOLVED lane
     // primitives and ONLY on a cross-protocol hop (`.then` is lazy, so a same-protocol passthrough
     // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
@@ -450,7 +450,7 @@ pub(crate) fn translate_request_cross_protocol(
         busbar_core::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
         let Some(ingress_dialect) =
-            busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+            busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
         else {
             return Err(Box::new(ingress_error(
                 ingress_protocol,
@@ -543,7 +543,7 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
                                                                  // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
                                                                  // are identical: same dialect, same two mutations, same order.
-    let lane_dialect = busbar_core::proto::decl_for(app.engine_tables().lanes()[i].protocol)
+    let lane_dialect = busbar_substrate::proto::decl_for(app.engine_tables().lanes()[i].protocol)
         .and_then(|d| d.dialect());
     pristine &= !lane_dialect
         .as_ref()
@@ -745,7 +745,7 @@ pub(crate) fn mid_stream_error_bytes(
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let Some(dialect) = busbar_core::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+    let Some(dialect) = busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
     else {
         return agnostic_stream_error_frame(message);
     };

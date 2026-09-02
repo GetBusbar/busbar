@@ -45,7 +45,7 @@ use super::*;
 /// `array_stream_shim_key` — folded into one registry aggregate at boot, so the set this function
 /// returns is the set the protocols declared and there is nowhere else to state it.
 fn captured_head_keys() -> &'static [&'static str] {
-    busbar_core::proto::registry::registry().head_keys()
+    busbar_substrate::proto::registry().head_keys()
 }
 
 /// A top-level map key classified against [`captured_head_keys`] WITHOUT allocating: the serde
@@ -287,7 +287,7 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
         return true;
     };
     // #1: never-native router shim keys are stripped on every branch.
-    if busbar_core::proto::array_stream_shim_keys()
+    if busbar_substrate::proto::array_stream_shim_keys()
         .iter()
         .any(|k| obj.contains_key(*k))
     {
@@ -295,7 +295,7 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
     }
     let lane = &app.engine_tables().lanes()[i];
     let model_in_url =
-        busbar_core::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
+        busbar_substrate::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
     // #2: `stream` is a path shim for a path-model egress (same-proto ⇒ egress == this lane).
     if model_in_url && obj.contains_key("stream") {
         return false;
@@ -308,7 +308,7 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
     // A dialect that reshapes its body at a path-model URL always mutates an object body, so such
     // a request can never be a pristine passthrough. Asked of the WRITER before any DOM exists.
     if lane.path_base.is_some()
-        && busbar_core::proto::decl_for(lane.protocol).is_some_and(|d| d.reshapes_body_at_path_base)
+        && busbar_substrate::proto::decl_for(lane.protocol).is_some_and(|d| d.reshapes_body_at_path_base)
     {
         return false;
     }

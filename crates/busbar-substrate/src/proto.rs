@@ -1499,3 +1499,97 @@ pub fn residual_default_protocol() -> Option<&'static str> {
 pub fn known_protocols() -> &'static [&'static str] {
     registry().codec_protocols()
 }
+
+// ── THE REGISTRY-RESOLVED PROTO ACCESSORS — RELOCATED DOWN from `busbar_core::proto` ───────────────
+// Thin reads of the registry singleton above, moved onto the neutral substrate so an extracted
+// protocol crate (`busbar-llm`) resolves a protocol fact through the neutral ABI rather than reaching
+// BACK into `busbar-core` (the reverse-edge rule). `busbar-core` re-exports each at its historical
+// `busbar_core::proto::…` path, so every in-core / plugin caller compiles unchanged and the values are
+// byte-identical. They read the SAME singleton `registry()` returns, so — exactly as `known_protocols`
+// already does — under core's own test binary they observe the core-test built-in tail once any core
+// accessor has seeded the substrate hook (idempotent, self-healing).
+
+/// RESOLVE A PROTOCOL BY NAME through the substrate registry singleton. A pure read of a
+/// `&'static ProtocolDecl`; allocates nothing. `busbar-core` keeps its own `decl_for` wrapper (which
+/// additionally seeds the core-test built-in hook under `#[cfg(test)]`); this is the plane-facing
+/// entry, behaviorally identical for any consumer that compiles `busbar-core` as a non-test dependency.
+pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
+    registry().decl(name)
+}
+
+/// The set of streaming `Content-Type` values across every declared protocol — a registry aggregate
+/// folded once at boot from `ProtocolDecl::streaming_content_type`.
+pub fn streaming_content_types() -> &'static [&'static str] {
+    registry().streaming_content_types()
+}
+
+/// The set of array-stream shim keys across every declared protocol (only Gemini declares one), the
+/// aggregate `proxy::strip_router_shim_keys` reads to remove every protocol's marker while naming none.
+pub fn array_stream_shim_keys() -> &'static [&'static str] {
+    registry().array_stream_shim_keys()
+}
+
+/// The array-stream shim key the NAMED protocol declares, or `None` if it declares none or is not
+/// registered. The injection site reads it by name so it names no protocol submodule.
+pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
+    decl_for(protocol_name).and_then(|d| d.array_stream_shim_key)
+}
+
+/// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol, dispatched through
+/// `ProtocolDecl::auth_failure_message` so the per-vendor copy lives in the declaration, not here. An
+/// unknown protocol falls back to the default generic copy.
+pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
+    decl_for(proto)
+        .map(|d| d.auth_failure_message)
+        .unwrap_or("authentication failed")
+}
+
+/// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
+/// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
+/// lane protocols).
+pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
+    decl_for(name).filter(|d| d.codec.is_some()).map(|d| d.name)
+}
+
+/// Collect `(HeaderName, HeaderValue)` pairs into an axum `HeaderMap`. A dependency-free neutral
+/// helper (no protocol vocabulary), used by the dialect crates on the egress-header path.
+pub fn convert_headers(
+    headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+) -> axum::http::HeaderMap {
+    let mut map = axum::http::HeaderMap::new();
+    for (name, value) in headers {
+        map.insert(name, value);
+    }
+    map
+}
+
+/// Signal the RESPONSE-side provider metadata that an egress dialect carries and no ingress dialect
+/// can express, so it does not vanish from a translated response with nothing in the logs. WHICH
+/// fields are present, and the SHAPE of the lookup, are the egress dialect's own knowledge — declared
+/// on `ProtocolDecl::vendor_response_metadata` and read here by name so the substrate spells no
+/// dialect. A dialect with no such vendor-scoped artifact declares `None` and reports nothing. Called
+/// ONLY from the cross-protocol response seam, so a same-protocol route never logs a word about them.
+pub fn warn_untranslatable_response_metadata(
+    egress: &str,
+    ingress: &str,
+    body: &serde_json::Value,
+) {
+    let present: Vec<&str> = decl_for(egress)
+        .and_then(|d| d.vendor_response_metadata)
+        .map(|report| report(body))
+        .unwrap_or_default();
+    if present.is_empty() {
+        return;
+    }
+    crate::diag_debug!(
+        crate::diagnostics::PROTO_DROP_PROVIDER_METADATA,
+        egress = %egress,
+        ingress = %ingress,
+        fields = %present.join(","),
+        "dropping response-side provider metadata on the cross-protocol seam: the field(s) named \
+         here are vendor-scoped artifacts (a guardrail assessment is an AWS account resource; a \
+         harm-category rating uses Google's own vocabulary) and the caller's protocol has no shape \
+         to receive them. If this metadata is compliance evidence, route the request to a \
+         same-protocol lane, where the upstream body reaches the client verbatim"
+    );
+}

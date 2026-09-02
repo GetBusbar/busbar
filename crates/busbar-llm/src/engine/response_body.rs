@@ -176,7 +176,7 @@ where
         // behavior-preserving — and core spells no dialect name to state it.
         // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
         // binary-eventstream flag AND the interned `&'static` name we store.
-        let ingress_decl = busbar_core::proto::decl_for(ingress_protocol);
+        let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
         // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
         // docs for the one-envelope exactness argument.
         let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
@@ -190,7 +190,7 @@ where
             ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
             ingress_protocol: ingress_decl
                 .map(|d| d.name)
-                .or_else(busbar_core::proto::residual_default_dialect)
+                .or_else(busbar_substrate::proto::residual_default_protocol)
                 .unwrap_or_default(),
             op,
             permit: Some(permit),
@@ -642,7 +642,7 @@ where
                                 // the self-contained `usage` sub-object instead (see
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
-                                busbar_core::proto::decl_for(this.ingress_protocol)
+                                busbar_substrate::proto::decl_for(this.ingress_protocol)
                                     .and_then(|d| d.dialect())
                                     .and_then(|di| di.recover_truncated_usage(&buf))
                             } else {
