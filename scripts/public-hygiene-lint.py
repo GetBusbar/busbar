@@ -369,9 +369,22 @@ SKIP_FILES = re.compile(
 SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/")
 
 
+# Internal engineering DESIGN docs. `docs/design/` holds the build's own design and roadmap prose —
+# phases, migration steps, audit rounds, per-commit plans, security-posture reframes. That IS the
+# process, described on purpose: a design doc's SUBJECT is how the software is being built, which is
+# precisely the vocabulary every rule here exists to keep OUT of the prose a customer reads. These
+# files live in the repo but describe the WORK, not the product, so they are out of scope for a gate
+# whose whole charter is "public prose describes the software, not the process". The PUBLISHED product
+# surface stays fully in scope: everything under `docs/` OTHER than `design/`, `SECURITY.md`, the
+# per-crate READMEs, and every source comment (a shipped comment is read as the software, so it is
+# held to the software standard even when it cites a design doc — the citation belongs in the design
+# doc, not the code).
+SKIP_DESIGN = re.compile(r"(^|/)docs/design/")
+
+
 def is_text_candidate(rel):
     base = os.path.basename(rel)
-    if SKIP_FILES.search(rel) or SKIP_PATHS.search(rel):
+    if SKIP_FILES.search(rel) or SKIP_PATHS.search(rel) or SKIP_DESIGN.search(rel):
         return False
     if any(part in SKIP_DIRS for part in rel.split("/")):
         return False
