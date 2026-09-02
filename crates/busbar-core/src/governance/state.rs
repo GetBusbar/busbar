@@ -104,7 +104,7 @@ impl GovState {
     /// token carrying ANY audience is rejected here; the MCP ingress passes its canonical URI and
     /// rejects a token whose audience is absent or different. Enforced inside
     /// [`TokenVerifier::verify`](super::signing::TokenVerifier::verify), never per handler.
-    pub(crate) fn verify_token(
+    pub fn verify_token(
         &self,
         token: &str,
         now: u64,
@@ -234,7 +234,7 @@ impl GovState {
     /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
     /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
     /// revoked subject's credentials are rejected identically regardless of which credential is presented.
-    pub(crate) fn is_revoked(&self, sub: &str) -> bool {
+    pub fn is_revoked(&self, sub: &str) -> bool {
         self.is_revoked_at(sub, crate::store::now())
     }
 
@@ -795,7 +795,7 @@ impl GovState {
     ///   attribute to the live window rather than being dropped - bounded to one in-flight
     ///   request, never lost.
     /// - no cell → insert fresh (defensive; post-admission the cell exists).
-    pub(crate) fn record_usage(
+    pub fn record_usage(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -863,7 +863,7 @@ impl GovState {
     /// (ridden by the same 100ms-tick flusher that drains budgets) does the actual store write, so
     /// a response is durably reflected within one `usage_flush_interval_ms` tick, not "eventually,
     /// whenever the blocking pool gets to it".
-    pub(crate) fn record_metering(
+    pub fn record_metering(
         &self,
         key_id: &str,
         model: &str,
@@ -995,7 +995,7 @@ impl GovState {
     // Wired into production routing: `proxy engine::decide_policy_order` calls this on the key it
     // looked up (one lookup shared with the `send_user` identity projection) to produce the
     // per-lane `usage` signal; the in-crate tests also exercise it directly.
-    pub(crate) fn rate_headroom(
+    pub fn rate_headroom(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -1074,7 +1074,7 @@ impl GovState {
     // Only read by the `auth-admin-tokens` chain link; without that feature the getter is unused
     // (the field is still populated/validated, so keep the method rather than gate the field).
     #[cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
-    pub(crate) fn admin_token_hash(&self) -> Option<String> {
+    pub fn admin_token_hash(&self) -> Option<String> {
         self.admin_token_hash
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1170,7 +1170,7 @@ impl GovState {
     /// row shape. The bearer key row is persisted first, then the AWS credential; both then refresh
     /// the in-memory caches so the AccessKeyId resolves on the next request.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn create_key_with_aws(
+    pub fn create_key_with_aws(
         &self,
         spec: NewKeySpec,
         now: u64,
@@ -1249,7 +1249,7 @@ impl GovState {
     }
 
     /// All virtual keys (metadata; callers must strip `generation_hash` before returning).
-    pub(crate) fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    pub fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         self.store.list_keys()
     }
 
@@ -1440,7 +1440,7 @@ impl GovState {
     /// the caller validates the named group exists). `generation_hash`/`name`/`allowed_pools`/
     /// `created_at` are preserved (the credential is never re-minted). Returns `Ok(None)` when the
     /// key does not exist (so the caller can 404), `Ok(Some(updated_metadata))` otherwise.
-    pub(crate) fn update_key(
+    pub fn update_key(
         &self,
         id: &str,
         enabled: Option<bool>,
@@ -1484,11 +1484,7 @@ impl GovState {
     /// budget to zero - a transient store blip at boot would let a maxed-out key spend its whole cap
     /// again. Propagate any store error so boot fails loudly (the supervisor restarts) rather than
     /// resuming with an unenforced ledger. Returns `Ok(())` only when every bucket hydrated cleanly.
-    pub(crate) fn hydrate_budgets(
-        &self,
-        cost: &crate::cost::CostModel,
-        now: u64,
-    ) -> StoreResult<()> {
+    pub fn hydrate_budgets(&self, cost: &crate::cost::CostModel, now: u64) -> StoreResult<()> {
         let keys = self.store.list_keys()?;
         let key_buckets = keys.iter().map(|k| (k.id.as_str(), super::WINDOW_TOTAL));
         let group_buckets = cost
@@ -1546,7 +1542,7 @@ impl GovState {
     /// fee x requests) - reprice-on-read. The AUTHORITATIVE in-memory cell wins for the current
     /// window (it reflects hot-path accruals the write-behind flusher may not have persisted yet);
     /// falls back to the durable ledger for a bucket whose cell was never materialised.
-    pub(crate) fn usage_for(
+    pub fn usage_for(
         &self,
         cost: &crate::cost::CostModel,
         id: &str,
@@ -1570,7 +1566,7 @@ impl GovState {
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
     /// must pass `true` for both. The parameter exists only for callers that deliberately want
     /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
-    pub(crate) fn derived_bucket_usage(
+    pub fn derived_bucket_usage(
         &self,
         cost: &crate::cost::CostModel,
         bucket_id: &str,
@@ -1642,7 +1638,7 @@ impl GovState {
     /// `{bucket_id, spend_micros_at_current_rate, remaining_micros, window}`. Read-only, built off
     /// the default hot path (only routing-policy pools request it). A missing budget group yields
     /// the key-only view.
-    pub(crate) fn budget_state(
+    pub fn budget_state(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
@@ -1750,7 +1746,7 @@ impl GovState {
     /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
     /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
     /// round-trip and no `await` anywhere on this path.
-    pub(crate) fn try_admit(
+    pub fn try_admit(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,

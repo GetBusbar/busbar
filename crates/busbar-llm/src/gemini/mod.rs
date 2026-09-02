@@ -17,10 +17,10 @@ use busbar_substrate::proto::{
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_core::proto::* when netted into core
+// used standalone; redundant with busbar_substrate::proto::* when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_core::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -154,7 +154,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_auth_headers: Some(egress_auth_headers),
     egress_auth_lane_constant: true,
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
-    // arrival (`busbar_core::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
+    // arrival (`busbar_substrate::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot
     // parity assert pairs with that registration; the arrival is no longer a field on this decl (it
     // named the core-only `Arrival`, which `ProtocolDecl`'s substrate home cannot).

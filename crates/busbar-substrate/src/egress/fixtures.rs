@@ -301,6 +301,72 @@ pub fn spawn_http(response: CannedResponse, max_requests_per_connection: usize) 
     }
 }
 
+/// Spawn a plaintext server that answers each request with a response HEAD advertising
+/// `content-length: claimed_len` but then CLOSES the connection WITHOUT sending the body. The
+/// premature EOF a client's body read hits (fewer than `claimed_len` bytes before the socket
+/// closes) is surfaced by hyper as a TRANSPORT error, DISTINCT from a clean short body or a
+/// size-cap truncation. This is the mid-body connection drop the self-minting OAuth credentials
+/// must classify as a transport failure — the substrate, real-socket twin of busbar-core's old
+/// `MockResponse::SseTransportError { ok_events: vec![] }`.
+///
+/// `claimed_len` MUST be > 0 so the client expects body bytes that never arrive; the head is
+/// written and flushed (then a brief pause) before the socket drops, so the response head parses —
+/// the request's `send_bounded` returns Ok — and only the subsequent body read fails.
+pub fn spawn_http_premature_close(claimed_len: usize) -> HttpFixture {
+    assert!(
+        claimed_len > 0,
+        "claimed_len must be > 0 to force a premature-EOF body read"
+    );
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let records: SharedRecords = Arc::new(Mutex::new(Vec::new()));
+    let request_lines = Arc::new(Mutex::new(Vec::new()));
+    let request_heads = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&records);
+    let lines = Arc::clone(&request_lines);
+    let heads = Arc::clone(&request_heads);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let record = Arc::new(Mutex::new(ConnRecord {
+                handshake_ok: true, // plaintext: there is no handshake to fail
+                ..ConnRecord::default()
+            }));
+            recorder.lock().expect("records").push(Arc::clone(&record));
+            let lines = Arc::clone(&lines);
+            let heads = Arc::clone(&heads);
+            std::thread::spawn(move || {
+                let Some(head) = read_one_request(&mut stream) else {
+                    return;
+                };
+                lines
+                    .lock()
+                    .expect("lines")
+                    .push(head.lines().next().unwrap_or_default().to_string());
+                heads.lock().expect("heads").push(head);
+                record.lock().expect("record").requests += 1;
+                // Advertise a body that never comes, flush the head, pause so it lands as a
+                // complete response head before the FIN, then DROP the socket with the body still
+                // owed — the client's body read hits EOF short of `claimed_len` → transport error.
+                let response = format!(
+                    "HTTP/1.1 200 X\r\ncontent-length: {claimed_len}\r\nconnection: close\r\n\r\n"
+                );
+                let _ = stream
+                    .write_all(response.as_bytes())
+                    .and_then(|()| stream.flush());
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                // `stream` drops here → connection closes mid-body.
+            });
+        }
+    });
+    HttpFixture {
+        addr,
+        records,
+        request_lines,
+        request_heads,
+    }
+}
+
 /// Read one HTTP/1.1 request off the stream: the head to its blank line, then exactly
 /// `content-length` body bytes so the next read starts at the next request. Returns the full
 /// request HEAD text, or `None` on a closed/broken connection.

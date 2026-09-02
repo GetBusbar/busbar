@@ -46,7 +46,7 @@
 #         `pub fn`) is skipped for its whole span (brace- and `;`-terminated) inside the scanner.
 #   * the neutral `Operation` enum — crates/api/src/operation.rs is EXCLUDED wholesale: its variants
 #     (Chat/Embeddings/Moderation/…) are the generic, protocol-neutral op vocabulary the ABI carries as
-#     DATA, and are explicitly in-scope-neutral per F4.
+#     DATA, and are explicitly in-scope-neutral.
 #   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional line) of hits
 #     that are frozen CONTRACT vocabulary, not dialect leakage: the OpenAPI/MCP `responses` object key
 #     under the admin/mcp/a2a wire crates, and the frozen `anthropic` protocol default / `mcp:` deploy
@@ -95,7 +95,7 @@ MCP_NEEDLES="$DIALECTS a2a"
 A2A_ROOT="crates/busbar-a2a/src"
 A2A_NEEDLES="$DIALECTS mcp"
 
-# The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral (F4). Excluded whole.
+# The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
 
 # ── THE FROZEN-WIRE ALLOWLIST (path-scoped, never global) ──────────────────────────────────────────

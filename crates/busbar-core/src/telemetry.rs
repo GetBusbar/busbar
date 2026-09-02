@@ -794,47 +794,51 @@ pub(crate) fn request_finished(
 pub use busbar_substrate::telemetry::{outcome_of, upstream_attempt_on, upstream_failure_on};
 
 /// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`.
-pub(crate) fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
+pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
-        _ => upstream_attempt_on(pool_label, &app.engine_tables().lanes()[lane_idx].model),
+        _ => upstream_attempt_on(
+            pool_label,
+            app.engine_tables_view()
+                .lane_view(lane_idx)
+                .map(|l| l.model)
+                .unwrap_or(""),
+        ),
     }
 }
 
 /// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane)`.
-pub(crate) fn upstream_failure(
-    app: &App,
-    pool_label: &str,
-    lane_idx: usize,
-    disposition: &'static str,
-) {
+pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, disposition: &'static str) {
     let fam = app.tslots.lane_family(pool_label, lane_idx);
     let di = DISPOSITIONS.iter().position(|d| *d == disposition);
     match (fam, di) {
         (Some(fam), Some(di)) if fam.failures[di].is_valid() => fam.failures[di].incr(),
         _ => upstream_failure_on(
             pool_label,
-            &app.engine_tables().lanes()[lane_idx].model,
+            app.engine_tables_view()
+                .lane_view(lane_idx)
+                .map(|l| l.model)
+                .unwrap_or(""),
             disposition,
         ),
     }
 }
 
 /// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane)`.
-pub(crate) fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
+pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
         _ => metrics::counter!(
             crate::metrics::BREAKER_TRIPS_TOTAL,
             "pool" => pool_label.to_owned(),
-            "lane" => app.engine_tables().lanes()[lane_idx].model.clone()
+            "lane" => app.engine_tables_view().lane_view(lane_idx).map(|l| l.model.to_owned()).unwrap_or_default()
         )
         .increment(1),
     }
 }
 
 /// `busbar_failovers_total` for one failover event on `pool label`, by reason.
-pub(crate) fn failover(app: &App, pool_label: &str, reason: &'static str) {
+pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
     let slots = app.tslots.failover.get(pool_label);
     let ri = REASONS.iter().position(|r| *r == reason);
     match (slots, ri) {
@@ -852,7 +856,7 @@ pub(crate) fn failover(app: &App, pool_label: &str, reason: &'static str) {
 /// vocabulary, so the slots are config-independent: one process-lifetime table over
 /// `KNOWN_PROTOCOLS × KNOWN_PROTOCOLS` (from ≠ to), resolved by a short linear scan (≤30 static-str
 /// compares — no hash, no allocation). Unknown (plugin) protocol names fall back to the macro.
-pub(crate) fn translation(from: &str, to: &str) {
+pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();

@@ -358,7 +358,7 @@ fn bedrock_huge_content_block_index_is_clamped() {
 // ── 5. OVER-DEEP NESTED BODY ─────────────────────────────────────────────────
 
 /// The MAX_JSON_DEPTH floor rejects a pathologically-nested body at the PARSE boundary
-/// (`busbar_core::json::parse`) — the single seam every ingress body crosses before a
+/// (`busbar_substrate::json::parse`) — the single seam every ingress body crosses before a
 /// `serde_json::Value` (and therefore any reader recursion, re-serialize, or recursive drop) can be
 /// built. A ~10k-deep body (well under the body cap) would otherwise overflow the worker stack and
 /// abort the process; here it returns a clean parse `Err` and no `Value` is ever constructed, so no

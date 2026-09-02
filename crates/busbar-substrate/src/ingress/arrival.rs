@@ -27,7 +27,6 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
-use busbar_api::operation::Operation;
 
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
@@ -49,6 +48,26 @@ impl ArrivalCtx {
     }
 }
 
+/// THE NEUTRAL ARRIVAL PAYLOAD (App-retype WEDGE 3 — THE FLIP): the concrete value core boxes into the
+/// opaque [`ArrivalCtx`] at the catch-all, and that both core's [`ArrivalHost`] impl and the LLM plane's
+/// universal ingress downcast back out. It USED to be `busbar_core::ingress::arrival_host::ArrivalPayload`
+/// (an `Arc<App>` + `GovCtx` + caller token), which forced the extracted LLM plane to name a core type to
+/// downcast it — the last structural backwards reach on the request path. Pivoted here so the payload is
+/// spelled in the NEUTRAL substrate: it carries the minted `Arc<dyn EngineHost>` (not the `Arc<App>` it
+/// was minted over), the public [`busbar_api::PlaneRequestCtx`] governance context, and the caller's
+/// bearer token flattened to a neutral scalar. Core mints the host at each construction site
+/// (`engine_host(&app)`); every downstream reader reaches the engine through the host seam, naming no
+/// core type.
+pub struct ArrivalPayload {
+    /// The neutral engine host, minted core-side over the live `App` — the seam every reader (core's
+    /// `ArrivalHost` impl and the LLM plane's ingress) drives instead of naming `Arc<App>`.
+    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    /// The resolved per-request governance context (public `busbar_api` type).
+    pub gov: busbar_api::PlaneRequestCtx,
+    /// The caller's resolved bearer token (for passthrough forwarding), flattened to a neutral scalar.
+    pub caller_token: Option<String>,
+}
+
 /// THE CORE REQUEST PIPELINE, as a path-model dialect's ingress reaches it. Every method that produces
 /// a response future returns a BOXED, `'static` future: the core impl clones the cheap
 /// `Arc<App>`/`GovCtx`/`CallerToken` out of the [`ArrivalCtx`] and owns the moved `HeaderMap`/`Bytes`,
@@ -57,37 +76,6 @@ impl ArrivalCtx {
 /// The `kind_*`/`err_type_*` accessors hand the dialect the core-owned neutral error-category vocabulary
 /// (`KIND_NOT_FOUND`, …) by value, so the dialect names none of core's `proxy`/`admin` const modules.
 pub trait ArrivalHost: Send + Sync {
-    /// THE SHARED PATH-MODEL CORE (`crate::ingress::ingress_path_model`): inject the URL-derived
-    /// `model` + route `stream` intent into the body and run the universal resolution + forward.
-    /// `model_not_found_message` is the dialect's PRE-SHAPED model-not-found body in its own native
-    /// vocabulary, used verbatim by core on a model miss — the dialect that owns the request builds it
-    /// (so core names no dialect); `None` shares the neutral OpenAI-style copy.
-    #[allow(clippy::too_many_arguments)]
-    fn ingress_path_model(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        model: String,
-        operation: Operation,
-        stream: bool,
-        gemini_json_array: bool,
-        proto: &'static str,
-        model_not_found_message: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
-
-    /// THE UNIVERSAL BODY-MODEL/RESOLVED-OP INGRESS (`crate::ingress::dispatch::operation_ingress`) —
-    /// the Bedrock `InvokeModel` arrival's tail, where the model is a path hint.
-    fn operation_ingress(
-        &self,
-        ctx: &ArrivalCtx,
-        headers: HeaderMap,
-        body: Bytes,
-        proto: &'static str,
-        operation: Operation,
-        model_hint: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = Response> + Send>>;
-
     /// The NOT-CHARGED observability finish (`crate::ingress::finish_rejected`) a pre-routing rejection
     /// (malformed path, unsupported action, no handler) must flow through so it is counted + logged.
     #[allow(clippy::too_many_arguments)]
@@ -143,6 +131,13 @@ pub struct Arrival {
     pub ctx: ArrivalCtx,
     /// The request path, already `to_string`ed by the catch-all. The dialect parses ITS OWN model out.
     pub path: String,
+    /// An OUT-OF-BAND routing name the catch-all resolved from the URL, for the busbar convenience
+    /// surfaces whose model/pool lives in the PATH rather than the body: the `/{name}/v1/messages`
+    /// (`named`) pool/model name, or the `/{provider}/{model}/v1/messages` (`adhoc`) model. `None` for
+    /// a dialect-native arrival (anthropic `/v1/messages`, the generic body-model dispatch), where the
+    /// model rides the body. A body-model arrival threads this straight into `operation_ingress`'s
+    /// `model_hint`, the byte-identical successor to the pre-relocation `named`/`adhoc` name routing.
+    pub model_hint: Option<String>,
     /// The original request URI (query intact — Gemini reads `?alt=sse`).
     pub uri: Uri,
     pub headers: HeaderMap,
@@ -213,6 +208,153 @@ pub fn path_ingress_for(name: &str) -> Option<PathIngress> {
     }
     #[cfg(any(test, feature = "test-support"))]
     if let Some((_, f)) = test_path_ingress().iter().find(|(n, _)| *n == name) {
+        return Some(*f);
+    }
+    None
+}
+
+// ============================================================================
+// THE NEUTRAL BODY-MODEL ARRIVAL SEAM — the ABI a body-model dialect's universal ingress (the LLM
+// plane's relocated `operation_ingress`) is registered through, mirroring the path-model seam above.
+// A body-model protocol keeps the model IN THE BODY, so its arrival does no URL parsing; but the
+// resolution + forward tail (`operation_ingress` → the one engine) reads the LLM routing tables and
+// so RELOCATED into `busbar-llm`. Core's `protocol_dispatch` resolves the body-arrival by protocol
+// name and calls it, naming no LLM type — exactly the plane ABI, reusing `Arrival`/`ArrivalHost`/
+// `ArrivalCtx`.
+// ============================================================================
+
+/// A body-model dialect's own universal ingress: one arrival in, one boxed response future out.
+/// Structurally identical to [`PathIngress` ] (it too takes an [`Arrival`] and returns a boxed
+/// response future); a distinct alias names the DIFFERENT registration table it lands in (the
+/// body-model side-table, not the path-model one).
+pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+
+/// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
+pub type BodyIngressEntry = (&'static str, BodyIngress);
+
+/// A fn that yields a `&'static` body-arrival table — the shape the core-test/`test-support` hook seeds.
+#[cfg(any(test, feature = "test-support"))]
+pub type BodyIngressFn = fn() -> &'static [BodyIngressEntry];
+
+/// The body-arrivals the COMPOSITION ROOT installed, protocol-name-keyed. Set once by
+/// [`install_body_ingress`]; consulted by [`body_ingress_for`]. A `Vec`, not a `&'static [_]`,
+/// because the composition root ASSEMBLES it from whichever protocol crates are linked.
+static INSTALLED_BODY_INGRESS: std::sync::OnceLock<Vec<(&'static str, BodyIngress)>> =
+    std::sync::OnceLock::new();
+
+/// INSTALL THE BODY-MODEL ARRIVALS — the composition root's one write, mirroring
+/// [`install_path_ingress`]. Set-once.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+pub fn install_body_ingress(arrivals: Vec<(&'static str, BodyIngress)>) {
+    assert!(
+        INSTALLED_BODY_INGRESS.set(arrivals).is_ok(),
+        "install_body_ingress called twice: there is one composition root, and it registers once"
+    );
+}
+
+/// THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK — the analogue of [`set_test_path_ingress`]. A
+/// build with no composition root seeds the LLM plane's `BODY_INGRESS` slice here so
+/// [`body_ingress_for`] resolves the universal ingress without a set-once `install_body_ingress`.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_BODY_INGRESS_HOOK: std::sync::OnceLock<BodyIngressFn> = std::sync::OnceLock::new();
+
+/// SEED THE CORE-TEST/`test-support` BODY-ARRIVAL HOOK. Idempotent (first writer wins).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_body_ingress(f: BodyIngressFn) {
+    let _ = TEST_BODY_INGRESS_HOOK.set(f);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn test_body_ingress() -> &'static [BodyIngressEntry] {
+    TEST_BODY_INGRESS_HOOK.get().map(|f| f()).unwrap_or(&[])
+}
+
+/// RESOLVE A BODY-MODEL DIALECT'S UNIVERSAL ARRIVAL BY NAME — the lookup `protocol_dispatch` performs
+/// for a body-model protocol. Consults the installed table first, then the test hook. `None` when no
+/// LLM plane is linked (core booted plane-agnostic): the caller then answers the honest no-handler
+/// 404.
+pub fn body_ingress_for(name: &str) -> Option<BodyIngress> {
+    if let Some(installed) = INSTALLED_BODY_INGRESS.get() {
+        if let Some((_, f)) = installed.iter().find(|(n, _)| *n == name) {
+            return Some(*f);
+        }
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some((_, f)) = test_body_ingress().iter().find(|(n, _)| *n == name) {
+        return Some(*f);
+    }
+    None
+}
+
+// ============================================================================
+// THE NEUTRAL RESOLVED-COMPLETION SEAM — the ABI core's `EngineHost::synthesize_completion` (the MCP
+// sampling re-entry) reaches the LLM plane's resolved-operation gauntlet through. The synthesizer
+// drives ONE non-streaming chat completion (a known model + body) through the SAME resolved-op path
+// (`operation_resolved` → the one engine) an arrival takes; that path reads the LLM routing tables
+// and so RELOCATED into `busbar-llm`. Unlike the arrival seams there is exactly one synthesizer (the
+// residual-default chat dialect's), so this is a single fn-pointer, not a protocol-keyed table.
+// ============================================================================
+
+/// One synthesize-completion request, as the LLM plane's relocated synthesizer receives it: the
+/// opaque core context ([`ArrivalCtx`] carrying `App`/`GovCtx`/caller-token, downcast in-plane), the
+/// resolved model, and the request headers + body. The plane resolves the residual-default chat
+/// dialect + op itself and drives `operation_resolved` with `model` explicit — byte-identical to the
+/// former core-resident `synthesize_completion_over`.
+pub struct CompletionArrival {
+    /// The opaque core context (`App`/`GovCtx`/caller-token) the plane downcasts in-plane.
+    pub ctx: ArrivalCtx,
+    /// The resolved model to route the synthesized completion through (passed explicitly, never read
+    /// from the body).
+    pub model: String,
+    pub headers: HeaderMap,
+    pub body: Bytes,
+}
+
+/// The LLM plane's resolved-completion synthesizer: one [`CompletionArrival`] in, one boxed response
+/// future out (core reads its status + body into the neutral `HostCompletion`).
+pub type CompletionIngress =
+    fn(CompletionArrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+
+/// The synthesizer the COMPOSITION ROOT installed. Set once by [`install_completion_ingress`];
+/// consulted by [`completion_ingress`]. Single, not a table (one residual-default chat synthesizer).
+static INSTALLED_COMPLETION_INGRESS: std::sync::OnceLock<CompletionIngress> =
+    std::sync::OnceLock::new();
+
+/// INSTALL THE RESOLVED-COMPLETION SYNTHESIZER — the composition root's one write, mirroring
+/// [`install_body_ingress`]. Set-once.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+pub fn install_completion_ingress(f: CompletionIngress) {
+    assert!(
+        INSTALLED_COMPLETION_INGRESS.set(f).is_ok(),
+        "install_completion_ingress called twice: there is one composition root, and it registers once"
+    );
+}
+
+/// THE CORE-TEST/`test-support` SYNTHESIZER HOOK — a build with no composition root seeds the LLM
+/// plane's synthesizer here so [`completion_ingress`] resolves it without a set-once install.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_COMPLETION_INGRESS_HOOK: std::sync::OnceLock<CompletionIngress> =
+    std::sync::OnceLock::new();
+
+/// SEED THE CORE-TEST/`test-support` SYNTHESIZER HOOK. Idempotent (first writer wins).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_test_completion_ingress(f: CompletionIngress) {
+    let _ = TEST_COMPLETION_INGRESS_HOOK.set(f);
+}
+
+/// RESOLVE THE RESOLVED-COMPLETION SYNTHESIZER — the lookup `EngineHost::synthesize_completion`
+/// performs. `None` when no LLM plane is linked (core booted plane-agnostic): the caller then returns
+/// the honest "no chat dialect installed" error rather than a synthesized completion.
+pub fn completion_ingress() -> Option<CompletionIngress> {
+    if let Some(f) = INSTALLED_COMPLETION_INGRESS.get() {
+        return Some(*f);
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(f) = TEST_COMPLETION_INGRESS_HOOK.get() {
         return Some(*f);
     }
     None

@@ -51,7 +51,7 @@ fn stub_vtable_populates_every_slot() {
     assert!(vt.journal_forget.is_some());
     assert!(vt.journal_compact.is_some());
     assert!(vt.journal_verify_scoped.is_some());
-    assert!(vt.card_sign.is_some());
+    assert!(vt.subkey_sign.is_some());
     assert!(vt.guard_url.is_some());
     assert!(vt.identity_admit.is_some());
     assert!(vt.gate_decide.is_some());

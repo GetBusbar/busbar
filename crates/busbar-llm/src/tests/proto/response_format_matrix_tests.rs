@@ -271,7 +271,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let openai_writer = OpenAiWriter;
     assert_eq!(
-        busbar_core::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
         Some((4, "OpenAI")),
         "openai must publish its documented stop-sequence cap of 4"
     );
@@ -285,7 +285,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let gemini_writer = GeminiWriter;
     assert_eq!(
-        busbar_core::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
         Some((5, "Gemini")),
         "gemini must publish its documented stop-sequence cap of 5"
     );
@@ -300,7 +300,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 
     assert_eq!(
-        busbar_core::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
+        busbar_substrate::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
         Some((5, "Cohere")),
         "cohere must publish its documented stop-sequence cap of 5"
     );

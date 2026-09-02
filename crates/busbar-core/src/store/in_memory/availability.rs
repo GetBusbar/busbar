@@ -124,7 +124,7 @@ impl HealthState {
 }
 
 impl LaneRuntime for HealthState {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn usable(&self, lane: usize, now: u64) -> bool {
         self.usable_for("", lane, now)
     }
@@ -133,7 +133,7 @@ impl LaneRuntime for HealthState {
         self.usable_for(pool, lane, now)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn is_ready(&self, lane: usize, now: u64) -> bool {
         self.ready_for("", lane, now)
     }
@@ -393,17 +393,17 @@ impl LaneRuntime for HealthState {
         Some(errors as f64 / count as f64)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn breaker_state(&self, lane: usize) -> BreakerState {
         self.breaker_state_for("", lane)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn breaker_state_in(&self, pool: &str, lane: usize) -> BreakerState {
         self.breaker_state_for(pool, lane)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn force_open_in(&self, pool: &str, lane: usize, cooldown_until: u64) {
         let cell = self.cell(pool, lane);
         let _tx = lock_recover(cell.transition_lock());
@@ -413,7 +413,7 @@ impl LaneRuntime for HealthState {
         cell.probe_in_flight().store(false, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn cooldown_remaining(&self, lane: usize, now: u64) -> u64 {
         self.cooldown_remaining_for("", lane, now)
     }
@@ -422,7 +422,7 @@ impl LaneRuntime for HealthState {
         self.cooldown_remaining_for(pool, lane, now)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_success(&self, lane: usize) {
         self.record_success_for("", lane);
     }
@@ -483,7 +483,7 @@ impl LaneRuntime for HealthState {
         ls.client_fault.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_transient(
         &self,
         lane: usize,
@@ -505,7 +505,7 @@ impl LaneRuntime for HealthState {
         self.record_failure_for(pool, lane, Self::now_secs(), cfg, retry_after)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_rate_limit(
         &self,
         lane: usize,
@@ -527,7 +527,7 @@ impl LaneRuntime for HealthState {
         self.record_failure_for(pool, lane, now_time, cfg, retry_after)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_hard_down(&self, lane: usize, reason: &str) {
         self.record_hard_down_for("", lane, reason);
     }
@@ -877,7 +877,7 @@ impl LaneRuntime for HealthState {
     }
 
     // SWRR selection over the healthy subset (ADR-0001 algorithm). Uses the lane-default cells.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
         self.select_weighted_for("", candidates, weights, now)
     }

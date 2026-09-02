@@ -42,7 +42,7 @@ use crate::net_guard::expand_alternate_ipv4;
 
 /// Validate the loaded configuration and collect all errors at once.
 /// Returns Ok(()) if valid; Err(Vec<String>) with all validation failures otherwise.
-pub(crate) fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
+pub fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
     validate_with_unset(cfg, &[])
 }
 

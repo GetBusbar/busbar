@@ -167,6 +167,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: Some(a2a_retain_verify_gates),
         default_section: Some(a2a_default_section),
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from

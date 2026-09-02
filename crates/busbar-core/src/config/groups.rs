@@ -46,21 +46,21 @@ pub struct GroupCfg {
     /// Optional parent group, forming the enforcement chain (acyclic; validated at
     /// boot / `--validate`).
     #[serde(default)]
-    pub(crate) parent: Option<String>,
+    pub parent: Option<String>,
     /// `false` FREEZES the group: every request charging through it is rejected while its history
     /// is kept. Default `true`.
     #[serde(default = "default_true")]
-    pub(crate) enabled: bool,
+    pub enabled: bool,
     /// The group's limits, enforced together (AND). Order preserved (ordered list).
     #[serde(default)]
-    pub(crate) limits: Vec<LimitCfg>,
+    pub limits: Vec<LimitCfg>,
     /// Template limits stamped onto any CHILD group auto-provisioned under this one (e.g. a
     /// `user:<sub>` leaf created on first self-mint). Lookup is nearest-ancestor-wins: provisioning
     /// walks up from the immediate parent and uses the first `child_default` it finds; none anywhere
     /// -> the new child is inherit-only (no own limits, capped by the parent chain). Absent when a
     /// group sets no template. Does NOT affect enforcement of THIS group — provisioning-time only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) child_default: Option<ChildDefault>,
+    pub child_default: Option<ChildDefault>,
 }
 
 impl Default for GroupCfg {
@@ -80,7 +80,7 @@ impl Default for GroupCfg {
 /// The limit template a group hands to its auto-provisioned children (see `GroupCfg::child_default`).
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChildDefault {
+pub struct ChildDefault {
     /// Limits copied onto a newly auto-created child group. Same `{ <metric>: <amount>, per: <window> }`
     /// shape as any group's `limits`.
     #[serde(default)]
@@ -93,7 +93,7 @@ fn default_true() -> bool {
 
 /// The metric a limit caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LimitMetric {
+pub enum LimitMetric {
     /// Request count per window.
     Requests,
     /// Total tokens (all tiers) per window.
@@ -132,7 +132,7 @@ impl LimitMetric {
 /// A limit's accounting window (nouns only).
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum LimitWindow {
+pub enum LimitWindow {
     Minute,
     Hour,
     Day,
@@ -169,11 +169,11 @@ impl LimitWindow {
 /// The `{ <metric>: amount, per: window }` shape is enforced at DESERIALIZE time (not a later
 /// validation pass), so a malformed limit fails with a precise error at parse.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LimitCfg {
-    pub(crate) metric: LimitMetric,
-    pub(crate) amount: u64,
+pub struct LimitCfg {
+    pub metric: LimitMetric,
+    pub amount: u64,
     /// `Some` for `requests`/`tokens`/`budget` (required); ALWAYS `None` for `concurrent`.
-    pub(crate) per: Option<LimitWindow>,
+    pub per: Option<LimitWindow>,
     /// `Some(scope)` scopes the limit to traffic dispatched through that scope - accounting
     /// becomes per `(group, scope)`. `None` = group-wide (every request charges it). ALWAYS
     /// `None` for `concurrent`. On the WIRE this is still the `pool: <name>` YAML key (under the
@@ -182,21 +182,21 @@ pub(crate) struct LimitCfg {
     /// decodes to `kind: "pool"`. The pool's existence is validated against the config's `pools:`
     /// at the door - generalized discipline: "validated against the config's registered universe
     /// for that scope's kind."
-    pub(crate) scope: Option<ScopeRef>,
+    pub scope: Option<ScopeRef>,
     /// What BUDGET exhaustion does: `block` (the default when absent -
     /// today's 429/quota rejection) or `downgrade` (the request re-admits and dispatches through
     /// `downgrade_to` instead of being refused - expensive calls get cheaper, not blocked).
     /// `downgrade` requires `downgrade_to` + a `pool:` scope + the `budget` metric (validated).
-    pub(crate) on_exhaust: Option<OnExhaust>,
+    pub on_exhaust: Option<OnExhaust>,
     /// The scope a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
     /// Same wire treatment as `scope`: the YAML key stays `downgrade_to: <pool-name>`.
-    pub(crate) downgrade_to: Option<ScopeRef>,
+    pub downgrade_to: Option<ScopeRef>,
 }
 
 /// The budget-exhaustion behavior a limit may declare (see [`LimitCfg::on_exhaust`]).
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OnExhaust {
+pub enum OnExhaust {
     /// Refuse the request (429 / the vendor's quota status) - the default.
     Block,
     /// Re-route the request through `downgrade_to` instead of refusing it.

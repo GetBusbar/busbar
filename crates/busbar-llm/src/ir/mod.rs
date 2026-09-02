@@ -14,7 +14,7 @@
 
 // G6 A4b relocation: the CONCRETE chat IR (below) + the leaf-op IR submodules moved here from
 // busbar-core. The neutral `facts` trait / `handle` / `invoke` / `subscribe` stay in busbar-core
-// (`busbar_core::ir::*`); the `IrReq`/`IrResp` hub enums dissolved onto `busbar_substrate::ir::handle`.
+// (`busbar_substrate::ir::*`); the `IrReq`/`IrResp` hub enums dissolved onto `busbar_substrate::ir::handle`.
 pub mod audio;
 pub mod embeddings;
 /// `impl IrFacts for IrRequest` + `project` — relocated with the concrete chat IR (G6 A4b).

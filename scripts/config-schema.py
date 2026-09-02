@@ -109,6 +109,13 @@ A2A = plane_dir("a2a")
 
 SOURCES = [
     f"{CORE}/config",
+    # `PolicyOnError` / `ProviderAuth` — the on_error/on_empty terminal and the per-provider
+    # auth-style selector — are LLM-runtime config VALUE enums that moved DOWN to
+    # `busbar-substrate` in 1.6.0's ABI-purity pass (`config/mod.rs` now re-exports each at its
+    # historical path). Track them at their new home so their `snake_case` / `#[serde(rename)]`
+    # variant grammar stays fingerprinted rather than degrading to nothing the moment it left the
+    # core config module — exactly as `UpstreamCreds`/`SecretRef` are tracked at theirs.
+    "crates/busbar-substrate/src/config.rs",
     "crates/secret-ref/src/lib.rs",
     # `UpstreamCreds` — the `upstream_credentials:` key's value grammar — moved to `busbar-api` (the
     # neutral contracts crate the plane crates name) in 1.6.0's plane extraction, exactly as

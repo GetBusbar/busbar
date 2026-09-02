@@ -130,6 +130,23 @@
 use crate::audit::vocab;
 use crate::store::Unavailable;
 
+// ── The FAILOVER BUDGET numeric defaults/bounds. Plain scalars with no config grammar attached
+//    (the serialized `FailoverCfg` shape stays in core, schema-frozen). They live HERE in the neutral
+//    substrate so a plane crate names the per-request failover budget without reaching into
+//    `busbar-core`; core's `config` re-exports each at its historical `crate::config::*` path (so
+//    `appbuild`/`config_validate`/`test_support` call sites are untouched), and the `serde` default
+//    fns (`default_failover_timeout`/`default_max_hops`) read the re-export.
+/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
+pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
+/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
+/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
+/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
+/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
+/// monotonic-clock `Instant` math.
+pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
+/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
+pub const DEFAULT_FAILOVER_CAP: usize = 3;
+
 /// ONE CANDIDATE: somewhere a request can be sent, on any plane.
 ///
 /// Implementing this is the ENTIRE cost of teaching a plane to fail over. The selection order, the

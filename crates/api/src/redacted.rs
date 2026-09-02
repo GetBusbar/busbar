@@ -100,3 +100,9 @@ impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
 #[cfg(test)]
 #[path = "tests/redacted_tests.rs"]
 mod tests;
+
+// The compile-time SERDE FENCE: pins `Redacted<T>: !Serialize`/`!Deserialize` so a secret value can
+// never reach an audit/wire/disk/log sink by construction (Part 3, Check 3 of the secret-hygiene design).
+#[cfg(test)]
+#[path = "tests/redacted_no_serde.rs"]
+mod redacted_no_serde;

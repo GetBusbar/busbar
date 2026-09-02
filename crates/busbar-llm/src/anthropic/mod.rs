@@ -37,10 +37,10 @@ use busbar_substrate::proto::*;
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_core::proto::* when netted into core
+// used standalone; redundant with busbar_substrate::proto::* when netted into core
 use super::proto_codec::*;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
-// the `busbar_core::proto::*` glob above — which, in a `test-support` build of busbar-core (this
+// the `busbar_substrate::proto::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
 // dual-compile, and a bare use of either name would then be ambiguous. An explicit import outranks both
 // globs; when this file is netted INTO core the two paths are one item, so the explicit is harmless.

@@ -180,6 +180,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         parse_endpoint: Some(mcp_parse_endpoint),
         lower_endpoint: Some(mcp_lower_endpoint),
         build_runtime: Some(mcp_build_runtime),
+        viewer: None,
         retain_verify_gates: Some(mcp_retain_verify_gates),
         default_section: Some(mcp_default_section),
     };

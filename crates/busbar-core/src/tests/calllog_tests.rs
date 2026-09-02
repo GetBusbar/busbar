@@ -524,6 +524,9 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
 /// (seq 1, 2) still form an intact chain, isolating the tolerance from the chain-break axis.
 #[test]
 fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
     let written = write_then_drop(&store);
@@ -532,10 +535,21 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
     // Corrupt the LAST persisted body so it will not decode on restore.
     backing.poison_row(P, 3);
 
+    // This restore hits the SAME `PLANE_CALLLOG_ROW_UNREADABLE` (BUSBAR-2045) skip-site that the
+    // sibling `..._fires_the_row_unreadable_diagnostic_at_error` asserts on. tracing caches each
+    // callsite's interest PROCESS-GLOBALLY on first hit; a hit under NO subscriber pins it to
+    // "disabled" and the sibling's capture then comes back empty in parallel runs. So drive this
+    // restore under a `WarnCapture` too (its shared reentrant gate serializes the two): whichever
+    // runs first registers the callsite as WANTED, and it stays enabled for the other. This test does
+    // not assert on the capture — it just refuses to poison the shared callsite cache.
+    let cap = WarnCapture::default();
     let log2 = CallTestHarness::over(store.clone());
-    let restored = log2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
-        .expect("a single undecodable record must NOT abort the whole rehydrate");
+    let restored = {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        log2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
+            .expect("a single undecodable record must NOT abort the whole rehydrate")
+    };
 
     assert_eq!(restored.principals, 1, "the principal is still enumerated");
     assert_eq!(restored.unreadable, 1, "the poisoned record is counted");
@@ -566,6 +580,7 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
 /// undecodable row — the count alone is not evidence that an operator would ever see the loss.
 #[test]
 fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
+    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let backing = Arc::new(DurableCallStore::new());
@@ -573,7 +588,13 @@ fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
     write_then_drop(&store);
     backing.poison_row(P, 3);
 
-    let cap = DiagCapture::default();
+    // Capture via the shared `WarnCapture` (WARN+ERROR) rather than an ad-hoc per-test layer. Its
+    // process-global reentrant gate SERIALIZES capture tests, so a concurrent capture test cannot
+    // cache tracing's PROCESS-GLOBAL callsite interest for this ERROR site as "disabled" and leave
+    // this one intermittently empty (green single-threaded, red in parallel). The ad-hoc `DiagCapture`
+    // this replaces had no such gate — the true cause of the parallel-only red — while the code under
+    // test always emits the diagnostic.
+    let cap = WarnCapture::default();
     let restored = {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let _g = tracing::subscriber::set_default(subscriber);
@@ -586,45 +607,12 @@ fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
         restored.unreadable, 1,
         "the poisoned record is still counted"
     );
-    let diags = cap.0.lock().unwrap();
     assert!(
-        diags.iter().any(|d| d.contains("BUSBAR-2045")),
+        cap.contains("BUSBAR-2045"),
         "the undecodable row must emit PLANE_CALLLOG_ROW_UNREADABLE (BUSBAR-2045) at ERROR at its \
-         skip site — a silent count is exactly the regression being fixed; captured: {diags:?}"
+         skip site — a silent count is exactly the regression being fixed; captured: {:?}",
+        cap.messages()
     );
-}
-
-/// A tracing layer that records the `diag = \"BUSBAR-NNNN\"` field of every ERROR event, so a test
-/// can assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose.
-#[derive(Clone, Default)]
-struct DiagCapture(Arc<std::sync::Mutex<Vec<String>>>);
-
-impl<S> tracing_subscriber::Layer<S> for DiagCapture
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::ERROR {
-            return;
-        }
-        struct V<'a>(&'a mut Option<String>);
-        impl tracing::field::Visit for V<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "diag" {
-                    *self.0 = Some(format!("{value:?}"));
-                }
-            }
-        }
-        let mut diag = None;
-        event.record(&mut V(&mut diag));
-        if let Some(d) = diag {
-            self.0.lock().unwrap().push(d);
-        }
-    }
 }
 
 /// THE PERMANENT PAIRED NEGATIVE. The same sequence against a store that overrides NONE of the

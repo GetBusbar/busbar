@@ -755,7 +755,7 @@ use Target::{FromCatalogue, Named};
 /// agent select/admit, same hook gate, same per-hop `mint_from` credential, same relay hop, same
 /// per-hop metering, same provenance chain / task-durable behaviour), and `verify_destination` is a
 /// structural `Proceed`. Riding the seam expresses verify-before-admit + the audit-correlation join
-/// on the ONE shared path, making all three planes siblings (the §11a symmetry milestone).
+/// on the ONE shared path, making all three planes siblings.
 struct A2aInvokePlane {
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     principal: busbar_api::AuthPrincipal,

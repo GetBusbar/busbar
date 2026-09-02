@@ -28,29 +28,33 @@ pub use busbar_substrate::diagnostics::*;
 mod tests;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// Emit macros. `pub(crate)` — internal to busbar-core (a `macro_rules!` macro cannot be re-exported
-// across crates via `pub use` without `#[macro_export]`, which would pollute the crate root). The
-// `busbar` bin therefore emits coded diagnostics with the equivalent banner form directly:
-// `tracing::warn!(diag = %busbar_core::diagnostics::CONST.banner(), <fields>, "msg")`. Sites in this
-// crate use `use crate::diagnostics::diag_warn;`.
+// Emit macros. `#[macro_export]` (was crate-internal): the relocated LLM engine (`busbar-llm`) names
+// these at `busbar_core::diagnostics::{diag_warn, diag_debug, diag_error}` on its money-path, so they
+// must cross the crate boundary — the one mechanism a `macro_rules!` has for that is `#[macro_export]`
+// (which also surfaces them at the crate root). The `pub use` below re-exports them at their
+// historical `crate::diagnostics::…` path so every in-crate `use crate::diagnostics::diag_warn;`
+// caller is unchanged. Sites in this crate use `use crate::diagnostics::diag_warn;`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const.
+#[macro_export]
 macro_rules! diag_warn {
     ($diag:expr, $($rest:tt)*) => {
         ::tracing::warn!(diag = %$diag.banner(), $($rest)*)
     };
 }
 /// `error!` carrying the `diag = "BUSBAR-NNNN"` field.
+#[macro_export]
 macro_rules! diag_error {
     ($diag:expr, $($rest:tt)*) => {
         ::tracing::error!(diag = %$diag.banner(), $($rest)*)
     };
 }
 /// `debug!` carrying the `diag = "BUSBAR-NNNN"` field (the benign-recurring / latched-quiet arm).
+#[macro_export]
 macro_rules! diag_debug {
     ($diag:expr, $($rest:tt)*) => {
         ::tracing::debug!(diag = %$diag.banner(), $($rest)*)
     };
 }
-pub(crate) use {diag_debug, diag_error, diag_warn};
+pub use crate::{diag_debug, diag_error, diag_warn};

@@ -643,7 +643,8 @@ async fn issue_and_render(
     let page = render_key_issued(
         &principal.id,
         &issued.group,
-        &issued.secret,
+        // `.expose_secret()`: the once-shown "key issued" page is the intended plaintext egress.
+        issued.secret.expose_secret(),
         base_url,
         module_name,
     );

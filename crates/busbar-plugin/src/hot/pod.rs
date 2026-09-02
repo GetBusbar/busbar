@@ -1601,10 +1601,12 @@ pub struct GateSubjectRef {
     pub container_ptr: *const u8,
     /// Length of the borrowed container range.
     pub container_len: usize,
-    /// Borrowed pointer to the invoked TOOL/method name (the `InvokeReq::tool`).
-    pub tool_ptr: *const u8,
-    /// Length of the borrowed tool range.
-    pub tool_len: usize,
+    /// Borrowed pointer to the invoked METHOD name (the operation the caller named — an MCP
+    /// `InvokeReq::tool`, an A2A skill/method, etc.). Named for the neutral taxonomy (the invoked
+    /// method), never one protocol's word for it.
+    pub method_ptr: *const u8,
+    /// Length of the borrowed method range.
+    pub method_len: usize,
     /// Borrowed pointer to the ARGUMENTS as the caller's JSON bytes (`serde_json::to_vec` of the
     /// arguments `Value`); the host parses them back into the `InvokeReq::arguments` `Value`.
     pub args_ptr: *const u8,

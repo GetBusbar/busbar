@@ -56,7 +56,7 @@
       "capability": "breaker-trip",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
+      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
     },
     {
       "capability": "breaker-trip",
@@ -86,7 +86,7 @@
       "capability": "breaker-fastfail",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
+      "test": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
     },
     {
       "capability": "breaker-fastfail",
@@ -116,7 +116,7 @@
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
+      "test": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
     },
     {
       "capability": "failover-reroute",
@@ -146,7 +146,7 @@
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
+      "test": "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
     },
     {
       "capability": "hooks-tap",
@@ -176,7 +176,7 @@
       "capability": "hooks-gate",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
+      "test": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
     },
     {
       "capability": "hooks-gate",
@@ -207,7 +207,7 @@
       "capability": "audit-chain",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
+      "test": "crates/busbar-llm/src/engine/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
       "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_api::Store carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists."
     },
     {
@@ -241,7 +241,7 @@
       "capability": "governance-budget",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
+      "test": "crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
     },
     {
       "capability": "governance-budget",
@@ -396,7 +396,7 @@
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
+      "test": "crates/busbar-llm/src/engine/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
     },
     {
       "capability": "egress-auth",

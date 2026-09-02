@@ -39,6 +39,15 @@ pub mod config;
 // borrows the core-live `App`) that implements `PlaneBootCtx`.
 pub mod registry;
 
+// SEAM-FIX #1 (axis-C): the NEUTRAL DURABLE-HANDLE ENGINE — the plane-agnostic async-handle /
+// durable-session capability (registry of cross-request handles, durable write-through, retention
+// sweep, boot rehydrate, inbound-push cursor, scoped anti-enumeration read). Lifted here out of the
+// A2A plane's task store so every plane consumes ONE substrate-single-compiled engine rather than
+// reaching into another plane. It names no plane noun: a plane's row is held opaquely behind
+// `Arc<dyn Any>` beside a neutral `HandleMeta` projection, and the plane supplies its shape/statuses/
+// vocab/digest through the entry-point callbacks.
+pub mod handle_engine;
+
 /// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
 /// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
 /// a plane crate contributes its admission across the mount seam without naming a core type; core

@@ -140,9 +140,9 @@ pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
     let scope = DispatchScope::new();
     with_borrowed_host(app, &scope, |host, vt| {
         // The slot is wired whenever a plane declares a card-signing domain (`plane-a2a`) and `None`
-        // otherwise (see the vtable's `card_sign`): an unwired slot signs nothing, so degrade to `None`
-        // rather than panic — the trait method must exist unconditionally across every feature combo.
-        let sign = vt.card_sign?;
+        // otherwise (see the vtable's `subkey_sign`): an unwired slot signs nothing, so degrade to
+        // `None` rather than panic — the trait method must exist unconditionally across every feature combo.
+        let sign = vt.subkey_sign?;
         let mut out = [0u8; 64];
         let status = sign(
             host,
@@ -334,7 +334,6 @@ pub async fn synthesize_completion_over(
     body: bytes::Bytes,
     max_body_bytes: usize,
 ) -> Result<busbar_substrate::plane_host::HostCompletion, String> {
-    let parsed = crate::proxy::LazyBody::parse(&body).ok();
     // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
     // per-request parameters addressed to the caller's request, and replaying them onto a leg the
     // caller did not compose would let one exchange steer another.
@@ -343,29 +342,28 @@ pub async fn synthesize_completion_over(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
-    // THE DEFAULT CHAT PROTOCOL — the wire dialect an extracted plane's synthesized completion is
-    // driven as — is the registry's residual-default protocol (openai_chat declares
-    // `residual_default: true`), read by name so this neutral core spells no dialect. `None` is the
-    // all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect to
-    // drive, and the caller gets that as an error rather than a hard-coded protocol identity.
-    let proto = crate::proto::residual_default_dialect()
-        .ok_or_else(|| "no default chat protocol is installed".to_string())?;
-    let op = crate::handlers::chat(proto, crate::transport::Transport::Http);
-    let response = crate::ingress::operation_resolved(
-        &app,
-        gov,
-        proto,
-        op.operation,
-        op.op_handler,
-        model,
-        &headers,
+    // The resolved-completion synthesizer (`operation_resolved` over the residual-default chat
+    // dialect, `LazyBody::parse` over these bytes, `model` explicit, `caller_token = None`) reads the
+    // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
+    // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
+    // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
+    // to drive, and the caller gets that as an error rather than a hard-coded protocol identity.
+    let Some(synth) = busbar_substrate::ingress::arrival::completion_ingress() else {
+        return Err("no default chat protocol is installed".to_string());
+    };
+    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
+        crate::ingress::arrival_host::ArrivalPayload {
+            host: engine_host(&app),
+            gov: gov.clone(),
+            caller_token: None,
+        },
+    );
+    let response = synth(busbar_substrate::ingress::arrival::CompletionArrival {
+        ctx,
+        model: model.to_string(),
+        headers,
         body,
-        parsed,
-        None,
-        std::time::Instant::now(),
-        crate::store::now(),
-        None,
-    )
+    })
     .await;
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
@@ -558,8 +556,280 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         );
     }
 
+    fn telemetry_upstream_attempt(&self, pool_label: &str, lane: usize) {
+        crate::telemetry::upstream_attempt(&self.app, pool_label, lane);
+    }
+
+    fn telemetry_upstream_failure(&self, pool_label: &str, lane: usize, disposition: &'static str) {
+        crate::telemetry::upstream_failure(&self.app, pool_label, lane, disposition);
+    }
+
+    fn telemetry_breaker_trip(&self, pool_label: &str, lane: usize) {
+        crate::telemetry::breaker_trip(&self.app, pool_label, lane);
+    }
+
+    fn telemetry_failover(&self, pool_label: &str, reason: &'static str) {
+        crate::telemetry::failover(&self.app, pool_label, reason);
+    }
+
+    fn telemetry_translation(&self, from: &str, to: &str) {
+        crate::telemetry::translation(from, to);
+    }
+
+    fn pool_label<'a>(&self, model: &'a str) -> &'a str {
+        crate::ingress::pool_label(&self.app, model)
+    }
+
+    fn destination_guard(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>> {
+        crate::ingress::destination_guard(&self.app, gov, proto, pool, started, charged_at)
+    }
+
+    fn finish_admitted(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response {
+        crate::ingress::finish_admitted(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+            charged,
+        )
+    }
+
+    fn finish_rejected(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response {
+        crate::ingress::finish_rejected(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+        )
+    }
+
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
+    }
+
+    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
+        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
+        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
+        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
+        &*self.app.store
+    }
+
+    fn default_probe_interval_secs(&self) -> u64 {
+        crate::limits::default_probe_interval_secs()
+    }
+
+    fn default_probe_timeout_secs(&self) -> u64 {
+        crate::limits::default_probe_timeout_secs()
+    }
+
+    fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
+        // Fold the `&App::groups_registry` argument host-side; the walk itself is byte-identical.
+        crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
+    }
+
+    // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) — each a pure borrow of the bound snapshot ──
+
+    fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+        // `App::pool_rewrites` already returns the neutral api tuple slice; byte-identical borrow.
+        self.app.pool_rewrites(pool)
+    }
+
+    fn rewrite_hooks(&self) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+        &self.app.rewrite_hooks
+    }
+
+    fn any_content_hook(&self) -> bool {
+        self.app.any_content_hook
+    }
+
+    fn tap_hooks(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks
+    }
+
+    fn tap_hooks_response(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_response
+    }
+
+    fn tap_hooks_routing(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_routing
+    }
+
+    fn tap_hooks_candidate(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_candidate
+    }
+
+    fn pool_gates(&self, pool: &str) -> &[(u16, busbar_substrate::hooks::ResolvedPolicy)] {
+        self.app.pool_gates(pool)
+    }
+
+    fn global_gates(&self) -> &[(u16, busbar_substrate::hooks::ResolvedPolicy)] {
+        &self.app.global_gates
+    }
+
+    fn pool_policy(&self, pool: &str) -> Option<&busbar_substrate::hooks::ResolvedPolicy> {
+        self.app.pool_policy(pool)
+    }
+
+    fn requested_signals(&self) -> &busbar_substrate::hooks::RequestedSignals {
+        &self.app.requested_signals
+    }
+
+    fn rate_headroom(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: Option<&str>,
+        now: u64,
+    ) -> Option<f64> {
+        // Recover the concrete gov/cost the caller's handles were minted from and drive the SAME pure
+        // observation `gov.rate_headroom(&app.cost, …)` did — byte-identical, no re-read of the host
+        // snapshot. A downcast miss (never in practice) reads as no constraint, matching the
+        // `gov`-absent arm at the engine call site.
+        let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) else {
+            return None;
+        };
+        g.rate_headroom(&c, key, pool, now)
+    }
+
+    fn budget_state(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        now: u64,
+    ) -> Vec<busbar_api::BudgetBucketState> {
+        let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) else {
+            return Vec::new();
+        };
+        g.budget_state(&c, key, now)
+    }
+
+    fn default_max_tokens(&self) -> u32 {
+        self.app.default_max_tokens
+    }
+
+    fn reasoning_effort_budgets(&self) -> &[u32; 4] {
+        &self.app.reasoning_effort_budgets
+    }
+
+    fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
+        // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
+        self.app.governance.clone().map(|g| {
+            busbar_substrate::plane_host::GovHandle(g as Arc<dyn std::any::Any + Send + Sync>)
+        })
+    }
+
+    fn cost(&self) -> busbar_substrate::plane_host::CostHandle {
+        busbar_substrate::plane_host::CostHandle(
+            self.app.cost.clone() as Arc<dyn std::any::Any + Send + Sync>
+        )
+    }
+
+    fn meter_ledger(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: &str,
+        model: &str,
+        tokens: &busbar_api::TierTokens,
+        now: u64,
+    ) {
+        // Recover the concrete gov/cost the plane's sink minted these handles from and drive the SAME
+        // accrual `sink.gov.record_usage(&sink.cost, …)` did — byte-identical, no re-read of the host
+        // snapshot. A downcast miss (never in practice — the handles are minted here) is a silent no-op,
+        // matching `record_usage`'s own fail-soft posture.
+        if let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) {
+            g.record_usage(&c, key, pool, model, tokens, now);
+        }
+    }
+
+    fn meter_series(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        usage: Option<&busbar_substrate::billing::TokenUsage>,
+        now: u64,
+    ) {
+        if let Ok(g) = gov.0.clone().downcast::<crate::governance::GovState>() {
+            g.record_metering(key_id, model, provider, usage, now);
+        }
+    }
+
+    fn admission_door(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<
+        (
+            Option<busbar_substrate::plane_host::AdmitHandle>,
+            Option<String>,
+        ),
+        Box<axum::response::Response>,
+    > {
+        // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
+        // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
+        // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
+        crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
+            |(admit, downgraded)| {
+                (
+                    admit.map(|a| {
+                        busbar_substrate::plane_host::AdmitHandle(
+                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
+                        )
+                    }),
+                    downgraded,
+                )
+            },
+        )
     }
 
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
@@ -639,6 +909,22 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
+        self.app
+            .governance
+            .as_ref()
+            .and_then(|g| g.verify_token(token, crate::store::now(), None))
+    }
+
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        // The in-process admin ring `record_by` seals into the retained ring AND cascades the SAME
+        // sealed record onto the durable hostless journal — the superset of `audit_emit`'s durable-only
+        // path. The egress audit-and-allow trail reads this ring, so a dropped cross-dialect control
+        // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
+        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
+    }
+
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
         // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
         // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
@@ -707,6 +993,24 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
     }
 
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `envelope_dialect(app.planes.ingress_of(path))`.
+        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
+    }
+
+    fn arrival_fallback_error(
+        &self,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> axum::response::Response {
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `fallback_error_response(&app.planes, …)`.
+        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
+    }
+
     async fn synthesize_completion(
         &self,
         gov: &busbar_api::PlaneRequestCtx,
@@ -727,6 +1031,21 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 #[must_use]
 pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
     Arc::new(EngineHostImpl::new(Arc::clone(app)))
+}
+
+/// THE ALLOC-FREE BORROWED HOST CARRIER (1.6.0 KEYSTONE): an owned [`EngineHost`] value the caller
+/// keeps on its STACK and coerces to `&dyn EngineHost`, so a plane reaches the host seam WITHOUT the
+/// per-request `Arc::new` heap allocation [`engine_host`] pays. The whole cost is one `Arc::clone` of
+/// the snapshot (an atomic refcount bump — NOT a heap allocation, so it never touches the engine's
+/// alloc-gate count), and the `&dyn` coercion of the stack value allocates nothing. Returned opaque
+/// (`impl EngineHost`) so the plane names no core type. The two async seam methods
+/// (`identity_admit`/`synthesize_completion`) still work — they `Arc::clone` internally — but the
+/// engine hot path calls only the SYNC methods, so this borrowed carrier is the right one there.
+#[must_use]
+pub fn engine_host_value(
+    app: &Arc<App>,
+) -> impl busbar_substrate::plane_host::EngineHost + 'static {
+    EngineHostImpl::new(Arc::clone(app))
 }
 
 /// Mint an `Arc<dyn EngineHost>` over the CURRENT snapshot of a live [`AppHandle`] — the form the
@@ -850,8 +1169,8 @@ pub fn gate_decide_over(
             request_id,
             container_ptr: container.as_ptr(),
             container_len: container.len(),
-            tool_ptr: tool.as_ptr(),
-            tool_len: tool.len(),
+            method_ptr: tool.as_ptr(),
+            method_len: tool.len(),
             args_ptr: args_json.as_ptr(),
             args_len: args_json.len(),
             key_id_ptr: key_id.as_ptr(),

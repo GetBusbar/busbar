@@ -164,7 +164,7 @@ impl ChainedRecord for AuditEntry {
 /// [`crate::audit::vocab`]. They are core's, not the admin surface's: the ruling put the whole
 /// vocabulary in core so a fourth stream inherits it instead of inventing a fourth spelling. The
 /// re-export keeps the existing import path for the hundred-odd call sites that name them.
-pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
+pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
 /// How many entries the in-memory ring retains. Bounds RAM, not history — the durable seam keeps the
 /// full log. Relocated to the neutral substrate (`busbar_substrate::audit::MAX_AUDIT_ENTRIES`) so the
@@ -196,13 +196,7 @@ impl AuditLog {
     /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap.
     /// WITH principal attribution: every mutation, success AND failure, is attributed to WHO attempted
     /// it. Feeds the SAME mutation onto the durable journal seam — the ONE durable path.
-    pub(crate) fn record_by(
-        &self,
-        action: &str,
-        resource: &str,
-        outcome: &'static str,
-        principal: &str,
-    ) {
+    pub fn record_by(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
         // Allocate `seq` INSIDE the entries lock so it matches insertion order: fetching it before
         // the lock let two concurrent recorders interleave (thread B takes the lock with the higher
         // seq and pushes first, thread A pushes its lower seq behind it), producing out-of-order

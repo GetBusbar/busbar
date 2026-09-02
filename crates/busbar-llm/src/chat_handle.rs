@@ -406,7 +406,7 @@ impl IrHandle for ChatRespHandle {
 // ─────────────────────────── the chat OperationHandler ───────────────────────────
 
 /// A protocol's chat operation — RELOCATED from `busbar-core/src/handlers/chat.rs` at the G6 A4b
-/// dissolve. The field names the protocol whose `busbar_core::proto::` reader/writer are this
+/// dissolve. The field names the protocol whose `busbar_substrate::proto::` reader/writer are this
 /// instance's codec; `read_request`/`read_response` now yield `Box<dyn IrHandle>` (a
 /// `ChatReqHandle`/`ChatRespHandle`), and the WRITE half inverted onto those handles (they write
 /// themselves by egress-protocol string). One TYPE, six per-protocol instances registered by each

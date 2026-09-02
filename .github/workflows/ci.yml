@@ -1189,6 +1189,94 @@ jobs:
       - name: Allocation-count perf gate (openai>openai forward path)
         run: cargo test -p busbar-core --lib alloc_gate -- --nocapture
 
+  # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
+  # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
+  # (dev/qa/main). A push to dev writes docs/proof/dev.json; qa -> qa.json; main -> main.json. The
+  # marketing site's deploy.yml checks THIS repo out SAME-BRANCH via UPSTREAM_DIR and renders the
+  # matching manifest, so getbusbar.dev shows dev's proof, getbusbar.qa shows qa's, and getbusbar.com
+  # shows main's — Transport Option A (commit into busbar, read via UPSTREAM_DIR): zero new infra, zero
+  # new tokens, no second-copy drift.
+  #
+  # The collator (scripts/proof-manifest.py) changes NO gate. It re-runs the cheap grep gates
+  # (plane-purity/grep/g6/abi), parses the field-coverage ledger, enumerates the golden corpus, runs the
+  # busbar-llm parity tests, and STAMPS the heavy cross-job verdicts (--mark) from the sibling jobs that
+  # actually ran them (honest capture — a job's GitHub result IS the verdict; a not-run source stays
+  # `unknown`, never green). Public-safety is fail-closed (check-proof-manifest-public.mjs: verdicts +
+  # counts + names only, no source, no secrets). The commit back carries [skip ci] so it cannot loop.
+  # Not in the ci-umbrella needs: a manifest refresh must never gate a promotion.
+  proof-manifest:
+    name: proof-manifest (stage-mirrored dev/qa/main)
+    if: github.event_name == 'push' && contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    needs:
+      - structure-lint
+      - check
+      - no-plugins-gate
+      - no-default-features
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Collate the proof manifest (verdicts + counts, public-safe)
+        env:
+          VERSION: ${{ github.ref_name }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          STRUCTURE_RESULT: ${{ needs.structure-lint.result }}
+          NOPLUGINS_RESULT: ${{ needs.no-plugins-gate.result }}
+          NODEFAULT_RESULT: ${{ needs.no-default-features.result }}
+        run: |
+          set -eu
+          python3 scripts/proof-manifest.py \
+            --version "$VERSION" \
+            --out "docs/proof/${VERSION}.json" \
+            --index \
+            --run-parity \
+            --hits-dir "$RUNNER_TEMP/proof-hits" \
+            --sha "${{ github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --reports-dir testing \
+            --mark "translate-parity-cross-pairs=${CHECK_RESULT}" \
+            --mark "egress-differential=${CHECK_RESULT}" \
+            --mark "crossproto-billing=${CHECK_RESULT}" \
+            --mark "on-exhausted=${CHECK_RESULT}" \
+            --mark "pool-upstream-creds=${CHECK_RESULT}" \
+            --mark "usage-decode-tap=${CHECK_RESULT}" \
+            --mark "plane-delete-test=${STRUCTURE_RESULT}" \
+            --mark "no-plugins-gate=${NOPLUGINS_RESULT}" \
+            --mark "proto-deletion-gate=${NODEFAULT_RESULT}"
+      - name: Public-safety guard (fail-closed — verdicts only, no source, no secrets)
+        run: node scripts/check-proof-manifest-public.mjs "docs/proof/${{ github.ref_name }}.json"
+      - name: Upload hit-list evidence as a PRIVATE CI artifact (contains source; never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-hits-${{ github.ref_name }}
+          path: ${{ runner.temp }}/proof-hits
+          if-no-files-found: ignore
+      - name: Commit the manifest back to the branch
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          git config user.name "busbar-ci"
+          git config user.email "ci@getbusbar.com"
+          git add "docs/proof/${VERSION}.json" docs/proof/index.json
+          if git diff --cached --quiet; then
+            echo "proof-manifest: no manifest change to commit."
+            exit 0
+          fi
+          git commit -m "ci(proof): refresh docs/proof/${VERSION}.json [skip ci]"
+          git push origin "HEAD:${VERSION}"
+
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
   # Branch protection should require ONE context per stage, not a growing list that silently drifts

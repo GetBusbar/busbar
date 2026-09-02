@@ -125,7 +125,7 @@ impl std::fmt::Display for AsCfgError {
 /// here, and the new secret is then one `--validate` reports as fine and the process fails on at
 /// runtime. The destructure is the enforcement; the visibility is what the destructure costs.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AsIdentity {
+pub struct AsIdentity {
     pub(crate) issuer: String,
     /// The path component of `issuer`, normalised, so a tenant-prefixed issuer
     /// (`https://host/tenant`) mounts its endpoints under that prefix rather than at the root.

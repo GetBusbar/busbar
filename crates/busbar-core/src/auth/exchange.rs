@@ -101,7 +101,9 @@ pub(crate) async fn exchange(
 /// complete BYOK payload (`{ api_key, key_id, group, exp, base_url }`).
 fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {
     serde_json::json!({
-        "api_key": issued.secret,
+        // `.expose_secret()`: the once-shown mint response is the intended, documented plaintext
+        // egress of the issued token (Redacted has no Serialize, so json! cannot embed it directly).
+        "api_key": issued.secret.expose_secret(),
         "key_id": issued.key_id,
         "group": issued.group,
         "exp": issued.exp,

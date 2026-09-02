@@ -4,7 +4,7 @@
 //! **G6 A4b, option (a) — the per-`(operation, egress-protocol)` LEAF-OP writer dispatch.**
 //!
 //! The chat operation already selects its writer by egress-protocol string
-//! (`busbar_core::proto::protocol_for(proto).writer()`); the six non-chat leaf ops
+//! (`busbar_substrate::proto::protocol_for(proto).writer()`); the six non-chat leaf ops
 //! (embeddings/image/rerank/transcription/speech/moderation) did not — each dialect's write body
 //! lived inline in its `OperationHandler::{write_request,write_response}`, reachable only by holding
 //! that dialect's handler instance. That is exactly the coupling the A4b dissolve cannot cross without
