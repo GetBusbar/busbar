@@ -25,6 +25,39 @@
 //!   the closures the lifecycle/sweep/rehydrate entry points take. This is the same boxed-callback
 //!   idiom [`crate::plane_host::scope`] uses to hold reclaim/settle resources without naming a plane
 //!   type. No plane noun appears in this module.
+//!
+//! ## Lock discipline — the deliberate submit-vs-mutate asymmetry (and why it is not yet sharded)
+//!
+//! The engine holds ONE process-wide `Mutex` over the working-set map (`handles`). Two operations take
+//! it with DIFFERENT durable-I/O disciplines, and the difference is deliberate, not an oversight:
+//!
+//! - [`submit`](DurableHandleEngine::submit) does its durable writes (`upsert_record` +
+//!   `append_record`) BEFORE it takes the working-set lock. It can, because a submit is a FRESH id at
+//!   the genesis chain position — there is no existing per-handle chain another writer could fork, so
+//!   the durable write needs no cross-writer serialization.
+//! - [`mutate`](DurableHandleEngine::mutate) / [`scoped_mutate`](DurableHandleEngine::scoped_mutate),
+//!   the sweep's abandon in [`sweep_locked`](DurableHandleEngine::sweep_locked), and
+//!   [`rehydrate`](DurableHandleEngine::rehydrate) instead hold the lock ACROSS their durable I/O. For
+//!   `mutate` this is REQUIRED, not incidental: it advances an EXISTING per-handle chain — the plane's
+//!   seal reads `pos.tail_hash` and produces the next link — so two concurrent mutations of the SAME
+//!   handle MUST be serialized or they fork the chain against one `tail_hash`. The lock-across-I/O is
+//!   what provides that per-handle serialization today.
+//!
+//! The cost: the correctness need is per-HANDLE serialization, but the current implementation pays it
+//! per-ENGINE — every handle's write serializes behind one global lock held across a store round-trip.
+//! A2A (the sole consumer today) is human-paced and tolerates it. A high-concurrency SECOND consumer
+//! (voice-session frames, Responses-stateful streaming) would hit a process-wide bottleneck.
+//!
+//! Note deliberately NOT taken: the naive "move the durable I/O out of the critical section, like
+//! `submit`" minimization is UNSOUND for `mutate` — dropping the lock during the seal/append would
+//! reopen exactly the concurrent-same-handle chain fork the lock exists to prevent, so it would trade a
+//! throughput cost for a correctness regression. The clean fix is a per-handle SHARD
+//! (`HashMap<String, Arc<Mutex<HandleSlot>>>`: the outer lock guards only map structure — insert /
+//! remove / enumerate — while a per-handle inner lock serializes that one handle's chain AND lets the
+//! global lock be released during I/O). That shard is deferred here: it is invasive (it touches every
+//! access path and the sweep's iterate-then-mutate ordering) and must not perturb A2A's frozen
+//! byte-behavior while A2A is the only consumer. It is the right move to make BEFORE a concurrent
+//! second consumer's throughput depends on the current per-engine semantics.
 
 // PARTLY UNMOUNTED: a bare substrate build that never constructs the engine reads some accessors as
 // unused; the plane crates and the engine's own unit tests exercise the whole surface.
@@ -503,7 +536,8 @@ impl DurableHandleEngine {
     /// idle past `abandon_secs` via the plane's `abandon` callback (a durable-write failure leaves it
     /// active and is reported through `report_fail`); (1) evict TERMINAL handles past
     /// `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest TERMINAL first — never an
-    /// active one.
+    /// active one. Its abandon transition does durable I/O while the global lock is held — see the
+    /// module-level "Lock discipline" note on the per-engine-vs-per-handle asymmetry.
     fn sweep_locked<A, R>(
         &self,
         handles: &mut HashMap<String, HandleSlot>,
@@ -567,7 +601,9 @@ impl DurableHandleEngine {
     /// with each (decode / read-back / terminal-check / chain-verify are the plane's, and it emits its
     /// own diagnostics + accumulates its own provenance breaks there), and installs the active ones.
     /// A row `classify` cannot read is counted, never aborting the whole rehydrate; only a STORE-level
-    /// list failure aborts (propagated).
+    /// list failure aborts (propagated). Runs at BOOT under the global lock across `classify`'s per-row
+    /// I/O; harmless there (single-threaded, no concurrency) but part of the same lock-across-I/O shape
+    /// the module-level "Lock discipline" note documents.
     pub fn rehydrate<F>(
         &self,
         store: &dyn PlaneStore,
