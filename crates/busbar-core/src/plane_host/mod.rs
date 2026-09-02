@@ -657,6 +657,101 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
     }
 
+    // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) — each a pure borrow of the bound snapshot ──
+
+    fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+        // `App::pool_rewrites` already returns the neutral api tuple slice; byte-identical borrow.
+        self.app.pool_rewrites(pool)
+    }
+
+    fn rewrite_hooks(&self) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+        &self.app.rewrite_hooks
+    }
+
+    fn any_content_hook(&self) -> bool {
+        self.app.any_content_hook
+    }
+
+    fn tap_hooks(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks
+    }
+
+    fn tap_hooks_response(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_response
+    }
+
+    fn tap_hooks_routing(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_routing
+    }
+
+    fn tap_hooks_candidate(&self) -> &[busbar_substrate::hooks::TapEntry] {
+        &self.app.tap_hooks_candidate
+    }
+
+    fn pool_gates(&self, pool: &str) -> &[(u16, busbar_substrate::hooks::ResolvedPolicy)] {
+        self.app.pool_gates(pool)
+    }
+
+    fn global_gates(&self) -> &[(u16, busbar_substrate::hooks::ResolvedPolicy)] {
+        &self.app.global_gates
+    }
+
+    fn pool_policy(&self, pool: &str) -> Option<&busbar_substrate::hooks::ResolvedPolicy> {
+        self.app.pool_policy(pool)
+    }
+
+    fn requested_signals(&self) -> &busbar_substrate::hooks::RequestedSignals {
+        &self.app.requested_signals
+    }
+
+    fn rate_headroom(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: Option<&str>,
+        now: u64,
+    ) -> Option<f64> {
+        // Recover the concrete gov/cost the caller's handles were minted from and drive the SAME pure
+        // observation `gov.rate_headroom(&app.cost, …)` did — byte-identical, no re-read of the host
+        // snapshot. A downcast miss (never in practice) reads as no constraint, matching the
+        // `gov`-absent arm at the engine call site.
+        let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) else {
+            return None;
+        };
+        g.rate_headroom(&c, key, pool, now)
+    }
+
+    fn budget_state(
+        &self,
+        gov: &busbar_substrate::plane_host::GovHandle,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        key: &busbar_api::VirtualKey,
+        now: u64,
+    ) -> Vec<busbar_api::BudgetBucketState> {
+        let (Ok(g), Ok(c)) = (
+            gov.0.clone().downcast::<crate::governance::GovState>(),
+            cost.0.clone().downcast::<crate::cost::CostModel>(),
+        ) else {
+            return Vec::new();
+        };
+        g.budget_state(&c, key, now)
+    }
+
+    fn default_max_tokens(&self) -> u32 {
+        self.app.default_max_tokens
+    }
+
+    fn reasoning_effort_budgets(&self) -> &[u32; 4] {
+        &self.app.reasoning_effort_budgets
+    }
+
     fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
         // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
         self.app

@@ -499,6 +499,121 @@ pub trait EngineHost: Send + Sync {
     /// `busbar_core::config` or `App::groups_registry`.
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool;
 
+    // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) ────────────────────────────────────────────
+    // The residual `busbar-llm` request-path reads off the resolved hook/config facades, each given a
+    // NEUTRAL borrowed home here so the wedge-3 flip (`app.X` → `host.X()`) names no `busbar_core`
+    // type. Every borrow is tied to `&self` (elided): when wedge 3 threads `host: &dyn EngineHost` as
+    // a STABLE forward-loop param, the returned slice/ref outlives the await loop, unlike a per-call
+    // `engine_host_value` stack temporary. Purely ADDITIVE — the engine still reads `app.X`, so
+    // `--baseline` is unchanged; these become live at the wedge-3 flip.
+
+    /// This pool's resolved REWRITE chain `(timeout, policy)` — the phase-1 transform hooks fired for
+    /// requests routed to `pool`, empty (the default) ⇒ no pool rewrites. Byte-identical to
+    /// `busbar_core::state::App::pool_rewrites(pool)`; a pure keyed map read, no `HostCtx`. The tuple is
+    /// purely neutral (`Duration`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait object — api).
+    fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(std::time::Duration, std::sync::Arc<dyn busbar_api::RoutingPolicy>)];
+
+    /// The GLOBAL (all-pools) rewrite chain `(timeout, policy)` fired in the phase-1 transform pass
+    /// BEFORE any pool rewrites — the borrow of `App::rewrite_hooks`. Empty (the default) ⇒ no globals.
+    /// Same neutral tuple shape as [`pool_rewrites`](Self::pool_rewrites).
+    fn rewrite_hooks(&self)
+        -> &[(std::time::Duration, std::sync::Arc<dyn busbar_api::RoutingPolicy>)];
+
+    /// Whether ANY registered hook holds a prompt-CONTENT grant (`prompt: ro`/`rw`) this generation —
+    /// the deployment gate that decides whether the request IR is built for the hook seam. A single
+    /// bool load of `App::any_content_hook`, byte-identical; `false` (the default) is the whole
+    /// zero-cost-when-off property.
+    fn any_content_hook(&self) -> bool;
+
+    /// The GLOBAL request-stage `kind: tap` observers — the borrow of `App::tap_hooks`. Each
+    /// [`TapEntry`](crate::hooks::TapEntry) is a neutral `(deadline, prompt-grant, transport, groups)`
+    /// tuple. Held BY REF across the forward await-loop (the tap-fire pass reads it after each hop), so
+    /// the borrow is deliberately tied to the stable host `&self`, not a per-call temporary.
+    fn tap_hooks(&self) -> &[crate::hooks::TapEntry];
+
+    /// The RESPONSE-stage tap observers — the borrow of `App::tap_hooks_response`. Same
+    /// [`TapEntry`](crate::hooks::TapEntry) shape as [`tap_hooks`](Self::tap_hooks); fired once the
+    /// upstream response outcome is known.
+    fn tap_hooks_response(&self) -> &[crate::hooks::TapEntry];
+
+    /// The ROUTING-stage tap observers — the borrow of `App::tap_hooks_routing`. Fired per failover hop
+    /// with the routing/attempt projection; same [`TapEntry`](crate::hooks::TapEntry) shape.
+    fn tap_hooks_routing(&self) -> &[crate::hooks::TapEntry];
+
+    /// The CANDIDATE-stage tap observers — the borrow of `App::tap_hooks_candidate`. Fired once the
+    /// decision reconcile has produced the final candidate set; same [`TapEntry`](crate::hooks::TapEntry)
+    /// shape.
+    fn tap_hooks_candidate(&self) -> &[crate::hooks::TapEntry];
+
+    /// This pool's resolved DECISION GATES `(priority, policy)` in config order — the borrow of
+    /// `App::pool_gates(pool)`. Empty ⇒ no pool gates. The [`ResolvedPolicy`](crate::hooks::ResolvedPolicy)
+    /// carrier is already neutral substrate; a pure keyed map read, no `HostCtx`.
+    fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)];
+
+    /// The GLOBAL decision gates `(priority, policy)` fired alongside the pool gates in the phase-2
+    /// reconcile — the borrow of `App::global_gates`. Empty (the default) ⇒ the phase-2 pass is skipped.
+    /// Same neutral `(u16, ResolvedPolicy)` shape as [`pool_gates`](Self::pool_gates).
+    fn global_gates(&self) -> &[(u16, crate::hooks::ResolvedPolicy)];
+
+    /// This pool's resolved routing POLICY, or `None` for the zero-cost weighted/SWRR default — the
+    /// borrow of `App::pool_policy(pool)`. The [`ResolvedPolicy`](crate::hooks::ResolvedPolicy) is
+    /// neutral substrate; a pure keyed map read, no `HostCtx`.
+    fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy>;
+
+    /// The config generation's declared-signal bitmask — the borrow of `App::requested_signals`. A
+    /// single load of the neutral [`RequestedSignals`](crate::hooks::RequestedSignals) newtype the
+    /// candidate-signal loop gates on (`requested.is_empty()` / `requested.wants(sig)`); the all-zero
+    /// default short-circuits the whole loop. Byte-identical to the field read.
+    fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
+
+    /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
+    /// chain, `None` when unconstrained) — the host-driven form of
+    /// `gov.rate_headroom(&app.cost, key, pool, now)`. `gov`/`cost` are the opaque handles the caller
+    /// minted (via [`governance`](Self::governance)/[`cost`](Self::cost)); the host downcasts them to the
+    /// concrete `GovState`/`CostModel` and drives the SAME pure observation (no cell mutation). No
+    /// `HostCtx`. `key` is the already-neutral [`VirtualKey`](busbar_api::VirtualKey) (api).
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `hooks.rs::decide_policy_order` `&app.cost`
+    /// read flips onto (the `gov` object is already the sink's own via the handle, so byte-identical).
+    fn rate_headroom(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: Option<&str>,
+        now: u64,
+    ) -> Option<f64>;
+
+    /// The HOOK-seam budget projection for `key`: `{bucket_id, spend_at_current_rate, remaining, window}`
+    /// per chain bucket, derived fresh from the token ledger × the current rate card — the host-driven
+    /// form of `gov.budget_state(&app.cost, key, now)`. `gov`/`cost` are the opaque handles; the host
+    /// downcasts and drives the SAME read. Returns the neutral
+    /// [`BudgetBucketState`](busbar_api::BudgetBucketState) vec (empty when the key has no chain), built
+    /// ONLY on a routing-policy pool. No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the twin of [`rate_headroom`](Self::rate_headroom) for the
+    /// budget-chain projection the wedge-3 flip targets.
+    fn budget_state(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        now: u64,
+    ) -> Vec<busbar_api::BudgetBucketState>;
+
+    /// The GLOBAL fallback `max_tokens` the cross-protocol translation seam injects when a lane has no
+    /// per-lane `default_max_tokens` — the read of `App::default_max_tokens`. A single `u32` load, no
+    /// `HostCtx`, byte-identical.
+    fn default_max_tokens(&self) -> u32;
+
+    /// The four reasoning-effort token budgets (`limits.reasoning_effort_budgets`, low→high) the
+    /// cross-protocol seam maps a request's declared effort onto — the borrow of
+    /// `App::reasoning_effort_budgets`. A pure array borrow, no `HostCtx`, byte-identical.
+    fn reasoning_effort_budgets(&self) -> &[u32; 4];
+
     /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
     /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane
     /// holds the handle on its per-request sink and hands it back to the metering seams.
