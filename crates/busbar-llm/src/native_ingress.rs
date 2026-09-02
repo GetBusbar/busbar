@@ -61,7 +61,7 @@ pub(crate) async fn operation_ingress_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_core::proxy::ingress_error(
+            busbar_substrate::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
@@ -76,7 +76,7 @@ pub(crate) async fn operation_ingress_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_core::proxy::ingress_error(
+            busbar_substrate::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,
@@ -108,7 +108,7 @@ pub(crate) async fn operation_ingress_inner(
                     crate::engine::POOL_LABEL_UNRESOLVED,
                     started,
                     charged_at,
-                    busbar_core::proxy::ingress_error(
+                    busbar_substrate::proxy::ingress_error(
                         proto,
                         StatusCode::BAD_REQUEST,
                         crate::engine::KIND_INVALID_REQUEST,
@@ -143,7 +143,7 @@ pub(crate) async fn operation_ingress_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_core::proxy::ingress_error(
+                busbar_substrate::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -277,7 +277,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             } else {
                 // The destination did not resolve — the dialect-shaped not-found, finished through the
                 // SAME stage-6 tail as a served request (so the pre-seam not-found accounting is exact).
-                let resp = busbar_core::proxy::ingress_error(
+                let resp = busbar_substrate::proxy::ingress_error(
                     proto,
                     StatusCode::NOT_FOUND,
                     crate::engine::KIND_NOT_FOUND,
@@ -526,7 +526,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_core::proxy::ingress_error(
+                busbar_substrate::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -565,7 +565,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_core::proxy::ingress_error(
+                busbar_substrate::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -599,7 +599,7 @@ async fn ingress_path_model_inner(
                 crate::engine::POOL_LABEL_UNRESOLVED,
                 started,
                 charged_at,
-                busbar_core::proxy::ingress_error(
+                busbar_substrate::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
                     crate::engine::KIND_INVALID_REQUEST,
@@ -621,7 +621,7 @@ async fn ingress_path_model_inner(
             crate::engine::POOL_LABEL_UNRESOLVED,
             started,
             charged_at,
-            busbar_core::proxy::ingress_error(
+            busbar_substrate::proxy::ingress_error(
                 proto,
                 StatusCode::NOT_FOUND,
                 crate::engine::KIND_NOT_FOUND,

@@ -314,3 +314,49 @@ pub fn build_egress_client(
     crate::egress::engine::build_client(spec)
         .expect("the base egress engine posture has no failing build arm")
 }
+
+// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_core::proxy::proxy_vocab` ──────
+// The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
+// fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
+// `busbar-llm` shapes an ingress error through the neutral ABI rather than reaching BACK into
+// `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
+// resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
+// being dropped with the `busbar-llm` plane. `busbar-core` re-exports both at their historical
+// `busbar_core::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
+// unchanged.
+
+/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
+/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
+/// resolves to no protocol the body is the neutral [`agnostic_error_envelope`] and no protocol headers
+/// are attached — the shape that survives every LLM dialect being dropped with the `busbar-llm` plane.
+pub fn ingress_error(
+    ingress: &str,
+    status: axum::http::StatusCode,
+    kind: &str,
+    msg: &str,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
+    let envelope = match &dialect {
+        Some(di) => di.write_error(status.as_u16(), kind, msg),
+        None => agnostic_error_envelope(kind, msg),
+    };
+    let body = crate::json::to_string(&envelope)
+        .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
+    let mut resp = axum::response::Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, APPLICATION_JSON)
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| status.into_response());
+    if let Some(di) = &dialect {
+        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+    }
+    resp
+}
+
+/// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
+/// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
+/// and neutral so it survives every LLM dialect being dropped from the build.
+pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
+    serde_json::json!({ "error": { "message": msg, "type": kind } })
+}

@@ -118,7 +118,7 @@ fn maybe_attach_route_policy_gated(
 // (`busbar_substrate::proxy::proxy_vocab`); the engine names them at their historical short paths through
 // this re-export. `ingress_reject_response` (LLM-specific — it maps an `IngressReject`) delegates to
 // the re-exported `ingress_error`.
-pub(crate) use busbar_core::proxy::{agnostic_error_envelope, ingress_error};
+pub(crate) use busbar_substrate::proxy::{agnostic_error_envelope, ingress_error};
 
 /// Project an [`busbar_substrate::handlers::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two

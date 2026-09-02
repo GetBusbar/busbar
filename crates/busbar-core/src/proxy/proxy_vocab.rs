@@ -10,14 +10,7 @@
 //! engine names them across the crate boundary as `busbar_core::proxy::*` — neither reaches for a
 //! dialect, so the plane can be dropped from the build without taking any of this with it.
 
-use axum::{
-    body::Body,
-    http::header::CONTENT_TYPE,
-    response::{IntoResponse, Response},
-};
-use http::StatusCode;
-
-use crate::proxy::APPLICATION_JSON;
+use axum::response::Response;
 
 // THE CAPPED READ and its `ReadEnd` outcome live in the neutral `busbar-substrate` crate (both
 // core's egress/auth paths and the relocated proxy engine read upstream bodies this way, and a plane
@@ -187,34 +180,10 @@ pub fn gate_rejected(mut resp: Response) -> Response {
     resp
 }
 
-/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
-/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When
-/// `ingress` resolves to no protocol the body is core's OWN [`agnostic_error_envelope`] and no
-/// protocol headers are attached — the shape that survives every LLM dialect being dropped with the
-/// `busbar-llm` plane. `crate::proto::decl_for` names no dialect literally; it reads whatever
-/// registry the resident planes populated.
-pub fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: &str) -> Response {
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
-    let body = crate::json::to_string(&envelope)
-        .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
-    let mut resp = Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, APPLICATION_JSON)
-        .body(Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    if let Some(di) = &dialect {
-        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
-    }
-    resp
-}
-
-/// CORE'S OWN ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
-/// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
-/// and core's, so it survives every LLM dialect being dropped from the build.
-pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
-    serde_json::json!({ "error": { "message": msg, "type": kind } })
-}
+// THE AGNOSTIC INGRESS-ERROR SHAPER and its neutral fallback envelope RELOCATED DOWN to
+// `busbar_substrate::proxy` (the extracted `busbar-llm` native-ingress path shapes an ingress error
+// through the neutral ABI); re-exported here at their historical `crate::proxy::{ingress_error,
+// agnostic_error_envelope}` paths so every in-core caller is unchanged. They name no dialect —
+// `proto::decl_for` reads whatever registry the resident planes populated — and the fallback is
+// neutral, so both survive the LLM plane being dropped from the build.
+pub use busbar_substrate::proxy::{agnostic_error_envelope, ingress_error};
