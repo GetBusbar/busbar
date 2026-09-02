@@ -1,0 +1,10 @@
+{
+  "event_id": "evt_client_0007",
+  "type": "conversation.item.create",
+  "item": {
+    "id": "item_fnout_001",
+    "type": "function_call_output",
+    "call_id": "call_weather_abc",
+    "output": "{\"temp_c\":18,\"condition\":\"partly cloudy\"}"
+  }
+}

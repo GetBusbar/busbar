@@ -1,0 +1,9 @@
+{
+  "event_id": "evt_server_0010",
+  "type": "response.audio.delta",
+  "response_id": "resp_001",
+  "item_id": "item_asst_002",
+  "output_index": 0,
+  "content_index": 0,
+  "delta": "UklGRhwAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="
+}

@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_server_0016",
+  "type": "response.done",
+  "response": {
+    "id": "resp_001",
+    "object": "realtime.response",
+    "status": "completed",
+    "output": [
+      {
+        "id": "item_asst_002",
+        "object": "realtime.item",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          { "type": "audio", "transcript": "It's 18 degrees and partly cloudy in Paris." }
+        ]
+      }
+    ],
+    "usage": {
+      "total_tokens": 220,
+      "input_tokens": 140,
+      "output_tokens": 80,
+      "input_token_details": { "text_tokens": 40, "audio_tokens": 100 },
+      "output_token_details": { "text_tokens": 20, "audio_tokens": 60 }
+    }
+  }
+}

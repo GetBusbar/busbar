@@ -1,0 +1,12 @@
+{
+  "event_id": "evt_client_0002",
+  "type": "conversation.item.create",
+  "item": {
+    "id": "item_user_001",
+    "type": "message",
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "What's the weather in Paris?" }
+    ]
+  }
+}

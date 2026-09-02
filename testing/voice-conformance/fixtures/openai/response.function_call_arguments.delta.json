@@ -1,0 +1,10 @@
+{
+  "event_id": "evt_server_0008",
+  "type": "response.function_call_arguments.delta",
+  "response_id": "resp_000",
+  "item_id": "item_fncall_001",
+  "output_index": 0,
+  "call_id": "call_weather_abc",
+  "delta": "{\"city\":\"Pa",
+  "sequence_number": 3
+}
