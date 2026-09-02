@@ -23,6 +23,34 @@
 
 pub mod ir;
 
+// THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
+// HARD RULE 4). The default / prod build compiles the skeleton IR + declarations only; turning the
+// feature on compiles the duplex session pump, the D2 metering lease, the durable `SessionScope`
+// binding, and the browser-sideband / telephony topologies. Voice stays dev-only until DoD.
+#[cfg(feature = "runtime")]
+pub mod runtime;
+#[cfg(feature = "runtime")]
+pub mod topology;
+
+/// THE `PLANE_DECL.build_runtime` VALUE — wired to the real runtime constructor
+/// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` in the default skeleton build so
+/// the prod `PLANE_DECL` is byte-unchanged (voice stays dev-only until DoD). Split by `cfg` because the
+/// `runtime` module (and its constructor) only exist behind the feature.
+#[cfg(feature = "runtime")]
+const VOICE_BUILD_RUNTIME: Option<
+    fn(
+        &dyn std::any::Any,
+        Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+> = Some(runtime::build_runtime);
+#[cfg(not(feature = "runtime"))]
+const VOICE_BUILD_RUNTIME: Option<
+    fn(
+        &dyn std::any::Any,
+        Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+    ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+> = None;
+
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
 /// here; it is the [`DECLS`] registry key and the plane's sole [`PLANE_DECL`] wire format (one
 /// dialect ⇒ no superset IR yet).
@@ -74,7 +102,12 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         parse_section: None,
         parse_endpoint: None,
         lower_endpoint: None,
-        build_runtime: None,
+        // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
+        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` in the default skeleton build so the prod build
+        // is byte-unchanged. The remaining runtime hooks (`build` / `hydrate` / `start` /
+        // `parse_section` / `default_section`) stay `None`: they need the plane's config-section grammar
+        // and the host metering-lease seam, both outside this crate's scope (see the T2 report).
+        build_runtime: VOICE_BUILD_RUNTIME,
         viewer: None,
         retain_verify_gates: None,
         default_section: None,

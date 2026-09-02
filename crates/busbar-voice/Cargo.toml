@@ -54,7 +54,22 @@ bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# ── THE T2 RUNTIME's async surface — OPTIONAL, pulled ONLY by the `runtime` feature (OFF by default).
+# The default / prod `cargo build -p busbar-voice` compiles with NONE of these in its closure: the
+# skeleton IR + declarations need no async runtime. The live duplex session pump (`session.rs`), the
+# metering lease, and the two topologies name `async_trait`, the `futures` Stream/Sink vocabulary the
+# neutral `serve_messages` pump is generic over, and `tokio` sync/task primitives — so each is an
+# OPTIONAL dep the `runtime` feature turns on, keeping voice dev-only until DoD (HARD RULE 4).
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optional = true }
+
 [features]
+# THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
+# lease + both topologies). OFF by default: voice is dev-only until DoD, so the default workspace build
+# is UNAFFECTED and the crate still compiles with the flag off (the skeleton). Turning it on pulls the
+# async closure (`async-trait` / `futures` / `tokio`) and compiles `session`/`topology`.
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The skeleton

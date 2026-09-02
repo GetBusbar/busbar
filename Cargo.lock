@@ -781,13 +781,16 @@ dependencies = [
 name = "busbar-voice"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "axum",
  "busbar-api",
  "busbar-core",
  "busbar-substrate",
  "bytes",
+ "futures",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
