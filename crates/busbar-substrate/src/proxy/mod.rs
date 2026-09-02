@@ -360,3 +360,15 @@ pub fn ingress_error(
 pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
+
+/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
+/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
+/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
+/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
+/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
+/// protocol registry, so it survives every LLM dialect being dropped from the build.
+pub fn auth_failure_status_and_kind(proto: &str) -> (axum::http::StatusCode, &'static str) {
+    crate::proto::decl_for(proto)
+        .map(|d| d.auth_failure_status_and_kind)
+        .unwrap_or((axum::http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
+}

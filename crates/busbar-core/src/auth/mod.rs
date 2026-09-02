@@ -795,11 +795,10 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// per-protocol decision lives in the writer vtable, not in this agnostic function. `BedrockWriter`
 /// overrides to (403, "auth"); `GeminiWriter` to (400, "invalid_request_error"); all others use the
 /// default (401, "authentication_error"). An unknown future proto falls back to the default.
-pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .map(|d| d.auth_failure_status_and_kind)
-        .unwrap_or((StatusCode::UNAUTHORIZED, crate::proxy::KIND_AUTHENTICATION))
-}
+// RELOCATED to `busbar_substrate::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
+// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
+// historical path are unchanged.
+pub use busbar_substrate::proxy::auth_failure_status_and_kind;
 
 /// Build an auth-failure response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native vendor SDK

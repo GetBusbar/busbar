@@ -2543,7 +2543,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 // (`auth_failure_status_and_kind`) so this path cannot drift from the
                                 // pre-routing auth path.
                                 let (auth_status, auth_kind) =
-                                    busbar_core::auth::auth_failure_status_and_kind(
+                                    busbar_substrate::proxy::auth_failure_status_and_kind(
                                         ingress_protocol,
                                     );
                                 return ingress_error(
