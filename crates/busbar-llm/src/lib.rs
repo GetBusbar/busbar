@@ -35,7 +35,7 @@
 //! `crate::proto` in the other, and only a relative path is correct in both.
 
 // THE ALLOCATION-COUNT PERF-GATE INSTRUMENT, ported from busbar-core WITH the money-path engine tests
-// (money-path Phase 3-4 C M4). The gate (`engine/proxy_tests/alloc_gate.rs`) drives one openai>openai
+// (money-path Phase 3-4 C M4). The gate (`engine/tests/alloc_gate.rs`) drives one openai>openai
 // passthrough through the real forward path and asserts the per-request heap-allocation count has not
 // regressed. Its instrument must be THIS test binary's `#[global_allocator]` (an allocator is a binary
 // property, set by the crate under test), so it is installed here under the same target gate core uses.

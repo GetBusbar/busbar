@@ -473,6 +473,22 @@ pub(crate) fn validate_hook_settings_size(
     Ok(())
 }
 
+/// Whether `p` names a live pool, read through the NEUTRAL pool label space (`EngineTablesView`) so
+/// this core group-validator names no plane table type. The `validate_groups` `pool_exists` predicate.
+fn pool_known(app: &App, p: &str) -> bool {
+    app.engine_tables_view()
+        .pools()
+        .iter()
+        .any(|(n, _)| *n == p)
+}
+
+/// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
+fn lane_model(view: &dyn busbar_substrate::plane_host::EngineTablesView, idx: usize) -> String {
+    view.lane_view(idx)
+        .map(|l| l.model.to_string())
+        .unwrap_or_default()
+}
+
 pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, AdminError> {
     // ── validate the definition (fail-closed, before any mutation) ──
     if name.trim().is_empty() {
@@ -605,17 +621,7 @@ pub(crate) fn build_with_group(
     let mut groups = current.groups_registry.clone();
     groups.insert(name.to_string(), cfg);
     let mut errors = Vec::new();
-    crate::config::groups::validate_groups(
-        &groups,
-        &|p| {
-            current
-                .engine_tables_view()
-                .pools()
-                .iter()
-                .any(|(n, _)| *n == p)
-        },
-        &mut errors,
-    );
+    crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
     if !errors.is_empty() {
         return Err(AdminError::Validation(format!(
             "invalid group `{name}`: {}",
@@ -694,17 +700,7 @@ pub(crate) fn build_without_group(
     // as a state CONFLICT (something still references this group) so the caller distinguishes it from
     // a malformed request.
     let mut errors = Vec::new();
-    crate::config::groups::validate_groups(
-        &groups,
-        &|p| {
-            current
-                .engine_tables_view()
-                .pools()
-                .iter()
-                .any(|(n, _)| *n == p)
-        },
-        &mut errors,
-    );
+    crate::config::groups::validate_groups(&groups, &|p| pool_known(current, p), &mut errors);
     if !errors.is_empty() {
         return Err(AdminError::Conflict(format!(
             "cannot delete group `{name}`: {} (re-parent or remove the referencing group first)",
@@ -921,11 +917,7 @@ impl AdminService {
                     .pool_members(name)
                     .iter()
                     .map(|&(idx, weight)| PoolMemberView {
-                        // `idx` is the stable lane handle; project the lane's model name.
-                        model: view
-                            .lane_view(idx)
-                            .map(|l| l.model.to_string())
-                            .unwrap_or_default(),
+                        model: lane_model(view, idx),
                         weight,
                     })
                     .collect(),
@@ -940,8 +932,8 @@ impl AdminService {
     /// `not_found` if the pool is unknown.
     pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
         let view = self.app.engine_tables_view();
-        // A pool is known iff it appears in the neutral pool label space; `pool_members` returns its
-        // `(lane idx, weight)` members (empty for an unknown pool, which `pools()` distinguishes).
+        // A pool is known iff it appears in the neutral pool label space (distinct from `pool_members`
+        // returning empty, which an unknown pool also does).
         if !view.pools().iter().any(|(n, _)| *n == name) {
             return Err(AdminError::not_found(format!("pool `{name}`")));
         }
@@ -951,8 +943,7 @@ impl AdminService {
 
     /// Project one pool's LIVE member status — the shared core of `GET /pools/{name}` and
     /// `GET /pools?detail=true` (one projection, two readers — the shapes can never diverge). Takes the
-    /// NEUTRAL `(lane idx, weight)` member projection ([`EngineTablesView::pool_members`]) so this core
-    /// admin reader names no plane `WeightedLane`.
+    /// NEUTRAL `(lane idx, weight)` projection ([`EngineTablesView::pool_members`]), naming no plane type.
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
         let view = self.app.engine_tables_view();
         let now = crate::store::now();
@@ -968,10 +959,7 @@ impl AdminService {
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
                 let snap = self.app.store.snapshot(idx, now);
                 PoolMemberStatusView {
-                    model: view
-                        .lane_view(idx)
-                        .map(|l| l.model.to_string())
-                        .unwrap_or_default(),
+                    model: lane_model(view, idx),
                     weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the

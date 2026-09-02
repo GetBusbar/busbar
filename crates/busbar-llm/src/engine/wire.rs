@@ -815,5 +815,5 @@ pub(crate) fn stable_hash(s: &str) -> u64 {
 }
 
 #[cfg(test)]
-#[path = "proxy_tests/wire_tests.rs"]
+#[path = "tests/wire_tests.rs"]
 mod tests;

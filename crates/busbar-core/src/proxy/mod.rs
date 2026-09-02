@@ -94,6 +94,6 @@ pub use busbar_substrate::proxy::build_egress_client;
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
 // *_degrade / egress_dropped_controls_audit / alloc_gate / … ) RELOCATED to `busbar-llm`
-// (`src/engine/proxy_tests/`, declared under `engine/mod.rs`) with the engine they drive
+// (`src/engine/tests/`, declared under `engine/mod.rs`) with the engine they drive
 // (`forward_with_pool` et al.). Only the record/dispatch audit tests that go
 // through core's `build_router` (`reqlog_dispatch_tests`, above; `reqlog_tests`, in `reqlog.rs`) stay.

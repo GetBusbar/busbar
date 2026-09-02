@@ -108,7 +108,7 @@ busbar-core = { path = "../busbar-core", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp" }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
-# The relocated money-path tests (src/engine/{proxy_tests,engine_tests}) drive the engine through
+# The relocated money-path tests (src/engine/{tests,engine_tests}) drive the engine through
 # core's test_support mock harness and name these directly.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
 reqwest = { workspace = true, features = ["http2", "json"] }
@@ -124,7 +124,7 @@ bytes = { workspace = true }
 metrics = { workspace = true }
 http = { workspace = true }
 
-# The allocation-count PERF gate (`engine/proxy_tests/alloc_gate.rs`) reads a per-thread counter off a
+# The allocation-count PERF gate (`engine/tests/alloc_gate.rs`) reads a per-thread counter off a
 # jemalloc-wrapping `#[global_allocator]` this crate's TEST binary installs (see `lib.rs`), mirroring
 # busbar-core. Target-gated exactly as core's is.
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]

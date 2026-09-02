@@ -321,5 +321,5 @@ pub(crate) fn head_provably_pristine(rt: &Arc<NativeRuntime>, i: usize, probe: &
 }
 
 #[cfg(test)]
-#[path = "proxy_tests/lazy_body_tests.rs"]
+#[path = "tests/lazy_body_tests.rs"]
 mod lazy_body_tests;

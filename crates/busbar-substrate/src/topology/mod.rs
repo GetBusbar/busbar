@@ -166,5 +166,5 @@ impl UpstreamClients {
 }
 
 #[cfg(test)]
-#[path = "topology/worker_shard_tests.rs"]
+#[path = "worker_shard_tests.rs"]
 mod worker_shard_tests;
