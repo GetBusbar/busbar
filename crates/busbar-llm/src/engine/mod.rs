@@ -72,7 +72,7 @@ pub(crate) use wire::*;
 // into the flattened engine namespace so the relocated wire/pipeline call sites keep naming them at
 // their historical short paths (`crate::engine::{route_policy_headers_enabled, HDR_ROUTE_POLICY,
 // HDR_ROUTE_TARGET, UPSTREAM_RTT_US}`).
-pub(crate) use busbar_core::proxy::{
+pub(crate) use busbar_substrate::proxy::{
     route_policy_headers_enabled, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET, UPSTREAM_RTT_US,
 };
 
@@ -95,18 +95,18 @@ pub(crate) use busbar_substrate::proxy::{
     TEXT_EVENT_STREAM,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_core::proxy::{
+pub(crate) use busbar_substrate::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
     DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
     ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
     KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
     KIND_TIMEOUT,
 };
-// The NEUTRAL hook-content ceiling knob + the egress-client builder that STAY in core — re-exported
-// into the flattened engine namespace so the relocated tests (which named them at `proxy::…`) keep
-// resolving at `crate::engine::…`.
+// The NEUTRAL hook-content ceiling knob + the egress-client builder now live in the neutral substrate
+// (`busbar_substrate::proxy`) — re-exported into the flattened engine namespace so the relocated tests
+// (which named them at `proxy::…`) keep resolving at `crate::engine::…`.
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_core::proxy::{
+pub(crate) use busbar_substrate::proxy::{
     build_egress_client, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };
 

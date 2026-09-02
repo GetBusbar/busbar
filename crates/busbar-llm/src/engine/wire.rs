@@ -618,7 +618,7 @@ pub(crate) fn max_translated_body_bytes() -> usize {
 // and a plane crate names them without reaching into core). Re-exported here so every
 // `crate::engine::{read_capped, ReadEnd}` call site — via `proxy/mod.rs`'s `pub(crate) use wire::*`
 // — resolves unchanged.
-pub use busbar_core::proxy::{read_capped, ReadEnd};
+pub use busbar_substrate::proxy::{read_capped, ReadEnd};
 
 /// Read an upstream ERROR / verbatim-relay body under the tight [`max_upstream_buffered_bytes()`] cap
 /// and the caller's wall-clock deadline. A truncated error body still classifies/relays correctly

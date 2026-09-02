@@ -292,7 +292,7 @@ pub(crate) fn enforce_content_cap(
     prompt: Option<busbar_api::PromptProjection<'_>>,
 ) -> Option<busbar_api::PromptProjection<'_>> {
     let p = prompt?;
-    let cap = busbar_core::proxy::hook_content_max_bytes();
+    let cap = busbar_substrate::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly unlimited — the operator turned the ceiling off.
         return Some(p);

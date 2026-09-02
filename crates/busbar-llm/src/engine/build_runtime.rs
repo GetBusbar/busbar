@@ -266,7 +266,7 @@ pub(crate) fn build_runtime(
             .max(1);
         let cs = input.client_settings;
         let make_one = || {
-            busbar_core::proxy::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
+            busbar_substrate::proxy::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
                 idle_per_host_per_shard,
                 cs.pool_idle_timeout_secs,
                 cs.http1_only,

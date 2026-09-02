@@ -33,28 +33,14 @@ pub fn max_upstream_buffered_bytes() -> usize {
     crate::limits::upstream_error_body_max_bytes()
 }
 
-/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection.
-///
-/// `0` = UNLIMITED (the default): the LLM prompt projection is sent UNCAPPED, byte-for-byte as
-/// v1.5.4 did. A non-zero ceiling is an OPT-IN an operator sets via `limits.hook_content_max_bytes`.
-pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
-
-/// The effective content ceiling for this config generation, resolved once at config apply
-/// (`limits.hook_content_max_bytes`) and read with a single relaxed load — never recomputed per
-/// request.
-static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
-
-/// Install the generation's content ceiling. Called at boot and on every config apply.
-pub fn set_hook_content_max_bytes(bytes: usize) {
-    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Read the generation's content ceiling. `0` = UNLIMITED. Named across the crate boundary by the
-/// relocated hook-projection enforcer, which caps SERIALIZED BYTES against this value.
-pub fn hook_content_max_bytes() -> usize {
-    HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
-}
+// The hook-content ceiling (the default, the process-global slot's setter, and the reader) now lives
+// in the neutral `busbar_substrate::proxy` so the relocated hook-projection enforcer names it without
+// reaching into `busbar-core`. Re-exported here so every core `crate::proxy::{
+// DEFAULT_HOOK_CONTENT_MAX_BYTES, set_hook_content_max_bytes, hook_content_max_bytes}` call site
+// (`config`, `appbuild`) resolves unchanged.
+pub use busbar_substrate::proxy::{
+    hook_content_max_bytes, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
+};
 
 /// Shape scalars captured ONCE per request for the STAGE tap payloads (candidate/routing/response).
 /// All owned/`'static`-free scalars except the pool/protocol names (which outlive the request), so

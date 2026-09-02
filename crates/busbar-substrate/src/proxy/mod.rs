@@ -201,3 +201,116 @@ pub const KIND_OVERLOADED: &str = "overloaded";
 pub const KIND_TIMEOUT: &str = "timeout";
 /// Transient upstream-failure forward kind (aliases the OpenAI `server_error` type).
 pub const KIND_SERVER_ERROR: &str = crate::proto::ERR_TYPE_SERVER_ERROR;
+
+// ── The remaining agnostic error-KIND tokens. Relocated DOWN from `busbar-core`'s `proxy` so the
+//    `busbar-llm` dialect writers name them without reaching into `busbar-core`; core's `proxy`
+//    re-exports each at its historical `crate::proxy::KIND_*` path. Each aliases its canonical home in
+//    [`crate::proto`] so the spelling has ONE definition and cannot drift.
+/// Caller-authentication failure forward kind (aliases the OpenAI `authentication_error` type).
+pub const KIND_AUTHENTICATION: &str = crate::proto::ERR_TYPE_AUTHENTICATION;
+/// Caller-permission failure forward kind (aliases the OpenAI `permission_error` type).
+pub const KIND_PERMISSION: &str = crate::proto::ERR_TYPE_PERMISSION;
+/// Rate-limit forward kind (aliases the OpenAI `rate_limit_error` type).
+pub const KIND_RATE_LIMIT: &str = crate::proto::ERR_TYPE_RATE_LIMIT;
+/// Malformed/invalid-request forward kind (aliases the OpenAI `invalid_request_error` type).
+pub const KIND_INVALID_REQUEST: &str = crate::proto::ERR_TYPE_INVALID_REQUEST;
+/// Unknown-model / not-found forward kind (aliases the OpenAI `not_found_error` type).
+pub const KIND_NOT_FOUND: &str = crate::proto::ERR_TYPE_NOT_FOUND;
+/// Quota-exhausted forward kind (aliases the OpenAI `insufficient_quota` type).
+pub const KIND_INSUFFICIENT_QUOTA: &str = crate::proto::ERR_TYPE_INSUFFICIENT_QUOTA;
+/// Oversized-request forward kind (aliases the OpenAI `request_too_large` type).
+pub const KIND_REQUEST_TOO_LARGE: &str = crate::proto::ERR_TYPE_REQUEST_TOO_LARGE;
+
+// ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the error-KIND
+//    tokens above: they label the *category* of network failure recorded in the breaker store, not the
+//    protocol-level error kind surfaced to the caller. Relocated DOWN from `busbar-core`'s `proxy` so
+//    the relocated LLM engine names them at `busbar_substrate::proxy::ERR_NET_*` without reaching into
+//    `busbar-core`; core's `proxy` re-exports each at its historical `crate::proxy::ERR_NET_*` path.
+pub const ERR_NET_CONNECT: &str = "connect";
+pub const ERR_NET_TIMEOUT: &str = "timeout";
+pub const ERR_NET_TRANSPORT: &str = "transport";
+/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
+pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
+
+// ── Failure-DISPOSITION metric-label values (the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL`
+//    / the `reason` dimension on `FAILOVERS_TOTAL`). [`DISPOSITION_TRANSIENT`] already lives above;
+//    these three are relocated DOWN from `busbar-core`'s `proxy` alongside it so the money-path
+//    failure-classification names them without reaching into `busbar-core`.
+/// A single attempt's budget-clamped transport timeout fired (retryable within the request).
+pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub const DISPOSITION_HARD_DOWN: &str = "hard_down";
+pub const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+
+// ── The two `x-busbar-*` TRANSPARENCY response-header NAMES stamped when a non-default routing policy
+//    chose the target lane, the operator opt-in gate, and the per-request upstream-RTT task-local the
+//    router reads. Neutral vocabulary relocated DOWN from `busbar-core`'s `proxy` so the money-path
+//    wire layer names them without reaching into `busbar-core`; core's `proxy` re-exports each at its
+//    historical `crate::proxy::…` path (so `router.rs`/`main.rs`/`admin` call sites are untouched).
+/// The `x-busbar-route-policy` TRANSPARENCY response header: the policy name that chose the lane.
+pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+/// The `x-busbar-route-target` TRANSPARENCY response header: the chosen lane's model.
+pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
+/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at boot by
+/// [`configure_route_policy_headers`]: a settled decision read at every emission site, never rebuilt
+/// by a config apply (restart-to-apply). Unset ⇒ `false`.
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
+/// boot, before the router is built; `OnceLock::set` silently no-ops on any later call.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+/// Did the operator opt in to the `x-busbar-route-*` headers? Gates the route-policy header emit —
+/// the header is a fingerprintable observable, so it defaults OFF.
+pub fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
+tokio::task_local! {
+    /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL
+    /// processing time (= total request wall-clock − upstream round-trip), reported as a
+    /// `Server-Timing: busbar;dur=<ms>` response header. Set via `.scope()` by the middleware;
+    /// written by the forward path when an upstream call returns. Microseconds; the `u64::MAX`
+    /// sentinel means "no upstream hop on this request" (admin/health/early error). Lives HERE in the
+    /// neutral substrate (single-compiled) so the router's `.scope()` and the plane's `.try_with()`
+    /// read the ONE task-local without the plane reaching into `busbar-core`.
+    pub static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
+}
+
+/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
+/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
+/// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
+pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
+
+/// The effective content ceiling for this config generation, resolved once at config apply
+/// (`limits.hook_content_max_bytes`) and read with a single relaxed load — never recomputed per
+/// request.
+static HOOK_CONTENT_MAX_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
+
+/// Install the generation's content ceiling. Called at boot and on every config apply (by core's
+/// `appbuild`).
+pub fn set_hook_content_max_bytes(bytes: usize) {
+    HOOK_CONTENT_MAX_BYTES.store(bytes, Ordering::Relaxed);
+}
+
+/// Read the generation's content ceiling. `0` = UNLIMITED. Named across the crate boundary by the
+/// relocated hook-projection enforcer, which caps SERIALIZED BYTES against this value.
+pub fn hook_content_max_bytes() -> usize {
+    HOOK_CONTENT_MAX_BYTES.load(Ordering::Relaxed)
+}
+
+/// Build ONE egress client shard on the LLM-lane posture. An infallible shim over the engine's
+/// fallible builder ([`crate::egress::engine::build_client`], where the parity ledger lives): the
+/// LLM posture carries no extra trust root and no client identity — the only arms a build can fail
+/// on — so the panic path here is unreachable by construction. Lives HERE so a plane crate builds its
+/// egress client without reaching into `busbar-core`; core's `proxy` re-exports it.
+pub fn build_egress_client(
+    spec: &crate::egress::engine::EngineSpec,
+) -> crate::egress::engine::EngineClient {
+    crate::egress::engine::build_client(spec)
+        .expect("the base egress engine posture has no failing build arm")
+}
