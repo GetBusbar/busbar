@@ -511,7 +511,7 @@ pub(crate) fn translate_request_cross_protocol(
             busbar_core::admin::audit::AUDIT.record_by(
                 "egress.control_unrepresentable",
                 &format!("{control} on {egress_name}"),
-                busbar_core::admin::audit::OUTCOME_DEGRADED,
+                busbar_substrate::audit::vocab::OUTCOME_DEGRADED,
                 caller_key_id,
             );
         }
