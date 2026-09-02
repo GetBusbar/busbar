@@ -349,6 +349,73 @@ pub trait LanePoolHost: Send + Sync {
     fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)>;
 }
 
+/// An OPAQUE handle to ONE open host-owned reserve-then-settle cost lease, minted by
+/// [`MeteringHost::cost_reserve`] and handed back to [`MeteringHost::cost_settle`] /
+/// [`cost_settled`](MeteringHost::cost_settled) / [`cost_close`](MeteringHost::cost_close). The
+/// reserve/settled/cap money state lives HOST-side behind this id; only the `u64` handle crosses the
+/// seam. Substrate-native (not the frozen hot-ABI POD) so the neutral seam stays independent of the
+/// C-ABI, though the two are structurally the same `u64` handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CostLeaseId(pub u64);
+
+impl CostLeaseId {
+    /// The reserved sentinel a REFUSED reserve reads as — never a live lease (ids are minted `≥ 1`).
+    pub const NONE: CostLeaseId = CostLeaseId(0);
+}
+
+/// The post-settle state [`MeteringHost::cost_settle`] reads back — the neutral twin of the hot-ABI
+/// `CostSettleOut.exhausted` flag. A live carrier reads `exhausted` after each settle and HARD-CLOSES
+/// the instant it is set (`settled ≥ cap`), the one thing post-hoc metering structurally cannot do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettleOutcome {
+    /// Whether the caller's budget is now DRY (`settled ≥ cap`) — the carrier must hard-close.
+    pub exhausted: bool,
+}
+
+/// BRAKE (minor-19): the METERING-LEASE slice of the host seam, split off `EngineHost` as a supertrait
+/// so the reserve-then-settle cost-lease cluster stays a cohesive, bounded ABI rather than swelling the
+/// god-trait. It gives a statically-linked plane (a live voice/stream carrier a plane cannot price after
+/// the fact) the SAME reserve-then-settle lease the hot-ABI `cost_reserve`/`cost_settle` slots expose to
+/// a dlopen plane — reachable as a plain Rust trait method rather than the C-ABI vtable, so a compiled-in
+/// plane meters a live carrier CONTINUOUSLY against the real grant/budget: open a lease over
+/// already-priced nanodollars at session start, settle EXACT increments per turn, and read back
+/// exhaustion so the carrier is hard-closed the moment `settled ≥ cap`.
+///
+/// Money-denominated end to end in `u128` nanodollars (1e-9 USD): core prices nothing, so the PLANE
+/// hands already-priced amounts (see the design's §2.5). `u128` is used directly here — `EngineHost` is
+/// a plain Rust trait, NOT the frozen hot FFI, so it carries rich neutral types without the `u64`
+/// narrowing the C-ABI slot demands; the host widens/narrows at its own boundaries.
+pub trait MeteringHost: Send + Sync {
+    /// OPEN a host-owned reserve-then-settle cost lease over ALREADY-PRICED nanodollars and return its
+    /// opaque [`CostLeaseId`]. `estimate_nanos` is the coarse over-estimate debited up front,
+    /// `fee_nanos` the once-per-lease flat session fee (`0` = none), and `cap_nanos` the TRUE budget
+    /// ceiling exhaustion is judged against: `None` leaves the lease UNCAPPED (never exhausts);
+    /// `Some(0)` is a REFUSE-ALL cap, DENIED at the door — the method returns `None` and the session
+    /// must fail closed (never open). Any other `Some(cap)` opens a live lease.
+    fn cost_reserve(
+        &self,
+        estimate_nanos: u128,
+        fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<CostLeaseId>;
+
+    /// ACCRUE one EXACT already-priced increment (`exact_nanos`) against the open lease `lease` and read
+    /// back the post-settle [`SettleOutcome`]. The lease STAYS open after a settle — a live carrier keeps
+    /// settling increments until it hard-closes. `None` iff `lease` names no open lease (unknown /
+    /// already-closed / the [`CostLeaseId::NONE`] sentinel); on `None` the caller fails CLOSED and
+    /// hard-closes the carrier, exactly as it would on `exhausted`.
+    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome>;
+
+    /// The total nanodollars SETTLED so far against `lease` — the audit tap the caller journals (and the
+    /// tests assert). `None` for an unknown / already-closed lease.
+    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128>;
+
+    /// CLOSE and forget the lease `lease`, returning its finalize()'d ledgered total (the exact settled
+    /// sum — never the coarse reserve). `None` for an unknown / already-closed lease. Idempotent: a
+    /// second close reads `None`. Bounds the host registry so a finished carrier's lease does not leak.
+    fn cost_close(&self, lease: CostLeaseId) -> Option<u128>;
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -364,7 +431,7 @@ pub trait LanePoolHost: Send + Sync {
 /// (it awaits a `spawn_blocking` join over the host auth chain). Every other method is a plain sync
 /// fn the attribute leaves untouched; only the async one is desugared to a boxed `Send` future.
 #[async_trait::async_trait]
-pub trait EngineHost: BreakerHost + LanePoolHost + Send + Sync {
+pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form
     /// of a plane's in-place seconds clock. Identical to `busbar_core::plane_host::clock_now_secs_over`.
     fn clock_now_secs(&self) -> u64;
@@ -898,15 +965,18 @@ pub trait EngineHost: BreakerHost + LanePoolHost + Send + Sync {
     }
 }
 
-/// Compile-time witness for the audit-D brake: any `EngineHost` implementor IS a `BreakerHost` and a
-/// `LanePoolHost`. If a future edit dropped either supertrait bound (or an impl stopped satisfying it),
-/// this stops compiling — so the two families cannot silently re-dissolve back into the flat god-trait.
+/// Compile-time witness for the audit-D brake: any `EngineHost` implementor IS a `BreakerHost`, a
+/// `LanePoolHost` and a `MeteringHost`. If a future edit dropped any supertrait bound (or an impl
+/// stopped satisfying it), this stops compiling — so the families cannot silently re-dissolve back into
+/// the flat god-trait.
 const _: () = {
     fn _assert_engine_host_brakes<T: EngineHost + ?Sized>() {
         fn _needs_breaker<U: BreakerHost + ?Sized>() {}
         fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
+        fn _needs_metering<U: MeteringHost + ?Sized>() {}
         _needs_breaker::<T>();
         _needs_lane_pool::<T>();
+        _needs_metering::<T>();
     }
 };
 

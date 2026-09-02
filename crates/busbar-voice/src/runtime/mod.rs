@@ -17,7 +17,8 @@ pub mod tools;
 
 pub use carrier::Carrier;
 pub use metering::{
-    LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort, Pricing,
+    HostLease, HostMeteringPort, LeaseState, LocalLease, LocalMeteringPort, MeteringLease,
+    MeteringPort, Pricing,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{Outbound, SessionCore, UplinkForwarder, VoiceSession};
@@ -94,9 +95,37 @@ pub fn build_runtime(
     _section: &dyn std::any::Any,
     _prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
+    // The DEV / TEST default binds [`LocalMeteringPort`] (HARD RULE 4): the runtime/topology tests and
+    // the conformance governance leg drive the faithful in-process lease. The PRODUCTION composition root
+    // — which holds an `Arc<dyn EngineHost>`/`MeteringHost` for the live grant — calls
+    // [`build_runtime_hosted`] instead, binding the REAL host lease so the D2 money hop meters against the
+    // caller's real budget. The frozen `PlaneDecl::build_runtime` fn-pointer signature carries no host, so
+    // the hosted entry is a sibling rather than a body branch.
+    build_runtime_with_metering(Arc::new(LocalMeteringPort))
+}
+
+/// THE PRODUCTION composition entry — build the voice runtime with the REAL host metering lease bound as
+/// its D2 money hop. The composition root (which holds the live `Arc<dyn EngineHost>` — it upcasts into
+/// the narrow [`MeteringHost`](busbar_substrate::plane_host::MeteringHost) slice) calls this so a live
+/// voice session reserves/settles/exhausts against the caller's real grant, not the in-process
+/// [`LocalLease`] stand-in. Every other dependency matches [`build_runtime`]'s dev defaults for now (the
+/// config-derived engine/tools/pricing are a separate slice — see [`build_runtime`]).
+#[must_use]
+pub fn build_runtime_hosted(
+    host: Arc<dyn busbar_substrate::plane_host::MeteringHost>,
+) -> Arc<dyn std::any::Any + Send + Sync> {
+    build_runtime_with_metering(Arc::new(metering::HostMeteringPort::new(host)))
+}
+
+/// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given metering
+/// PORT (the one dependency the dev/prod paths differ on) plus the current dev defaults for the durable
+/// engine, tool executor and price book.
+fn build_runtime_with_metering(
+    metering: Arc<dyn MeteringPort>,
+) -> Arc<dyn std::any::Any + Send + Sync> {
     Arc::new(VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
+        metering,
         Arc::new(EchoToolExecutor),
         Pricing {
             audio_in_nanos: 0,

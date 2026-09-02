@@ -9,19 +9,25 @@
 //! lease over ALREADY-PRICED nanodollars at session start, settle EXACT increments per turn, and read
 //! back exhaustion so the carrier is closed the moment `settled ≥ cap`.
 //!
-//! THE NEUTRAL-SEAM GAP (reported, not worked around — HARD RULE 2). The host wires that ABI
-//! (`busbar_core::plane_host::cost_host::{cost_reserve, cost_settle}`), but the NEUTRAL seam a
-//! statically-linked plane is handed at request time — `busbar_substrate::plane_host::EngineHost` —
-//! exposes `meter_charge` (one-shot) and NOT the two lease methods. So a static voice plane cannot
-//! reach the host-owned budget cell today without two methods added to that neutral trait. Rather than
-//! leak plane shape into neutral code, the runtime depends on a plane-local PORT ([`MeteringLease`] /
-//! [`MeteringPort`]) whose contract is byte-for-byte the D2 lease's (reserve = estimate+fee, settle
-//! accrues exact increments, exhausted = `settled ≥ cap`, refuse-all cap denies at the door). The
-//! composition root binds the real host lease behind this port the instant `EngineHost` exposes it;
-//! [`LocalLease`] is the faithful, fully-wired implementation the runtime and its tests drive today.
+//! THE NEUTRAL-SEAM GAP IS NOW CLOSED (minor-19). The neutral seam a statically-linked plane is handed
+//! at request time — `busbar_substrate::plane_host::EngineHost` — now carries a real reserve-then-settle
+//! cost lease through its [`MeteringHost`](busbar_substrate::plane_host::MeteringHost) supertrait
+//! (`cost_reserve`/`cost_settle`/`cost_settled`/`cost_close`), backed host-side by the SAME `CostHold`
+//! registry the frozen hot-ABI cost slots fill. So the D2 money hop is REAL: [`HostMeteringPort`] opens a
+//! host-owned lease against the caller's live grant ceiling, [`HostLease`] settles EXACT increments
+//! against it and reads exhaustion off the real cap — no plane-private counter. The composition root
+//! (`build_runtime`) binds [`HostMeteringPort`] as the PRODUCTION path.
+//!
+//! [`LocalLease`] / [`LocalMeteringPort`] stay the TEST default: the runtime tests, the topology tests
+//! and the in-flight conformance governance leg all drive the faithful in-process lease whose
+//! reserve/settle/exhaustion contract is byte-for-byte the host D2 lease's (reserve = estimate+fee,
+//! settle accrues exact increments, exhausted = `settled ≥ cap`, refuse-all cap denies at the door). The
+//! port abstraction ([`MeteringLease`] / [`MeteringPort`]) is the seam both share.
 
 use crate::ir::usage::IrDuplexUsage;
+use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// THE POST-SETTLE STATE the plane reads back to decide whether to hard-close — the mirror of the D2
 /// `CostSettleOut.exhausted` flag plus the `StatusClass::Refused`/`Fault` fail-closed cases folded in.
@@ -171,5 +177,82 @@ impl MeteringPort for LocalMeteringPort {
             settled_nanos: AtomicU64::new(0),
             cap_nanos,
         }))
+    }
+}
+
+/// THE PRODUCTION [`MeteringPort`] — the REAL D2 money hop. Backed by the host's reserve-then-settle
+/// cost lease over the neutral [`MeteringHost`] seam (core's `EngineHostImpl`), so a live voice carrier
+/// meters CONTINUOUSLY against the caller's real grant/budget rather than a plane-local counter. Holds an
+/// `Arc<dyn MeteringHost>` — the narrow lease slice of `EngineHost` — so a full-`EngineHost` production
+/// host binds here and a test's tiny mock `MeteringHost` binds identically.
+pub struct HostMeteringPort {
+    host: Arc<dyn MeteringHost>,
+}
+
+impl HostMeteringPort {
+    /// Bind the port over a host's metering seam (an `Arc<dyn MeteringHost>` — an `Arc<dyn EngineHost>`
+    /// upcasts into it, or a plane hands the narrow slice directly).
+    #[must_use]
+    pub fn new(host: Arc<dyn MeteringHost>) -> Self {
+        HostMeteringPort { host }
+    }
+}
+
+impl MeteringPort for HostMeteringPort {
+    fn reserve(
+        &self,
+        estimate_nanos: u64,
+        fee_nanos: u64,
+        cap_nanos: Option<u64>,
+    ) -> Option<Box<dyn MeteringLease>> {
+        // Widen the plane's already-priced `u64` nanodollars to the host seam's `u128`; a refuse-all cap
+        // is denied host-side (returns `None`) so the session fails closed and never opens.
+        let lease = self.host.cost_reserve(
+            u128::from(estimate_nanos),
+            u128::from(fee_nanos),
+            cap_nanos.map(u128::from),
+        )?;
+        Some(Box::new(HostLease {
+            host: Arc::clone(&self.host),
+            lease,
+        }))
+    }
+}
+
+/// ONE open host-backed metering lease — the production twin of [`LocalLease`]. Every settle and the
+/// settled-total read cross the neutral [`MeteringHost`] seam into the host-owned `CostHold`, so the
+/// budget/cap state lives HOST-side (the closed neutral-seam gap), not in this handle.
+pub struct HostLease {
+    host: Arc<dyn MeteringHost>,
+    lease: CostLeaseId,
+}
+
+impl MeteringLease for HostLease {
+    fn settle(&self, nanos: u64) -> LeaseState {
+        // The `cost_settle` leg: accrue the exact increment host-side and map the outcome. An unknown /
+        // already-closed lease (`None`) fails CLOSED — the plane hard-closes just as on exhaustion.
+        match self.host.cost_settle(self.lease, u128::from(nanos)) {
+            Some(SettleOutcome { exhausted: false }) => LeaseState::Live,
+            Some(SettleOutcome { exhausted: true }) => LeaseState::Exhausted,
+            None => LeaseState::Refused,
+        }
+    }
+
+    fn settled_nanos(&self) -> u64 {
+        // The host accounts in u128; a per-lease settled total fits u64 (a ~$18.4B ceiling far above any
+        // one session). Saturate defensively rather than wrap, and read `0` for an unknown/closed lease.
+        self.host
+            .cost_settled(self.lease)
+            .map(|n| u64::try_from(n).unwrap_or(u64::MAX))
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for HostLease {
+    fn drop(&mut self) {
+        // Close the lease host-side when the carrier finishes so its `CostHold` does not leak the host
+        // registry. Idempotent and fire-and-forget: a second close (or an already-forgotten lease) is a
+        // harmless `None`.
+        let _ = self.host.cost_close(self.lease);
     }
 }

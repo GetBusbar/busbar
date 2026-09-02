@@ -503,6 +503,49 @@ impl busbar_substrate::plane_host::LanePoolHost for EngineHostImpl {
     }
 }
 
+// AUDIT-D BRAKE (minor-19): the METERING-LEASE family, split off `EngineHost` into its `MeteringHost`
+// supertrait. Each method forwards into the host-owned `CostHold` registry in [`cost_host`] — the SAME
+// registry the FFI `cost_reserve`/`cost_settle` slots fill, so a statically-linked plane's reserve/settle
+// and a dlopen plane's are one ledger. This is the REAL money hop the neutral seam previously lacked: the
+// lease's cap is the caller's live grant ceiling (the plane priced it), and exhaustion (`settled ≥ cap`)
+// is judged host-side against it — not against a plane-private counter. `EngineHost: MeteringHost` makes
+// these visible on every `dyn EngineHost`.
+impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
+    fn cost_reserve(
+        &self,
+        estimate_nanos: u128,
+        fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<busbar_substrate::plane_host::CostLeaseId> {
+        // The host-owned `CostHold` registry is process-global (a lease outlives any one host call — a
+        // live carrier settles many increments against it), so the reserve needs no `HostCtx`; the cap is
+        // the caller's TRUE grant ceiling in nanodollars. A refuse-all cap returns `None` (the plane fails
+        // closed and never opens the session).
+        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos)
+            .map(busbar_substrate::plane_host::CostLeaseId)
+    }
+
+    fn cost_settle(
+        &self,
+        lease: busbar_substrate::plane_host::CostLeaseId,
+        exact_nanos: u128,
+    ) -> Option<busbar_substrate::plane_host::SettleOutcome> {
+        // Accrue the exact already-priced increment against the SAME `CostHold` the reserve opened and
+        // read exhaustion off the real cap. `None` (unknown / closed lease) surfaces so the plane fails
+        // closed, exactly as an exhaustion would.
+        cost_host::settle_lease(lease.0, exact_nanos)
+            .map(|exhausted| busbar_substrate::plane_host::SettleOutcome { exhausted })
+    }
+
+    fn cost_settled(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        cost_host::settled_of(lease.0)
+    }
+
+    fn cost_close(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        cost_host::close_lease(lease.0)
+    }
+}
+
 #[async_trait::async_trait]
 impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn clock_now_secs(&self) -> u64 {

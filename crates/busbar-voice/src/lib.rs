@@ -36,7 +36,11 @@ pub mod topology;
 /// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` in the default skeleton build so
 /// the prod `PLANE_DECL` is byte-unchanged (voice stays dev-only until DoD). Split by `cfg` because the
 /// `runtime` module (and its constructor) only exist behind the feature.
+// `type_complexity`: this fn-pointer is the mirror of the frozen `PlaneDecl::build_runtime` field type
+// (`busbar_substrate::plane::registry`), which carries the SAME `#[allow(clippy::type_complexity)]` — the
+// shape is the ABI, not a factorable local type.
 #[cfg(feature = "runtime")]
+#[allow(clippy::type_complexity)]
 const VOICE_BUILD_RUNTIME: Option<
     fn(
         &dyn std::any::Any,
@@ -44,6 +48,7 @@ const VOICE_BUILD_RUNTIME: Option<
     ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 > = Some(runtime::build_runtime);
 #[cfg(not(feature = "runtime"))]
+#[allow(clippy::type_complexity)]
 const VOICE_BUILD_RUNTIME: Option<
     fn(
         &dyn std::any::Any,

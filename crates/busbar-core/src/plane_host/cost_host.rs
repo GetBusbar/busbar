@@ -55,12 +55,67 @@ fn register(hold: CostHold) -> CostLeaseId {
 
 /// Settle `settle_nanos` against the lease `id` and report exhaustion, or `None` when `id` names no
 /// open lease (unknown / already-forgotten). The lease STAYS open after a settle — a live carrier
-/// keeps settling increments until it hard-closes; the registry keys off the minted id only.
+/// keeps settling increments until it hard-closes; the registry keys off the minted id only. The
+/// scalar widens to the internal u128 [`CostAmount`] via the shared [`settle_lease`] primitive.
 fn settle(id: u64, settle_nanos: u64) -> Option<bool> {
+    settle_lease(id, u128::from(settle_nanos))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE NEUTRAL-SEAM (`MeteringHost`) SHIMS — the SAME host-owned `CostHold` registry above, reached by a
+// STATICALLY-LINKED plane through the plain-Rust `busbar_substrate::plane_host::MeteringHost` trait
+// (core's `EngineHostImpl`) rather than the C-ABI vtable. A compiled-in voice plane's lease and a dlopen
+// plane's lease are therefore ONE ledger: both mint from `NEXT_ID`, both live in `LEASES`, both accrue
+// against the same `CostHold` cap — so exhaustion reflects the real grant ceiling the reserve was opened
+// with, not a plane-private counter. Amounts are u128 nanodollars end to end (no `u64` narrowing — the
+// neutral seam is not the frozen FFI).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// NEUTRAL-SEAM `cost_reserve`: open a host-owned reserve-then-settle [`CostHold`] over u128
+/// nanodollars and return its raw lease id, or `None` on a REFUSE-ALL cap (`Some(0)`) denied at the
+/// door. Shares [`register`] (and thus `NEXT_ID`/`LEASES`) with the FFI `cost_reserve` slot, so a
+/// static-plane lease is indistinguishable from a dlopen-plane lease in the one registry.
+pub(crate) fn reserve_lease(
+    estimate_nanos: u128,
+    flat_fee_nanos: u128,
+    cap_nanos: Option<u128>,
+) -> Option<u64> {
+    // A refuse-all cap (present, zero) denies outright — byte-identical to the FFI slot's door check.
+    if matches!(cap_nanos, Some(0)) {
+        return None;
+    }
+    let hold = CostHold::reserve(
+        CostAmount(estimate_nanos),
+        CostAmount(flat_fee_nanos),
+        cap_nanos.map(CostAmount),
+    );
+    Some(register(hold).0)
+}
+
+/// NEUTRAL-SEAM `cost_settle`: accrue one EXACT u128 increment against the open lease `id` and report
+/// exhaustion (`settled ≥ cap`), or `None` when `id` names no open lease. The lease stays open. This is
+/// the shared primitive the FFI [`settle`] shim widens its `u64` into.
+pub(crate) fn settle_lease(id: u64, exact_nanos: u128) -> Option<bool> {
     let mut guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
     let hold = guard.as_mut()?.get_mut(&id)?;
-    hold.settle_partial(CostAmount(u128::from(settle_nanos)));
+    hold.settle_partial(CostAmount(exact_nanos));
     Some(hold.is_exhausted())
+}
+
+/// The exact nanodollars SETTLED so far against `id` (the audit tap), or `None` for an unknown lease. A
+/// pure read of the shared registry.
+pub(crate) fn settled_of(id: u64) -> Option<u128> {
+    let guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
+    Some(guard.as_ref()?.get(&id)?.settled().nanodollars())
+}
+
+/// CLOSE and forget the lease `id`, returning its [`CostHold::finalize`]'d ledgered total (the exact
+/// settled sum), or `None` for an unknown / already-closed lease. Idempotent by construction (the
+/// entry is removed), so a finished carrier's lease does not leak the registry.
+pub(crate) fn close_lease(id: u64) -> Option<u128> {
+    let mut guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
+    let hold = guard.as_mut()?.remove(&id)?;
+    Some(hold.finalize().ledgered_total.nanodollars())
 }
 
 /// WIRED `cost_reserve` → open a host-owned reserve-then-settle [`CostHold`] over ALREADY-PRICED

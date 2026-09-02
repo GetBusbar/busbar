@@ -114,6 +114,153 @@ fn local_lease_exhausts_at_cap_and_refuse_all_denies() {
     assert!(LocalMeteringPort.reserve(0, 0, Some(0)).is_none());
 }
 
+// ── THE HOST-LEASE PORT (the REAL D2 money hop) — the production `HostMeteringPort` over a mock host ─
+
+/// A FAITHFUL mock of the host's [`MeteringHost`] seam: a host-owned `CostHold`-shaped registry keyed by
+/// lease id, so the [`HostMeteringPort`]/`HostLease` ADAPTER is exercised against the exact reserve/
+/// settle/exhaustion/close contract core's `EngineHostImpl` provides — reserve = estimate+fee (audit
+/// tap), exact increments accrue toward the TRUE cap, exhausted = `settled ≥ cap`, refuse-all denies.
+#[derive(Default)]
+struct MockMeteringHost {
+    inner: std::sync::Mutex<MockInner>,
+}
+
+#[derive(Default)]
+struct MockInner {
+    next: u64,
+    leases: std::collections::HashMap<u64, MockLease>,
+    /// Every id ever minted, so a test can prove a dropped `HostLease` closed its lease host-side.
+    closed: Vec<u64>,
+}
+
+struct MockLease {
+    reserved: u128,
+    settled: u128,
+    cap: Option<u128>,
+}
+
+use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
+
+impl MeteringHost for MockMeteringHost {
+    fn cost_reserve(
+        &self,
+        estimate_nanos: u128,
+        fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<CostLeaseId> {
+        if matches!(cap_nanos, Some(0)) {
+            return None; // refuse-all denies at the door.
+        }
+        let mut g = self.inner.lock().unwrap();
+        g.next += 1;
+        let id = g.next;
+        g.leases.insert(
+            id,
+            MockLease {
+                reserved: estimate_nanos + fee_nanos,
+                settled: 0,
+                cap: cap_nanos,
+            },
+        );
+        Some(CostLeaseId(id))
+    }
+
+    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.leases.get_mut(&lease.0)?;
+        l.settled += exact_nanos;
+        let exhausted = matches!(l.cap, Some(c) if l.settled >= c);
+        Some(SettleOutcome { exhausted })
+    }
+
+    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
+        Some(self.inner.lock().unwrap().leases.get(&lease.0)?.settled)
+    }
+
+    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.leases.remove(&lease.0)?;
+        g.closed.push(lease.0);
+        Some(l.settled)
+    }
+}
+
+#[test]
+fn host_lease_reserves_settles_and_hard_closes_at_the_real_cap() {
+    use crate::runtime::metering::HostMeteringPort;
+    let host = Arc::new(MockMeteringHost::default());
+    let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
+
+    // Reserve estimate 100 + flat fee 10, TRUE cap 50 (the flat fee is folded into `reserved`, NOT the
+    // cap — exhaustion is judged against the cap only, so the fee is never double-counted on settle).
+    let lease = port
+        .reserve(100, 10, Some(50))
+        .expect("a real cap opens the lease");
+    // The flat fee folded into `reserved` ONCE (estimate 100 + fee 10), never into the cap.
+    assert_eq!(
+        host.inner
+            .lock()
+            .unwrap()
+            .leases
+            .get(&1)
+            .map(|l| l.reserved),
+        Some(110),
+        "reserve = estimate + flat fee, charged once"
+    );
+    assert_eq!(lease.settle(20), LeaseState::Live, "20 < 50 → live");
+    assert_eq!(lease.settle(20), LeaseState::Live, "40 < 50 → live");
+    assert_eq!(
+        lease.settled_nanos(),
+        40,
+        "settled tap reads through the host"
+    );
+    assert_eq!(
+        lease.settle(20),
+        LeaseState::Exhausted,
+        "60 ≥ cap 50 → exhausted (hard close)"
+    );
+    assert_eq!(lease.settled_nanos(), 60, "exact accrual, no drift");
+    // Dropping the handle closes the lease host-side (no registry leak).
+    drop(lease);
+    assert!(
+        host.inner.lock().unwrap().closed.contains(&1),
+        "the dropped HostLease closed its lease host-side"
+    );
+}
+
+#[test]
+fn host_port_refuse_all_fails_the_session_closed() {
+    use crate::runtime::metering::HostMeteringPort;
+    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
+    let port = HostMeteringPort::new(host);
+    // A refuse-all cap denies the reserve — the session never opens (fail closed).
+    assert!(
+        port.reserve(0, 0, Some(0)).is_none(),
+        "refuse-all → no lease"
+    );
+    // An uncapped lease never exhausts.
+    let unc = port.reserve(0, 0, None).expect("uncapped opens");
+    assert_eq!(unc.settle(u64::MAX), LeaseState::Live, "uncapped never dry");
+}
+
+#[test]
+fn host_lease_unknown_or_closed_settle_fails_closed() {
+    use crate::runtime::metering::HostMeteringPort;
+    let host = Arc::new(MockMeteringHost::default());
+    let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
+    let lease = port.reserve(0, 0, Some(100)).unwrap();
+    // Forget the lease host-side out from under the handle: the next settle names no open lease and the
+    // adapter maps the host's `None` to `Refused`, so the plane hard-closes fail-closed (not silently).
+    host.inner.lock().unwrap().leases.clear();
+    assert_eq!(
+        lease.settle(1),
+        LeaseState::Refused,
+        "unknown lease → Refused"
+    );
+    assert!(lease.settle(1).must_close(), "Refused demands a hard close");
+    assert_eq!(lease.settled_nanos(), 0, "an unknown lease reads 0 settled");
+}
+
 // ── THE D2 HARD-CLOSE-ON-EXHAUSTION PATH (the marquee guarantee) ─────────────────────────────────
 
 #[tokio::test]

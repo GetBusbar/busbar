@@ -165,6 +165,64 @@ fn breakdown_bytes_are_an_opaque_tap_the_host_never_parses() {
     });
 }
 
+// ── THE NEUTRAL-SEAM (`MeteringHost`) SHIMS — the same host-owned `CostHold` registry, reached by a
+//    statically-linked plane through the plain-Rust trait rather than the C-ABI vtable ──────────────
+
+#[test]
+fn neutral_reserve_then_settle_reaches_exhaustion_at_the_real_cap() {
+    // Cap is the TRUE ceiling (1000), independent of the coarse reserve (500 + 10 fee).
+    let id = reserve_lease(500, 10, Some(1_000)).expect("a non-refuse-all cap opens a lease");
+    // Below the cap: not exhausted, and the settled tap tracks the exact running sum.
+    assert_eq!(settle_lease(id, 400), Some(false), "400 < 1000 → live");
+    assert_eq!(settled_of(id), Some(400), "settled tap = exact running sum");
+    // The running sum crosses the cap (400 + 700 = 1100 ≥ 1000): now dry.
+    assert_eq!(settle_lease(id, 700), Some(true), "1100 ≥ 1000 → exhausted");
+    assert_eq!(settled_of(id), Some(1_100));
+    // close returns the ledgered total (the exact settled sum) and FORGETS the lease (idempotent after).
+    assert_eq!(
+        close_lease(id),
+        Some(1_100),
+        "close ledgers the exact settled sum"
+    );
+    assert_eq!(close_lease(id), None, "a second close is a harmless None");
+    assert_eq!(
+        settle_lease(id, 1),
+        None,
+        "a settled-closed lease is unknown"
+    );
+    assert_eq!(settled_of(id), None);
+}
+
+#[test]
+fn neutral_refuse_all_denies_and_uncapped_never_exhausts() {
+    // A refuse-all cap (`Some(0)`) denies at the door — the plane reads `None` and fails closed.
+    assert_eq!(reserve_lease(100, 0, Some(0)), None, "refuse-all denies");
+    // An uncapped lease is never exhausted, whatever the settle.
+    let unc = reserve_lease(0, 0, None).expect("uncapped opens");
+    assert_eq!(settle_lease(unc, u128::from(u64::MAX)), Some(false));
+    assert_eq!(settle_lease(unc, u128::from(u64::MAX)), Some(false));
+    assert_eq!(close_lease(unc), Some(u128::from(u64::MAX) * 2));
+}
+
+#[test]
+fn neutral_and_ffi_seams_share_one_lease_registry() {
+    // Open a lease through the NEUTRAL seam, then settle it through the FFI `settle` shim: the two seams
+    // key off the SAME `LEASES`/`NEXT_ID`, so the FFI settle moves the ledger the neutral reserve opened.
+    let id = reserve_lease(0, 0, Some(1_000)).expect("opens");
+    assert_eq!(
+        settle(id, 600),
+        Some(false),
+        "FFI settle sees the neutral lease"
+    );
+    assert_eq!(settled_of(id), Some(600), "neutral tap sees the FFI settle");
+    assert_eq!(
+        settle(id, 500),
+        Some(true),
+        "1100 ≥ 1000 → exhausted, one ledger"
+    );
+    let _ = close_lease(id);
+}
+
 #[test]
 fn a_caught_panic_maps_to_fault_and_leaves_out_untouched() {
     // A null `HostCtx` trips `recover`'s debug-assert (tests build with `debug_assertions`), so the
