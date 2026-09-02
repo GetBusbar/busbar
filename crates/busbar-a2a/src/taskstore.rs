@@ -36,12 +36,16 @@
 // `test-support`, and a bare unit build reads some helpers as unused.
 #![cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::any::Any;
+use std::sync::Arc;
 
 use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_substrate::plane::handle_engine::{
+    ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, MutateError,
+    RehydrateOutcome, SealedEvent, SubmitRecord, SweepBounds,
+};
 use busbar_substrate::plane::store::PlaneStore;
 
 // ---------------------------------------------------------------------------------------------------
@@ -267,40 +271,12 @@ pub fn verify_chain(events: &[TaskEventRow]) -> Result<(), ChainBreak> {
     Ok(())
 }
 
-/// ONE CHAIN'S POSITION in memory: the tail link and the next sequence number. The first event of a
-/// chain gets `seq` 1 and an empty `prev_hash`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Position {
-    tail_hash: String,
-    next_seq: u64,
-}
-
-impl Position {
-    fn genesis() -> Self {
-        Position {
-            tail_hash: String::new(),
-            next_seq: 1,
-        }
-    }
-
-    /// Continue from what is already persisted: position on the tail of `events`.
-    fn from_events(events: &[TaskEventRow]) -> Self {
-        match events.last() {
-            None => Position::genesis(),
-            Some(last) => Position {
-                tail_hash: last.hash.clone(),
-                next_seq: last.seq.saturating_add(1),
-            },
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------------------------------
 // The event input a caller supplies, and the retention constants.
 // ---------------------------------------------------------------------------------------------------
 
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are the
-/// chain's own business, sealed by [`TaskRegistry::seal_event`].
+/// chain's own business, sealed by [`seal_task_event`] into the substrate engine's chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EventInput {
     kind: &'static str,
@@ -375,26 +351,157 @@ impl std::fmt::Display for TaskStoreError {
     }
 }
 
-/// One task in the working set: its current row and its provenance chain position.
-#[derive(Debug, Clone)]
-struct Entry {
-    row: TaskRow,
-    pos: Position,
+/// The neutral projection helper: build the substrate engine's [`HandleMeta`] from a [`TaskRow`]. The
+/// engine reads only this projection (owner / age / terminal / cursor) to run its mechanics; the row
+/// itself it holds opaquely.
+fn meta_of(row: &TaskRow) -> HandleMeta {
+    HandleMeta {
+        owner: row.principal.clone(),
+        updated_at: row.updated_at,
+        terminal: is_terminal_state(&row.state),
+        cursor: row.artifact_cursor,
+    }
 }
 
-/// The in-flight task registry. No `Debug`: it holds a `dyn PlaneStore` (not `Debug`).
+/// Recover, by REFERENCE, the [`TaskRow`] the engine is holding opaquely for this plane. Always a
+/// `TaskRow`: the A2A registry only ever hands the engine a `TaskRow`, and the downcast is within this
+/// crate (same `TypeId`), so the row's byte-identity survives with no re-encode round-trip.
+fn as_task_ref(row: &(dyn Any + Send + Sync)) -> &TaskRow {
+    row.downcast_ref::<TaskRow>()
+        .expect("an A2A durable handle always carries a TaskRow")
+}
+
+/// Recover an OWNED clone of the engine's opaque row.
+fn as_task(row: &Arc<dyn Any + Send + Sync>) -> TaskRow {
+    as_task_ref(row.as_ref()).clone()
+}
+
+/// SEAL one A2A provenance event at `pos` into the [`SealedEvent`] the substrate engine appends:
+/// compute the A2A digest (framing v2) over the event's fields — byte-identical to the former
+/// plane-side `seal_event` — build the typed [`TaskEventRow`], and frame it into the opaque plane
+/// record. The plane owns the digest here; the engine owns the append and the chain-position advance.
+fn seal_task_event(
+    pos: &ChainPosition,
+    task_id: &str,
+    ev: &EventInput,
+) -> StoreResult<SealedEvent> {
+    let seq = pos.next_seq;
+    // Every NEW event is sealed under the injective framing v2; v1 is only ever read, never written.
+    let digest_version = DIGEST_VERSION_LEN_PREFIXED;
+    let hash = digest_event(
+        digest_version,
+        &pos.tail_hash,
+        task_id,
+        seq,
+        ev.ts,
+        ev.kind,
+        &ev.context_id,
+        &ev.principal,
+        &ev.agent_id,
+        &ev.state,
+    );
+    let event_row = TaskEventRow {
+        task_id: task_id.to_string(),
+        seq,
+        ts: ev.ts,
+        kind: ev.kind.to_string(),
+        context_id: ev.context_id.clone(),
+        principal: ev.principal.clone(),
+        agent_id: ev.agent_id.clone(),
+        state: ev.state.clone(),
+        request_id: ev.request_id.clone(),
+        prev_hash: pos.tail_hash.clone(),
+        hash: hash.clone(),
+        digest_version,
+    };
+    Ok(SealedEvent {
+        record: event_row.to_plane_record()?,
+        tail_hash: hash,
+    })
+}
+
+/// THE ABANDON TRANSITION the retention sweep applies to an A2A task idle past the ceiling: move it to
+/// `canceled` through the normal chained write path (a `task.terminal` event on its provenance chain).
+/// A2A-specific — the `canceled` token and the event vocab are the plane's — so it is handed to the
+/// engine's neutral sweep as its abandon callback. A seal/encode failure here (impossible in practice
+/// for a `TaskRow`) skips the abandon; the task stays active and the next sweep retries, exactly as a
+/// durable-write failure does.
+fn plan_abandon(
+    _id: &str,
+    row: &(dyn Any + Send + Sync),
+    pos: &ChainPosition,
+    now: u64,
+) -> Option<Mutation> {
+    let row = row.downcast_ref::<TaskRow>()?;
+    let mut candidate = row.clone();
+    candidate.state = "canceled".to_string();
+    candidate.updated_at = now;
+    let ev = EventInput {
+        kind: busbar_substrate::audit::vocab::EV_TERMINAL,
+        context_id: candidate.context_id.clone(),
+        principal: candidate.principal.clone(),
+        agent_id: candidate.agent_id.clone(),
+        state: candidate.state.clone(),
+        request_id: String::new(),
+        ts: now,
+    };
+    let event = seal_task_event(pos, &candidate.task_id, &ev).ok()?;
+    let row_record = candidate.to_plane_record().ok()?;
+    let meta = meta_of(&candidate);
+    Some(Mutation {
+        row: Some(Arc::new(candidate)),
+        meta: Some(meta),
+        row_record: Some(row_record),
+        event: Some(event),
+    })
+}
+
+/// Report an abandon that could not be durably recorded: the task stays active and the next sweep
+/// retries. Warned at most once (the durable sink is down; a per-task log would flood). Handed to the
+/// engine's sweep as its neutral failure reporter.
+fn report_abandon_fail(id: &str, e: &StoreError) {
+    static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        busbar_substrate::diag_error!(
+            crate::diagnostics::A2A_FAILURE_UNRECORDED,
+            task_id = %id,
+            error = %e,
+            "an abandoned A2A task could not be transitioned to canceled; it stays \
+             active and the next sweep retries"
+        );
+    }
+}
+
+/// Map a neutral engine error back to the A2A task-store taxonomy (byte-identical `Display`).
+fn map_engine_err(e: HandleEngineError) -> TaskStoreError {
+    match e {
+        HandleEngineError::NoSuchHandle(id) => TaskStoreError::NoSuchTask(id),
+        HandleEngineError::Rejected(msg) => TaskStoreError::Domain(msg),
+        HandleEngineError::Store(e) => TaskStoreError::Store(e),
+    }
+}
+
+/// The A2A retention knobs, handed to the engine's submit-time sweep.
+const SWEEP_BOUNDS: SweepBounds = SweepBounds {
+    abandon_secs: ACTIVE_TASK_ABANDON_SECS,
+    terminal_ttl_secs: TERMINAL_TASK_TTL_SECS,
+    max_retained: MAX_RETAINED_TASKS,
+};
+
+/// The in-flight A2A task registry — now a THIN CONSUMER of the neutral
+/// [`busbar_substrate::plane::handle_engine::DurableHandleEngine`]. The engine owns the mechanics (the
+/// working set, the durable write-through, the retention sweep, the boot rehydrate, the push cursor,
+/// the scoped anti-enumeration read); this type layers the A2A TASK SHAPE, STATUSES, VOCAB and DIGEST
+/// over it. No `Debug`: the engine holds a `dyn PlaneStore`.
 pub struct TaskRegistry {
-    tasks: Mutex<HashMap<String, Entry>>,
-    /// The durable sink for the `task` row upserts AND the `task_event` chain appends. `None` is the
-    /// documented `store: memory` RAM-cache posture.
-    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
+    engine: DurableHandleEngine,
 }
 
 impl Default for TaskRegistry {
     fn default() -> Self {
         Self {
-            tasks: Mutex::new(HashMap::new()),
-            sink: Mutex::new(None),
+            engine: DurableHandleEngine::new(),
         }
     }
 }
@@ -414,96 +521,31 @@ impl TaskRegistry {
         Self::default()
     }
 
-    /// Poison-recovering lock. The data behind it is always still consistent after a panic (the
-    /// critical sections only mutate a map), and cascading a poison would wedge the whole task plane.
-    fn tasks(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
-        self.tasks.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// The durable sink. `None` is the documented `store: memory` RAM-cache posture.
-    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
-        self.sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .cloned()
-    }
-
     /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no sink
     /// the registry is a RAM cache — the `store: memory` posture.
     pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+        self.engine.set_sink(store);
     }
 
     /// TEST ONLY: drop the sink again, so a test that attached one to the process-wide [`TASKS`] leaves
     /// the registry as it found it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn clear_sink_for_test(&self) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    /// SEAL one event at `pos`, advancing the chain, and PERSIST it. Row-before-event ordering is the
-    /// caller's; this appends the event body through the generic plane-record store.
-    fn seal_event(&self, pos: &mut Position, task_id: &str, ev: &EventInput) -> StoreResult<()> {
-        let seq = pos.next_seq;
-        // Every NEW event is sealed under the injective framing v2; v1 is only ever read, never written.
-        let digest_version = DIGEST_VERSION_LEN_PREFIXED;
-        let hash = digest_event(
-            digest_version,
-            &pos.tail_hash,
-            task_id,
-            seq,
-            ev.ts,
-            ev.kind,
-            &ev.context_id,
-            &ev.principal,
-            &ev.agent_id,
-            &ev.state,
-        );
-        let event_row = TaskEventRow {
-            task_id: task_id.to_string(),
-            seq,
-            ts: ev.ts,
-            kind: ev.kind.to_string(),
-            context_id: ev.context_id.clone(),
-            principal: ev.principal.clone(),
-            agent_id: ev.agent_id.clone(),
-            state: ev.state.clone(),
-            request_id: ev.request_id.clone(),
-            prev_hash: pos.tail_hash.clone(),
-            hash: hash.clone(),
-            digest_version,
-        };
-        if let Some(store) = self.sink() {
-            store.append_plane_record(&event_row.to_plane_record()?)?;
-        }
-        pos.tail_hash = hash;
-        pos.next_seq = seq.saturating_add(1);
-        Ok(())
-    }
-
-    /// Upsert one task ROW durably.
-    fn upsert_row(&self, row: &TaskRow) -> Result<(), TaskStoreError> {
-        if let Some(store) = self.sink() {
-            store
-                .upsert_plane_record(&row.to_plane_record().map_err(TaskStoreError::Store)?)
-                .map_err(TaskStoreError::Store)?;
-        }
-        Ok(())
+        self.engine.clear_sink_for_test();
     }
 
     /// BOOT REHYDRATE. Reads every persisted task, loads the ACTIVE ones into the working set, and
     /// resumes each one's provenance chain from its persisted events. Terminal tasks are counted and
-    /// left in the store.
+    /// left in the store. The engine drives the orchestration + tolerance; this closure supplies the
+    /// A2A decode, the read-back check, the terminal-token test, and the chain verify (accumulating the
+    /// plane-typed [`ChainBreak`]s), and emits the A2A diagnostics.
     pub fn restore_from_store(
         &self,
         store: &dyn PlaneStore,
         readable: impl Fn(&TaskRow) -> Result<(), String>,
     ) -> StoreResult<Rehydrated> {
-        let bodies = store.list_plane_records(KIND_TASK, &PlaneSelector::All)?;
-        let mut out = Rehydrated::default();
-        let mut tasks = self.tasks();
-        for body in &bodies {
+        let mut chain_breaks: Vec<ChainBreak> = Vec::new();
+        let counts = self.engine.rehydrate(store, KIND_TASK, |store, body| {
             // Decode per-row: a single row this build cannot parse is COUNTED as unreadable and
             // SKIPPED, never allowed to `?`-abort the whole rehydrate (which would drop every OTHER
             // task's working set). This is the same tolerance a chain break already gets below.
@@ -516,12 +558,10 @@ impl TaskRegistry {
                         "a persisted A2A task row could not be DECODED on restore; it is being \
                          skipped and counted rather than aborting the whole rehydrate"
                     );
-                    out.unreadable += 1;
-                    continue;
+                    return Ok(RehydrateOutcome::Unreadable);
                 }
             };
-            let row = &row;
-            if let Err(e) = readable(row) {
+            if let Err(e) = readable(&row) {
                 busbar_substrate::diag_error!(
                     crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                     task_id = %row.task_id,
@@ -529,18 +569,17 @@ impl TaskRegistry {
                     "a persisted A2A task row could not be read back; it is NOT resumable and is \
                      being reported rather than skipped silently"
                 );
-                out.unreadable += 1;
-                continue;
+                return Ok(RehydrateOutcome::Unreadable);
             }
             if is_terminal_state(&row.state) {
-                out.terminal += 1;
-                continue;
+                return Ok(RehydrateOutcome::Terminal);
             }
             // Decode each event per-record: an undecodable event is counted and skipped, not
             // `?`-aborted. A gap in the chain that a skip leaves is caught by `verify_chain` below and
             // reported as a chain break — the same tamper-evidence path — rather than losing the whole
             // working set to one bad row.
             let mut events: Vec<TaskEventRow> = Vec::new();
+            let mut event_unreadable = 0usize;
             for b in store
                 .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(row.task_id.clone()))?
                 .iter()
@@ -555,7 +594,7 @@ impl TaskRegistry {
                             "a persisted A2A task EVENT could not be DECODED on restore; it is being \
                              skipped and counted rather than aborting the whole rehydrate"
                         );
-                        out.unreadable += 1;
+                        event_unreadable += 1;
                     }
                 }
             }
@@ -567,136 +606,63 @@ impl TaskRegistry {
                     "A2A per-task provenance CHAIN VERIFICATION FAILED on restore — the persisted \
                      events do not verify against their own hash chain"
                 );
-                out.chain_breaks.push(brk);
+                chain_breaks.push(brk);
             }
-            let pos = Position::from_events(&events);
-            tasks.insert(
-                row.task_id.clone(),
-                Entry {
-                    row: row.clone(),
-                    pos,
-                },
-            );
-            out.active += 1;
-        }
-        Ok(out)
+            let pos = match events.last() {
+                None => ChainPosition::genesis(),
+                Some(last) => ChainPosition::from_tail(last.hash.clone(), last.seq.saturating_add(1)),
+            };
+            let meta = meta_of(&row);
+            let id = row.task_id.clone();
+            Ok(RehydrateOutcome::Active {
+                id,
+                row: Arc::new(row),
+                meta,
+                pos,
+                event_unreadable,
+            })
+        })?;
+        Ok(Rehydrated {
+            active: counts.active,
+            terminal: counts.terminal,
+            unreadable: counts.unreadable,
+            chain_breaks,
+        })
     }
 
     /// SUBMIT a new task: record it, write it through, and open its provenance chain. The durable write
-    /// happens BEFORE the task is announced as accepted.
+    /// happens BEFORE the task is announced as accepted; the retention sweep runs before the insert.
     pub fn submit(&self, row: &TaskRow, request_id: &str) -> Result<TaskRow, TaskStoreError> {
-        self.upsert_row(row)?;
-        let mut pos = Position::genesis();
-        self.seal_event(
-            &mut pos,
-            &row.task_id,
-            &EventInput {
-                kind: busbar_substrate::audit::vocab::EV_SUBMITTED,
-                context_id: row.context_id.clone(),
-                principal: row.principal.clone(),
-                agent_id: row.agent_id.clone(),
-                state: row.state.clone(),
-                request_id: request_id.to_string(),
-                ts: row.created_at,
-            },
-        )
-        .map_err(TaskStoreError::Store)?;
-        let mut tasks = self.tasks();
-        self.sweep(&mut tasks, row.created_at);
-        tasks.insert(
-            row.task_id.clone(),
-            Entry {
-                row: row.clone(),
-                pos,
-            },
-        );
-        Ok(row.clone())
-    }
-
-    /// THE RETENTION SWEEP. Three rules; the first is a TRANSITION, the two eviction rules touch
-    /// TERMINAL tasks only. Driven inline by [`TaskRegistry::submit`] under the lock.
-    fn sweep(&self, tasks: &mut HashMap<String, Entry>, now: u64) {
-        let abandoned: Vec<String> = tasks
-            .iter()
-            .filter(|(_, e)| {
-                !is_terminal_state(&e.row.state)
-                    && now.saturating_sub(e.row.updated_at) > ACTIVE_TASK_ABANDON_SECS
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &abandoned {
-            let Some(entry) = tasks.get_mut(id) else {
-                continue;
-            };
-            let mut candidate = entry.row.clone();
-            candidate.state = "canceled".to_string();
-            candidate.updated_at = now;
-            let event = EventInput {
-                kind: busbar_substrate::audit::vocab::EV_TERMINAL,
-                context_id: candidate.context_id.clone(),
-                principal: candidate.principal.clone(),
-                agent_id: candidate.agent_id.clone(),
-                state: candidate.state.clone(),
-                request_id: String::new(),
-                ts: now,
-            };
-            match self.write_through(&mut entry.pos, &candidate, event) {
-                Ok(()) => entry.row = candidate,
-                Err(e) => {
-                    static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
-                        std::sync::atomic::AtomicBool::new(false);
-                    if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        busbar_substrate::diag_error!(
-                            crate::diagnostics::A2A_FAILURE_UNRECORDED,
-                            task_id = %id,
-                            error = %e,
-                            "an abandoned A2A task could not be transitioned to canceled; it stays \
-                             active and the next sweep retries"
-                        );
-                    }
-                }
-            }
-        }
-        let expired: Vec<String> = tasks
-            .iter()
-            .filter(|(_, e)| {
-                is_terminal_state(&e.row.state)
-                    && now.saturating_sub(e.row.updated_at) > TERMINAL_TASK_TTL_SECS
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &expired {
-            tasks.remove(id);
-        }
-        if tasks.len() < MAX_RETAINED_TASKS {
-            return;
-        }
-        let mut terminal: Vec<(u64, String)> = tasks
-            .iter()
-            .filter(|(_, e)| is_terminal_state(&e.row.state))
-            .map(|(id, e)| (e.row.updated_at, id.clone()))
-            .collect();
-        terminal.sort_unstable();
-        for (_, id) in terminal
-            .into_iter()
-            .take(tasks.len().saturating_sub(MAX_RETAINED_TASKS) + 1)
-        {
-            tasks.remove(&id);
-        }
-    }
-
-    /// The SHARED write-through for a mutation that changes the row AND appends an event: upsert the
-    /// row durably FIRST, then seal+append the event. The in-memory working set is NOT touched here.
-    fn write_through(
-        &self,
-        pos: &mut Position,
-        row: &TaskRow,
-        event: EventInput,
-    ) -> Result<(), TaskStoreError> {
-        self.upsert_row(row)?;
-        self.seal_event(pos, &row.task_id, &event)
-            .map_err(TaskStoreError::Store)?;
-        Ok(())
+        let row = row.clone();
+        let request_id = request_id.to_string();
+        self.engine
+            .submit(
+                row.created_at,
+                SWEEP_BOUNDS,
+                |pos| {
+                    let ev = EventInput {
+                        kind: busbar_substrate::audit::vocab::EV_SUBMITTED,
+                        context_id: row.context_id.clone(),
+                        principal: row.principal.clone(),
+                        agent_id: row.agent_id.clone(),
+                        state: row.state.clone(),
+                        request_id: request_id.clone(),
+                        ts: row.created_at,
+                    };
+                    let event = seal_task_event(pos, &row.task_id, &ev)?;
+                    Ok(SubmitRecord {
+                        id: row.task_id.clone(),
+                        meta: meta_of(&row),
+                        row_record: row.to_plane_record()?,
+                        row: Arc::new(row.clone()),
+                        event,
+                    })
+                },
+                plan_abandon,
+                report_abandon_fail,
+            )
+            .map(|arc| as_task(&arc))
+            .map_err(map_engine_err)
     }
 
     /// TRANSITION a task, emitting the matching chained provenance event and writing both through. The
@@ -710,28 +676,32 @@ impl TaskRegistry {
     where
         F: FnOnce(&TaskRow) -> Result<(TaskRow, &'static str), String>,
     {
-        let mut tasks = self.tasks();
-        let entry = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let (candidate, kind) = plan(&entry.row).map_err(TaskStoreError::Domain)?;
-        let mut pos = entry.pos.clone();
-        self.write_through(
-            &mut pos,
-            &candidate,
-            EventInput {
-                kind,
-                context_id: candidate.context_id.clone(),
-                principal: candidate.principal.clone(),
-                agent_id: candidate.agent_id.clone(),
-                state: candidate.state.clone(),
-                request_id: request_id.to_string(),
-                ts: candidate.updated_at,
-            },
-        )?;
-        entry.pos = pos;
-        entry.row = candidate.clone();
-        Ok(candidate)
+        let request_id = request_id.to_string();
+        self.engine
+            .mutate(task_id, |row, pos| {
+                let (candidate, kind) = plan(as_task_ref(row)).map_err(MutateError::Rejected)?;
+                let ev = EventInput {
+                    kind,
+                    context_id: candidate.context_id.clone(),
+                    principal: candidate.principal.clone(),
+                    agent_id: candidate.agent_id.clone(),
+                    state: candidate.state.clone(),
+                    request_id: request_id.clone(),
+                    ts: candidate.updated_at,
+                };
+                let event =
+                    seal_task_event(pos, &candidate.task_id, &ev).map_err(MutateError::Store)?;
+                let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
+                let meta = meta_of(&candidate);
+                Ok(Some(Mutation {
+                    row: Some(Arc::new(candidate)),
+                    meta: Some(meta),
+                    row_record: Some(row_record),
+                    event: Some(event),
+                }))
+            })
+            .map(|arc| as_task(&arc))
+            .map_err(map_engine_err)
     }
 
     /// DISPATCH: record which agent this task was routed to, and chain a `task.delegated` event.
@@ -742,30 +712,35 @@ impl TaskRegistry {
         now: u64,
         request_id: &str,
     ) -> Result<TaskRow, TaskStoreError> {
-        let mut tasks = self.tasks();
-        let entry = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let mut candidate = entry.row.clone();
-        candidate.agent_id = agent_id.to_string();
-        candidate.updated_at = now;
-        let mut pos = entry.pos.clone();
-        self.write_through(
-            &mut pos,
-            &candidate,
-            EventInput {
-                kind: busbar_substrate::audit::vocab::EV_DELEGATED,
-                context_id: candidate.context_id.clone(),
-                principal: candidate.principal.clone(),
-                agent_id: candidate.agent_id.clone(),
-                state: candidate.state.clone(),
-                request_id: request_id.to_string(),
-                ts: now,
-            },
-        )?;
-        entry.pos = pos;
-        entry.row = candidate.clone();
-        Ok(candidate)
+        let agent_id = agent_id.to_string();
+        let request_id = request_id.to_string();
+        self.engine
+            .mutate(task_id, |row, pos| {
+                let mut candidate = as_task_ref(row).clone();
+                candidate.agent_id = agent_id.clone();
+                candidate.updated_at = now;
+                let ev = EventInput {
+                    kind: busbar_substrate::audit::vocab::EV_DELEGATED,
+                    context_id: candidate.context_id.clone(),
+                    principal: candidate.principal.clone(),
+                    agent_id: candidate.agent_id.clone(),
+                    state: candidate.state.clone(),
+                    request_id: request_id.clone(),
+                    ts: now,
+                };
+                let event =
+                    seal_task_event(pos, &candidate.task_id, &ev).map_err(MutateError::Store)?;
+                let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
+                let meta = meta_of(&candidate);
+                Ok(Some(Mutation {
+                    row: Some(Arc::new(candidate)),
+                    meta: Some(meta),
+                    row_record: Some(row_record),
+                    event: Some(event),
+                }))
+            })
+            .map(|arc| as_task(&arc))
+            .map_err(map_engine_err)
     }
 
     /// RECORD ONE PUSH-NOTIFICATION DELIVERY OUTCOME on the task's own chain. Not a transition and not
@@ -777,24 +752,29 @@ impl TaskRegistry {
         now: u64,
         request_id: &str,
     ) -> Result<(), TaskStoreError> {
-        let mut tasks = self.tasks();
-        let entry = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let event = EventInput {
-            kind,
-            context_id: entry.row.context_id.clone(),
-            principal: entry.row.principal.clone(),
-            agent_id: entry.row.agent_id.clone(),
-            state: entry.row.state.clone(),
-            request_id: request_id.to_string(),
-            ts: now,
-        };
-        let mut pos = entry.pos.clone();
-        self.seal_event(&mut pos, task_id, &event)
-            .map_err(TaskStoreError::Store)?;
-        entry.pos = pos;
-        Ok(())
+        let request_id = request_id.to_string();
+        self.engine
+            .mutate(task_id, |row, pos| {
+                let row = as_task_ref(row);
+                let ev = EventInput {
+                    kind,
+                    context_id: row.context_id.clone(),
+                    principal: row.principal.clone(),
+                    agent_id: row.agent_id.clone(),
+                    state: row.state.clone(),
+                    request_id: request_id.clone(),
+                    ts: now,
+                };
+                let event = seal_task_event(pos, task_id, &ev).map_err(MutateError::Store)?;
+                Ok(Some(Mutation {
+                    row: None,
+                    meta: None,
+                    row_record: None,
+                    event: Some(event),
+                }))
+            })
+            .map(|_| ())
+            .map_err(map_engine_err)
     }
 
     /// ADVANCE THE ARTIFACT CURSOR — how many artifact chunks have been durably relayed. MONOTONIC.
@@ -805,135 +785,114 @@ impl TaskRegistry {
         now: u64,
         request_id: &str,
     ) -> Result<TaskRow, TaskStoreError> {
-        let mut tasks = self.tasks();
-        let entry = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        if cursor <= entry.row.artifact_cursor {
-            return Ok(entry.row.clone());
-        }
-        let mut candidate = entry.row.clone();
-        candidate.artifact_cursor = cursor;
-        candidate.updated_at = now;
-        let mut pos = entry.pos.clone();
-        self.write_through(
-            &mut pos,
-            &candidate,
-            EventInput {
-                kind: busbar_substrate::audit::vocab::EV_ARTIFACT,
-                context_id: candidate.context_id.clone(),
-                principal: candidate.principal.clone(),
-                agent_id: candidate.agent_id.clone(),
-                state: candidate.state.clone(),
-                request_id: request_id.to_string(),
-                ts: now,
-            },
-        )?;
-        entry.pos = pos;
-        entry.row = candidate.clone();
-        Ok(candidate)
+        let request_id = request_id.to_string();
+        self.engine
+            .mutate(task_id, |row, pos| {
+                let row = as_task_ref(row);
+                if cursor <= row.artifact_cursor {
+                    return Ok(None);
+                }
+                let mut candidate = row.clone();
+                candidate.artifact_cursor = cursor;
+                candidate.updated_at = now;
+                let ev = EventInput {
+                    kind: busbar_substrate::audit::vocab::EV_ARTIFACT,
+                    context_id: candidate.context_id.clone(),
+                    principal: candidate.principal.clone(),
+                    agent_id: candidate.agent_id.clone(),
+                    state: candidate.state.clone(),
+                    request_id: request_id.clone(),
+                    ts: now,
+                };
+                let event =
+                    seal_task_event(pos, &candidate.task_id, &ev).map_err(MutateError::Store)?;
+                let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
+                let meta = meta_of(&candidate);
+                Ok(Some(Mutation {
+                    row: Some(Arc::new(candidate)),
+                    meta: Some(meta),
+                    row_record: Some(row_record),
+                    event: Some(event),
+                }))
+            })
+            .map(|arc| as_task(&arc))
+            .map_err(map_engine_err)
     }
 
     /// Register (or clear) this task's push-notification callback. The SSRF FLOOR is applied by the A2A
-    /// caller BEFORE this method; a refused URL reaches here as `None`.
+    /// caller BEFORE this method; a refused URL reaches here as `None`. No provenance event: it changes
+    /// no task state, only the delivery target on the row.
     pub fn set_push_callback(
         &self,
         task_id: &str,
         callback: Option<String>,
         now: u64,
     ) -> Result<TaskRow, TaskStoreError> {
-        let mut tasks = self.tasks();
-        let entry = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let mut candidate = entry.row.clone();
-        candidate.push_callback = callback.unwrap_or_default();
-        candidate.updated_at = now;
-        self.upsert_row(&candidate)?;
-        entry.row = candidate.clone();
-        Ok(candidate)
+        self.engine
+            .mutate(task_id, |row, _pos| {
+                let mut candidate = as_task_ref(row).clone();
+                candidate.push_callback = callback.clone().unwrap_or_default();
+                candidate.updated_at = now;
+                let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
+                let meta = meta_of(&candidate);
+                Ok(Some(Mutation {
+                    row: Some(Arc::new(candidate)),
+                    meta: Some(meta),
+                    row_record: Some(row_record),
+                    event: None,
+                }))
+            })
+            .map(|arc| as_task(&arc))
+            .map_err(map_engine_err)
     }
 
     /// SCOPED READ. The authorization gate for `GetTask`: a caller sees its own tasks and nothing else,
     /// and cannot tell a foreign id from a nonexistent one.
     pub fn get_scoped(&self, principal: &str, task_id: &str) -> Result<TaskRow, Denied> {
-        if principal.is_empty() {
-            return Err(Denied::NotYours);
-        }
-        match self.tasks().get(task_id) {
-            Some(e) if e.row.principal == principal => Ok(e.row.clone()),
-            _ => Err(Denied::NotYours),
-        }
+        self.engine
+            .scoped_get(principal, task_id)
+            .map(|arc| as_task(&arc))
+            .map_err(|_| Denied::NotYours)
     }
 
     /// SCOPED LIST. The authorization gate for `ListTasks`, sorted by task id so the result is
-    /// deterministic.
+    /// deterministic (the engine sorts by handle id, which is the task id).
     pub fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
-        if principal.is_empty() {
-            return Vec::new();
-        }
-        let mut out: Vec<TaskRow> = self
-            .tasks()
-            .values()
-            .filter(|e| e.row.principal == principal)
-            .map(|e| e.row.clone())
-            .collect();
-        out.sort_by(|a, b| a.task_id.cmp(&b.task_id));
-        out
+        self.engine.scoped_list(principal).iter().map(as_task).collect()
     }
 
     /// UNSCOPED read — for the retention sweep and the operator surface, never for a caller.
     pub fn get_unscoped(&self, task_id: &str) -> Option<TaskRow> {
-        self.tasks().get(task_id).map(|e| e.row.clone())
+        self.engine.get_unscoped(task_id).map(|arc| as_task(&arc))
     }
 
     /// How many tasks are in the working set. Active + interrupted only.
     pub fn len(&self) -> usize {
-        self.tasks().len()
+        self.engine.len()
     }
 
     /// Whether the working set holds no tasks.
     pub fn is_empty(&self) -> bool {
-        self.tasks().is_empty()
+        self.engine.is_empty()
     }
 
     /// Drop a task from the WORKING SET once it is terminal, leaving its durable rows and its
     /// provenance chain in the store for the retention window. Refuses to evict an ACTIVE task.
     pub fn evict_terminal(&self, task_id: &str) -> bool {
-        let mut tasks = self.tasks();
-        match tasks.get(task_id) {
-            Some(e) if is_terminal_state(&e.row.state) => {
-                tasks.remove(task_id);
-                true
-            }
-            _ => false,
-        }
+        self.engine.evict_if_terminal(task_id)
     }
 
     /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any matching
     /// working-set entries. Returns how many durable rows went.
     pub fn compact(&self, before: u64) -> StoreResult<u64> {
-        let removed = match self.sink() {
-            Some(store) => store.purge_plane_records_before(KIND_TASK, before)?,
-            None => 0,
-        };
-        let mut tasks = self.tasks();
-        let dropped: Vec<String> = tasks
-            .iter()
-            .filter(|(_, e)| is_terminal_state(&e.row.state) && e.row.updated_at < before)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &dropped {
-            tasks.remove(id);
-        }
-        Ok(removed)
+        self.engine.compact(before, KIND_TASK)
     }
 
-    /// TEST ONLY: how many working-set entries hold a chain position — trivially the working-set size
-    /// now that the position lives on the entry, kept as the diagnostic the retention tests read.
+    /// TEST ONLY: how many working-set entries hold a chain position — trivially the working-set size,
+    /// kept as the diagnostic the retention tests read.
     #[cfg(any(test, feature = "test-support"))]
     pub fn chain_positions(&self) -> usize {
-        self.tasks().len()
+        self.engine.len()
     }
 
     /// TEST ONLY: the retention constants, so the cross-crate retention tests assert against the

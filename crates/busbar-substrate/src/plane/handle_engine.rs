@@ -263,9 +263,9 @@ impl DurableHandleEngine {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
-    /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide engine leaves it
-    /// as it found it.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Drop the sink again, so a test that attached one to a process-wide engine leaves it as it found
+    /// it. Not test-gated: a plane crate's OWN test build depends on this crate as a non-test library,
+    /// so the method must exist there; it is inert in production (a plane only calls it under test).
     pub fn clear_sink_for_test(&self) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
