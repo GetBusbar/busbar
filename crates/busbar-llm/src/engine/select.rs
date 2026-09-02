@@ -81,7 +81,7 @@ impl RequestCtx {
                 .unwrap_or_else(|| {
                     std::time::Instant::now()
                         + std::time::Duration::from_secs(
-                            busbar_core::config::MAX_FAILOVER_DEADLINE_SECS,
+                            busbar_substrate::failover::MAX_FAILOVER_DEADLINE_SECS,
                         )
                 }),
             excluded: std::collections::HashSet::new(),

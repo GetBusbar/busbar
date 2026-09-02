@@ -2630,16 +2630,14 @@ pub struct FailoverCfg {
     pub max_hops: usize,
 }
 
-/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
-pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
-/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
-/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
-/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
-/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
-/// monotonic-clock `Instant` math (see `RequestCtx::new`).
-pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
-/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
-pub const DEFAULT_FAILOVER_CAP: usize = 3;
+// The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
+// they now live in the neutral `busbar_substrate::failover` (a plane names the per-request failover
+// budget without reaching into `busbar-core`); re-exported here at their historical
+// `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
+// the `serde` default fns below) resolves unchanged.
+pub use busbar_substrate::failover::{
+    DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
+};
 
 fn default_failover_timeout() -> u64 {
     DEFAULT_FAILOVER_DEADLINE_SECS

@@ -1108,8 +1108,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let (deadline_secs, max_cap) = match pool_failover {
         Some(f) => (f.timeout_secs, f.max_hops),
         None => (
-            busbar_core::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-            busbar_core::config::DEFAULT_FAILOVER_CAP,
+            busbar_substrate::failover::DEFAULT_FAILOVER_DEADLINE_SECS,
+            busbar_substrate::failover::DEFAULT_FAILOVER_CAP,
         ),
     };
 
