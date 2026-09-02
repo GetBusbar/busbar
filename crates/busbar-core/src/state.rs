@@ -973,8 +973,8 @@ fn empty_native_runtime() -> &'static NativeRuntime {
     })
 }
 
-/// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface (R3/R4 sub-phase A, LOCKED §7
-/// "wire the seam in place"). A zero-cost newtype over `&NativeRuntime`, so every read through it is
+/// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface. A zero-cost newtype over
+/// `&NativeRuntime`, so every read through it is
 /// byte-identical to reading the bundle directly. It exists so the engine and the model-plane readers
 /// reach the pool/lane/failover tables through ONE named seam — the seam whose SOURCE sub-phase B
 /// flipped from the flat `App::llm_runtime` field to the LLM plane's opaque `plane_slot` (downcast ONCE

@@ -114,7 +114,7 @@ pub struct HostCompletion {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE GAUNTLET SEAM — one shared request sequence every protocol plane rides (design §10, M3).
+// THE GAUNTLET SEAM — one shared request sequence every protocol plane rides.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The neutral per-request facts of ONE gauntlet traversal that the SHARED sequence

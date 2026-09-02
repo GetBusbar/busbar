@@ -391,7 +391,7 @@ fn governance_guard(
     admission_door(app, gov, proto, pool, started, charged_at)
 }
 
-/// STAGE 2 (design §10, the LLM plane's `verify_destination`) — the PRE-ADMISSION destination
+/// STAGE 2 (the LLM plane's `verify_destination`) — the PRE-ADMISSION destination
 /// verification: the requested pool ACL (`pool_authorized`), every reachable fallback pool's ACL
 /// (`fallback_pools_authorized`), and the fail-closed unpriced-model gate. Every check that can
 /// reject fires here, BEFORE the budget door, so no rejection can ever land after a charge. `Ok(())`
@@ -450,7 +450,7 @@ fn destination_guard(
     Ok(())
 }
 
-/// STAGE 4 (design §10) — THE single budget-admission door, SHARED gauntlet core (never a plane
+/// STAGE 4 — THE single budget-admission door, SHARED gauntlet core (never a plane
 /// hook). The atomic group-limit ADMISSION runs here, after stage 2: it CHARGES every chain bucket
 /// on admit, so nothing may reject an already-charged request after it. On rejection nothing was
 /// charged → `finish_rejected` (no refund). On admission the returned grant reports whether the

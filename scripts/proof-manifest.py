@@ -7,7 +7,7 @@
 # It changes NO gate. It is a thin capture layer over apparatus that already runs in CI: it runs (or
 # reads) the neutrality gates, enumerates the golden corpus, parses the field-coverage ledger, and
 # ingests the MCP/A2A conformance JSON reports, then reduces every one to a public-safe verdict object
-# and emits docs/proof/<version>.json per the schema in section 4.1 of the design doc.
+# and emits docs/proof/<version>.json per the proof-manifest schema.
 #
 # PUBLIC-SAFE BY CONSTRUCTION. The manifest carries verdicts, counts, gate names, test-function names,
 # golden filenames, and field ids -- all already public in the docs/CHANGELOG the marketing site
