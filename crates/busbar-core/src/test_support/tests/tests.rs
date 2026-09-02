@@ -4936,7 +4936,6 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
         axum::extract::Extension(crate::governance::GovCtx::default()),
         axum::extract::Extension(crate::auth::CallerToken::default()),
-        axum::http::HeaderMap::new(),
         body.clone(),
     )
     .await;
@@ -4952,7 +4951,6 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
         axum::extract::Extension(crate::governance::GovCtx::default()),
         axum::extract::Extension(crate::auth::CallerToken::default()),
-        axum::http::HeaderMap::new(),
         body,
     )
     .await;

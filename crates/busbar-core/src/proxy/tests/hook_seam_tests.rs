@@ -1799,7 +1799,6 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "anthropic",
         crate::handlers::chat("anthropic", crate::transport::Transport::Http),
         None,
-        Vec::new(),
     )
     .await;
     let captured = seen.lock().unwrap().clone().expect("pool policy ran");

@@ -313,7 +313,6 @@ pub(crate) async fn handle_queue(
                     req_content_type,
                     usage_sink,
                     reasoning_override,
-                    request_ctx.forwarded_client_headers.as_slice(),
                 )
                 .await
                 {
@@ -431,11 +430,6 @@ pub(crate) async fn forward_once(
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
-    // The allowlisted client beta/version headers the caller actually sent (from
-    // `RequestCtx::forwarded_client_headers`). Forwarded to the upstream SCOPED to this lane's egress
-    // dialect (no cross-dialect leak), mirroring the hot `forward_with_pool` path. Empty ⇒ byte-
-    // identical egress on this degraded route too.
-    client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
 ) -> Result<Response, ()> {
     // RAII probe release covering the WHOLE dispatch window, built ONLY when
     // this dispatch actually won a probe (`probe_epoch == Some`). The caller won a single-flight
@@ -643,9 +637,6 @@ pub(crate) async fn forward_once(
         ACCEPT,
         axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
     );
-    // T4 HEADER FIDELITY (mirrors the main forward path): forward the allowlisted client beta/version
-    // headers, scoped to this lane's egress dialect (no cross-dialect leak). No-op on an empty set.
-    crate::proxy::apply_forwarded_client_headers(&mut egress_headers, client_fwd, egress_name);
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
     let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
@@ -1215,7 +1206,6 @@ pub(crate) async fn handle_fallback_pool(
                 .iter()
                 .find(|w| w.idx == i)
                 .and_then(|w| w.reasoning),
-            request_ctx.forwarded_client_headers.as_slice(),
         )
         .await
         {
@@ -1316,7 +1306,6 @@ pub(crate) async fn handle_least_bad(
             .iter()
             .find(|w| w.idx == soonest_idx)
             .and_then(|w| w.reasoning),
-        request_ctx.forwarded_client_headers.as_slice(),
     )
     .await
     {
