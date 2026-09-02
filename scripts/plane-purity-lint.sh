@@ -108,7 +108,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # The neutral crates (the ABI side) and the plane crates (the plugin side). Derived once; a plane or
 # neutral crate that appears/disappears is a one-line edit here, never N stale paths scattered below.
 NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
-PLANE_ROOTS="crates/busbar-llm/src crates/busbar-mcp/src crates/busbar-a2a/src"
+PLANE_ROOTS="crates/busbar-llm/src crates/busbar-mcp/src crates/busbar-a2a/src crates/busbar-voice/src"
 
 neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' 2>/dev/null | sort; }
 plane_files()   { find $PLANE_ROOTS   -name '*.rs' 2>/dev/null | sort; }
@@ -202,14 +202,14 @@ scan() {
       # (a) PATH-INCLUDE — unconditional, test scope included (instant fail). NEVER excusable by the
       #     frozen-wire pragma below: a witness `#[path]` include is a STRUCTURAL side channel, not a
       #     grammar token, so no config-freeze can justify it.
-      if (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a)\//) emit("PATH-INCLUDE", code)
+      if (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//) emit("PATH-INCLUDE", code)
 
       if (intest) next                                    # (b)/(c) exclude test code
 
       # (b) SYMBOL — a plane-crate symbol path. ALSO never excusable by the frozen-wire pragma: a
-      #     frozen config FIELD/TYPE never requires naming `busbar_{llm,mcp,a2a}::` — that is a
+      #     frozen config FIELD/TYPE never requires naming `busbar_{llm,mcp,a2a,voice}::` — that is a
       #     backwards reach into plane implementation, orthogonal to the wire grammar.
-      if (code ~ /busbar_(llm|mcp|a2a)::/) emit("SYMBOL", code)
+      if (code ~ /busbar_(llm|mcp|a2a|voice)::/) emit("SYMBOL", code)
 
       # ── FROZEN-WIRE CARVE-OUT (the config-stability contract; see header "THE FROZEN-WIRE CARVE-OUT")
       # A neutral-source line bearing a `// plane-purity: frozen-wire <reason>` pragma is EXEMPT from
@@ -228,12 +228,12 @@ scan() {
       # (c3) TYPE — the named plane record structs, plus any plane-/dialect-prefixed CamelCase type.
       #      (Checked before the bare-key rule so McpFoo reads as TYPE, not KEY.)
       if (code ~ /(^|[^A-Za-z0-9_])(McpCallRecord|McpDemotionRow|TaskRow|TaskEventRow)([^A-Za-z0-9_]|$)/ \
-       || code ~ /(^|[^A-Za-z0-9_])(Mcp|A2a|A2A|Llm|Openai|Anthropic|Gemini|Bedrock|Cohere|Responses)[A-Z][A-Za-z0-9_]*/)
+       || code ~ /(^|[^A-Za-z0-9_])(Mcp|A2a|A2A|Llm|Voice|Openai|Anthropic|Gemini|Bedrock|Cohere|Responses)[A-Z][A-Za-z0-9_]*/)
         emit("TYPE", code)
 
-      # (c1) KEY — a concrete plane key as a bare token (mcp / a2a / llm). Word-boundary, so it does
-      #      NOT match inside busbar_mcp / plane_mcp / MCP_RUNTIME_SLOT (underscore is not a boundary).
-      if (word_ci(lc, "mcp") || word_ci(lc, "a2a") || word_ci(lc, "llm")) emit("KEY", code)
+      # (c1) KEY — a concrete plane key as a bare token (mcp / a2a / llm / voice). Word-boundary, so it
+      #      does NOT match inside busbar_mcp / plane_mcp / MCP_RUNTIME_SLOT (underscore is not a boundary).
+      if (word_ci(lc, "mcp") || word_ci(lc, "a2a") || word_ci(lc, "llm") || word_ci(lc, "voice")) emit("KEY", code)
 
       # (c2) DIALECT — one of the six dialect names as a token.
       if (word_ci(lc, "openai") || word_ci(lc, "anthropic") || word_ci(lc, "gemini") \
@@ -270,13 +270,32 @@ RED
   done
   [ "$ok" -eq 1 ] || { fail=1; note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
 
+  # ── RED (neutral, voice parity): a fake witness #[path=…busbar-voice…], a busbar_voice:: reference,
+  # a VoiceFoo type, and a bare `voice` key — must ALL be flagged, exactly as the mcp/a2a case above. ──
+  cat >"$tmp/neutral_red_voice.rs" <<'REDV'
+#[path = "../../../busbar-voice/src/witness.rs"]
+mod voice_witness;
+use busbar_voice::runtime::Session;
+pub struct VoiceFoo;
+fn route() { let plane_key = "voice"; }
+REDV
+  out="$(scan forward "$tmp/neutral_red_voice.rs")"
+  local voice_ok=1
+  for need in PATH-INCLUDE SYMBOL TYPE KEY; do
+    if [ "$(printf '%s\n' "$out" | awk -F'\t' -v c="$need" '$1==c{n++} END{print n+0}')" -ge 1 ]; then
+      note "RED neutral (voice): flagged $need"
+    else
+      voice_ok=0; note "RED neutral (voice) FAILED: $need not flagged"; fi
+  done
+  [ "$voice_ok" -eq 1 ] || { fail=1; note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
+
   # ── GREEN (neutral): the intentional neutral ABI, plus a comment / block-comment / cfg(test) mod
   # that MENTION plane vocabulary — none may be flagged. This is the executable proof of the
   # curated allow-list AND of the comment/test exclusion.
   cat >"$tmp/neutral_green.rs" <<'GREEN'
 use busbar_substrate::plane::{PlaneDecl, PlaneRecord};
 use busbar_api::store::{ProtocolDecl, PlaneSlots};
-// a comment naming mcp a2a llm anthropic gemini and McpCallRecord must be ignored
+// a comment naming mcp a2a llm voice anthropic gemini and McpCallRecord must be ignored
 /* a block comment naming TaskRow and openai and bedrock also ignored */
 pub fn install(d: &PlaneDecl, r: PlaneRecord) {
     install_planes(&[d]);

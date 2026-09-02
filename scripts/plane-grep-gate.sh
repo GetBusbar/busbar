@@ -21,9 +21,12 @@
 #
 #     NEUTRAL crates (busbar-core, busbar-substrate, busbar-api): ZERO occurrences (as substrings) of
 #       the six dialect names — openai gemini anthropic bedrock cohere responses — PLUS the plane keys
-#       `mcp` / `a2a` (a neutral crate must name neither plane by key).
-#     busbar-mcp : may name `mcp`, but NOT the six dialect names and NOT `a2a`.
-#     busbar-a2a : may name `a2a`, but NOT the six dialect names and NOT `mcp`.
+#       `mcp` / `a2a` / `voice` (a neutral crate must name no plane by key).
+#     busbar-mcp   : may name `mcp`,   but NOT the six dialect names and NOT `a2a` / `voice`.
+#     busbar-a2a   : may name `a2a`,   but NOT the six dialect names and NOT `mcp` / `voice`.
+#     busbar-voice : may name `voice`, but NOT the six dialect names and NOT `mcp` / `a2a`.
+#       (voice added at parity with mcp/a2a after the initial F4 pin, closing the same substring hole
+#       for the busbar-voice plane crate.)
 #     busbar-llm : OWNS the dialect names — not scanned.
 #
 #   Substring match (index, not word-boundary) is the whole point: it is a SUPERSET of plane-purity's
@@ -84,16 +87,19 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # ── THE CRATE GROUPS AND THEIR BANNED NEEDLES ────────────────────────────────────────────────────
 # Each group names a crate src root and the exact set of needles that must NOT appear there. A crate
 # added/removed/re-scoped is a one-line edit here, never N stale paths below.
-#   neutral  : the ABI side — bans every dialect + BOTH plane keys (names no plane at all).
-#   mcp      : may name `mcp`; bans the dialects + the OTHER plane key `a2a`.
-#   a2a      : may name `a2a`; bans the dialects + the OTHER plane key `mcp`.
+#   neutral  : the ABI side — bans every dialect + ALL THREE plane keys (names no plane at all).
+#   mcp      : may name `mcp`; bans the dialects + the OTHER plane keys `a2a` / `voice`.
+#   a2a      : may name `a2a`; bans the dialects + the OTHER plane keys `mcp` / `voice`.
+#   voice    : may name `voice`; bans the dialects + the OTHER plane keys `mcp` / `a2a`.
 #   (busbar-llm owns the dialect names and is not scanned.)
 NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
-NEUTRAL_NEEDLES="$DIALECTS mcp a2a"
+NEUTRAL_NEEDLES="$DIALECTS mcp a2a voice"
 MCP_ROOT="crates/busbar-mcp/src"
-MCP_NEEDLES="$DIALECTS a2a"
+MCP_NEEDLES="$DIALECTS a2a voice"
 A2A_ROOT="crates/busbar-a2a/src"
-A2A_NEEDLES="$DIALECTS mcp"
+A2A_NEEDLES="$DIALECTS mcp voice"
+VOICE_ROOT="crates/busbar-voice/src"
+VOICE_NEEDLES="$DIALECTS mcp a2a"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
@@ -276,28 +282,31 @@ run_selftest() {
   cat >"$tmp/neutral_red.rs" <<'RED'
 pub const GEMINI_KEY: &str = "gemini_api_version";
 use busbar_a2a::Foo;
+use busbar_voice::Bar;
 fn probe() { let url = "https://api.openai.com/v1/models"; }
 RED
   out="$(scan "$NEUTRAL_NEEDLES" "$tmp/neutral_red.rs")"
-  local hit_gemini hit_a2a hit_openai
+  local hit_gemini hit_a2a hit_openai hit_voice
   hit_gemini="$(printf '%s\n' "$out" | awk -F'\t' '$1=="gemini"{n++} END{print n+0}')"
   hit_a2a="$(printf '%s\n' "$out"    | awk -F'\t' '$1=="a2a"{n++}    END{print n+0}')"
   hit_openai="$(printf '%s\n' "$out" | awk -F'\t' '$1=="openai"{n++} END{print n+0}')"
+  hit_voice="$(printf '%s\n' "$out"  | awk -F'\t' '$1=="voice"{n++}  END{print n+0}')"
   if [ "$hit_gemini" -ge 1 ]; then note "RED neutral: caught gemini SUBSTRING in \`gemini_api_version\`"; else fail=1; note "RED neutral FAILED: gemini_api_version not flagged"; fi
   if [ "$hit_a2a"    -ge 1 ]; then note "RED neutral: caught the busbar_a2a:: plane-key reach"; else fail=1; note "RED neutral FAILED: busbar_a2a:: not flagged"; fi
   if [ "$hit_openai" -ge 1 ]; then note "RED neutral: caught openai SUBSTRING in the /v1/models url host"; else fail=1; note "RED neutral FAILED: api.openai.com not flagged"; fi
+  if [ "$hit_voice"  -ge 1 ]; then note "RED neutral: caught the busbar_voice:: plane-key reach"; else fail=1; note "RED neutral FAILED: busbar_voice:: not flagged"; fi
   [ "$fail" -eq 0 ] || { note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
 
   # ── GREEN (neutral): the generic neutral vocabulary + a comment / cfg(test) block MENTIONING dialect
   # names — none may be flagged (executable proof of the comment/test exclusion).
   cat >"$tmp/neutral_green.rs" <<'GREEN'
 pub enum Op { Chat, Embeddings, Rerank, Moderation }
-// this comment names openai gemini anthropic bedrock cohere responses mcp a2a and must be ignored
+// this comment names openai gemini anthropic bedrock cohere responses mcp a2a voice and must be ignored
 /* block comment naming gemini_api_version and openai too — ignored */
 pub fn install() { let _op = Op::Chat; let _e = Op::Embeddings; }
 #[cfg(test)]
 mod tests {
-    fn t() { let _ = "openai gemini anthropic"; let _k = "mcp a2a"; }
+    fn t() { let _ = "openai gemini anthropic"; let _k = "mcp a2a voice"; }
 }
 GREEN
   out="$(scan "$NEUTRAL_NEEDLES" "$tmp/neutral_green.rs")"
@@ -322,6 +331,20 @@ MCP
   if [ "$mcp_hit_a2a" -ge 1 ];      then note "SYMMETRIC mcp: flagged the foreign \`a2a\` plane key"; else fail=1; note "SYMMETRIC mcp FAILED: foreign a2a not flagged"; fi
   if [ "$mcp_hit_anthropic" -ge 1 ]; then note "SYMMETRIC mcp: flagged \`anthropic\` SUBSTRING in anthropic_v1"; else fail=1; note "SYMMETRIC mcp FAILED: anthropic_v1 not flagged"; fi
 
+  # ── SYMMETRIC (busbar-voice): may name `voice`, must NOT name `mcp` or `a2a`. ──
+  cat >"$tmp/voice_case.rs" <<'VOICE'
+use busbar_voice::runtime::Session;
+fn wire() { let _ = "mcp"; let _d = "a2a_bridge"; }
+VOICE
+  out="$(scan "$VOICE_NEEDLES" "$tmp/voice_case.rs")"
+  local voice_hit_voice voice_hit_mcp voice_hit_a2a
+  voice_hit_voice="$(printf '%s\n' "$out" | awk -F'\t' '$1=="voice"{n++} END{print n+0}')"
+  voice_hit_mcp="$(printf '%s\n' "$out"   | awk -F'\t' '$1=="mcp"{n++}   END{print n+0}')"
+  voice_hit_a2a="$(printf '%s\n' "$out"   | awk -F'\t' '$1=="a2a"{n++}   END{print n+0}')"
+  if [ "$voice_hit_voice" -eq 0 ]; then note "SYMMETRIC voice: did NOT flag its own \`voice\` name"; else fail=1; note "SYMMETRIC voice FAILED: flagged its own \`voice\`"; fi
+  if [ "$voice_hit_mcp"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`mcp\` plane key"; else fail=1; note "SYMMETRIC voice FAILED: foreign mcp not flagged"; fi
+  if [ "$voice_hit_a2a"   -ge 1 ]; then note "SYMMETRIC voice: flagged the foreign \`a2a\` plane key SUBSTRING in a2a_bridge"; else fail=1; note "SYMMETRIC voice FAILED: foreign a2a not flagged"; fi
+
   if [ "$fail" -ne 0 ]; then
     red "plane-grep-gate SELF-TEST FAILED — the scanner would let a dialect substring through"
     return 1
@@ -338,16 +361,18 @@ run_report() {
   : >"$tmp/hits"
 
   # Prepass: compute the test-support module subtrees to drop (across every scanned root).
-  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT
+  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT $VOICE_ROOT
 
-  local nf mf af
-  nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"
+  local nf mf af vf
+  nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"; vf="$(prod_files $VOICE_ROOT)"
   # shellcheck disable=SC2086
   [ -n "$nf" ] && scan "$NEUTRAL_NEEDLES" $nf >>"$tmp/hits"
   # shellcheck disable=SC2086
   [ -n "$mf" ] && scan "$MCP_NEEDLES"     $mf >>"$tmp/hits"
   # shellcheck disable=SC2086
   [ -n "$af" ] && scan "$A2A_NEEDLES"     $af >>"$tmp/hits"
+  # shellcheck disable=SC2086
+  [ -n "$vf" ] && scan "$VOICE_NEEDLES"   $vf >>"$tmp/hits"
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
@@ -356,11 +381,12 @@ run_report() {
   note "neutral roots: $NEUTRAL_ROOTS   (bans: $NEUTRAL_NEEDLES)"
   note "mcp root:      $MCP_ROOT   (bans: $MCP_NEEDLES)"
   note "a2a root:      $A2A_ROOT   (bans: $A2A_NEEDLES)"
+  note "voice root:    $VOICE_ROOT   (bans: $VOICE_NEEDLES)"
   note "excluded:      $OPERATION_EXCLUDE (neutral Operation enum), */tests/*, *_test(s).rs, #[cfg(test)]"
 
   hdr "by needle (a clean tree reports zero)"
   local d n
-  for d in $DIALECTS mcp a2a; do
+  for d in $DIALECTS mcp a2a voice; do
     n="$(awk -F'\t' -v c="$d" '$1==c{n++} END{print n+0}' "$tmp/hits")"
     printf '  %-12s %6d\n' "$d" "$n"
   done
