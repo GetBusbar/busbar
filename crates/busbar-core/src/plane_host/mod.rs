@@ -27,6 +27,9 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
+// The host side of the metering-lease seam (minor-19): the real `cost_reserve`/`cost_settle` shims
+// backed by a host-owned `CostHold` lease registry. The vtable's two cost slots forward into it.
+pub mod cost_host;
 mod creds;
 pub mod dispatch;
 pub mod egress;

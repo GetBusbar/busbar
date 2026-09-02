@@ -112,12 +112,14 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    fires its hook gates without naming the gate engine. Always wired (the host owns the gate
         //    set whatever the plane); no plane feature gates it. ───────────────────────────────────────
         gate_decide: Some(super::dispatch::gate_decide),
-        // ── RESERVED `cost_reserve`/`cost_settle` (minor-19, the METERING-LEASE seam): the ABI slots
-        //    are FROZEN so a high-rate carrier plane can bind against them, but the host-side
-        //    reserve-then-settle `CostHold` is not wired yet — it lands with the duplex/session plane
-        //    that needs continuous per-frame metering. `None` until then (an honest not-granted). ──────
-        cost_reserve: None,
-        cost_settle: None,
+        // ── WIRED `cost_reserve`/`cost_settle` (minor-19, the METERING-LEASE seam) → the host-owned
+        //    reserve-then-settle `CostHold` lease registry in `super::cost_host`: open a lease over
+        //    ALREADY-PRICED nanodollars (widened host-side to the internal u128 `CostAmount`), settle
+        //    EXACT increments against it, and read back exhaustion so a high-rate carrier plane can
+        //    hard-close a live session mid-stream. Always wired (the host owns the lease state whatever
+        //    the plane); no plane feature gates it. ─────────────────────────────────────────────────────
+        cost_reserve: Some(super::cost_host::cost_reserve),
+        cost_settle: Some(super::cost_host::cost_settle),
     }
 }
 

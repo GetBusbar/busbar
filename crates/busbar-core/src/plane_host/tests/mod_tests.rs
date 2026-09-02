@@ -39,6 +39,9 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     assert!(vt.egress_open.is_some());
     assert!(vt.auth_resolve.is_some());
     assert!(vt.gate_scan.is_some());
+    // The minor-19 metering-lease slots are now WIRED (no longer the reserved `None`).
+    assert!(vt.cost_reserve.is_some());
+    assert!(vt.cost_settle.is_some());
 }
 
 #[test]
