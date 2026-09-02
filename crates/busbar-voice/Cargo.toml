@@ -80,7 +80,11 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optiona
 # lease + both topologies). OFF by default: voice is dev-only until DoD, so the default workspace build
 # is UNAFFECTED and the crate still compiles with the flag off (the skeleton). Turning it on pulls the
 # async closure (`async-trait` / `futures` / `tokio`) and compiles `session`/`topology`.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio"]
+# `busbar-substrate/runtime` ARMS the neutral full-duplex WS transport (the ingress acceptor + the
+# net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
+# the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
+# plumbing of its own. Turned on in lock-step with the plane's own async runtime.
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The skeleton

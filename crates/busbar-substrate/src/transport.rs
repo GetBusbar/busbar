@@ -140,15 +140,17 @@ pub enum Transport {
     /// A FULL-DUPLEX FRAMED CONNECTION — one long-lived socket carrying framed messages in BOTH
     /// directions at once, rather than the one-request-one-response exchange [`Transport::Http`]
     /// models. The byte-duplex carrier that `busbar_substrate::ingress::byte_duplex` pumps: a
-    /// `AsyncRead`/`AsyncWrite` pair served until EOF, with each side free to send a frame at any
-    /// time without a prior request from the other.
+    /// message `Stream`/`Sink<Vec<u8>>` pair served until the stream ends, with each side free to send
+    /// a frame at any time without a prior request from the other.
     ///
     /// A variant rather than a flavour of [`Transport::Http`] because the two differ in exactly the
     /// thing this axis names — the FRAMING. `Http` frames one buffered or streamed reply behind one
     /// request; here the channel is symmetric and open-ended, so "which frame answers which" is not a
-    /// property the transport can assume. Armed by binding: the variant and its neutral wire shape
-    /// exist here, but no site drives a request down it yet, so every match below maps it to the
-    /// same safe default the other unwired legs take.
+    /// property the transport can assume. ARMED under the `runtime` capability: the neutral WS
+    /// transport is real on both legs — the ingress WS-upgrade acceptor (`crate::ingress::duplex_ws`)
+    /// presents an upgraded socket as the `serve_messages` channel, and the egress WS dialer
+    /// (`crate::egress::duplex_ws`) dials an upstream `wss://` THROUGH `net_guard` and hands back the
+    /// same channel. A duplex caller selects this variant and lets the transport open the socket.
     WebSocket,
 }
 
@@ -157,9 +159,10 @@ pub enum Transport {
 /// the MCP plane's wire vtable, which the plane maps to `&dyn McpWire` on its own side
 /// (`mcp/client/wire.rs`). A closed core enum rather than the plane's types, so the axis names no MCP
 /// plane type while the wire TYPES stay in the plane that owns them.
-// Constructed and read only on the MCP client leg (`plane-mcp`); with that plane compiled out there
-// is no client wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
-#[cfg(feature = "dispatch")]
+// Read on the MCP client leg (`dispatch`) AND on the full-duplex leg (`runtime`, the duplex plane's
+// WS dialer): both resolve "which upstream wire" off this axis. With BOTH capabilities compiled out
+// there is no upstream wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
+#[cfg(any(feature = "dispatch", feature = "runtime"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamWireKind {
     /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
@@ -168,8 +171,10 @@ pub enum UpstreamWireKind {
     Stdio,
     /// A BIDIRECTIONAL FRAMED BYTE WIRE — the full-duplex channel shape [`Transport::WebSocket`]
     /// selects, distinct from the two request/response wires above because bytes flow both ways over
-    /// one open connection. No client leg resolves it yet (see `mcp/client/wire.rs`); it names the
-    /// wire the axis answers with, not a plane vtable it is already mapped to.
+    /// one open connection. ARMED under the `runtime` capability: the neutral WS egress dialer
+    /// (`crate::egress::duplex_ws`) is the site that maps this discriminant to a real guarded socket,
+    /// so a duplex caller that selects `Transport::WebSocket` resolves the axis to a live wire. The
+    /// MCP client leg (`mcp/client/wire.rs`) still has no `Duplex` arm — it never selects it.
     Duplex,
 }
 
@@ -232,17 +237,18 @@ impl Transport {
     /// MCP client leg, and `mcp/config.rs` refuses any `transport:` that is not `streamable_http` or
     /// `stdio` at boot, so a `None` here is a config-grammar defect the plane makes loud rather than a
     /// silent wrong channel.
-    // Read only by the MCP client leg (`mcp/client/wire.rs`), which exists only when the MCP plane is
-    // compiled in; with `plane-mcp` off it is dead, so it is gated exactly as its one caller is.
-    #[cfg(feature = "dispatch")]
+    // Read by the MCP client leg (`mcp/client/wire.rs`, `dispatch`) AND by the full-duplex leg (the
+    // duplex plane's WS dialer, `runtime`): both resolve "which upstream wire" off the axis here. With
+    // BOTH capabilities compiled out it is dead, so it is gated on their union.
+    #[cfg(any(feature = "dispatch", feature = "runtime"))]
     pub fn upstream_wire(self) -> Option<UpstreamWireKind> {
         match self {
             Transport::Http => Some(UpstreamWireKind::StreamableHttp),
             Transport::Stdio => Some(UpstreamWireKind::Stdio),
-            // The full-duplex framed wire the axis names neutrally. `mcp/client/wire.rs` has no leg
-            // that resolves it yet, so this is armed by binding: the discriminant exists, and the
-            // one site that would map it to a plane vtable treats it as the unreachable it is until a
-            // request drives it.
+            // The full-duplex framed wire the axis names neutrally. ARMED under `runtime`: the neutral
+            // WS egress dialer (`crate::egress::duplex_ws`) maps this discriminant to a real guarded
+            // socket, so a duplex caller that selects `Transport::WebSocket` resolves the axis to a
+            // live wire rather than an unreachable. The MCP client leg never selects it.
             Transport::WebSocket => Some(UpstreamWireKind::Duplex),
             Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
         }
@@ -271,7 +277,7 @@ mod tests {
 
     /// The axis answers the full-duplex leg with its neutral wire shape — the one match on this axis,
     /// mapping WebSocket to the bidirectional framed byte wire.
-    #[cfg(feature = "dispatch")]
+    #[cfg(any(feature = "dispatch", feature = "runtime"))]
     #[test]
     fn websocket_selects_the_duplex_upstream_wire() {
         assert_eq!(

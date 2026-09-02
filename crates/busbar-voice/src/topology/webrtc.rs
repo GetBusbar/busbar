@@ -81,7 +81,9 @@ impl std::error::Error for AttachError {}
 pub struct Attached<C> {
     /// The ephemeral client secret to return to the browser.
     pub token: EphemeralToken,
-    /// The sideband control plane — serve it over the WSS with `serve_messages`.
+    /// The sideband control plane — serve it over the persistent WSS the plane opens THROUGH the neutral
+    /// guarded WS transport ([`crate::topology::dial_provider`] → `serve_messages`); the plane holds no
+    /// socket of its own.
     pub session: VoiceSession<C>,
     /// The shared session core (metering, tools, barge-in).
     pub core: Arc<SessionCore<C>>,

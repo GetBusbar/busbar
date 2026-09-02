@@ -25,6 +25,14 @@ pub mod seam;
 // per the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
 pub mod engine;
 
+// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
+// (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS
+// handshake) and hand back the `Stream`/`Sink<Vec<u8>>` pair `byte_duplex::serve_messages` consumes.
+// The outbound half of the WS transport `Transport::WebSocket` selects; armed under `runtime`. This is
+// the neutral home for any plane's outbound duplex socket — no plane opens a WS itself.
+#[cfg(feature = "runtime")]
+pub mod duplex_ws;
+
 // The differential-harness FIXTURE SERVERS (recording rustls TLS/mTLS servers, the plaintext
 // redirect canary, resolver doubles). Test machinery only: compiled for this crate's own suite and,
 // under `test-support`, for the dependent test binaries that drive the two egress stacks against

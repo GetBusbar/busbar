@@ -25,8 +25,44 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::SessionCore;
 use crate::runtime::VoiceRuntime;
+use busbar_substrate::egress::duplex_ws::{self, DialError};
+use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::HandleEngineError;
+use busbar_substrate::transport::{Transport, UpstreamWireKind};
+use futures::{Sink, Stream};
 use std::sync::Arc;
+
+/// DIAL THE PROVIDER SIDEBAND/UPSTREAM WSS through the neutral, net-guarded WS transport — the plane's
+/// one door to an outbound duplex socket, and the close of the egress-audit finding that voice's
+/// provider WSS never went through net-guard.
+///
+/// The plane SELECTS [`Transport::WebSocket`], resolves the axis to its neutral wire shape
+/// ([`UpstreamWireKind::Duplex`]) and lets the SUBSTRATE open the socket: the dialer
+/// resolves-then-pins-then-guards `url` and hands back the message `Stream`/`Sink<Vec<u8>>` pair the
+/// session pump (`serve_messages`) consumes. The plane holds no socket, resolver or WS framing of its
+/// own — it feeds the returned pair to a topology's provider leg
+/// ([`telephony::TelephonyProxy::run`](crate::topology::telephony::TelephonyProxy::run) or the webrtc
+/// sideband) and keeps ONLY data/session/media logic.
+///
+/// `policy` is the outbound trust posture (a public provider `wss://` takes the fail-closed
+/// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin.
+pub async fn dial_provider(
+    url: &str,
+    policy: GuardPolicy,
+) -> Result<
+    (
+        impl Stream<Item = Vec<u8>> + Unpin,
+        impl Sink<Vec<u8>> + Unpin + Send + 'static,
+    ),
+    DialError,
+> {
+    // The axis pins `WebSocket` to the full-duplex wire; the `else` is unreachable by construction (a
+    // closed axis), expressed as a refusal rather than a panic so a mis-selection fails closed.
+    let Some(UpstreamWireKind::Duplex) = Transport::WebSocket.upstream_wire() else {
+        return Err(DialError::Url(url.to_string()));
+    };
+    duplex_ws::dial(url, policy).await
+}
 
 /// THE ALREADY-PRICED SESSION BUDGET handed across the D2 lease at session start (§2.5): the coarse
 /// over-`estimate` debited up front, the once-per-session flat `fee`, and the TRUE budget `cap`

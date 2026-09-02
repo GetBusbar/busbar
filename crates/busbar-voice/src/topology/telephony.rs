@@ -117,7 +117,10 @@ where
     }
 
     /// RUN the proxy until either socket ends OR the metering lease hard-closes the carrier. Binds the
-    /// four socket halves:
+    /// four socket halves — the PROVIDER pair is opened THROUGH the neutral guarded WS transport
+    /// ([`crate::topology::dial_provider`], which resolves-then-pins-then-guards the upstream `wss://`),
+    /// and the CLIENT pair is the telephony leg; the plane holds no socket plumbing, only these
+    /// `Stream`/`Sink` halves:
     /// * `provider_in` / `provider_out` — the Realtime upstream (server→client in, client→server out).
     /// * `client_in` / `client_out` — the telephony leg (client audio in, downlink audio out).
     ///

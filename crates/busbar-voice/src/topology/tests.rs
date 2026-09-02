@@ -11,10 +11,13 @@ use crate::runtime::metering::{LocalMeteringPort, Pricing};
 use crate::runtime::VoiceRuntime;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
-use crate::topology::SessionBudget;
+use crate::topology::{dial_provider, SessionBudget};
+use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
+use busbar_substrate::ingress::duplex_ws as ws_ingress;
+use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use futures::channel::mpsc::unbounded;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 
 fn runtime() -> VoiceRuntime {
@@ -102,6 +105,74 @@ async fn telephony_proxy_relays_both_directions() {
     assert!(
         uplink.contains(&"input_audio_buffer.append".to_string()),
         "client uplink audio reached the provider: {uplink:?}"
+    );
+}
+
+// ── The provider WSS dials THROUGH the neutral guarded transport (HARD RULE 3) ───────────────────
+
+/// A loopback echo "provider" served over the neutral WS ingress acceptor — stands in for the Realtime
+/// upstream so the plane's `dial_provider` can be driven end to end without a network.
+struct EchoProvider;
+
+#[async_trait::async_trait]
+impl DuplexPlane for EchoProvider {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, frame: Vec<u8>, out: DuplexHandle) {
+        out.emit(frame).await;
+    }
+}
+
+async fn spawn_echo_provider() -> std::net::SocketAddr {
+    async fn route(upgrade: axum::extract::ws::WebSocketUpgrade) -> axum::response::Response {
+        ws_ingress::serve(upgrade, Arc::new(EchoProvider))
+    }
+    let app = axum::Router::new().route("/", axum::routing::get(route));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// The plane SELECTS `Transport::WebSocket` and lets the substrate open the socket: `dial_provider`
+/// dials the loopback provider THROUGH the net-guard and a frame crosses both directions. This is the
+/// plane using the neutral transport instead of carrying its own socket plumbing.
+#[tokio::test]
+async fn dial_provider_routes_through_the_guarded_ws_transport() {
+    let addr = spawn_echo_provider().await;
+    let url = format!("ws://{addr}/");
+    let policy = GuardPolicy {
+        allow_private: true,
+        allow_plaintext: true,
+        ..GuardPolicy::default()
+    };
+    let (mut stream, mut sink) = dial_provider(&url, policy)
+        .await
+        .expect("the plane dials the provider through the guarded transport");
+    sink.send(b"realtime-frame".to_vec()).await.ok();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("a reply arrived")
+        .expect("the stream yielded a frame");
+    assert_eq!(
+        got, b"realtime-frame",
+        "a frame crossed the guarded WS both ways"
+    );
+}
+
+/// The provider dial FAILS CLOSED on a guard-failing target — the plane never opens a socket the
+/// net-guard did not pin (the egress-audit finding this closes).
+#[tokio::test]
+async fn dial_provider_fails_closed_on_a_guarded_target() {
+    // A public loopback under the fail-closed default is an internal address — refused, no socket.
+    assert!(
+        dial_provider("wss://127.0.0.1/", GuardPolicy::default())
+            .await
+            .is_err(),
+        "the provider dial must refuse an unpinned/guard-failing target"
     );
 }
 

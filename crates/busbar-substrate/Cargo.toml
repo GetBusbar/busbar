@@ -117,6 +117,14 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
 webpki-roots = { workspace = true }
+# THE NEUTRAL FULL-DUPLEX WEBSOCKET TRANSPORT (`ingress`/`egress` duplex-ws), OPTIONAL behind the
+# `runtime` feature — OFF in a default/shipped build, so the transport-agnostic floor carries no WS
+# edge unless a caller (the duplex plane) arms it. `tokio-tungstenite` runs the CLIENT WS handshake
+# over a stream the dialer has already TLS-wrapped to the net-guard-pinned address (its own `connect`
+# is left OFF so no socket bypasses the guard); `tokio-rustls` is the SAME connector the egress engine
+# uses (it was a dev-only edge before — the WS egress dialer promotes it to an optional prod edge).
+tokio-tungstenite = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 # The tunnel connector implements `tower::Service<http::Uri>` — the same seam every connector in
@@ -172,6 +180,16 @@ tokio-rustls = { workspace = true }
 [features]
 dispatch = []
 relay = []
+# THE FULL-DUPLEX WEBSOCKET TRANSPORT capability — the neutral `ingress`/`egress` duplex-ws acceptor
+# and guarded dialer, plus the `Transport::WebSocket` → `UpstreamWireKind::Duplex` selection they arm.
+# OFF by default: a shipped build carries no WS edge, exactly as the plane crates gate their own
+# transport surface. The duplex plane forwards its own `runtime` feature to this one so selecting
+# `Transport::WebSocket` compiles the acceptor + dialer in. Pulls the client WS handshake
+# (`tokio-tungstenite`), the same rustls connector the egress engine uses (`tokio-rustls`), and axum's
+# server-side upgrade extractor (`axum/ws`). The `dispatch`-side wire-selection seam
+# (`Transport::upstream_wire` / `UpstreamWireKind`) is compiled under this feature too, so a duplex
+# caller resolves the axis without enabling the MCP dispatch capability.
+runtime = ["dep:tokio-tungstenite", "dep:tokio-rustls", "axum/ws"]
 # THE PLANE-NAME FORWARDS (composition-root vocabulary; not referenced in this crate's source). Each
 # forwards to its neutral capability so core's `busbar-core/plane-{mcp,a2a}` → `busbar-substrate/
 # plane-{mcp,a2a}` edge enables the same seams it always did, in lock-step. `plane-llm` owns no
