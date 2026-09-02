@@ -148,7 +148,12 @@ pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: us
 /// `pool` label is the bounded, operator-controlled canonical pool name, or the routed model name for
 /// the default (`""`) cell (see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
 pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
-    busbar_core::telemetry::breaker_trip(app, metric_pool_label(app, pool_name, i), i);
+    use busbar_substrate::plane_host::EngineHost as _;
+    // KEYSTONE: route the trip metric through the neutral host seam (an alloc-free borrowed host — one
+    // atomic `Arc::clone`, no heap) instead of naming core's telemetry module. Fired only on a real
+    // Closed→Open trip, so the per-call clone is off the steady-state hot path and the alloc gate.
+    busbar_core::plane_host::engine_host_value(app)
+        .telemetry_breaker_trip(metric_pool_label(app, pool_name, i), i);
     diag_warn!(LANE_BREAKER_TRIPPED, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, "lane breaker tripped (Closed→Open)");
 }
 

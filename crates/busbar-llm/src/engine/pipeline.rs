@@ -836,6 +836,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
     let _prep = busbar_substrate::profile::start(busbar_substrate::profile::Stage::Prepare);
+    // The alloc-free borrowed host carrier (KEYSTONE): the failover loop's telemetry emits
+    // (upstream-attempt/failure, failover) route through this neutral seam instead of naming core's
+    // telemetry module. One `Arc::clone` (atomic, no heap — off the alloc-gate count).
+    use busbar_substrate::plane_host::EngineHost as _;
+    let host = busbar_core::plane_host::engine_host_value(app);
     // EGRESS deletion switch: every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
@@ -1763,7 +1768,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let metric_pool: &str = metric_pool_label(app, pool_name, i);
 
         // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
-        busbar_core::telemetry::upstream_attempt(app, metric_pool, i);
+        host.telemetry_upstream_attempt(metric_pool, i);
         tracing::debug!(pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, "upstream attempt");
 
         let egress_name = app.engine_tables().lanes()[i].protocol;
@@ -2159,13 +2164,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(app, pool_name, i);
                 }
-                busbar_core::telemetry::upstream_failure(
-                    app,
-                    metric_pool,
+                host.telemetry_upstream_failure(metric_pool,
                     i,
                     DISPOSITION_ATTEMPT_TIMEOUT,
                 );
-                busbar_core::telemetry::failover(app, metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
+                host.telemetry_failover(metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
                 diag_debug!(
                     ATTEMPT_TIMEOUT_FAILOVER,
                     pool = %pool_name,
@@ -2214,13 +2217,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(app, pool_name, i);
                 }
-                busbar_core::telemetry::upstream_failure(
-                    app,
-                    metric_pool,
+                host.telemetry_upstream_failure(metric_pool,
                     i,
                     DISPOSITION_TRANSIENT,
                 );
-                busbar_core::telemetry::failover(app, metric_pool, err_type);
+                host.telemetry_failover(metric_pool, err_type);
                 last_failure = Some(err_type);
                 drop(permit);
                 continue;
@@ -2447,15 +2448,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             if tripped {
                                 emit_breaker_trip(app, pool_name, i);
                             }
-                            busbar_core::telemetry::upstream_failure(
-                                app,
-                                metric_pool,
+                            host.telemetry_upstream_failure(metric_pool,
                                 i,
                                 DISPOSITION_TRANSIENT,
                             );
-                            busbar_core::telemetry::failover(
-                                app,
-                                metric_pool,
+                            host.telemetry_failover(metric_pool,
                                 DISPOSITION_TRANSIENT,
                             );
                             last_failure = Some(DISPOSITION_TRANSIENT);
@@ -2506,14 +2503,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // cooldown for a stuck lane. Warn on the fresh trip; the recurring
                             // still-down probe logs at `debug!`.
                             if newly_tripped {
-                                busbar_core::telemetry::breaker_trip(app, metric_pool, i);
+                                host.telemetry_breaker_trip(metric_pool, i);
                                 diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, reason = %reason, "lane hard-down (breaker trip)");
                             } else {
                                 diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
-                            busbar_core::telemetry::upstream_failure(
-                                app,
-                                metric_pool,
+                            host.telemetry_upstream_failure(metric_pool,
                                 i,
                                 DISPOSITION_HARD_DOWN,
                             );
@@ -2562,9 +2557,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             }
 
                             // For billing hard downs: continue to next lane (failover)
-                            busbar_core::telemetry::failover(
-                                app,
-                                metric_pool,
+                            host.telemetry_failover(metric_pool,
                                 DISPOSITION_HARD_DOWN,
                             );
                             last_failure = Some(DISPOSITION_HARD_DOWN);
@@ -2594,15 +2587,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 }
                             }
 
-                            busbar_core::telemetry::upstream_failure(
-                                app,
-                                metric_pool,
+                            host.telemetry_upstream_failure(metric_pool,
                                 i,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
-                            busbar_core::telemetry::failover(
-                                app,
-                                metric_pool,
+                            host.telemetry_failover(metric_pool,
                                 DISPOSITION_CONTEXT_LENGTH,
                             );
                             // ContextLength is a client-fault variant (the request is too large for

@@ -430,6 +430,11 @@ pub(crate) async fn forward_once(
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
+    // The alloc-free borrowed host carrier (KEYSTONE): this degraded-path dispatch's
+    // upstream-failure/failover telemetry routes through the neutral seam instead of naming core's
+    // telemetry module. One `Arc::clone` (atomic, no heap — off the alloc-gate count).
+    use busbar_substrate::plane_host::EngineHost as _;
+    let host = busbar_core::plane_host::engine_host_value(app);
     // RAII probe release covering the WHOLE dispatch window, built ONLY when
     // this dispatch actually won a probe (`probe_epoch == Some`). The caller won a single-flight
     // recovery probe on the `(pool, i)` cell before entering here; if THIS future is dropped mid-`.await`
@@ -705,10 +710,10 @@ pub(crate) async fn forward_once(
             // `record_transient_in` above already transitioned the cell; the armed `probe_guard`
             // releases the probe on drop (owner-checked no-op after the transient). Record
             // BEFORE release preserved (the guard drops at return, after this recording).
-            busbar_core::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
+            host.telemetry_upstream_failure(pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
             // Parity with the organic path: a degraded-path attempt-timeout is a failover
             // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
-            busbar_core::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
+            host.telemetry_failover(pool, DISPOSITION_ATTEMPT_TIMEOUT);
             return Err(());
         }
     };

@@ -352,6 +352,34 @@ pub trait EngineHost: Send + Sync {
         seconds: f64,
     );
 
+    /// Count ONE dispatch ATTEMPT on `(pool_label, lane)` — the `busbar_upstream_attempts_total`
+    /// upstream-attempt metric — through the host, so the engine emits it without naming core's
+    /// telemetry module. `pool_label` is the bounded metric label (a named pool, or the routed model
+    /// name for the default `""` cell); `lane` is the lane index the host resolves the `lane` label
+    /// from off the bound snapshot. A pure snapshot-scoped metric emit, no `HostCtx`; identical to
+    /// `busbar_core::telemetry::upstream_attempt` over the bound snapshot.
+    fn telemetry_upstream_attempt(&self, pool_label: &str, lane: usize);
+
+    /// Count ONE classified upstream FAILURE on `(pool_label, lane)` by `disposition` — the
+    /// `busbar_upstream_failures_total` metric — through the host. The telemetry twin of
+    /// [`telemetry_upstream_attempt`](Self::telemetry_upstream_attempt); identical to
+    /// `busbar_core::telemetry::upstream_failure` over the bound snapshot.
+    fn telemetry_upstream_failure(&self, pool_label: &str, lane: usize, disposition: &'static str);
+
+    /// Count ONE logical Closed→Open breaker TRIP on `(pool_label, lane)` — the
+    /// `busbar_breaker_trips_total` metric — through the host. Identical to
+    /// `busbar_core::telemetry::breaker_trip` over the bound snapshot.
+    fn telemetry_breaker_trip(&self, pool_label: &str, lane: usize);
+
+    /// Count ONE FAILOVER event on `pool_label` by `reason` — the `busbar_failovers_total` metric —
+    /// through the host. Identical to `busbar_core::telemetry::failover` over the bound snapshot.
+    fn telemetry_failover(&self, pool_label: &str, reason: &'static str);
+
+    /// Count ONE cross-protocol TRANSLATION hop `from → to` — the `busbar_translations_total`
+    /// metric — through the host. Both names come from the fixed protocol vocabulary, so the emit is
+    /// snapshot-independent; identical to `busbar_core::telemetry::translation`.
+    fn telemetry_translation(&self, from: &str, to: &str);
+
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;

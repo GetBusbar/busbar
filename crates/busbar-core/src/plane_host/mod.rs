@@ -556,6 +556,26 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         );
     }
 
+    fn telemetry_upstream_attempt(&self, pool_label: &str, lane: usize) {
+        crate::telemetry::upstream_attempt(&self.app, pool_label, lane);
+    }
+
+    fn telemetry_upstream_failure(&self, pool_label: &str, lane: usize, disposition: &'static str) {
+        crate::telemetry::upstream_failure(&self.app, pool_label, lane, disposition);
+    }
+
+    fn telemetry_breaker_trip(&self, pool_label: &str, lane: usize) {
+        crate::telemetry::breaker_trip(&self.app, pool_label, lane);
+    }
+
+    fn telemetry_failover(&self, pool_label: &str, reason: &'static str) {
+        crate::telemetry::failover(&self.app, pool_label, reason);
+    }
+
+    fn telemetry_translation(&self, from: &str, to: &str) {
+        crate::telemetry::translation(from, to);
+    }
+
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
     }
@@ -725,6 +745,19 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 #[must_use]
 pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
     Arc::new(EngineHostImpl::new(Arc::clone(app)))
+}
+
+/// THE ALLOC-FREE BORROWED HOST CARRIER (1.6.0 KEYSTONE): an owned [`EngineHost`] value the caller
+/// keeps on its STACK and coerces to `&dyn EngineHost`, so a plane reaches the host seam WITHOUT the
+/// per-request `Arc::new` heap allocation [`engine_host`] pays. The whole cost is one `Arc::clone` of
+/// the snapshot (an atomic refcount bump — NOT a heap allocation, so it never touches the engine's
+/// alloc-gate count), and the `&dyn` coercion of the stack value allocates nothing. Returned opaque
+/// (`impl EngineHost`) so the plane names no core type. The two async seam methods
+/// (`identity_admit`/`synthesize_completion`) still work — they `Arc::clone` internally — but the
+/// engine hot path calls only the SYNC methods, so this borrowed carrier is the right one there.
+#[must_use]
+pub fn engine_host_value(app: &Arc<App>) -> impl busbar_substrate::plane_host::EngineHost + 'static {
+    EngineHostImpl::new(Arc::clone(app))
 }
 
 /// Mint an `Arc<dyn EngineHost>` over the CURRENT snapshot of a live [`AppHandle`] — the form the
