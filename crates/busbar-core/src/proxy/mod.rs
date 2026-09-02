@@ -247,6 +247,10 @@ mod ingress_indistinguishability_tests;
 mod forward_once_pool_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/client_header_forwarding_tests.rs"]
+mod client_header_forwarding_tests;
+
+#[cfg(test)]
 #[path = "tests/pool_upstream_creds_tests.rs"]
 mod pool_upstream_creds_tests;
 
