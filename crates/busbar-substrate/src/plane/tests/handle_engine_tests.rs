@@ -190,10 +190,10 @@ fn submit_demo(engine: &DurableHandleEngine, row: DemoRow, now: u64) {
                     row: row.clone().arc(),
                     meta,
                     row_record: record.clone(),
-                    event: SealedEvent {
+                    event: Some(SealedEvent {
                         record,
                         tail_hash: format!("h-{}", row.id),
-                    },
+                    }),
                 })
             },
             demo_abandon,
@@ -220,12 +220,8 @@ fn a_foreign_or_missing_id_is_one_indistinguishable_denial() {
     let got = engine.scoped_get("alice", "a").expect("alice sees hers");
     assert_eq!(got.downcast_ref::<DemoRow>().unwrap().owner, "alice");
     // a foreign owner and a missing id both deny identically
-    let denied = |owner: &str, id: &str| {
-        matches!(
-            engine.scoped_get(owner, id),
-            Err(HandleDenied::NotYours)
-        )
-    };
+    let denied =
+        |owner: &str, id: &str| matches!(engine.scoped_get(owner, id), Err(HandleDenied::NotYours));
     assert!(denied("bob", "a"), "a foreign owner is denied");
     assert!(denied("alice", "nope"), "a missing id is denied");
     assert!(denied("", "a"), "an empty owner sees nothing");

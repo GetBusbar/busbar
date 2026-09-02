@@ -124,7 +124,7 @@ pub struct Mutation {
 }
 
 /// The record a fresh submit installs: its id, opaque row, projection, durable row record, and its
-/// genesis event.
+/// OPTIONAL genesis event.
 pub struct SubmitRecord {
     /// The handle id (the working-set key and the row's primary key).
     pub id: String,
@@ -134,8 +134,13 @@ pub struct SubmitRecord {
     pub meta: HandleMeta,
     /// The durable row record to upsert.
     pub row_record: PlaneRecord,
-    /// The genesis provenance event.
-    pub event: SealedEvent,
+    /// The genesis provenance event, or `None` to open a CHAINLESS durable handle. A2A always opens a
+    /// chain here (an `EV_SUBMITTED` genesis); a consumer that wants a durable row WITHOUT a per-event
+    /// hash chain (a Responses-stateful handle keyed by response id) passes `None` — matching
+    /// [`Mutation::event`], so "every handle opens a provenance chain" is a plane CHOICE, not an engine
+    /// assumption. With `None` the handle's position stays at [`ChainPosition::genesis`] (empty tail,
+    /// `next_seq` 1), so a LATER `mutate` that does append an event seals the true genesis event.
+    pub event: Option<SealedEvent>,
 }
 
 /// What a plane's rehydrate classifier decides for one persisted row.
@@ -338,11 +343,19 @@ impl DurableHandleEngine {
         let sr = plan(&genesis).map_err(HandleEngineError::Store)?;
         self.upsert_record(&sr.row_record)
             .map_err(HandleEngineError::Store)?;
-        self.append_record(&sr.event.record)
-            .map_err(HandleEngineError::Store)?;
-        let pos = ChainPosition {
-            tail_hash: sr.event.tail_hash,
-            next_seq: genesis.next_seq.saturating_add(1),
+        // A genesis event opens the chain and advances the position by one; a chainless handle keeps
+        // the genesis position (empty tail, next_seq 1) so a first later event still seals the genuine
+        // genesis link.
+        let pos = match sr.event {
+            Some(ev) => {
+                self.append_record(&ev.record)
+                    .map_err(HandleEngineError::Store)?;
+                ChainPosition {
+                    tail_hash: ev.tail_hash,
+                    next_seq: genesis.next_seq.saturating_add(1),
+                }
+            }
+            None => genesis,
         };
         let mut handles = self.lock();
         self.sweep_locked(&mut handles, now, bounds, &abandon, &report_fail);
@@ -368,7 +381,10 @@ impl DurableHandleEngine {
         plan: F,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
     where
-        F: FnOnce(&(dyn Any + Send + Sync), &ChainPosition) -> Result<Option<Mutation>, MutateError>,
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
     {
         let mut handles = self.lock();
         let plan_out = {

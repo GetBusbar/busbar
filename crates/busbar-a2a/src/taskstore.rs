@@ -43,7 +43,7 @@ use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
 use busbar_substrate::plane::handle_engine::{
-    ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, MutateError,
+    ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, MutateError, Mutation,
     RehydrateOutcome, SealedEvent, SubmitRecord, SweepBounds,
 };
 use busbar_substrate::plane::store::PlaneStore;
@@ -655,7 +655,9 @@ impl TaskRegistry {
                         meta: meta_of(&row),
                         row_record: row.to_plane_record()?,
                         row: Arc::new(row.clone()),
-                        event,
+                        // A2A always opens a provenance chain at submit (the `EV_SUBMITTED` genesis);
+                        // the neutral engine now permits `None`, but the A2A behavior is unchanged.
+                        event: Some(event),
                     })
                 },
                 plan_abandon,
@@ -858,7 +860,11 @@ impl TaskRegistry {
     /// SCOPED LIST. The authorization gate for `ListTasks`, sorted by task id so the result is
     /// deterministic (the engine sorts by handle id, which is the task id).
     pub fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
-        self.engine.scoped_list(principal).iter().map(as_task).collect()
+        self.engine
+            .scoped_list(principal)
+            .iter()
+            .map(as_task)
+            .collect()
     }
 
     /// UNSCOPED read — for the retention sweep and the operator surface, never for a caller.
