@@ -396,3 +396,72 @@ modality/provider/plane noun appears in them; keys are opaque data.
 5. Attribution X+Y extends the existing `MeterKey` and metering series
    (`virtual_key/model/provider` already present; add `pool/plane/operation`);
    enforcement ledger keying is unchanged. No new attribution record.
+
+---
+
+# v2 — Post-audit revision (THE BUILD SPEC; supersedes v1 where they differ)
+
+Two independent adversarial audits (Sonnet, Opus) found v1's "additive / zero-edit /
+byte-consistent" framing false and flagged 3 blockers (Copy cascade; host-lease FFI POD
+cannot carry a map; CostBreakdown exact-sum vs per-key + tier_mult). v2 clears them by
+SCOPING and SEPARATING, not by forcing unification.
+
+## Core correction: keyed units are EXTRAS-ONLY, disjoint from the 4 tiers
+- `TierTokens` / `TierTokensDelta` / `RateNanos` / `RateEntryCfg` stay EXACTLY as they are —
+  **`Copy` preserved, hot enforcement path untouched** (clears BLOCKER: Copy cascade).
+- Add `usage_units: BTreeMap<String,u64>` on the **usage/ledger record only** (NOT the Copy
+  hot structs), holding ONLY signals OUTSIDE the 4 reserved tiers (e.g. `audio`, `reasoning`,
+  `web_search`, `cache_write_1h`). Reserved tier names are FORBIDDEN as unit keys.
+- Rate card gains a per-model **extra-key rate map**, looked up ONLY when `usage_units` is
+  non-empty — the common no-extras request pays zero added cost and `RateNanos` stays `Copy`
+  (extra rates live in a separate non-hot lookup, e.g. `Arc<BTreeMap<key,nano>>` on the
+  RateCard keyed by model, NOT inside the `Copy` `RateNanos`).
+- **Structural double-count guard (clears MAJOR):** config validation REJECTS a reserved tier
+  name in a `units:` rate map; the plane projection NEVER emits a reserved name into
+  `usage_units`. Enforced in core (named point + test), not hoped.
+
+## Scope boundaries (clears BLOCKER: host-lease FFI + kills the "two pipelines" confusion)
+- Keyed units = **per-request, direct-path (statically-compiled plane)** billing, priced via
+  the rate card -> cents. All 4 audit findings are LLM-plane / direct-path -> solved here.
+- The **FFI `Usage` POD (dlopen plugins) is UNCHANGED** — single scalar as today; keyed units
+  do NOT cross the FFI in 1.6 (documented; a keyed POD variant is future work).
+- The **D2 `CostHold` lease (voice/continuous) is UNCHANGED** — voice audio bills via the
+  nanodollar lease (already real), NOT via rate-card keyed units. Post-hoc-per-request vs
+  continuous-reserve/settle are DIFFERENT surfaces by design; v2 does not pretend they unify.
+
+## Tier multiplier: DEFERRED to 1.7 (clears BLOCKER: CostBreakdown invariant)
+- `service_tier` (batch/priority multiplier) is OUT of 1.6. A whole-charge multiplier conflicts
+  with `CostBreakdown`'s exact-sum / no-zero-component invariants. Each `usage_units` key becomes
+  a **disjoint top-level `CostComponent`** so `Σ components == total` by construction. No
+  multiplier -> no invariant conflict.
+
+## Unpriced-present-key: NEVER SILENT (clears MAJOR silent-$0, matches the G2 precedent)
+- A `usage_units` key present but unpriced (rate card present, no rate): priced 0 BUT emits a
+  rate-limited WARN diagnostic (new `BUSBAR-30xx`) + an `unpriced_usage_key` metric. Never
+  silent. (Optional strict-mode reject is future; default = warn.)
+
+## Attribution (X/Y): reporting record, NOT the hot enforcement key (clears MAJOR cardinality)
+- Add `{plane, operation, provider}` to the **persisted ledger / usage record** for cost
+  reporting (`virtual_key`/`pool`/`model` already there). `operation` is a **closed enum**
+  (chat/embeddings/responses/realtime/…), never free text.
+- Do NOT add these to the hot `MeterKey` (enforcement keyspace + 262k bound unchanged) and do
+  NOT emit open `usage_units` keys as Prometheus labels (`metrics.rs` stays bounded at the 4
+  known tiers). Open-key visibility is via the ledger/reports, not unbounded labels.
+
+## Owned edits (v1's "zero core edits" was FALSE — own it)
+usage/ledger record (+usage_units), rate entry (+extra-rate map), `cost_nanos` (+disjoint
+extras loop -> components), `record_usage`/the two plane-side projections, the **config-schema
+snapshot golden** (regen), and the serde `is_zero`/round-trip tests (fold `usage_units`). Cohere
+`billed_units` -> an explicit, tested per-dialect mapping-truth change (NOT folded as
+"zero-edit"); may defer to 1.7 if it risks changing historical counts.
+
+## Acceptance tests — the build is NOT done until every one passes
+1. `Copy` preserved: compile-time assert `TierTokens`/`RateNanos` still `Copy`.
+2. Disjointness: config with a reserved name in `units:` -> rejected (test); projection never
+   emits a reserved name into `usage_units` (test).
+3. Back-compat: existing rate card + a no-extras request prices BYTE-IDENTICALLY to today (golden).
+4. CostBreakdown: keyed components satisfy exact-sum (test).
+5. Unpriced key -> WARN + metric, priced 0, never silent (red-before-green test).
+6. `operation` is a closed enum; `MeterKey` unchanged; no per-key Prometheus label (grep/test).
+7. config-schema snapshot + serde `is_zero` regenerated and green.
+8. plane-purity `--check` BACKWARDS 0; no unit-key string literal in a neutral crate.
