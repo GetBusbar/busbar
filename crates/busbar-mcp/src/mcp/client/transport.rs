@@ -32,7 +32,7 @@
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
-use busbar_substrate::egress::seam::{self, EgressFaultInfo, HopSpec};
+use busbar_substrate::egress::seam;
 
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
@@ -123,33 +123,24 @@ impl HttpTransport {
         // off the dispatch reactor worker; the guard above and the SSE handling below stay on the async
         // side. Wire bytes are the same `build_pinned_client` reqwest codec (h2/ALPN/TLS unchanged).
         let hop = tokio::task::spawn_blocking(move || {
-            let spec = HopSpec {
+            // The SSRF pool guard already judged this hop plane-side; a supplied pinned address means
+            // the host re-judges nothing (the `allow_*` stances are moot), so this is a PINNED hop.
+            let pinned = seam::PinnedHop {
                 verb: "POST",
                 url: &url,
                 headers: &headers,
                 body: &body,
-                // The SSRF pool guard already judged this hop plane-side; the host re-judges nothing
-                // when a pinned address is supplied, so these stances are moot here.
-                allow_private: true,
-                allow_plaintext: true,
                 client_identity_ref: 0,
                 trust_anchor_ref: 0,
                 timeout,
-                resolved_addr: Some(resolved),
+                addr: resolved,
             };
             // THE HOP, through the neutral hostless-egress driver the composition root installed
             // (core's `CoreHostlessEgress`, over the `plane_host` FFI egress vtable). A build that
-            // installed none has no egress backend behind this plane; it refuses the hop with an
-            // `Io`-class fault (`EgressFailClass::Fault` → `TransportError::Io` below) rather than
-            // inventing a client, keeping the plane's transport free of any `reqwest::Response`.
-            seam::hostless()
-                .ok_or_else(|| EgressFaultInfo {
-                    class: busbar_plugin::hot::EgressFailClass::Fault,
-                    status: 0,
-                    cause: "no governed egress backend is installed for this build".to_string(),
-                    url: url.clone(),
-                })?
-                .buffered(&spec, cap)
+            // installed none has no egress backend behind this plane; the shared helper refuses the hop
+            // with an `Io`-class fault (`EgressFailClass::Fault` → `TransportError::Io` below) rather
+            // than inventing a client, keeping the plane's transport free of any `reqwest::Response`.
+            seam::send_pinned_buffered(&pinned, cap)
         })
         .await
         .map_err(|e| TransportError::Io(format!("the upstream hop task failed to run: {e}")))?;

@@ -73,7 +73,6 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use busbar_substrate::egress::seam;
-use busbar_substrate::egress::seam::HopSpec;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
@@ -331,38 +330,36 @@ mod test_egress_boot {
 }
 
 impl ReqwestTransport {
-    /// The neutral [`HopSpec`] for one hop, carrying the plane's ALREADY-JUDGED pinned address as
-    /// `resolved_addr` (Design A: the host connects there and resolves nothing, so this plane's "no
-    /// second lookup" guarantee holds) and this transport's opaque identity/trust-anchor refs.
-    fn hop_spec<'a>(
-        &'a self,
+    /// The neutral [`seam::PinnedHop`] for one hop, carrying the plane's ALREADY-JUDGED pinned address
+    /// as `addr` (Design A: the host connects there and resolves nothing, so this plane's "no second
+    /// lookup" guarantee holds) and this transport's opaque identity/trust-anchor refs. The neutral
+    /// `seam::send_pinned_*` helpers lower it to a `HopSpec` and run it — the shared post-pin skeleton.
+    fn pinned_hop<'a>(
+        &self,
+        verb: &'a str,
         url: &'a str,
         addr: IpAddr,
         headers: &'a [(String, String)],
         body: &'a [u8],
         timeout: Duration,
-    ) -> HopSpec<'a> {
+    ) -> seam::PinnedHop<'a> {
         // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
         // dual-compiles this plane has no composition root to install the hostless-egress driver (the
         // `busbar` binary's `main` does that), so a plane transport test would otherwise drive an
         // uninstalled `hostless()` seam. Install the core-backed driver here, idempotently
         // (`OnceLock`) — reached by both hop methods (`execute`/`post_stream`) since both build their
-        // spec through this. Compiled out of every non-test build; production installs it at boot.
+        // hop through this. Compiled out of every non-test build; production installs it at boot.
         #[cfg(all(test, feature = "test-support"))]
         test_egress_boot::install();
-        HopSpec {
-            verb: "",
+        seam::PinnedHop {
+            verb,
             url,
             headers,
             body,
-            // The a2a fetch guard runs PLANE-SIDE (`guard_hop`) and has already judged this hop; the
-            // host re-judges nothing when a pinned address is supplied, so these stances are moot here.
-            allow_private: true,
-            allow_plaintext: true,
             client_identity_ref: self.client_identity_ref,
             trust_anchor_ref: self.trust_anchor_ref,
             timeout,
-            resolved_addr: Some(addr),
+            addr,
         }
     }
 
@@ -381,18 +378,14 @@ impl ReqwestTransport {
         } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
         let body = body.unwrap_or_default();
-        let mut spec = self.hop_spec(url.as_str(), addr, headers, &body, timeout);
-        spec.verb = method.as_str();
+        let hop = self.pinned_hop(method.as_str(), url.as_str(), addr, headers, &body, timeout);
 
         // THE HOP, over the HOSTLESS egress seam. The host owns the socket, the pinned client (its own
         // refusing resolver), the verified handshake and the capped read; it hands back the status, the
         // `Location`, the peer SPKI pin (decoded from the same bytes `super::spki::spki_pin` produces)
         // and whether busbar's own client identity was carried into the handshake. The deadline rides
         // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
-        let buffered = seam::hostless()
-            .ok_or_else(|| "no governed egress backend is installed for this build".to_string())?
-            .buffered(&spec, cap)
-            .map_err(|f| f.cause)?;
+        let buffered = seam::send_pinned_buffered(&hop, cap).map_err(|f| f.cause)?;
 
         match buffered.end {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
@@ -482,8 +475,14 @@ impl RelayTransport for ReqwestTransport {
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String> {
         let cap = self.max_body_bytes.saturating_add(1);
-        let mut spec = self.hop_spec(url.as_str(), addr, headers, body, RELAY_STREAM_TIMEOUT);
-        spec.verb = "POST";
+        let hop = self.pinned_hop(
+            "POST",
+            url.as_str(),
+            addr,
+            headers,
+            body,
+            RELAY_STREAM_TIMEOUT,
+        );
 
         // ONE hostless scope spans the head AND the pump, so the streaming egress stays open between
         // `stream_head` and `pump` (the arena closer fires only when the closure returns). The head's
@@ -494,10 +493,7 @@ impl RelayTransport for ReqwestTransport {
         // body over ONE hostless scope (see `CoreHostlessEgress::stream`), so a mid-body failure still
         // carries the flattened cause and the relay reports the same operator line — byte-identical to
         // the manual orchestration this replaced, now naming no `busbar_core` egress driver.
-        seam::hostless()
-            .ok_or_else(|| "no governed egress backend is installed for this build".to_string())?
-            .stream(&spec, cap, on_chunk)
-            .map_err(|f| f.cause)
+        seam::send_pinned_stream(&hop, cap, on_chunk).map_err(|f| f.cause)
     }
 }
 
