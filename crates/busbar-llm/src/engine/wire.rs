@@ -345,7 +345,7 @@ pub(crate) fn translate_request_cross_protocol(
     app: &Arc<App>,
     i: usize,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     body: Option<Value>,
     req_content_type: &str,
     // The EFFECTIVE per-lane reasoning capability for this attempt (pool-member override wins over
@@ -398,9 +398,9 @@ pub(crate) fn translate_request_cross_protocol(
     // exactly the contract the JSON branch below implements at the Value level.
     let Some(mut body) = body else {
         if let Some(prep) = &egress_prep {
-            let ingress_handler = busbar_core::handlers::request_handler(ingress_protocol)
+            let ingress_handler = busbar_substrate::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation));
-            let egress_handler = busbar_core::handlers::request_handler(egress_name)
+            let egress_handler = busbar_substrate::handlers::request_handler(egress_name)
                 .and_then(|rh| rh.operation_handler(op.operation));
             let (Some(ih), Some(_eh)) = (ingress_handler, egress_handler) else {
                 return Err(Box::new(ingress_error(
@@ -477,9 +477,9 @@ pub(crate) fn translate_request_cross_protocol(
         // dialect is (ingress_protocol, operation)'s handler; the egress dialect is the lane's.
         // (`op` supplies the operation tag + capabilities; its instance is registry-identical to
         // this lookup on every production path.)
-        let ingress_handler = busbar_core::handlers::request_handler(ingress_protocol)
+        let ingress_handler = busbar_substrate::handlers::request_handler(ingress_protocol)
             .and_then(|rh| rh.operation_handler(op.operation));
-        let egress_handler = busbar_core::handlers::request_handler(egress_name)
+        let egress_handler = busbar_substrate::handlers::request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation));
         let Some(ingress_handler) = ingress_handler else {
             return Err(Box::new(ingress_error(

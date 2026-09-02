@@ -54,7 +54,7 @@ pub(crate) async fn operation_ingress_inner(
     // methods so this plane names no core ingress module. Not on the measured forward alloc path.
     let host = busbar_core::plane_host::engine_host_value(app);
 
-    let Some(rh) = busbar_core::handlers::request_handler(proto) else {
+    let Some(rh) = busbar_substrate::handlers::request_handler(proto) else {
         return host.finish_rejected(
             gov,
             proto,
@@ -332,7 +332,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
             // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
             // and gRPC arrivals get their own entry points and frame the same codecs.
-            busbar_core::handlers::frame(
+            busbar_substrate::handlers::frame(
                 busbar_substrate::transport::Transport::Http,
                 operation,
                 op_handler,
@@ -612,7 +612,7 @@ async fn ingress_path_model_inner(
     // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
     // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
     // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) = busbar_core::handlers::request_handler(proto)
+    let Some(op_handler) = busbar_substrate::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
     else {
         return host.finish_rejected(

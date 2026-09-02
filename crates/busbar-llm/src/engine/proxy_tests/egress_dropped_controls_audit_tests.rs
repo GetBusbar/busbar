@@ -42,7 +42,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         &app,
         0,
         "openai",
-        busbar_core::handlers::chat("openai", http()),
+        busbar_substrate::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -95,7 +95,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         &app,
         0,
         "openai",
-        busbar_core::handlers::chat("openai", http()),
+        busbar_substrate::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -126,7 +126,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
     crate::testkit::install_test_seams();
-    let ingress = busbar_core::handlers::chat("openai", http());
+    let ingress = busbar_substrate::handlers::chat("openai", http());
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],

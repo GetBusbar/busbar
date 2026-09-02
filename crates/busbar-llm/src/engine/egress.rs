@@ -125,7 +125,7 @@ pub fn build_egress_targets(
 > {
     use busbar_api::operation::Operation;
     let mut out = std::collections::HashMap::new();
-    let Some(rh) = busbar_core::handlers::request_handler(protocol) else {
+    let Some(rh) = busbar_substrate::handlers::request_handler(protocol) else {
         return Ok(out);
     };
     // The seven cross-dialect chat/completion-family operations, kept as a local seed set (a neutral
@@ -315,12 +315,12 @@ pub(crate) trait OpEgressExt {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String>;
 }
 
-impl OpEgressExt for busbar_core::handlers::OpDispatch {
+impl OpEgressExt for busbar_substrate::handlers::OpDispatch {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
         if let Some(p) = &lane.path {
             return Some(p.clone());
         }
-        busbar_core::handlers::request_handler(lane.protocol).map(|rh| {
+        busbar_substrate::handlers::request_handler(lane.protocol).map(|rh| {
             rh.upstream_path(&busbar_substrate::wire::EgressCtx {
                 operation: self.operation,
                 model: lane.wire_model(),

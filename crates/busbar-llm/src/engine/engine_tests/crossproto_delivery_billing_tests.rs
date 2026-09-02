@@ -90,7 +90,7 @@ struct Outcome {
 /// governed fixture. Before the call we consume ONE unit of the lane budget — the headers-time spend
 /// the guard is responsible for refunding — then arm a `BudgetSpendGuard` exactly as the live caller
 /// does. The guard is dropped (its refund seam) before we read the budget back.
-async fn drive(op: busbar_core::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
+async fn drive(op: busbar_substrate::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
     let (app, gov, cost, key) = fixture();
     let sink = Some(crate::engine::UsageSink {
         gov: gov.clone(),
@@ -198,7 +198,7 @@ async fn delivered_cross_protocol_response_bills_once() {
     crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        busbar_core::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
+        busbar_substrate::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
         "anthropic",
         body,
     )
@@ -228,7 +228,7 @@ async fn ingress_unsupported_404_does_not_charge() {
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#.to_vec();
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_core::handlers::op_for(
+        busbar_substrate::handlers::op_for(
             "openai",
             busbar_core::operation::Operation::EMBEDDINGS,
             busbar_substrate::transport::Transport::Http,
@@ -267,7 +267,7 @@ async fn untranslatable_500_does_not_charge() {
     ];
     crate::testkit::install_test_seams();
     let out = drive(
-        busbar_core::handlers::op_for(
+        busbar_substrate::handlers::op_for(
             "openai",
             busbar_core::operation::Operation::SPEECH,
             busbar_substrate::transport::Transport::Http,

@@ -72,16 +72,19 @@ pub use busbar_substrate::handlers::{
 /// `match protocol { "openai" => …, "mcp" => … }`, seven arms, each naming a protocol core had to
 /// have been edited to know about. It is now a read of `ProtocolDecl::handler` — the cell a protocol
 /// DECLARES, beside the codec, the verbs and the head keys it declares in the same struct.
-pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
-    crate::proto::decl_for(protocol).and_then(|d| d.handler)
-}
+// RELOCATED DOWN to `busbar_substrate::handlers` (the dialect crates resolve it through the neutral
+// ABI); re-exported here at its historical `busbar_core::handlers::request_handler` path.
+pub use busbar_substrate::handlers::request_handler;
+
+// The dispatch surface these named at module scope RELOCATED to `busbar_substrate::handlers`; core's
+// own `#[path]`-netted handler test modules (`use super::*`) still name them, so keep the vocabulary
+// in test scope only (production core no longer references either directly).
+#[cfg(test)]
+use crate::operation::Operation;
 
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod registry_tests;
-
-use crate::operation::Operation;
-use serde_json::Value;
 
 // `WireBody` (a serialized wire body + its content-type) RELOCATED to `busbar-substrate` as a
 // neutral wire value type a plane crate names directly; re-exported here so core's call sites and the
@@ -110,115 +113,16 @@ pub use busbar_substrate::wire::TranslatedResponse;
 #[path = "tests/contract_tests.rs"]
 mod contract_tests;
 
-/// A `(operation, transport, OperationHandler)` dispatch handle — ONE CELL of the matrix, framed —
-/// threaded through the forward engine by value (`Copy`). The engine reads operation behavior off it
-/// without ever naming an operation, and now carries the transport the request arrived on without
-/// ever naming one of those either.
-///
-/// BUILT THROUGH [`crate::handlers::frame`] — the framing constructor, and the only
-/// thing that builds one in this tree. The three axes meet here and nowhere else: routing picks the
-/// protocol, the `RequestHandler` picks the operation (and with it the codec), and the ARRIVAL
-/// picks the transport. What the compiler enforces is the part that matters — no site can hold a
-/// codec without having said which channel it is speaking over, which is the shape whose absence
-/// let a stdio `tools:` entry sit in config with no dispatch arm to reach it.
-#[derive(Clone, Copy)]
-pub struct OpDispatch {
-    pub operation: Operation,
-    /// The channel this exchange rides. A VALUE, like `operation`: the engine labels with it and
-    /// hands it on, and never compares or matches it (that would be a transport-identity branch,
-    /// which `scripts/structure-lint.sh` refuses outside a `proto/` arm, its handler and its codec).
-    pub(crate) transport: crate::transport::Transport,
-    pub op_handler: &'static dyn OperationHandler,
-}
-
-/// The engine's operation handle. (Kept as `Op` so the engine's signatures read unchanged.)
-pub type Op = OpDispatch;
-
-/// Build one framed dispatch cell. This is the free-function form of what was `Transport::frame`;
-/// it moved here (core) when `Transport` itself moved to the neutral substrate, because framing
-/// names `OpDispatch`/`OperationHandler` — the engine dispatch types, which stay in core. The
-/// transport is handed in whole and is not consulted, wrapped or re-implemented: a transport decides
-/// how a codec's bytes reach and leave a peer, never what those bytes say.
-pub const fn frame(
-    transport: crate::transport::Transport,
-    operation: Operation,
-    op_handler: &'static dyn OperationHandler,
-) -> OpDispatch {
-    OpDispatch {
-        operation,
-        transport,
-        op_handler,
-    }
-}
-
-impl OpDispatch {
-    /// Stable identifier — a bounded metric label / tracing span field. VALUE use only; the engine
-    /// must never compare or `match` on it (that would be an operation-identity branch).
-    pub fn name(&self) -> &'static str {
-        self.operation.name()
-    }
-    /// The transport this exchange rides — a bounded label, the third axis's counterpart to
-    /// [`Self::name`]. VALUE use only, for exactly the reason [`Self::name`] is.
-    pub fn transport(&self) -> crate::transport::Transport {
-        self.transport
-    }
-    /// WHAT THIS ATTEMPT'S FAILURE MEANT — the attributed outcome the breaker classifies, read by
-    /// THIS cell's own codec ([`OperationHandler::extract_error`]). It needs nothing but the cell,
-    /// so a caller that holds no `Lane` attributes a failure the same way the lane path does.
-    pub fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        self.op_handler.extract_error(status, body)
-    }
-    /// Can this cell produce a client-facing incremental stream?
-    ///
-    /// THE SHAPE IS A FLOOR UNDER THE CELL'S ANSWER, and it is the one place the operation axis is
-    /// a decision rather than a label. `OpShape::may_stream` says whether an exchange of this shape
-    /// has anything to stream at all; the cell says whether IT does. A cell may always say less —
-    /// MCP's `tools/call` is `Invoke` and answers `false` — and it may never say more, because a
-    /// shape whose reply is one message (a catalogue page, a fetched document, a subscription
-    /// acknowledgement, a handshake) streamed by an over-eager cell leaves the engine holding a
-    /// response open for a body that is never coming.
-    ///
-    /// This is a floor and not a replacement deliberately: it removes a failure the cell cannot be
-    /// trusted to prevent, and removes nothing the cell legitimately decides.
-    pub fn streaming(&self) -> bool {
-        self.operation.shape().may_stream() && self.op_handler.streaming()
-    }
-    /// The caller's stream INTENT, under the same shape floor and for the same reason: a caller
-    /// cannot ask for an incremental answer to an exchange that has no increments.
-    pub fn wants_stream(&self, body: &Value) -> bool {
-        self.operation.shape().may_stream() && self.op_handler.wants_stream(body)
-    }
-    pub fn body_affinity_key<'a>(&self, body: &'a Value) -> Option<&'a str> {
-        self.op_handler.body_affinity_key(body)
-    }
-    pub fn taps_nonstream_usage(&self) -> bool {
-        self.op_handler.taps_usage()
-    }
-    pub fn extract_usage(
-        &self,
-        ingress_protocol: &str,
-        body: &[u8],
-    ) -> Option<crate::billing::TokenUsage> {
-        self.op_handler.extract_usage(ingress_protocol, body)
-    }
-    pub fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
-        // The registry read the trait default used to do, hoisted here so the relocated substrate
-        // `OperationHandler::egress_accept` names no core registry. Resolve the egress protocol's
-        // declared streaming `Accept` and hand it in; the trait picks it (streaming) or the universal
-        // `application/json` (non-streaming) — the exact `if/map/unwrap_or` the old default computed,
-        // so the returned `&'static str` is identical for every `(protocol, wants_stream)`.
-        let egress_stream_accept = crate::proto::decl_for(egress_protocol)
-            .map(|d| d.egress_stream_accept)
-            .unwrap_or(crate::proxy::TEXT_EVENT_STREAM);
-        self.op_handler
-            .egress_accept(egress_stream_accept, wants_stream)
-    }
-    // `upstream_path(&self, lane: &Lane, wants_stream)` — the REFERENCE `(protocol × operation)` path
-    // composition the egress-target differential test proves the boot-precomputed table byte-identical
-    // to — RELOCATED into `busbar-llm` with the engine (money-path Phase 3-4 C): it named the plane's
-    // `Lane`, which core no longer holds. It now lives as `busbar_llm`'s `OpEgressExt::upstream_path`
-    // extension over this `Op`, reading `self.operation` (a `pub` field) — byte-identical composition.
-}
+// THE ENGINE DISPATCH HANDLE `OpDispatch` (+ the `Op` alias, the `frame` framing ctor, and its
+// inherent-method surface) RELOCATED DOWN to `busbar_substrate::handlers`: every dependency
+// (`Transport`, `RawUpstreamError`, `Operation`/`OpShape`, `TokenUsage`, `TEXT_EVENT_STREAM`, the
+// registry `decl_for`) already lives on the substrate, so the dialect crates thread the handle
+// through the neutral ABI rather than reaching BACK into `busbar-core`. Re-exported here at their
+// historical `busbar_core::handlers::{OpDispatch, Op, frame}` paths so core's own call sites and the
+// netted dual-compile test build are unchanged. `busbar_llm`'s `OpEgressExt::upstream_path` extension
+// over this `Op` (the REFERENCE `(protocol × operation)` path composition) is unaffected — it reads
+// the `pub operation` field.
+pub use busbar_substrate::handlers::{frame, Op, OpDispatch};
 
 /// Chat — operation #1. A const handle to the shared chat `OperationHandler`, for core's own tests.
 /// TEST-BINARY ONLY: `ChatOperation` lives in the `busbar-llm` plugin (it names the concrete chat IR
@@ -248,18 +152,10 @@ pub(crate) use chat_fixture::CHAT;
 /// The TRANSPORT is the caller's to state, not this resolver's: which channel an exchange arrived on
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
-pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    op_for(protocol, Operation::CHAT, transport).unwrap_or_else(|| {
-        // Unreachable in any shipped configuration: a chat plugin always registers the residual chat
-        // protocol and its siblings, and the sole production caller asks for that residual name. The
-        // diagnostic names the registry's residual-default protocol (whatever the plugin declared)
-        // rather than a hard-coded dialect, so core spells no dialect here.
-        panic!(
-            "a chat-serving protocol is registered (registry residual chat protocol: {:?})",
-            crate::proto::residual_default_dialect()
-        )
-    })
-}
+// RELOCATED DOWN to `busbar_substrate::handlers` (it resolves through the registry `op_for` and the
+// residual-default protocol, both now on the substrate); re-exported here at its historical
+// `busbar_core::handlers::chat` path so the production caller (`mcp::sampling`) is unchanged.
+pub use busbar_substrate::handlers::chat;
 
 /// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and
 /// framed by the channel it rides. `None` when the protocol does not serve the operation: on the
@@ -276,19 +172,8 @@ pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
 /// handler are pinned EQUAL in both directions by
 /// `registry_tests::the_declared_verbs_are_the_verbs_the_handler_serves`, so this check can only
 /// ever fire on a decl that is lying, never on a legitimate route.
-pub fn op_for(
-    protocol: &str,
-    operation: Operation,
-    transport: crate::transport::Transport,
-) -> Option<Op> {
-    let decl = crate::proto::decl_for(protocol)?;
-    if !decl.verbs.contains(&operation) {
-        return None;
-    }
-    decl.handler
-        .and_then(|rh| rh.operation_handler(operation))
-        .map(|op_handler| frame(transport, operation, op_handler))
-}
+// RELOCATED DOWN to `busbar_substrate::handlers`; re-exported here at its historical path.
+pub use busbar_substrate::handlers::op_for;
 
 /// ONE HTTP LLM PROTOCOL'S ERROR ENVELOPE, SHARED BY EVERY OPERATION IT SERVES.
 ///
@@ -301,18 +186,8 @@ pub fn op_for(
 ///
 /// Falls back to the status alone when the name resolves to no protocol: claiming a provider
 /// vocabulary busbar could not read would be worse than saying only what is known.
-pub fn protocol_error(
-    protocol: &str,
-    status: u16,
-    body: &[u8],
-) -> crate::breaker::RawUpstreamError {
-    // Through the neutral dialect seam: the concrete reader (whose `extract_error` this delegates to)
-    // relocated to the busbar-llm plugin at A4b, so core names it by protocol only.
-    match crate::proto::decl_for(protocol).and_then(|d| d.dialect()) {
-        Some(dc) => dc.extract_error(status, body),
-        None => crate::breaker::RawUpstreamError::from_status(status),
-    }
-}
+// RELOCATED DOWN to `busbar_substrate::handlers`; re-exported here at its historical path.
+pub use busbar_substrate::handlers::protocol_error;
 
 #[cfg(test)]
 #[path = "tests/dispatch_tests.rs"]

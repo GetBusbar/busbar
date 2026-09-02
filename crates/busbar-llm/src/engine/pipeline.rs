@@ -96,7 +96,7 @@ pub(crate) async fn forward_with_pool(
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> Response {
     forward_with_pool_keyed(
@@ -137,7 +137,7 @@ pub(crate) fn forward_with_pool_keyed<'a>(
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
@@ -212,7 +212,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
@@ -395,7 +395,7 @@ pub(crate) async fn translate_response_cross_protocol(
     app: &Arc<App>,
     i: usize,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     pool: &str,
     breaker_cfg: &busbar_substrate::store::BreakerCfg,
     r: axum::http::Response<hyper::body::Incoming>,
@@ -494,11 +494,11 @@ pub(crate) async fn translate_response_cross_protocol(
     // never receives, exactly the inconsistency the Truncated and TransportError branches above
     // deliberately avoid. So tap usage ONLY once we are inside the block that actually mints and
     // returns a translated response.
-    let egress_op = busbar_core::handlers::request_handler(egress_name)
+    let egress_op = busbar_substrate::handlers::request_handler(egress_name)
         .and_then(|rh| rh.operation_handler(op.operation));
     // The ingress operation handler that writes the client's dialect (chat delegates to the same
     // writer vtable — byte-identical). Resolved once, shared by both the opaque and JSON arms.
-    let ingress_op = busbar_core::handlers::request_handler(ingress_protocol)
+    let ingress_op = busbar_substrate::handlers::request_handler(ingress_protocol)
         .and_then(|rh| rh.operation_handler(op.operation));
     // OPAQUE (non-JSON) egress body — e.g. binary speech audio: bridge at the BYTE level through the
     // operation codecs and relay the ingress handler's WireBody (bytes + ITS content-type) verbatim.
@@ -823,8 +823,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // A request's identity is (operation, protocol): `ingress_protocol` is the wire language,
     // `op` is the kind of work. Everything below is the engine carrying that pair through pool
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
-    // spec, never its identity; `busbar_substrate::handlers::CHAT` reproduces today's behavior byte-for-byte.
-    op: busbar_core::handlers::Op,
+    // spec, never its identity; `busbar_core::handlers::CHAT` reproduces today's behavior byte-for-byte.
+    op: busbar_substrate::handlers::Op,
     usage_sink: Option<UsageSink>,
     // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
     // before this fn was called — carried as a plain `Copy` scalar for the whole dispatch (stored on
@@ -848,7 +848,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // removed (the deletion test).
     let mut cands: Vec<WeightedLane> = {
         let supports = |wl: &WeightedLane| {
-            busbar_core::handlers::request_handler(app.engine_tables().lanes()[wl.idx].protocol)
+            busbar_substrate::handlers::request_handler(app.engine_tables().lanes()[wl.idx].protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))
                 .is_some()
         };
@@ -2032,7 +2032,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         } else if ingress_protocol == egress_name {
             req_content_type
         } else {
-            busbar_core::handlers::request_handler(egress_name)
+            busbar_substrate::handlers::request_handler(egress_name)
                 .and_then(|rh| rh.operation_handler(op.operation))
                 .map(|h| h.egress_request_content_type())
                 .unwrap_or(APPLICATION_JSON)
@@ -2338,7 +2338,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // rather than the lane's chat vtable. For the six LLM protocols the answer is
                     // identical (their cells all read the one envelope their protocol defines), and
                     // an operation whose upstream is not a lane at all is attributed the same way.
-                    let mut raw = busbar_core::handlers::op_for(
+                    let mut raw = busbar_substrate::handlers::op_for(
                         egress_name,
                         op.operation,
                         busbar_substrate::transport::Transport::Http,

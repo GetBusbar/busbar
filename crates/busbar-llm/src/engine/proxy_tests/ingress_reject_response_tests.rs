@@ -13,7 +13,7 @@ async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
     crate::testkit::install_test_seams();
     let resp = ingress_reject_response(
         "openai",
-        &busbar_core::handlers::IngressReject::UnsupportedSubOp {
+        &busbar_substrate::handlers::IngressReject::UnsupportedSubOp {
             op: busbar_core::operation::Operation::IMAGE,
             model: "dall-e-2".into(),
         },
@@ -45,7 +45,7 @@ async fn bad_request_reject_keeps_the_unchanged_generic_400() {
     crate::testkit::install_test_seams();
     let resp = ingress_reject_response(
         "openai",
-        &busbar_core::handlers::IngressReject::BadRequest("x".into()),
+        &busbar_substrate::handlers::IngressReject::BadRequest("x".into()),
     );
     assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)

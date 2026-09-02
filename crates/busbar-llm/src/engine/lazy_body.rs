@@ -234,11 +234,11 @@ impl LazyBody {
     pub(crate) fn ensure_ir(
         &mut self,
         ingress_protocol: &str,
-        op: busbar_core::handlers::Op,
+        op: busbar_substrate::handlers::Op,
     ) -> Option<&(dyn busbar_substrate::ir::facts::IrFacts + Send + Sync)> {
         use busbar_substrate::handlers::TranslateCodec;
         if self.ir.is_none() {
-            let handler = busbar_core::handlers::request_handler(ingress_protocol)
+            let handler = busbar_substrate::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))?;
             // `ensure_dom` clears the memo, so read the facts from the materialized tree and only then
             // install them — the order matters and is the reason this is not two statements.

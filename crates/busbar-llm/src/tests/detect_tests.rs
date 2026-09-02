@@ -13,7 +13,7 @@
 
 use axum::http::{HeaderMap, HeaderValue};
 use busbar_api::operation::Operation;
-use busbar_core::handlers::request_handler;
+use busbar_substrate::handlers::request_handler;
 use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
 
 fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {

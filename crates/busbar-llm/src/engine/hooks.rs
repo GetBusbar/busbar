@@ -143,7 +143,7 @@ pub(crate) fn read_hook_facts(
     // lazy-IR seam use, so the hook sees exactly the IR that will be built from these bytes. No
     // handler (an unregistered protocol, or a protocol that does not serve this operation) is
     // `Absent`: there is no reader to ask, which is not the same as a reader refusing.
-    let Some(handler) = busbar_core::handlers::request_handler(ingress_protocol)
+    let Some(handler) = busbar_substrate::handlers::request_handler(ingress_protocol)
         .and_then(|rh| rh.operation_handler(operation))
     else {
         return Ok(HookFacts::Absent);

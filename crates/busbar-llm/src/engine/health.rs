@@ -399,7 +399,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
             // chat IR relocated to the `busbar-llm` plugin).
             let mut raw: RawUpstreamError =
-                busbar_core::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
+                busbar_substrate::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

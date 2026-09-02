@@ -43,7 +43,7 @@ fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
         &app,
         0,
         "openai",
-        busbar_core::handlers::chat("openai", http()),
+        busbar_substrate::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -86,7 +86,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
         &app,
         0,
         "gemini",
-        busbar_core::handlers::chat("gemini", http()),
+        busbar_substrate::handlers::chat("gemini", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -126,7 +126,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
         &app,
         0,
         "openai",
-        busbar_core::handlers::chat("openai", http()),
+        busbar_substrate::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -162,7 +162,7 @@ fn single_candidate_cross_protocol_is_not_rejected() {
             &app,
             0,
             "openai",
-            busbar_core::handlers::chat("openai", http()),
+            busbar_substrate::handlers::chat("openai", http()),
             Some(body),
             crate::engine::APPLICATION_JSON,
             true,
@@ -191,7 +191,7 @@ fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
             "http://unused.local",
         ))
         .build();
-    let op = busbar_core::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_substrate::handlers::op_for("openai", Operation::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({
         "model": "text-embedding-3-small",
@@ -231,7 +231,7 @@ fn single_input_embeddings_to_gemini_is_allowed() {
             "http://unused.local",
         ))
         .build();
-    let op = busbar_core::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_substrate::handlers::op_for("openai", Operation::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({ "model": "text-embedding-3-small", "input": ["alpha"] });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());

@@ -87,7 +87,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
     caller_token: Option<&str>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -195,7 +195,7 @@ pub(crate) async fn handle_queue(
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -421,7 +421,7 @@ pub(crate) async fn forward_once(
     // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
     // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
     probe_epoch: Option<u64>,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
@@ -606,7 +606,7 @@ pub(crate) async fn forward_once(
     } else if ingress_protocol == egress_name {
         req_content_type
     } else {
-        busbar_core::handlers::request_handler(egress_name)
+        busbar_substrate::handlers::request_handler(egress_name)
             .and_then(|rh| rh.operation_handler(op.operation))
             .map(|h| h.egress_request_content_type())
             .unwrap_or(APPLICATION_JSON)
@@ -766,7 +766,7 @@ pub(crate) async fn forward_once(
                 // ClientFault/ContextLength arms). Body-only classification here (no headers);
                 // `retry_after` only floors the cooldown, not the disposition, so it is omitted.
                 let penalize_breaker = {
-                    let raw = busbar_core::handlers::op_for(
+                    let raw = busbar_substrate::handlers::op_for(
                         egress_name,
                         op.operation,
                         busbar_substrate::transport::Transport::Http,
@@ -1074,7 +1074,7 @@ pub(crate) async fn handle_fallback_pool(
     pool_name: &str,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -1237,7 +1237,7 @@ pub(crate) async fn handle_least_bad(
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {

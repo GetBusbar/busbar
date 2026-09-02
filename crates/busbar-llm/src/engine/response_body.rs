@@ -65,7 +65,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// The operation this response belongs to. Drives whether the non-stream body is buffered for
     /// usage extraction (`taps_nonstream_usage`) and how usage is read from it (`extract_usage`).
     /// Chat reads the egress reader's IR usage; a flat-fee op taps nothing.
-    op: busbar_core::handlers::Op,
+    op: busbar_substrate::handlers::Op,
     /// True when the INGRESS client decodes a binary `application/vnd.amazon.eventstream` body (a
     /// native AWS SDK Bedrock client). A mid-stream error must then be a BINARY exception frame, not
     /// an SSE `event: error` text frame — writing SSE text into a binary eventstream body yields an
@@ -156,7 +156,7 @@ where
         inner: S,
         is_sse: bool,
         ingress_protocol: &str,
-        op: busbar_core::handlers::Op,
+        op: busbar_substrate::handlers::Op,
         permit: P,
         ceiling_deadline: tokio::time::Instant,
         app: Arc<App>,

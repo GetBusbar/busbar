@@ -132,7 +132,7 @@ fn head_pristine_matches_translate_output() {
             &app,
             0,
             name,
-            busbar_core::handlers::chat(name, busbar_substrate::transport::Transport::Http),
+            busbar_substrate::handlers::chat(name, busbar_substrate::transport::Transport::Http),
             Some(body.clone()),
             APPLICATION_JSON,
             true,

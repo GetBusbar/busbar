@@ -1864,7 +1864,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "p",
         None,
         "anthropic",
-        busbar_core::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),
+        busbar_substrate::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),
         None,
     )
     .await;

@@ -10,9 +10,10 @@
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
 use busbar_api::operation::Operation;
-use busbar_core::handlers::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
+use busbar_substrate::handlers::{
+    CodecError, IngressReject, OperationHandler, RequestHandler,
 };
+use busbar_substrate::wire::{EgressCtx, WireBody};
 use busbar_core::proto::registry::{IngressAuth, ProtocolDecl, Registry};
 use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use bytes::Bytes;
