@@ -156,6 +156,11 @@ pub mod telemetry;
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
 // each from its old `busbar_core::governance::…` path.
 pub mod governance;
+// ABI-purity CONFIG-ENUMS: the neutral LLM-runtime config VALUE enums (`PolicyOnError` /
+// `ProviderAuth`) a plane names via the ABI. Fieldless serde enums moved DOWN with their derives +
+// `#[serde(...)]` attrs VERBATIM (byte-identical wire form); core re-exports each from its historical
+// `busbar_core::config::` path so the frozen config grammar + every deserialization are unchanged.
+pub mod config;
 
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
 // crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.

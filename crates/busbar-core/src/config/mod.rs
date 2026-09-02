@@ -1306,29 +1306,11 @@ fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
 }
 
-/// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
-/// auth (`bearer`) unless `api-key` selects an `api-key: <key>` header (Azure OpenAI). The wire
-/// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
-/// unknown spelling is now a deserialize error instead of a hand-checked validation error.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderAuth {
-    #[serde(rename = "bearer")]
-    Bearer,
-    #[serde(rename = "api-key")]
-    ApiKey,
-    /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
-    /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
-    /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
-    /// token minting/refresh lives in `crate::egress_auth::jwt_bearer`; this is only the selector.
-    #[serde(rename = "jwt-bearer")]
-    JwtBearer,
-    /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
-    /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
-    /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
-    /// The token minting/refresh lives in `crate::egress_auth::oauth_client_credentials`.
-    #[serde(rename = "oauth-client-credentials")]
-    OAuthClientCredentials,
-}
+// ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is an LLM-runtime config value
+// concept; it moved DOWN to `busbar_substrate::config` (serde `Deserialize` + the `#[serde(rename)]`
+// wire strings VERBATIM, byte-identical) so a plane names it via the ABI. Re-exported here at its
+// historical `config::ProviderAuth` path so the frozen providers.yaml grammar parse is unchanged.
+pub use busbar_substrate::config::ProviderAuth;
 
 /// Active health-probe mode for a provider's lanes.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -2064,20 +2046,11 @@ pub(crate) const CORE_HOOK_PHASES: &[HookStage] = &[
     HookStage::Response,
 ];
 
-/// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
-/// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
-/// request. `Reject` is fail-closed (503). `First` uses the configured member order (a
-/// deterministic degraded pick). The `on_error` CONFIG field is a free string (a fallback chain of
-/// hook names bottoming out on one of these three reserved terminals); `on_empty` parses this enum
-/// directly.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyOnError {
-    #[default]
-    Weighted,
-    Reject,
-    First,
-}
+// ABI-purity CONFIG-ENUMS: the resolved on_error/on_empty TERMINAL is an LLM-runtime config value
+// concept; it moved DOWN to `busbar_substrate::config` (serde derives + rename VERBATIM, byte-
+// identical wire form) so a plane names it via the ABI. Re-exported here at its historical
+// `config::PolicyOnError` path so the frozen config grammar + every deserialization are unchanged.
+pub use busbar_substrate::config::PolicyOnError;
 
 /// The serde default for a hook's `on_error` — `nothing`: a failing gate
 /// DOES NOT PARTICIPATE by default — it cannot steer, and it cannot displace another gate's

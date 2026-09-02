@@ -33,14 +33,14 @@ use crate::engine::{
 
 /// Map the neutral [`LlmAuthStyle`] back to the core `Option<ProviderAuth>` the sync
 /// `egress_auth::resolve` reads (the OAuth styles never route through `resolve` — they mint at boot).
-fn provider_auth(style: LlmAuthStyle) -> Option<busbar_core::config::ProviderAuth> {
+fn provider_auth(style: LlmAuthStyle) -> Option<busbar_substrate::config::ProviderAuth> {
     match style {
         LlmAuthStyle::Default => None,
-        LlmAuthStyle::Bearer => Some(busbar_core::config::ProviderAuth::Bearer),
-        LlmAuthStyle::ApiKey => Some(busbar_core::config::ProviderAuth::ApiKey),
-        LlmAuthStyle::JwtBearer => Some(busbar_core::config::ProviderAuth::JwtBearer),
+        LlmAuthStyle::Bearer => Some(busbar_substrate::config::ProviderAuth::Bearer),
+        LlmAuthStyle::ApiKey => Some(busbar_substrate::config::ProviderAuth::ApiKey),
+        LlmAuthStyle::JwtBearer => Some(busbar_substrate::config::ProviderAuth::JwtBearer),
         LlmAuthStyle::OAuthClientCredentials => {
-            Some(busbar_core::config::ProviderAuth::OAuthClientCredentials)
+            Some(busbar_substrate::config::ProviderAuth::OAuthClientCredentials)
         }
     }
 }
