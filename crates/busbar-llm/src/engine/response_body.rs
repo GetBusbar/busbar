@@ -46,6 +46,27 @@ pub(crate) struct UsageSink {
     pub(crate) admit: Option<busbar_substrate::plane_host::AdmitHandle>,
 }
 
+/// Bytes-per-token divisor for the truncated-tail billing FLOOR (C2). Deliberately conservative
+/// (~4 bytes/token is typical for English prose; a JSON response envelope with field names and
+/// escaping runs HIGHER), so the estimate UNDER-counts the true consumption: the retained tail is
+/// already only the LAST `cap` bytes of a strictly larger body, making this a genuine floor that
+/// cannot over-charge relative to the tokens actually generated. Its only job is to keep a
+/// truncated-beyond-recovery response from billing ZERO.
+pub(crate) const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
+
+/// FLOOR token estimate for a same-protocol non-stream response whose body OVERFLOWED the usage-tap
+/// reassembly cap AND whose trailing `usage` object could not be recovered by the tail scan. Such a
+/// body demonstrably consumed tokens (it exceeded the cap), so metering it at zero is the C2
+/// fail-open-to-free defect. Attribute the floor to the OUTPUT tier — the overflow is generated
+/// content — so it prices under the model's output rate; `.max(1)` keeps it non-zero even for a
+/// pathologically small tail.
+fn estimate_usage_from_truncated_tail(tail_len: usize) -> busbar_substrate::billing::TokenUsage {
+    busbar_substrate::billing::TokenUsage {
+        output: (tail_len as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
+        ..Default::default()
+    }
+}
+
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
 /// streaming responses.
 pub(crate) struct FirstByteBody<S, P> {
@@ -656,9 +677,21 @@ where
                                 // the self-contained `usage` sub-object instead (see
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
+                                let tail_len = buf.len();
                                 busbar_substrate::proto::decl_for(this.ingress_protocol)
                                     .and_then(|d| d.dialect())
                                     .and_then(|di| di.recover_truncated_usage(&buf))
+                                    // C2 fail-open-to-free fix: a body large enough to OVERFLOW the
+                                    // reassembly cap demonstrably consumed tokens. When the tail scan
+                                    // cannot isolate the `usage` object — the usage object itself fell
+                                    // past the retained tail, or the dialect is unrecognized —
+                                    // returning `None` here meters those real tokens at $0 (only the
+                                    // flat fee lands): a silent under-bill on exactly the LARGEST
+                                    // responses. Fall back to a conservative FLOOR estimate derived
+                                    // from the retained tail so the request is never silently free.
+                                    // Genuine "no usage" (a truly empty / errored response) never
+                                    // truncates and so never reaches this arm — it still bills nothing.
+                                    .or_else(|| Some(estimate_usage_from_truncated_tail(tail_len)))
                             } else {
                                 this.op.extract_usage(this.ingress_protocol, &buf)
                             }

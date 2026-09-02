@@ -5967,6 +5967,54 @@ fn cache_usage_is_additive_input_not_reduced() {
     );
 }
 
+/// BEDROCK ADDITIVE-CACHE billing guard: the neutral projection the MONEY PATH actually bills from
+/// (`IrUsage::to_token_usage()` → `engine::usage::tier_tokens` → the four ledger tiers) must keep
+/// Bedrock's `inputTokens` in the INPUT tier ALONE — cache read/write land in their OWN tiers and
+/// are NOT folded back into input. If a future change ever made the Bedrock reader treat
+/// `inputTokens` as cache-inclusive (the OpenAI/Gemini convention) WITHOUT also subtracting, the
+/// input tier would double-count the cache and OVER-bill the uncached-input rate on cache tokens.
+/// The existing `cache_usage_is_additive_input_not_reduced` pins the reader's `billable_tokens`
+/// SUM; this pins the TIER SPLIT the rate card prices each field by, at the billing boundary.
+#[test]
+fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
+    let body = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "totalTokens": 15,
+            "cacheReadInputTokens": 1000,
+            "cacheWriteInputTokens": 200
+        }
+    });
+    let resp = BedrockReader.read_response(&body).expect("read_response");
+    // Project through the SAME seam the non-stream billing arm uses: IrUsage → neutral TokenUsage →
+    // the four pricing tiers.
+    let tu = resp.usage.to_token_usage();
+    let tier = crate::engine::usage::tier_tokens(&tu);
+    assert_eq!(
+        tier.input, 10,
+        "the INPUT tier must be Bedrock's raw uncached inputTokens (10), NOT input+cache — cache \
+         folded into input would over-bill the input rate on cache tokens"
+    );
+    assert_eq!(
+        tier.cache_read, 1000,
+        "cache-read tokens must bill under the cache_read tier, not input"
+    );
+    assert_eq!(
+        tier.cache_write, 200,
+        "cache-write tokens must bill under the cache_write tier, not input"
+    );
+    assert_eq!(tier.output, 5);
+    // The double-count the guard forbids: input must NOT equal input+cache_read+cache_write.
+    assert_ne!(
+        tier.input,
+        10 + 1000 + 200,
+        "inputTokens must never be treated as cache-INCLUSIVE for Bedrock (additive convention)"
+    );
+}
+
 /// `write_response_exception` (the Bedrock-INGRESS stream error path) must fold every error class
 /// onto ONE of the FIVE legal ConverseStream exception-union members, never a request-level name a
 /// native AWS stream decoder can't match. Pins the class→member mapping so a mid-stream error

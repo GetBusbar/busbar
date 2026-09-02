@@ -158,6 +158,46 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// G3 BY-DESIGN GUARD: a virtual key with NO group (`group: None`) is AUTHENTICATED but UNLIMITED —
+/// it is access-gated (scopes/pools) yet carries NO budget, request, or token cap, because its
+/// resolved charge chain is ONLY its own attribution bucket (all caps `None`) with no group tier to
+/// walk. This is deliberate (an ungrouped key is the "authed, uncapped" tier), so this test LOCKS
+/// the semantics: admission must NEVER block such a key, no matter how much it has already spent. If
+/// a future change accidentally started enforcing a default cap on ungrouped keys, `try_admit` would
+/// begin returning `Err(LimitBlocked)` here and this guard would surface it.
+#[test]
+fn test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks() {
+    crate::testkit::install_test_seams();
+    busbar_core::metrics::init();
+    // `governed_app_with_key` mints a `group: None` key — the ungrouped case under test.
+    let (app, key) = governed_app_with_key();
+    assert!(
+        key.group.is_none(),
+        "precondition: the key under test carries no group"
+    );
+    let govstate = app.governance.as_ref().unwrap().clone();
+    let at = 1_700_000_000u64;
+
+    // Admit the SAME ungrouped key far more times than any real budget/request cap would permit.
+    // Every admission must succeed: with no group there is no chain tier to block on. Spend
+    // accumulates without bound (30c flat fee each), proving no budget ceiling is enforced.
+    const ADMITS: i64 = 500;
+    for i in 0..ADMITS {
+        govstate
+            .try_admit(&app.cost, &key, "", at)
+            .unwrap_or_else(|e| {
+                panic!(
+                "an ungrouped key is authed-but-UNLIMITED: admission #{i} must not block, got {e:?}"
+            )
+            });
+    }
+    assert_eq!(
+        key_spend(&app, &key.id),
+        ADMITS * 30,
+        "an ungrouped key accrues spend without any budget cap ever blocking admission"
+    );
+}
+
 /// The flat fee is charged ATOMICALLY at admission, and `finish` REFUNDS it on a non-2xx
 /// outcome (so the net effect remains "bill 2xx only"). A 2xx `finish` keeps the charge; each
 /// non-2xx `finish` (503 / 5xx / 4xx) refunds exactly one flat fee. `finish_rejected` (governance

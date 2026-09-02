@@ -959,6 +959,145 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     );
 }
 
+/// C2 FAIL-OPEN-TO-FREE regression (HIGH): a same-protocol non-stream body that overflows the
+/// usage-tap reassembly cap AND whose `usage` object cannot be recovered from the retained tail must
+/// NOT bill ZERO tokens. Here the `usage` object sits at the FRONT of the body and a huge `content`
+/// filler trails it, so once the body exceeds the cap the tail-anchored buffer drops the FRONT
+/// (including `usage`) and `recover_truncated_usage` finds no `"usage"` in the tail → recovery
+/// returns `None`. The response demonstrably consumed tokens (it blew past the cap), yet the old
+/// code metered `token_usage = None` → all-zero tiers → only the flat fee, real tokens at $0.
+///
+/// After the C2 fix a truncated-beyond-recovery body falls back to a conservative FLOOR estimate
+/// derived from the retained tail (`estimate_usage_from_truncated_tail`), so the request bills a
+/// NON-ZERO amount rather than being silently free. With the small test cap the retained tail is
+/// exactly `CAP` bytes, so the deterministic floor is `CAP / TRUNCATED_TAIL_BYTES_PER_TOKEN`.
+#[tokio::test]
+async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
+    crate::testkit::install_test_seams();
+    use super::FirstByteBody;
+    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+
+    busbar_core::metrics::init();
+    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
+    const CAP: usize = 4096;
+    let _limits_guard = busbar_core::limits::InstallGuard::install(
+        &busbar_core::config::LimitsResolved::with_request_body_max_bytes(CAP),
+    );
+    assert_eq!(super::max_translated_body_bytes(), CAP);
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let charged_at: u64 = 1_700_000_000;
+    let sink = Some(UsageSink {
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at,
+        admit: None,
+    });
+
+    // `usage` at the FRONT, a filler `content` well over CAP AFTER it: once the body exceeds the
+    // cap the tail-anchored buffer keeps only the last CAP bytes — all filler — so the `usage`
+    // object has fallen out of the retained tail and `recover_truncated_usage` cannot find it.
+    let filler = "x".repeat(CAP * 3);
+    let body = format!(
+        r#"{{"id":"chatcmpl-huge","object":"chat.completion","usage":{{"prompt_tokens":600,"completion_tokens":400}},"choices":[{{"index":0,"message":{{"role":"assistant","content":"{filler}"}},"finish_reason":"stop"}}]}}"#
+    );
+    assert!(
+        body.len() > CAP * 2,
+        "body must genuinely exceed the test cap for this to be a meaningful regression test"
+    );
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "glm-4.5",
+            crate::proto_codec::PROTO_OPENAI,
+            "http://127.0.0.1:1",
+        ))
+        .pool("pa", &[(0, 1)])
+        .build();
+
+    let chunks: Vec<Result<Bytes, hyper::Error>> = body
+        .as_bytes()
+        .chunks(512)
+        .map(|c| Ok(Bytes::copy_from_slice(c)))
+        .collect();
+    let inner = futures::stream::iter(chunks);
+    let (host, rt) = crate::engine::test_host_rt(&app);
+    let fbb = FirstByteBody::new(
+        inner,
+        false, // is_sse: same-protocol NON-STREAM application/json
+        "openai",
+        crate::test_support::CHAT,
+        (),
+        tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+        host.clone(),
+        rt.clone(),
+        0,
+        Arc::new(busbar_core::store::BreakerCfg::default()),
+        "pa",
+        None, // translate: same-protocol → no translation
+        None, // json_array
+        sink,
+        false, // budget_spent
+    );
+
+    let collected = fbb
+        .into_body()
+        .collect()
+        .await
+        .expect("drain body")
+        .to_bytes();
+    assert_eq!(
+        collected.as_ref(),
+        body.as_bytes(),
+        "the client must still receive the complete over-cap body verbatim"
+    );
+
+    // Deterministic floor: the tail-anchored buffer holds exactly CAP bytes at end, and the C2
+    // fallback estimates output tokens as tail_len / TRUNCATED_TAIL_BYTES_PER_TOKEN.
+    let expected_floor = CAP as u64 / super::TRUNCATED_TAIL_BYTES_PER_TOKEN;
+    let mut tokens = 0;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+        tokens = gov
+            .usage_for(&cost, &key.id, charged_at)
+            .expect("usage read")
+            .map(|u| u.tokens)
+            .unwrap_or(0);
+        if tokens == expected_floor {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert!(
+        tokens > 0,
+        "a truncated-beyond-recovery body that consumed tokens MUST NOT bill ZERO (C2 \
+         fail-open-to-free): recovery returned None, so the old code metered all-zero tiers and \
+         only the flat fee landed"
+    );
+    assert_eq!(
+        tokens, expected_floor,
+        "the C2 fallback must bill the conservative tail-derived FLOOR ({expected_floor} tokens)"
+    );
+}
+
 /// The non-stream usage-tap reassembly decision at
 /// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
 /// = max_translated_body_bytes() - ... }` reads the live-reloadable
