@@ -4,13 +4,13 @@
     {
       "version": "dev",
       "tag": "dev",
-      "qa_sha": "863e7f62ecc61491322b89319c7c1dde70987dd4",
-      "recorded_at": "2026-09-01T20:35:27Z",
+      "qa_sha": "213ee610277a50d0366fd6cb11be5134f8d222c6",
+      "recorded_at": "2026-09-02T00:31:53Z",
       "file": "dev.json",
       "verdicts": [
         {
           "class": "byte-identity",
-          "status": "unknown"
+          "status": "pass"
         },
         {
           "class": "plane-neutrality",
@@ -18,7 +18,7 @@
         },
         {
           "class": "composability",
-          "status": "unknown"
+          "status": "pass"
         },
         {
           "class": "field-coverage",

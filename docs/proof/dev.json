@@ -3,18 +3,18 @@
   "release": {
     "version": "dev",
     "tag": "dev",
-    "qa_sha": "863e7f62ecc61491322b89319c7c1dde70987dd4",
+    "qa_sha": "213ee610277a50d0366fd6cb11be5134f8d222c6",
     "staging_tag": null,
     "digest": null,
-    "run_id": "",
-    "run_url": "https://github.com/GetBusbar/busbar/actions",
-    "recorded_at": "2026-09-01T20:35:27Z"
+    "run_id": "33574686066",
+    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33574686066",
+    "recorded_at": "2026-09-02T00:31:53Z"
   },
   "verdicts": [
     {
       "class": "byte-identity",
       "title": "Your bytes survive read to IR to write",
-      "status": "unknown",
+      "status": "pass",
       "evidence_count": 118,
       "evidence_total": 118,
       "unit": "golden byte-pairs",
@@ -303,13 +303,14 @@
                 ]
               }
             ]
-          }
+          },
+          "note": "captured from the sibling ci.yml job result"
         },
         {
           "id": "egress-differential",
           "kind": "oracle",
-          "status": "unknown",
-          "note": "present",
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
             "path": "crates/busbar-core/src/proxy/tests/egress_differential_tests.rs"
@@ -318,8 +319,8 @@
         {
           "id": "crossproto-billing",
           "kind": "oracle",
-          "status": "unknown",
-          "note": "present",
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
             "path": "crates/busbar-core/src/proxy/engine/tests/crossproto_delivery_billing_tests.rs"
@@ -328,8 +329,8 @@
         {
           "id": "on-exhausted",
           "kind": "oracle",
-          "status": "unknown",
-          "note": "present",
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
             "path": "crates/busbar-core/src/proxy/tests/on_exhausted_tests.rs"
@@ -338,8 +339,8 @@
         {
           "id": "pool-upstream-creds",
           "kind": "oracle",
-          "status": "unknown",
-          "note": "present",
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
             "path": "crates/busbar-core/src/proxy/tests/pool_upstream_creds_tests.rs"
@@ -348,8 +349,8 @@
         {
           "id": "usage-decode-tap",
           "kind": "oracle",
-          "status": "unknown",
-          "note": "present",
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
             "path": "crates/busbar-core/src/ingress/tests/tests.rs"
@@ -419,38 +420,38 @@
           "id": "plane-abi-neutrality",
           "kind": "gate",
           "status": "fail",
-          "count": 1231
+          "count": 6
         }
       ]
     },
     {
       "class": "composability",
       "title": "Any plane is removable; any subset runs",
-      "status": "unknown",
+      "status": "pass",
       "sources": [
         {
           "id": "no-plugins-gate",
           "kind": "gate",
-          "status": "unknown",
+          "status": "pass",
           "unit": "failed assertions",
-          "note": "cargo-backed; run in ci.yml no-plugins-gate job"
+          "note": "captured from the sibling ci.yml job result"
         },
         {
           "id": "plane-delete-test",
           "kind": "gate",
-          "status": "unknown",
+          "status": "pass",
           "planes": {
-            "llm": "unknown",
-            "mcp": "unknown",
-            "a2a": "unknown"
+            "llm": "pass",
+            "mcp": "pass",
+            "a2a": "pass"
           },
-          "note": "cargo-backed; run in ci.yml structure-lint (--all)"
+          "note": "captured from the sibling ci.yml job result"
         },
         {
           "id": "proto-deletion-gate",
           "kind": "gate",
-          "status": "unknown",
-          "note": "cargo-backed; run in ci.yml deletion area"
+          "status": "pass",
+          "note": "captured from the sibling ci.yml job result"
         }
       ]
     },
@@ -581,7 +582,7 @@
     }
   ],
   "provenance": {
-    "content_digest": "sha256:deb5ae570f3a855087b846d5666abd65ef5f23d57bfa349e62dae8afb8ec6584",
+    "content_digest": "sha256:e2c96533f4add78dd7dc83645f155aa248a8502712f575ac7336d3f74152796e",
     "collator": "scripts/proof-manifest.py"
   }
 }
