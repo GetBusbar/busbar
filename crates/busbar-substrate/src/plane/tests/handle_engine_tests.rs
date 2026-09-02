@@ -409,6 +409,107 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
 }
 
 #[test]
+fn two_different_handles_mutate_concurrently_without_serializing_on_each_other() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    // Two independent handles. Under the old single-global-lock shape, one handle's mutate held the
+    // whole engine's lock across its store round-trip, so a second handle's mutate could not run until
+    // the first returned. With the per-handle shard, a mutate holds only its OWN handle's inner lock,
+    // so a different handle proceeds freely. This test parks handle "a"'s mutate INSIDE its plan (its
+    // inner lock held) and proves handle "b"'s mutate runs to completion meanwhile — which is only
+    // possible if the outer map lock was released before "a" took its inner lock.
+    let engine = Arc::new(DurableHandleEngine::new());
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "a".into(),
+            owner: "o".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "b".into(),
+            owner: "o".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+
+    let (a_entered_tx, a_entered_rx) = mpsc::channel::<()>();
+    let (release_a_tx, release_a_rx) = mpsc::channel::<()>();
+    let (b_done_tx, b_done_rx) = mpsc::channel::<()>();
+
+    // Thread 1: mutate "a", but block INSIDE the plan (holding "a"'s inner lock) until released.
+    let e1 = Arc::clone(&engine);
+    let t1 = thread::spawn(move || {
+        e1.mutate("a", |row, _pos| {
+            a_entered_tx.send(()).unwrap();
+            release_a_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("a's plan is released after b completes");
+            let row = row.downcast_ref::<DemoRow>().unwrap();
+            let mut next = row.clone();
+            next.cursor = 1;
+            let record = next.record();
+            let meta = next.meta();
+            Ok(Some(Mutation {
+                row: Some(next.arc()),
+                meta: Some(meta),
+                row_record: Some(record),
+                event: None,
+            }))
+        })
+        .expect("mutate a");
+    });
+
+    // Wait until "a"'s plan is running — its inner lock is now held.
+    a_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a entered its plan");
+
+    // Thread 2: mutate "b". This MUST complete while "a" is still parked, or the engine serialized.
+    let e2 = Arc::clone(&engine);
+    let t2 = thread::spawn(move || {
+        e2.mutate("b", |row, _pos| {
+            let row = row.downcast_ref::<DemoRow>().unwrap();
+            let mut next = row.clone();
+            next.cursor = 2;
+            let record = next.record();
+            let meta = next.meta();
+            Ok(Some(Mutation {
+                row: Some(next.arc()),
+                meta: Some(meta),
+                row_record: Some(record),
+                event: None,
+            }))
+        })
+        .expect("mutate b");
+        b_done_tx.send(()).unwrap();
+    });
+
+    // The proof: "b" finishes while "a" is still holding its own handle lock inside its plan.
+    b_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("b mutated concurrently while a held only its own handle's lock");
+
+    // Now let "a" finish and confirm both writes landed.
+    release_a_tx.send(()).unwrap();
+    t1.join().unwrap();
+    t2.join().unwrap();
+    assert_eq!(engine.meta("a").unwrap().cursor, 1);
+    assert_eq!(engine.meta("b").unwrap().cursor, 2);
+}
+
+#[test]
 fn scoped_mutate_owner_gates_the_write_with_one_indistinguishable_refusal() {
     use std::cell::Cell;
 
