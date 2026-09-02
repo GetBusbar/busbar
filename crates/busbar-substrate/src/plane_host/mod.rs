@@ -435,6 +435,40 @@ pub trait EngineHost: Send + Sync {
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
 
+    /// The breaker/lane store this deployment routes through, as the NEUTRAL
+    /// [`busbar_substrate::store::LaneRuntime`](crate::store::LaneRuntime) view — the seam the engine's
+    /// `app.store` reads (select/health/pipeline lane admit/settle/snapshot) resolve to WITHOUT naming
+    /// core's `state::App`. A pure borrow of the bound snapshot's store, no `HostCtx`; the returned
+    /// `&dyn LaneRuntime` shares the live in-memory breaker engine, identical to `&*App::store`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the transitional seam the wedge-3 `app.store → host.lane_store()`
+    /// flip targets. The `LaneRuntime` trait already lives in substrate (wedge 1), so this names no core type.
+    fn lane_store(&self) -> &dyn crate::store::LaneRuntime;
+
+    /// The process-wide active-probe INTERVAL fallback (whole seconds) a lane with no
+    /// `health.interval_secs` inherits — the host-read form of `busbar_core::limits::default_probe_interval_secs`.
+    /// A pure read of the live limits registry, no `HostCtx`; byte-identical to that free fn.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `health.rs` probe-spawn flip targets. The
+    /// limits fns read core's runtime `LIMITS` global, so they CANNOT relocate to substrate by-identity;
+    /// this host seam is the neutral home instead.
+    fn default_probe_interval_secs(&self) -> u64;
+
+    /// The process-wide active-probe TIMEOUT fallback (whole seconds) a lane with no `health.timeout_secs`
+    /// inherits — the host-read twin of [`default_probe_interval_secs`](Self::default_probe_interval_secs).
+    /// Byte-identical to `busbar_core::limits::default_probe_timeout_secs`.
+    fn default_probe_timeout_secs(&self) -> u64;
+
+    /// Whether `caller_group` sits within (any ancestor of) one of `hook_groups` — the group-membership
+    /// walk a hook's `groups:` filter consults, resolved against this deployment's group registry.
+    /// Identical to `busbar_core::config::caller_in_hook_groups(caller_group, hook_groups, &App::groups_registry)`;
+    /// a pure tree walk over the bound snapshot's registry, no `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `pipeline.rs` flip targets. Folding the
+    /// `&App::groups_registry` argument HOST-side means the engine reads group membership without naming
+    /// `busbar_core::config` or `App::groups_registry`.
+    fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool;
+
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
     /// records. Identical to `busbar_core::plane::auditlog::emit_admin_hostless_now` — this seam needs

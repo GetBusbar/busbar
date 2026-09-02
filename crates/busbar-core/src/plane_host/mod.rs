@@ -637,6 +637,26 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         self.app.governance.is_some()
     }
 
+    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
+        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
+        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
+        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
+        &*self.app.store
+    }
+
+    fn default_probe_interval_secs(&self) -> u64 {
+        crate::limits::default_probe_interval_secs()
+    }
+
+    fn default_probe_timeout_secs(&self) -> u64 {
+        crate::limits::default_probe_timeout_secs()
+    }
+
+    fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
+        // Fold the `&App::groups_registry` argument host-side; the walk itself is byte-identical.
+        crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
+    }
+
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
         self.app.plane_slot(key).cloned()
