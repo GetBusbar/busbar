@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -100,14 +101,14 @@ pub struct DuplexHandle {
 }
 
 impl DuplexHandle {
-    /// Write ONE frame: the bytes, then the `0x0A` terminator, under the single write lock. A frame
-    /// carrying an embedded newline would break the one-frame-per-line rule, so a caller composing a
-    /// frame must not embed one — the transport appends exactly the terminator and no more.
-    pub async fn emit(&self, mut frame: Vec<u8>) {
-        frame.push(b'\n');
-        let mut out = self.shared.writer.lock().await;
-        let _ = out.write_all(&frame).await;
-        let _ = out.flush().await;
+    /// Write ONE frame under the single write lock, framed however the bound [`FrameSink`] frames.
+    /// Over the newline byte sink (the [`serve`] path) that is the bytes then the `0x0A` terminator, so
+    /// a caller composing such a frame must not embed a newline; over the message sink (the
+    /// [`serve_messages`] path) the frame IS one whole message and no terminator is added. The handle
+    /// stays framing-agnostic: it hands the sink one frame and the sink decides the wire shape.
+    pub async fn emit(&self, frame: Vec<u8>) {
+        let mut out = self.shared.sink.lock().await;
+        out.send(frame).await;
     }
 
     /// Mint a fresh, non-zero [`CallRef`] for a call this side is about to issue. Monotonic for the
@@ -138,12 +139,15 @@ impl DuplexHandle {
     }
 }
 
-/// The shared spine of one channel: the locked writer, the correlation table, the ref mint, and the
-/// in-flight handler registry. Non-generic over the writer — it is type-erased at [`serve`] so a
-/// [`DuplexHandle`] a plane holds carries no writer type.
+/// The shared spine of one channel: the locked sink, the correlation table, the ref mint, and the
+/// in-flight handler registry. Non-generic over the sink — it is type-erased at the entry point
+/// ([`serve`] or [`serve_messages`]) so a [`DuplexHandle`] a plane holds carries neither the writer
+/// type nor the framing it speaks.
 struct Shared {
-    /// ONE writer, ONE lock — see the module header, rule 2.
-    writer: tokio::sync::Mutex<Box<dyn AsyncWrite + Unpin + Send>>,
+    /// ONE sink, ONE lock — see the module header, rule 2. Type-erased to a boxed [`FrameSink`] so a
+    /// [`DuplexHandle`] a plane holds carries neither the concrete writer type nor which framing
+    /// (newline bytes vs one-message-per-frame) the bound transport speaks.
+    sink: tokio::sync::Mutex<Box<dyn FrameSink>>,
     /// Calls issued on this side awaiting their answer, keyed on the raw [`CallRef`] number.
     pending: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
     /// The monotonic mint; starts at 1 so [`CallRef::NONE`] (`0`) is never handed out.
@@ -153,6 +157,116 @@ struct Shared {
     inflight: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
+}
+
+/// THE PLUGGABLE WRITE HALF — one outbound frame in, framed onto the wire however the bound transport
+/// frames. The pump's [`DuplexHandle::emit`] hands a frame here and reads nothing of the wire shape;
+/// which shape (newline-terminated bytes vs one whole message per frame) is exactly the difference
+/// between [`NewlineSink`] and [`MessageSink`]. Private: the crate exposes the two entry points
+/// ([`serve`], [`serve_messages`]) that pick the sink, not the sink trait itself.
+#[async_trait::async_trait]
+trait FrameSink: Send {
+    /// Write ONE frame, framed for this transport, and flush it.
+    async fn send(&mut self, frame: Vec<u8>);
+    /// Flush any buffered bytes at end-of-session.
+    async fn flush(&mut self);
+}
+
+/// The BYTE framing: a frame is its bytes then the `0x0A` terminator — byte-for-byte the wire the
+/// stdio pump always spoke. Wraps any `AsyncWrite`.
+struct NewlineSink<W> {
+    writer: W,
+}
+
+#[async_trait::async_trait]
+impl<W: AsyncWrite + Unpin + Send> FrameSink for NewlineSink<W> {
+    async fn send(&mut self, mut frame: Vec<u8>) {
+        frame.push(b'\n');
+        let _ = self.writer.write_all(&frame).await;
+        let _ = self.writer.flush().await;
+    }
+    async fn flush(&mut self) {
+        let _ = self.writer.flush().await;
+    }
+}
+
+/// The MESSAGE framing: a frame IS one whole message, emitted with no terminator. Wraps any
+/// `Sink<Vec<u8>>` — the already-upgraded write half of a message duplex (e.g. a WebSocket, whose
+/// text/binary payloads a caller has mapped to frame bytes at the upgrade site).
+struct MessageSink<Sk> {
+    sink: Sk,
+}
+
+#[async_trait::async_trait]
+impl<Sk: Sink<Vec<u8>> + Unpin + Send> FrameSink for MessageSink<Sk> {
+    async fn send(&mut self, frame: Vec<u8>) {
+        // `SinkExt::send` feeds then flushes; the message is one frame, so there is no terminator to
+        // add. A closed sink drops the frame — the reader side has already ended the session.
+        let _ = self.sink.send(frame).await;
+    }
+    async fn flush(&mut self) {
+        let _ = self.sink.flush().await;
+    }
+}
+
+/// Assemble the shared spine over a chosen (type-erased) [`FrameSink`]. The mint starts at 1 so
+/// [`CallRef::NONE`] (`0`) is never handed out.
+fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
+    Arc::new(Shared {
+        sink: tokio::sync::Mutex::new(sink),
+        pending: Mutex::new(HashMap::new()),
+        next_ref: AtomicU64::new(1),
+        inflight: Mutex::new(HashMap::new()),
+        next_inflight: AtomicU64::new(0),
+    })
+}
+
+/// ROUTE ONE inbound frame: a REPLY the plane recognises goes to the caller awaiting it and reaches no
+/// handler; everything else is handled concurrently under a private key so it clears itself on
+/// completion and the EOF path can abort whatever remains. Shared by both entry points so the
+/// correlation contract is written once, regardless of framing.
+fn dispatch_frame<P: DuplexPlane>(
+    shared: &Arc<Shared>,
+    handle: &DuplexHandle,
+    plane: &Arc<P>,
+    frame: Vec<u8>,
+) {
+    if let Some(call) = plane.classify(&frame).filter(|c| !c.is_none()) {
+        if let Some(tx) = shared.pending.lock().unwrap().remove(&call.0) {
+            let _ = tx.send(frame);
+        }
+        // A reply to a call nobody is waiting on is dropped: with no plane-side meaning to consult,
+        // the transport has nothing to answer it with.
+        return;
+    }
+    let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
+    let plane = plane.clone();
+    let handle = handle.clone();
+    let for_cleanup = shared.clone();
+    let running = tokio::spawn(async move {
+        plane.handle(frame, handle).await;
+        for_cleanup.inflight.lock().unwrap().remove(&key);
+    });
+    shared
+        .inflight
+        .lock()
+        .unwrap()
+        .insert(key, running.abort_handle());
+}
+
+/// END OF SESSION: DRAIN the in-flight handlers under a bound, then abort the remainder and flush. A
+/// one-shot invocation (one frame, then EOF/close) has its answer computed after the far end goes
+/// away, so a straight abort would serve nothing to exactly the caller who asked for one thing. Shared
+/// by both entry points.
+async fn drain_and_flush(shared: &Arc<Shared>) {
+    let deadline = tokio::time::Instant::now() + EOF_DRAIN;
+    while !shared.inflight.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    for (_, h) in shared.inflight.lock().unwrap().drain() {
+        h.abort();
+    }
+    shared.sink.lock().await.flush().await;
 }
 
 /// SERVE one inbound byte-duplex channel over any `AsyncRead`/`AsyncWrite` pair until EOF, driving
@@ -165,13 +279,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     P: DuplexPlane,
 {
-    let shared = Arc::new(Shared {
-        writer: tokio::sync::Mutex::new(Box::new(writer)),
-        pending: Mutex::new(HashMap::new()),
-        next_ref: AtomicU64::new(1),
-        inflight: Mutex::new(HashMap::new()),
-        next_inflight: AtomicU64::new(0),
-    });
+    let shared = new_shared(Box::new(NewlineSink { writer }));
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
@@ -192,44 +300,37 @@ where
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue; // a blank line is not a frame
         }
-        let frame = std::mem::take(&mut buf);
-        // A REPLY the plane recognises is routed to the caller awaiting it and reaches no handler.
-        if let Some(call) = plane.classify(&frame).filter(|c| !c.is_none()) {
-            if let Some(tx) = shared.pending.lock().unwrap().remove(&call.0) {
-                let _ = tx.send(frame);
-            }
-            // A reply to a call nobody is waiting on is dropped: with no plane-side meaning to
-            // consult, the transport has nothing to answer it with.
-            continue;
-        }
-        // Anything else is handled concurrently. Registered under a private key so it clears itself
-        // on completion and the EOF path can abort whatever remains.
-        let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
-        let plane = plane.clone();
-        let handle = handle.clone();
-        let for_cleanup = shared.clone();
-        let running = tokio::spawn(async move {
-            plane.handle(frame, handle).await;
-            for_cleanup.inflight.lock().unwrap().remove(&key);
-        });
-        shared
-            .inflight
-            .lock()
-            .unwrap()
-            .insert(key, running.abort_handle());
+        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf));
     }
-    // EOF: DRAIN the in-flight handlers under a bound, then abort the remainder and flush. A
-    // one-shot invocation (one frame, then EOF) has its answer computed after EOF arrives, so a
-    // straight abort would serve nothing to exactly the caller who asked for one thing.
-    let deadline = tokio::time::Instant::now() + EOF_DRAIN;
-    while !shared.inflight.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    drain_and_flush(&shared).await;
+}
+
+/// SERVE one inbound MESSAGE-duplex channel until the stream ends, driving the SAME `plane` callbacks,
+/// correlation table and drain lifecycle as [`serve`] — the difference is framing, and nothing else.
+///
+/// Where [`serve`] frames a byte stream on `0x0A`, this takes a channel that is ALREADY
+/// message-oriented: `stream` yields one frame per message and `sink` accepts one message per frame,
+/// with no newline convention. That is exactly the shape of an already-upgraded WebSocket, whose HTTP
+/// upgrade, routing and message-kind handling (text/binary vs ping/pong/close) a caller performs at
+/// the upgrade site and reduces to `Vec<u8>` frames here — so the neutral pump names no protocol and
+/// stays out of the transport handshake. The stream ending (the peer's close, or a dropped sender)
+/// ends the session, mirroring EOF on the byte path.
+pub async fn serve_messages<St, Sk, P>(mut stream: St, sink: Sk, plane: Arc<P>)
+where
+    St: Stream<Item = Vec<u8>> + Unpin,
+    Sk: Sink<Vec<u8>> + Unpin + Send + 'static,
+    P: DuplexPlane,
+{
+    let shared = new_shared(Box::new(MessageSink { sink }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+    // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
+    // message-duplex analogue of EOF.
+    while let Some(frame) = stream.next().await {
+        dispatch_frame(&shared, &handle, &plane, frame);
     }
-    for (_, h) in shared.inflight.lock().unwrap().drain() {
-        h.abort();
-    }
-    let mut out = shared.writer.lock().await;
-    let _ = out.flush().await;
+    drain_and_flush(&shared).await;
 }
 
 #[cfg(all(test, feature = "test-support"))]
@@ -344,13 +445,7 @@ mod tests {
     async fn mint_is_monotonic_and_never_none() {
         let (_near, far) = tokio::io::duplex(64);
         let (_r, w) = tokio::io::split(far);
-        let shared = Arc::new(Shared {
-            writer: tokio::sync::Mutex::new(Box::new(w)),
-            pending: Mutex::new(HashMap::new()),
-            next_ref: AtomicU64::new(1),
-            inflight: Mutex::new(HashMap::new()),
-            next_inflight: AtomicU64::new(0),
-        });
+        let shared = new_shared(Box::new(NewlineSink { writer: w }));
         let handle = DuplexHandle { shared };
         let a = handle.mint();
         let b = handle.mint();
@@ -358,5 +453,63 @@ mod tests {
         assert_eq!(b, CallRef(2));
         assert!(!a.is_none() && !b.is_none());
         assert!(CallRef::NONE.is_none());
+    }
+
+    /// Drive the pump over an in-memory MESSAGE duplex (each channel item is one frame, no newline
+    /// convention — the shape an already-upgraded WebSocket presents): frames sent to the near end come
+    /// back echoed verbatim as whole messages, and the stream ending (close) ends the loop. Mirrors
+    /// `echo_round_trips_frames_and_stops_on_eof` on the byte path.
+    #[tokio::test]
+    async fn message_duplex_round_trips_frames_and_stops_on_close() {
+        use futures::channel::mpsc;
+
+        // inbound: what the peer sends the pump; outbound: what the pump emits back.
+        let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+        let (out_tx, mut out_rx) = mpsc::unbounded::<Vec<u8>>();
+        let pump = tokio::spawn(serve_messages(in_rx, out_tx, Arc::new(EchoPlane)));
+
+        // A whole message is one frame — no terminator on the wire, unlike the byte path.
+        in_tx.send(b"hello".to_vec()).await.unwrap();
+        assert_eq!(out_rx.next().await.unwrap(), b"hello");
+
+        in_tx.send(b"world".to_vec()).await.unwrap();
+        assert_eq!(out_rx.next().await.unwrap(), b"world");
+
+        // Closing the inbound stream (dropping the sender) is the message-duplex analogue of EOF.
+        drop(in_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+            .await
+            .expect("pump did not stop on stream close")
+            .unwrap();
+    }
+
+    /// Drive the correlation table over the MESSAGE duplex: a `call` frame makes the pump ISSUE an
+    /// outbound call as one message, the peer answers with a `reply:<n> ...` message, `classify` maps
+    /// it to the minted `CallRef`, the transport routes it back to the waiting `issue`, and the answer
+    /// is re-emitted — the identical machinery `serve` uses, reached through a different framing.
+    #[tokio::test]
+    async fn message_duplex_correlation_routes_a_reply_to_its_issuer() {
+        use futures::channel::mpsc;
+
+        let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+        let (out_tx, mut out_rx) = mpsc::unbounded::<Vec<u8>>();
+        let pump = tokio::spawn(serve_messages(in_rx, out_tx, Arc::new(EchoPlane)));
+
+        in_tx.send(b"call".to_vec()).await.unwrap();
+
+        // The pump issues its outbound call as one whole message, naming the CallRef it minted.
+        assert_eq!(out_rx.next().await.unwrap(), b"call 1");
+
+        // Answer it, tagged with the same ref so classify can pair it.
+        in_tx.send(b"reply:1 pong".to_vec()).await.unwrap();
+
+        // The routed answer is re-emitted by the handler.
+        assert_eq!(out_rx.next().await.unwrap(), b"got reply:1 pong");
+
+        drop(in_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+            .await
+            .expect("pump did not stop on stream close")
+            .unwrap();
     }
 }
