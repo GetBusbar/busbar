@@ -178,3 +178,9 @@ pub mod hooks;
 // Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
+
+// WEDGE 3-PREP: the neutral data-plane topology facts (worker count / per-thread worker id) + the
+// per-worker-sharded upstream client they size, relocated DOWN from `busbar_core::state` so a plane
+// crate names them without reaching into `busbar-core`. Core re-exports each at its historical
+// `busbar_core::state::…` path.
+pub mod topology;

@@ -8,7 +8,7 @@
 //! the carrier holds NO `busbar_core::` type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
 //! the egress-target/credential/upstream-client/probe-schedule resolution against the widened core
-//! down-primitives (`busbar_substrate::egress_auth`, `busbar_core::state::UpstreamClients`, this plane's own
+//! down-primitives (`busbar_core::egress_auth`, `busbar_substrate::topology::UpstreamClients`, this plane's own
 //! `EgressTarget`/`ProbeSchedule`) — the allowed plane→core edge. Byte-identical to the pre-pivot
 //! core-resident lowering (old `appbuild`'s lane/pool build loop).
 //!
@@ -258,7 +258,7 @@ pub(crate) fn build_runtime(
     } else {
         crate::engine::install_proxy_tunnel_if_configured()
             .unwrap_or_else(|e| panic!("upstream proxy tunnel: {e}"));
-        let shard_count = busbar_core::state::UpstreamClients::shard_count();
+        let shard_count = busbar_substrate::topology::UpstreamClients::shard_count();
         let idle_per_host_per_shard = input
             .client_settings
             .pool_max_idle_per_host
@@ -273,7 +273,7 @@ pub(crate) fn build_runtime(
                 cs.h2_prior_knowledge,
             ))
         };
-        busbar_core::state::UpstreamClients::build(shard_count, make_one)
+        busbar_substrate::topology::UpstreamClients::build(shard_count, make_one)
     };
 
     Arc::new(NativeRuntime {

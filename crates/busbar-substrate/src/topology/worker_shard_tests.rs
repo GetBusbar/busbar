@@ -8,11 +8,11 @@
 #[test]
 fn worker_ids_index_distinct_shards_and_unset_falls_back() {
     let clients = super::UpstreamClients::build(3, || {
-        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
+        crate::proxy::build_egress_client(&crate::egress::engine::EngineSpec::llm_lane(
             1, 1, false, false,
         ))
     });
-    let addr_of = |c: &crate::proxy::EgressClient| c as *const _ as usize;
+    let addr_of = |c: &crate::egress::engine::EngineClient| c as *const _ as usize;
     let shard_for = |id: Option<usize>| {
         let clients = clients.clone();
         std::thread::spawn(move || {
@@ -60,7 +60,7 @@ fn worker_ids_index_distinct_shards_and_unset_falls_back() {
 fn shard_count_fallback_publishes_the_establishment_shard_count() {
     let shards = super::UpstreamClients::shard_count();
     assert_eq!(
-        busbar_substrate::egress::engine::establishment_shards_or_one(),
+        crate::egress::engine::establishment_shards_or_one(),
         shards,
         "the engine's establishment-shard count must equal the client shard count after a \
          fallback resolution — a divergence re-opens the unpublished-topology 16x dial overrun"

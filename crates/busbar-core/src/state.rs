@@ -7,157 +7,16 @@ use std::sync::Arc;
 pub use crate::store::now;
 pub(crate) use crate::store::LaneRuntime;
 
-use crate::proxy::EgressClient as Client;
-
-// ── DATA-PLANE TOPOLOGY, published once by the composition root ─────────────────────────────────
-// The `busbar` binary spawns N per-worker data runtimes (thread-per-core; see main.rs) and tells
-// core two things before any request is served: HOW MANY workers exist (sizes the client shards
-// below, and the per-worker state stripes later stages add) and, on each worker thread, WHICH
-// worker this thread is. Both are process-topology facts — set at boot, immutable, no config.
-
-/// Total data-plane workers, set once by the composition root before serving. Unset (tests,
-/// embedded uses) falls back to the machine-derived default at each consumer.
-static DATA_WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-/// Publish the data-plane worker count. First call wins; later calls are ignored (boot runs once).
-pub fn set_data_workers(n: usize) {
-    let _ = DATA_WORKERS.set(n.max(1));
-    // The egress engine's connect gate sizes its per-shard establishment share from this same
-    // topology fact, and the engine lives in substrate, which cannot name core — so the publish
-    // FORWARDS in the same boot act: one composition-root call, two subscribers, no second
-    // source of the number.
-    busbar_substrate::egress::engine::set_establishment_shards(n);
-}
-
-thread_local! {
-    /// This thread's data-plane worker id (0..N), or `usize::MAX` on every non-worker thread
-    /// (the control runtime, the blocking pool). A plain `Cell` read — no atomic — because the id
-    /// is a per-thread constant after spawn.
-    static WORKER_ID: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-}
-
-/// Mark the current thread as data-plane worker `id`. Called exactly once per worker thread by the
-/// composition root, after pinning and before the worker's runtime starts serving.
-pub fn set_worker_id(id: usize) {
-    WORKER_ID.with(|w| w.set(id));
-}
-
-/// The current thread's worker id, or `usize::MAX` for a non-worker thread.
-pub(crate) fn worker_id() -> usize {
-    WORKER_ID.with(|w| w.get())
-}
-
-/// Stripe count for per-worker striped store state: one stripe per data worker PLUS one shared
-/// FALLBACK stripe (the last) for every non-worker thread. Constant for the process lifetime
-/// (`set_data_workers` runs before anything builds; the machine-derived fallback is stable).
-pub(crate) fn worker_stripes() -> usize {
-    DATA_WORKERS.get().copied().unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .min(16)
-    }) + 1
-}
-
-/// The current thread's stripe index in a `stripes`-slot stripe array: its worker id, or the
-/// last (fallback) slot for a non-worker thread. `min`: defensive clamp only.
-pub(crate) fn worker_stripe(stripes: usize) -> usize {
-    let id = worker_id();
-    if id == usize::MAX {
-        stripes - 1
-    } else {
-        id.min(stripes - 1)
-    }
-}
-
-/// The upstream HTTP client, SHARDED: N identical `reqwest::Client`s, each owning its own
-/// connection pool, one selected per thread. ONE shared client meant one pool mutex that every
-/// request crossed twice (connection checkout + checkin) across every worker — a lock convoy
-/// that grows with core count (measured: throughput fell ~36% from concurrency 64 → 1024 on a
-/// 4-core pin, and inverted busbar's standing against per-worker-sharded gateways on 32-thread
-/// x86). Each worker thread is assigned one shard on first use and keeps it: warm connections
-/// and TLS sessions stay worker-local, and each shard's pool lock is contended by ~1/Nth of the
-/// threads. NOT configurable — the shard count is one per data-plane worker (published by the
-/// composition root; machine-derived fallback for embedded/test uses) and the per-host idle
-/// budget is divided across shards so the TOTAL kept-alive sockets toward any upstream are
-/// unchanged.
-#[derive(Clone)]
-pub struct UpstreamClients {
-    shards: Arc<[Client]>,
-}
-
-impl UpstreamClients {
-    /// The shard count: ONE SHARD PER DATA-PLANE WORKER when the composition root published the
-    /// count (`set_data_workers` — the thread-per-core binary always does), so every worker gets a
-    /// pool of its own and shard selection is a direct index by worker id. Unset (tests, embedded
-    /// uses that never call `set_data_workers`) falls back to the machine-derived
-    /// `min(cores, 16).next_power_of_two()` the pre-topology sharding used.
-    pub fn shard_count() -> usize {
-        match DATA_WORKERS.get() {
-            Some(&n) => n,
-            None => {
-                let n = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-                    .next_power_of_two()
-                    .min(16);
-                // UNPUBLISHED-TOPOLOGY UNIFICATION: the engine's
-                // establishment machinery (connect gate permits + the pool's dial bound) divides
-                // one GLOBAL per-authority budget by the shard count. When the composition root
-                // never published a worker count (tests, embedded uses), this fallback is the
-                // shard count — so it must ALSO be the establishment divisor, or an unpublished
-                // build runs up to 16 pools × an undivided per-shard budget (16× the invariant).
-                // Publishing the value HERE — from the one function that derives it — keeps a
-                // single source instead of substrate re-deriving the formula cross-crate (the
-                // exact drift shape the single-source rule forbids). First call wins on both
-                // sides; the thread-per-core binary always publishes at boot and never gets here.
-                busbar_substrate::egress::engine::set_establishment_shards(n);
-                n
-            }
-        }
-    }
-
-    /// Build N shards from a builder factory (each shard is an IDENTICAL client; reqwest clients
-    /// cannot be cloned into independent pools, so the builder runs once per shard).
-    pub fn build(count: usize, mut make: impl FnMut() -> Client) -> Self {
-        let shards: Arc<[Client]> = (0..count.max(1)).map(|_| make()).collect();
-        UpstreamClients { shards }
-    }
-
-    /// This thread's client. A DATA-PLANE WORKER (id set at spawn) indexes its own shard directly —
-    /// one thread-local `Cell` read, no shared write ever, and its warm connections/TLS sessions
-    /// never cross another worker's pool lock. Any OTHER thread (the control runtime's prober,
-    /// blocking-pool threads, non-unix workers without ids) keeps the prior behavior: assigned a
-    /// shard round-robin on FIRST use for its lifetime — a once-per-thread counter bump, never a
-    /// per-request write.
-    pub fn get(&self) -> &Client {
-        let id = crate::state::worker_id();
-        if id != usize::MAX {
-            // min: defensive only — the composition root sizes shards to the worker count, so a
-            // worker id is always in range.
-            return &self.shards[id.min(self.shards.len() - 1)];
-        }
-        static NEXT_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        thread_local! {
-            static SHARD: std::cell::OnceCell<usize> = const { std::cell::OnceCell::new() };
-        }
-        let idx = SHARD.with(|s| {
-            *s.get_or_init(|| NEXT_THREAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-        });
-        // Modulo, not mask: with worker-published counts the shard count is exact (= N workers),
-        // not a power of two. Cold path — the result is cached per thread above.
-        &self.shards[idx % self.shards.len()]
-    }
-
-    /// Do two `UpstreamClients` share the SAME underlying shard set (`Arc::ptr_eq`)? True exactly
-    /// when one was cloned from the other (a config apply that REUSED the prior client for pool
-    /// warmth); false when the shards were freshly built. Lets the apply path — and its tests —
-    /// distinguish "carried the warm pool forward" from "rebuilt with new client settings".
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn shares_pool_with(&self, other: &UpstreamClients) -> bool {
-        Arc::ptr_eq(&self.shards, &other.shards)
-    }
-}
+// ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
+// (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
+// process facts and the per-worker-sharded upstream client without naming `busbar-core`. Re-exported
+// here at their historical `busbar_core::state::…` paths so every in-core call site — the
+// composition root's boot publish (`set_data_workers`/`set_worker_id`), the store-striping readers
+// (`worker_stripes`/`worker_stripe`), `appbuild`/`engine_facade`'s `UpstreamClients` — is unchanged.
+// The two worker accessors kept `pub(crate)` here (they were `pub(crate)` before the move); the rest
+// keep their prior `pub` visibility.
+pub use busbar_substrate::topology::{set_data_workers, set_worker_id, UpstreamClients};
+pub(crate) use busbar_substrate::topology::{worker_stripe, worker_stripes};
 
 /// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
 /// whose change must produce a different client. On a config apply the prior client is reused (for
@@ -1092,10 +951,6 @@ where
         Ok(CurrentApp(handle.load()))
     }
 }
-
-#[cfg(test)]
-#[path = "tests/worker_shard_tests.rs"]
-mod worker_shard_tests;
 
 // ── DETACHED-WORK DRAIN — RELOCATED to `busbar-substrate::detached` so the plane crates (which
 // deliberately never link busbar-core) reach the same seam. Re-exported here for core callers

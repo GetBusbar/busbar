@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_core::state::UpstreamClients;
+use busbar_substrate::topology::UpstreamClients;
 
 // ---------- lane (one per model) ----------
 #[derive(Clone)]
