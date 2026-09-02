@@ -707,6 +707,34 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         }
     }
 
+    fn admission_door(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<
+        (Option<busbar_substrate::plane_host::AdmitHandle>, Option<String>),
+        Box<axum::response::Response>,
+    > {
+        // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
+        // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
+        // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
+        crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
+            |(admit, downgraded)| {
+                (
+                    admit.map(|a| {
+                        busbar_substrate::plane_host::AdmitHandle(
+                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
+                        )
+                    }),
+                    downgraded,
+                )
+            },
+        )
+    }
+
     fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
         self.app.plane_slot(key).cloned()

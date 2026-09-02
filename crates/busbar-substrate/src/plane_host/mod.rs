@@ -548,6 +548,25 @@ pub trait EngineHost: Send + Sync {
         now: u64,
     );
 
+    /// STAGE 3–4 budget-admission door: charge the chain buckets for one request under `gov` on
+    /// `pool`, returning the ADMISSION grant (as the opaque [`AdmitHandle`] the sink holds Drop-only)
+    /// and any budget DOWNGRADE re-pool, or the already-finished not-charged rejection. Identical to
+    /// `busbar_core::ingress::admission_door` over the bound snapshot; the returned `AdmitHandle`
+    /// wraps the SAME `AdmitGrant` the in-place door produced, so `.is_some()` (charged?) and the
+    /// gauge-releasing `Drop` are byte-identical. No `HostCtx` on this path.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `native_ingress::drive` flip targets
+    /// (a host is already minted there). The `AdmitGrant`→[`AdmitHandle`] carrier-field retype
+    /// (`response_body.rs` / `native_ingress.rs`) rides the same wedge-3 governance flip.
+    fn admission_door(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
+
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
     /// records. Identical to `busbar_core::plane::auditlog::emit_admin_hostless_now` — this seam needs
