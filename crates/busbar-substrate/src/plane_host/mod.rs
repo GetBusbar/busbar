@@ -380,6 +380,57 @@ pub trait EngineHost: Send + Sync {
     /// snapshot-independent; identical to `busbar_core::telemetry::translation`.
     fn telemetry_translation(&self, from: &str, to: &str);
 
+    /// Map a client-supplied model/name string to the BOUNDED `pool` metric label through the host:
+    /// the string verbatim when it names a configured pool or by-model lane, else the fixed
+    /// `"unresolved"` sentinel. Bounds the Prometheus label cardinality on every finish/webhook path.
+    /// Identical to `busbar_core::ingress::pool_label` over the bound snapshot; the returned slice
+    /// borrows `model` (or a `'static` sentinel), independent of the host.
+    fn pool_label<'a>(&self, model: &'a str) -> &'a str;
+
+    /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
+    /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
+    /// protocol-native rejection response (finished via the not-charged terminal). Identical to
+    /// `busbar_core::ingress::destination_guard` over the bound snapshot + `gov` scope.
+    fn destination_guard(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>>;
+
+    /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
+    /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
+    /// admission (`charged`). Identical to `busbar_core::ingress::finish_admitted` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_admitted(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response;
+
+    /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
+    /// refund, for a request rejected BEFORE the admission charge ever ran (governance guard denial or
+    /// a pre-routing failure). Identical to `busbar_core::ingress::finish_rejected` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_rejected(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response;
+
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;

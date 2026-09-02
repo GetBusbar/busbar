@@ -576,6 +576,63 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::telemetry::translation(from, to);
     }
 
+    fn pool_label<'a>(&self, model: &'a str) -> &'a str {
+        crate::ingress::pool_label(&self.app, model)
+    }
+
+    fn destination_guard(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>> {
+        crate::ingress::destination_guard(&self.app, gov, proto, pool, started, charged_at)
+    }
+
+    fn finish_admitted(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response {
+        crate::ingress::finish_admitted(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+            charged,
+        )
+    }
+
+    fn finish_rejected(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response {
+        crate::ingress::finish_rejected(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+        )
+    }
+
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
     }

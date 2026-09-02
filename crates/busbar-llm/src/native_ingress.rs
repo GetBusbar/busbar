@@ -18,6 +18,9 @@ use serde_json::Value;
 
 use busbar_core::state::App;
 use busbar_substrate::ingress::arrival::ArrivalCtx;
+// The neutral host seam — brings the `finish_rejected`/`finish_admitted`/`pool_label`/
+// `destination_guard` methods into scope on the borrowed `engine_host_value` carrier.
+use busbar_substrate::plane_host::EngineHost as _;
 
 use crate::engine::{AppEngineExt, WeightedLane};
 
@@ -46,10 +49,13 @@ pub(crate) async fn operation_ingress_inner(
 ) -> Response {
     let started = Instant::now();
     let charged_at = busbar_substrate::store::now();
+    // The alloc-free borrowed host carrier (1.6.0 KEYSTONE): one Arc::clone, stack value coerced to
+    // `&dyn EngineHost`. The pre-routing finish/label/guard capabilities route through its narrow seam
+    // methods so this plane names no core ingress module. Not on the measured forward alloc path.
+    let host = busbar_core::plane_host::engine_host_value(app);
 
     let Some(rh) = busbar_core::handlers::request_handler(proto) else {
-        return busbar_core::ingress::finish_rejected(
-            app,
+        return host.finish_rejected(
             gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,
@@ -64,8 +70,7 @@ pub(crate) async fn operation_ingress_inner(
         );
     };
     let Some(op_handler) = rh.operation_handler(operation) else {
-        return busbar_core::ingress::finish_rejected(
-            app,
+        return host.finish_rejected(
             gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,
@@ -97,8 +102,7 @@ pub(crate) async fn operation_ingress_inner(
             Ok(v) => Some(v),
             Err(_) => {
                 tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
-                return busbar_core::ingress::finish_rejected(
-                    app,
+                return host.finish_rejected(
                     gov,
                     proto,
                     crate::engine::POOL_LABEL_UNRESOLVED,
@@ -133,8 +137,7 @@ pub(crate) async fn operation_ingress_inner(
     let model = match model {
         Some(m) if !m.is_empty() => m,
         _ => {
-            return busbar_core::ingress::finish_rejected(
-                app,
+            return host.finish_rejected(
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -206,8 +209,8 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         use busbar_substrate::plane_host::VerifyOutcome;
         // STAGE 2 — the pre-admission destination guard, verbatim. Its `Err` is the already-finished,
         // protocol-native rejection; the seam returns it as `Refuse` (byte-identical shaping).
-        match busbar_core::ingress::destination_guard(
-            self.app,
+        let host = busbar_core::plane_host::engine_host_value(self.app);
+        match host.destination_guard(
             req.gov,
             self.proto,
             req.destination,
@@ -235,6 +238,9 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             caller_token,
             model_not_found_message,
         } = *self;
+        // The alloc-free borrowed host carrier — the finish/label seam methods route through it so
+        // this served-path tail names no core ingress module. Off the measured forward alloc path.
+        let host = busbar_core::plane_host::engine_host_value(app);
 
         // STAGE 3–4 — THE single budget-admission door charges the chain buckets. On rejection
         // nothing was charged (the door finished it).
@@ -277,11 +283,10 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                     crate::engine::KIND_NOT_FOUND,
                     &busbar_substrate::ingress::not_found_message(model, model_not_found_message),
                 );
-                return busbar_core::ingress::finish_admitted(
-                    app,
+                return host.finish_admitted(
                     req.gov,
                     proto,
-                    busbar_core::ingress::pool_label(app, model),
+                    host.pool_label(model),
                     req.started,
                     req.charged_at,
                     resp,
@@ -339,11 +344,10 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         // STAGE 6 — audit + finish/metrics/refund. `pool_label` bounds the metric label — the
         // effective model is a configured pool/lane on the served path — so this reproduces the
         // pre-seam served tail exactly.
-        busbar_core::ingress::finish_admitted(
-            app,
+        host.finish_admitted(
             req.gov,
             proto,
-            busbar_core::ingress::pool_label(app, model),
+            host.pool_label(model),
             req.started,
             req.charged_at,
             resp,
@@ -502,6 +506,9 @@ async fn ingress_path_model_inner(
     let started = Instant::now();
     // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
     let charged_at = busbar_substrate::store::now();
+    // Alloc-free borrowed host carrier — the pre-routing finish seam routes through it (see the body-
+    // model twin). Off the measured forward alloc path.
+    let host = busbar_core::plane_host::engine_host_value(app);
     let mut v: Value = match busbar_substrate::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -513,8 +520,7 @@ async fn ingress_path_model_inner(
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
             // path. A raw early-return made it invisible to Prometheus and the webhook.
-            return busbar_core::ingress::finish_rejected(
-                app,
+            return host.finish_rejected(
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -553,8 +559,7 @@ async fn ingress_path_model_inner(
             // Pre-routing failure (body is not a JSON object → model never resolved): route through
             // `finish_rejected` with the bounded `"unresolved"` label so it is observable in metrics +
             // the webhook, not a silent early-return — and never charged, so nothing to refund.
-            return busbar_core::ingress::finish_rejected(
-                app,
+            return host.finish_rejected(
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -588,8 +593,7 @@ async fn ingress_path_model_inner(
             // with the bounded `"unresolved"` label so it is observable in metrics + the webhook. This
             // arm is effectively unreachable today (see the comment above), but keeping it on
             // `finish_rejected` preserves the observability invariant for every pre-routing exit.
-            return busbar_core::ingress::finish_rejected(
-                app,
+            return host.finish_rejected(
                 gov,
                 proto,
                 crate::engine::POOL_LABEL_UNRESOLVED,
@@ -611,8 +615,7 @@ async fn ingress_path_model_inner(
     let Some(op_handler) = busbar_core::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
     else {
-        return busbar_core::ingress::finish_rejected(
-            app,
+        return host.finish_rejected(
             gov,
             proto,
             crate::engine::POOL_LABEL_UNRESOLVED,
