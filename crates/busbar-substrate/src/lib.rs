@@ -162,6 +162,12 @@ pub mod governance;
 // `busbar_core::config::` path so the frozen config grammar + every deserialization are unchanged.
 pub mod config;
 
+// THE NEUTRAL hook value/wire layer (1.6.0 hooks seam): the plain-data resolved-policy carriers
+// (`ResolvedPolicy`/`FallbackHook`) and the outbound hook-request `wire` projection, relocated off
+// `busbar_core::hooks::` so the LLM model plane names the substrate ABI. Core re-exports these from its
+// historical `busbar_core::hooks::` paths; the reply-side normalizers stay core-side.
+pub mod hooks;
+
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
 // crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
 // Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.

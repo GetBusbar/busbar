@@ -279,51 +279,14 @@ impl HookEnv {
     }
 }
 
-/// The per-pool routing policy resolved ONCE at config load. `None` is the zero-cost default
-/// (`route: weighted` / absent): no policy object, no projection, the inline SWRR hot path. Stored
-/// on `App` keyed by pool name; the hot path is `if let Some(p) = app.pool_policies.get(pool) { … }`.
-#[derive(Clone)]
-pub enum ResolvedPolicy {
-    /// A constructed policy object (a dlopen hook plugin / native non-weighted) plus its fallback config.
-    /// The default SWRR / weighted path is represented as `None` by `resolve_policy` (it constructs no
-    /// policy object), so there is no `Weighted` variant — a weighted pool simply has no resolved
-    /// policy and takes the inline SWRR branch.
-    Policy {
-        policy: Arc<dyn RoutingPolicy>,
-        /// The TERMINAL the on_error chain bottoms out on (weighted/reject/first) — applied when
-        /// the policy fails and every chain link (below) also fails.
-        on_error: crate::config::PolicyOnError,
-        /// The resolved on_error FALLBACK CHAIN: hooks/strategies fired IN ORDER when the policy
-        /// errors or times out; the first that answers decides. Empty (the common case — a
-        /// terminal was named directly) costs nothing. Resolved once at config load; boot
-        /// validation proves termination (cycles/unknowns/taps never reach here).
-        on_error_chain: Vec<FallbackHook>,
-        timeout: std::time::Duration,
-        /// Derived from the hook's `prompt` grant (`ro`/`rw`) — build + send the prompt content
-        /// projection (default false, i.e. `prompt: no`).
-        send_prompt: bool,
-        /// Derived from the hook's `user` grant (`ro`) — build + send the caller identity projection
-        /// (default false, i.e. `user: no`).
-        send_user: bool,
-        /// Gate `on_empty` — behavior when a `restrict` reply leaves an EMPTY candidate intersection.
-        /// Default `Reject` (fail-closed; the spec default for a compliance restrict); `Weighted`
-        /// is the advisory escape (fall back to SWRR over the FULL pool). Inert for non-restricting
-        /// policies (native/order-only), which never produce an empty intersection.
-        on_empty: crate::config::PolicyOnError,
-    },
-}
-
-/// One link in a gate's resolved `on_error` fallback chain: the fallback hook's transport plus
-/// the per-hook config the firing site needs (its own deadline, ITS grants — a fallback never
-/// sees a projection its own grants don't allow — and its own `on_empty`).
-#[derive(Clone)]
-pub struct FallbackHook {
-    pub policy: Arc<dyn RoutingPolicy>,
-    pub timeout: std::time::Duration,
-    pub send_prompt: bool,
-    pub send_user: bool,
-    pub on_empty: crate::config::PolicyOnError,
-}
+/// The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
+/// resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_substrate::hooks`) so the LLM
+/// model plane names them without reaching back into core (see docs/design/1.6.0-hooks-seam-notes.md).
+/// Every field is already-neutral (`Arc<dyn RoutingPolicy>` (api), `PolicyOnError` (substrate),
+/// `Duration`, `bool`) and no trait object crosses the plugin C-ABI here — the plane invokes
+/// `policy.decide(..)` in-process on the api trait. Re-exported by-identity so core-internal
+/// `crate::hooks::{ResolvedPolicy, FallbackHook}` paths (and the `App` gate maps) are unchanged.
+pub use busbar_substrate::hooks::{FallbackHook, ResolvedPolicy};
 
 /// Resolve a pool's routing config into a runtime policy ONCE at config load. Returns `None` for the
 /// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
