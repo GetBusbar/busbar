@@ -127,7 +127,7 @@ pub struct App {
     #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_substrate::plane_host::EngineHost::plane_pool_members`]), keyed by the plane's stable
+    /// ([`busbar_substrate::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// `agent_pools` field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its `<section>.pools:` set (member selection derives lanes from member position). Read

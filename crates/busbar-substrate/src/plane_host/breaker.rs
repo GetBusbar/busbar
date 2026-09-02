@@ -5,7 +5,7 @@
 //! host `breaker_settle` seam. These are pure `#[repr(C)]` POD builders (they name only
 //! [`busbar_plugin::hot`] + the neutral [`CanonicalSignal`](crate::breaker::CanonicalSignal)), so they
 //! live here in the substrate rather than in `busbar-core`: a plane compiled apart from the host builds
-//! the `Signal` it hands to [`EngineHost::breaker_settle`](super::EngineHost::breaker_settle) without
+//! the `Signal` it hands to [`BreakerHost::breaker_settle`](super::BreakerHost::breaker_settle) without
 //! naming a core type.
 //!
 //! The host's own `classify` (in `busbar-core`) is the INVERSE of [`failure_signal`], so a settle folded

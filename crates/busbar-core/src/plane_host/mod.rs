@@ -413,6 +413,93 @@ impl EngineHostImpl {
     }
 }
 
+// AUDIT-D BRAKE: the BREAKER family, split off `EngineHost` into its `BreakerHost` supertrait. The
+// bodies are relocated byte-for-byte — same-dispatch reaches, same arenas — so the split is purely
+// structural. `EngineHost: BreakerHost` (in substrate) makes these visible on every `dyn EngineHost`.
+impl busbar_substrate::plane_host::BreakerHost for EngineHostImpl {
+    fn breaker_admit(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        lane: u32,
+    ) -> Result<busbar_plugin::hot::AdmissionId, crate::store::Unavailable> {
+        breaker::breaker_admit_over(&self.app, scope, pool, lane)
+    }
+
+    fn breaker_settle(
+        &self,
+        scope: &DispatchScope,
+        admission: busbar_plugin::hot::AdmissionId,
+        signal: &busbar_plugin::hot::Signal,
+    ) -> busbar_plugin::hot::StatusClass {
+        // SAME dispatch as the in-place `with_borrowed_host` settle the plane's sync leg drove: mint
+        // the transient `HostCtx` over the caller's arena, fold the leg through the `breaker_settle`
+        // slot, and return the class — the raw host pointer never escapes the call.
+        with_borrowed_host(&self.app, scope, |host, vt| {
+            (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
+                host,
+                admission,
+                signal as *const busbar_plugin::hot::Signal,
+            )
+        })
+    }
+
+    fn breaker_record_success(&self, pool: &str, lane: usize) {
+        self.app.plane_breakers.record_success(pool, lane);
+    }
+
+    fn breaker_record_signal(
+        &self,
+        pool: &str,
+        lane: usize,
+        sig: &busbar_substrate::breaker::CanonicalSignal,
+    ) {
+        self.app.plane_breakers.record_signal(pool, lane, sig);
+    }
+
+    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
+        self.app.plane_breakers.retry_after_secs(pool, lane)
+    }
+}
+
+// AUDIT-D BRAKE: the LANE/POOL family, split off `EngineHost` into its `LanePoolHost` supertrait.
+// Relocated byte-for-byte from the flat impl; `EngineHost: LanePoolHost` keeps every call site working.
+impl busbar_substrate::plane_host::LanePoolHost for EngineHostImpl {
+    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
+        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
+        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
+        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
+        &*self.app.store
+    }
+
+    fn default_probe_interval_secs(&self) -> u64 {
+        crate::limits::default_probe_interval_secs()
+    }
+
+    fn default_probe_timeout_secs(&self) -> u64 {
+        crate::limits::default_probe_timeout_secs()
+    }
+
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
+        self.app
+            .tool_pools
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
+    }
+
+    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
+        // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
+        // members (the walk derives lanes from member position). A pure snapshot read over the generic
+        // per-plane pool map, keyed by the opaque registry key.
+        self.app
+            .plane_pools(plane_key)?
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
+    }
+}
+
 #[async_trait::async_trait]
 impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn clock_now_secs(&self) -> u64 {
@@ -464,50 +551,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
                 usage as *const busbar_plugin::hot::Usage,
             );
         });
-    }
-
-    fn breaker_admit(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, crate::store::Unavailable> {
-        breaker::breaker_admit_over(&self.app, scope, pool, lane)
-    }
-
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: busbar_plugin::hot::AdmissionId,
-        signal: &busbar_plugin::hot::Signal,
-    ) -> busbar_plugin::hot::StatusClass {
-        // SAME dispatch as the in-place `with_borrowed_host` settle the plane's sync leg drove: mint
-        // the transient `HostCtx` over the caller's arena, fold the leg through the `breaker_settle`
-        // slot, and return the class — the raw host pointer never escapes the call.
-        with_borrowed_host(&self.app, scope, |host, vt| {
-            (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
-                host,
-                admission,
-                signal as *const busbar_plugin::hot::Signal,
-            )
-        })
-    }
-
-    fn breaker_record_success(&self, pool: &str, lane: usize) {
-        self.app.plane_breakers.record_success(pool, lane);
-    }
-
-    fn breaker_record_signal(
-        &self,
-        pool: &str,
-        lane: usize,
-        sig: &busbar_substrate::breaker::CanonicalSignal,
-    ) {
-        self.app.plane_breakers.record_signal(pool, lane, sig);
-    }
-
-    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
-        self.app.plane_breakers.retry_after_secs(pool, lane)
     }
 
     fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
@@ -635,21 +678,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
-    }
-
-    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
-        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
-        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
-        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
-        &*self.app.store
-    }
-
-    fn default_probe_interval_secs(&self) -> u64 {
-        crate::limits::default_probe_interval_secs()
-    }
-
-    fn default_probe_timeout_secs(&self) -> u64 {
-        crate::limits::default_probe_timeout_secs()
     }
 
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
@@ -846,30 +874,11 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         }
     }
 
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        self.app
-            .tool_pools
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
-    }
-
     fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
         // Pure snapshot read of the generic per-plane gate map, keyed by the opaque registry key.
         self.app
             .plane_gates(plane_key)
             .is_some_and(|g| g.contains_key(container))
-    }
-
-    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
-        // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
-        // members (the walk derives lanes from member position). A pure snapshot read over the generic
-        // per-plane pool map, keyed by the opaque registry key.
-        self.app
-            .plane_pools(plane_key)?
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
     }
 
     fn plane_audience_bound(&self, plane_key: &str) -> bool {

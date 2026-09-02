@@ -252,6 +252,103 @@ pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 #[derive(Clone)]
 pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 
+/// BRAKE (audit D): the BREAKER-family slice of the host seam, split off `EngineHost` as a supertrait
+/// so the circuit-breaker admission/settle/record cluster stays a cohesive, bounded ABI rather than
+/// dissolving into the ~30-method god-trait. Groups the five `(pool, lane)` breaker seams a plane's
+/// dispatch/failover legs drive: win a probe ([`breaker_admit`](Self::breaker_admit)), fold a leg's
+/// outcome ([`breaker_settle`](Self::breaker_settle)), the in-place record fallbacks
+/// ([`breaker_record_success`](Self::breaker_record_success) /
+/// [`breaker_record_signal`](Self::breaker_record_signal)), and the cooldown read
+/// ([`breaker_retry_after_secs`](Self::breaker_retry_after_secs)). PURE STRUCTURAL: every method keeps
+/// its exact signature and same-dispatch body; a plane that names `EngineHost` still calls these
+/// through the inherited supertrait bound.
+pub trait BreakerHost: Send + Sync {
+    /// WIN ONE `(pool, lane)` breaker probe through the host `breaker_admit` seam, leaving the
+    /// settle-capable admission REGISTERED in `scope`'s arena and returning the POD [`AdmissionId`] —
+    /// or the store's own [`Unavailable`] refusal. Identical to
+    /// `busbar_core::plane_host::breaker::breaker_admit_over`.
+    fn breaker_admit(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        lane: u32,
+    ) -> Result<AdmissionId, Unavailable>;
+
+    /// Fold a leg's classified outcome through the host `breaker_settle` seam over `admission` (looked
+    /// up in `scope`'s arena). `Ok` means the live admission was found and settled; a `Gone` means it
+    /// was already settled — the caller falls back to an in-place record. Byte-identical disposition
+    /// to the plane's own `record_signal`/`record_success`.
+    fn breaker_settle(
+        &self,
+        scope: &DispatchScope,
+        admission: AdmissionId,
+        signal: &Signal,
+    ) -> StatusClass;
+
+    /// Record a SUCCESS against the `(pool, lane)` breaker cell in place — the fallback a settle leg
+    /// takes when no arena owns the probe (or a multi-round leg whose probe was already settled).
+    /// Identical to the plane's own `PlaneBreakers::record_success`.
+    fn breaker_record_success(&self, pool: &str, lane: usize);
+
+    /// Record a canonical failure signal against the `(pool, lane)` breaker cell in place — the
+    /// fallback twin of [`breaker_record_success`](Self::breaker_record_success). Identical to the
+    /// plane's own `PlaneBreakers::record_signal`.
+    fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal);
+
+    /// The seconds until the `(pool, lane)` breaker cell's cooldown expires — the honest `Retry-After`
+    /// for a refused pooled dispatch, read PER MEMBER so a pool whose members trip independently
+    /// answers with the soonest. Identical to the plane's own `PlaneBreakers::retry_after_secs`; a
+    /// pure read, so it needs no `HostCtx`.
+    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64;
+}
+
+/// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a supertrait
+/// so the lane-runtime + pool-membership + probe-default cluster stays a cohesive, bounded ABI. Groups
+/// the five seams a plane's routing/health machinery reads: the neutral breaker/lane store view
+/// ([`lane_store`](Self::lane_store)), the two process-wide active-probe fallbacks
+/// ([`default_probe_interval_secs`](Self::default_probe_interval_secs) /
+/// [`default_probe_timeout_secs`](Self::default_probe_timeout_secs)), and the failover-pool membership
+/// resolvers ([`tool_pool_members`](Self::tool_pool_members) /
+/// [`plane_pool_members`](Self::plane_pool_members)). PURE STRUCTURAL: signatures and bodies are
+/// unchanged; a plane that names `EngineHost` reaches these through the inherited supertrait bound.
+pub trait LanePoolHost: Send + Sync {
+    /// The breaker/lane store this deployment routes through, as the NEUTRAL
+    /// [`busbar_substrate::store::LaneRuntime`](crate::store::LaneRuntime) view — the seam the engine's
+    /// `app.store` reads (select/health/pipeline lane admit/settle/snapshot) resolve to WITHOUT naming
+    /// core's `state::App`. A pure borrow of the bound snapshot's store, no `HostCtx`; the returned
+    /// `&dyn LaneRuntime` shares the live in-memory breaker engine, identical to `&*App::store`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the transitional seam the wedge-3 `app.store → host.lane_store()`
+    /// flip targets. The `LaneRuntime` trait already lives in substrate (wedge 1), so this names no core type.
+    fn lane_store(&self) -> &dyn crate::store::LaneRuntime;
+
+    /// The process-wide active-probe INTERVAL fallback (whole seconds) a lane with no
+    /// `health.interval_secs` inherits — the host-read form of `busbar_core::limits::default_probe_interval_secs`.
+    /// A pure read of the live limits registry, no `HostCtx`; byte-identical to that free fn.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `health.rs` probe-spawn flip targets. The
+    /// limits fns read core's runtime `LIMITS` global, so they CANNOT relocate to substrate by-identity;
+    /// this host seam is the neutral home instead.
+    fn default_probe_interval_secs(&self) -> u64;
+
+    /// The process-wide active-probe TIMEOUT fallback (whole seconds) a lane with no `health.timeout_secs`
+    /// inherits — the host-read twin of [`default_probe_interval_secs`](Self::default_probe_interval_secs).
+    /// Byte-identical to `busbar_core::limits::default_probe_timeout_secs`.
+    fn default_probe_timeout_secs(&self) -> u64;
+
+    /// The `(pool_name, members, repeatable)` of the `tool_pools:` failover pool `server` belongs to,
+    /// off the BOUND snapshot; `None` when `server` is un-pooled. `repeatable` is the pool's
+    /// `repeatable:` operation list (what `CandidatePoolCfg::repeatability` consults). Identical to
+    /// scanning `App::tool_pools`.
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
+
+    /// The `(pool_name, members)` of the failover pool `member` belongs to on the plane identified by
+    /// the opaque registry `plane_key`, off the BOUND snapshot; `None` when `member` is un-pooled. The
+    /// member-selection walk derives each candidate's lane from the member's position in the returned
+    /// list, so name + members is the whole seam. Identical to scanning the plane's pool map.
+    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)>;
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -267,7 +364,7 @@ pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 /// (it awaits a `spawn_blocking` join over the host auth chain). Every other method is a plain sync
 /// fn the attribute leaves untouched; only the async one is desugared to a boxed `Send` future.
 #[async_trait::async_trait]
-pub trait EngineHost: Send + Sync {
+pub trait EngineHost: BreakerHost + LanePoolHost + Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form
     /// of a plane's in-place seconds clock. Identical to `busbar_core::plane_host::clock_now_secs_over`.
     fn clock_now_secs(&self) -> u64;
@@ -319,44 +416,6 @@ pub trait EngineHost: Send + Sync {
     /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
     /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
     fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
-
-    /// WIN ONE `(pool, lane)` breaker probe through the host `breaker_admit` seam, leaving the
-    /// settle-capable admission REGISTERED in `scope`'s arena and returning the POD [`AdmissionId`] —
-    /// or the store's own [`Unavailable`] refusal. Identical to
-    /// `busbar_core::plane_host::breaker::breaker_admit_over`.
-    fn breaker_admit(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        lane: u32,
-    ) -> Result<AdmissionId, Unavailable>;
-
-    /// Fold a leg's classified outcome through the host `breaker_settle` seam over `admission` (looked
-    /// up in `scope`'s arena). `Ok` means the live admission was found and settled; a `Gone` means it
-    /// was already settled — the caller falls back to an in-place record. Byte-identical disposition
-    /// to the plane's own `record_signal`/`record_success`.
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: AdmissionId,
-        signal: &Signal,
-    ) -> StatusClass;
-
-    /// Record a SUCCESS against the `(pool, lane)` breaker cell in place — the fallback a settle leg
-    /// takes when no arena owns the probe (or a multi-round leg whose probe was already settled).
-    /// Identical to the plane's own `PlaneBreakers::record_success`.
-    fn breaker_record_success(&self, pool: &str, lane: usize);
-
-    /// Record a canonical failure signal against the `(pool, lane)` breaker cell in place — the
-    /// fallback twin of [`breaker_record_success`](Self::breaker_record_success). Identical to the
-    /// plane's own `PlaneBreakers::record_signal`.
-    fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal);
-
-    /// The seconds until the `(pool, lane)` breaker cell's cooldown expires — the honest `Retry-After`
-    /// for a refused pooled dispatch, read PER MEMBER so a pool whose members trip independently
-    /// answers with the soonest. Identical to the plane's own `PlaneBreakers::retry_after_secs`; a
-    /// pure read, so it needs no `HostCtx`.
-    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64;
 
     /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
     /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
@@ -464,30 +523,6 @@ pub trait EngineHost: Send + Sync {
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
-
-    /// The breaker/lane store this deployment routes through, as the NEUTRAL
-    /// [`busbar_substrate::store::LaneRuntime`](crate::store::LaneRuntime) view — the seam the engine's
-    /// `app.store` reads (select/health/pipeline lane admit/settle/snapshot) resolve to WITHOUT naming
-    /// core's `state::App`. A pure borrow of the bound snapshot's store, no `HostCtx`; the returned
-    /// `&dyn LaneRuntime` shares the live in-memory breaker engine, identical to `&*App::store`.
-    ///
-    /// WEDGE 2 (App-retype): additive — the transitional seam the wedge-3 `app.store → host.lane_store()`
-    /// flip targets. The `LaneRuntime` trait already lives in substrate (wedge 1), so this names no core type.
-    fn lane_store(&self) -> &dyn crate::store::LaneRuntime;
-
-    /// The process-wide active-probe INTERVAL fallback (whole seconds) a lane with no
-    /// `health.interval_secs` inherits — the host-read form of `busbar_core::limits::default_probe_interval_secs`.
-    /// A pure read of the live limits registry, no `HostCtx`; byte-identical to that free fn.
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `health.rs` probe-spawn flip targets. The
-    /// limits fns read core's runtime `LIMITS` global, so they CANNOT relocate to substrate by-identity;
-    /// this host seam is the neutral home instead.
-    fn default_probe_interval_secs(&self) -> u64;
-
-    /// The process-wide active-probe TIMEOUT fallback (whole seconds) a lane with no `health.timeout_secs`
-    /// inherits — the host-read twin of [`default_probe_interval_secs`](Self::default_probe_interval_secs).
-    /// Byte-identical to `busbar_core::limits::default_probe_timeout_secs`.
-    fn default_probe_timeout_secs(&self) -> u64;
 
     /// Whether `caller_group` sits within (any ancestor of) one of `hook_groups` — the group-membership
     /// walk a hook's `groups:` filter consults, resolved against this deployment's group registry.
@@ -777,23 +812,11 @@ pub trait EngineHost: Send + Sync {
     /// without a live handle). A pure map read, no `HostCtx`.
     fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
-    /// The `(pool_name, members, repeatable)` of the `tool_pools:` failover pool `server` belongs to,
-    /// off the BOUND snapshot; `None` when `server` is un-pooled. `repeatable` is the pool's
-    /// `repeatable:` operation list (what `CandidatePoolCfg::repeatability` consults). Identical to
-    /// scanning `App::tool_pools`.
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
-
     /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on the
     /// plane identified by the opaque registry `plane_key` (the plane's stable decl key)? Lets a plane
     /// skip the blocking `gate_decide` hop when nothing is attached. Identical to
     /// `App::plane_gates(plane_key).contains_key(container)`.
     fn gate_attached(&self, plane_key: &str, container: &str) -> bool;
-
-    /// The `(pool_name, members)` of the failover pool `member` belongs to on the plane identified by
-    /// the opaque registry `plane_key`, off the BOUND snapshot; `None` when `member` is un-pooled. The
-    /// member-selection walk derives each candidate's lane from the member's position in the returned
-    /// list, so name + members is the whole seam. Identical to scanning the plane's pool map.
-    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)>;
 
     /// Whether the plane identified by the opaque registry `plane_key` is mounted under an
     /// AUDIENCE-BOUND door — the deployment gate a request path reads before it trusts an inbound
@@ -874,6 +897,18 @@ pub trait EngineHost: Send + Sync {
         run_gauntlet(req, plane).await
     }
 }
+
+/// Compile-time witness for the audit-D brake: any `EngineHost` implementor IS a `BreakerHost` and a
+/// `LanePoolHost`. If a future edit dropped either supertrait bound (or an impl stopped satisfying it),
+/// this stops compiling — so the two families cannot silently re-dissolve back into the flat god-trait.
+const _: () = {
+    fn _assert_engine_host_brakes<T: EngineHost + ?Sized>() {
+        fn _needs_breaker<U: BreakerHost + ?Sized>() {}
+        fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
+        _needs_breaker::<T>();
+        _needs_lane_pool::<T>();
+    }
+};
 
 /// THE NEUTRAL TYPE-ERASED SLOT-READ SEAM the core-owned `PlaneDecl` callbacks that today force a
 /// `&busbar_core::state::App` are neutralised over — so a plane's `on_swap` / `registry_contains` /
