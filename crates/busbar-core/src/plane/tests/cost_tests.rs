@@ -138,7 +138,8 @@ fn children_cannot_exceed_their_parent() {
 
 // ── CostHold: reserve → settle → refund ─────────────────────────────────────────────────────────
 
-/// Helper: a single-line breakdown of `n` nanodollars.
+/// Helper: a single-line audit breakdown of `n` nanodollars. The hot-path settle takes only its
+/// money `total` scalar (the breakdown itself is audit-only) — modelled here by `charge(n).total()`.
 fn charge(n: u128) -> CostBreakdown {
     CostBreakdown::new(
         CostAmount(n),
@@ -149,14 +150,15 @@ fn charge(n: u128) -> CostBreakdown {
 
 #[test]
 fn reserve_folds_the_flat_fee_in_once() {
-    let h = CostHold::reserve(CostAmount(1_000), CostAmount(50));
+    let h = CostHold::reserve(CostAmount(1_000), CostAmount(50), None);
     assert_eq!(h.reserved(), CostAmount(1_050));
 }
 
 #[test]
 fn finalize_ledgers_the_exact_settled_sum_and_refunds_the_unspent_reserve() {
-    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0));
-    h.settle_partial(&charge(300));
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0), None);
+    h.settle_partial(charge(300).total());
+    assert_eq!(h.settled(), CostAmount(300));
     let s = h.finalize();
     assert_eq!(s.ledgered_total, CostAmount(300)); // the EXACT charge, not the reserve
     assert_eq!(s.refund, CostAmount(700)); // reserved 1000 − settled 300
@@ -164,10 +166,11 @@ fn finalize_ledgers_the_exact_settled_sum_and_refunds_the_unspent_reserve() {
 
 #[test]
 fn streamed_partials_accumulate_to_the_true_charge() {
-    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0));
-    h.settle_partial(&charge(120));
-    h.settle_partial(&charge(80));
-    h.settle_partial(&charge(50));
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0), None);
+    h.settle_partial(charge(120).total());
+    h.settle_partial(charge(80).total());
+    h.settle_partial(charge(50).total());
+    assert_eq!(h.settled(), CostAmount(250));
     let s = h.finalize();
     assert_eq!(s.ledgered_total, CostAmount(250));
     assert_eq!(s.refund, CostAmount(750));
@@ -175,8 +178,8 @@ fn streamed_partials_accumulate_to_the_true_charge() {
 
 #[test]
 fn an_over_settle_ledgers_the_true_amount_and_refunds_zero_never_negative() {
-    let mut h = CostHold::reserve(CostAmount(100), CostAmount(0));
-    h.settle_partial(&charge(250)); // the coarse estimate was low
+    let mut h = CostHold::reserve(CostAmount(100), CostAmount(0), None);
+    h.settle_partial(charge(250).total()); // the coarse estimate was low
     let s = h.finalize();
     assert_eq!(s.ledgered_total, CostAmount(250));
     assert_eq!(s.refund, CostAmount(0));
@@ -184,8 +187,68 @@ fn an_over_settle_ledgers_the_true_amount_and_refunds_zero_never_negative() {
 
 #[test]
 fn a_hold_never_settled_refunds_the_whole_reserve() {
-    let h = CostHold::reserve(CostAmount(500), CostAmount(25));
+    let h = CostHold::reserve(CostAmount(500), CostAmount(25), None);
     let s = h.finalize();
     assert_eq!(s.ledgered_total, CostAmount(0));
     assert_eq!(s.refund, CostAmount(525));
+}
+
+// ── CostHold: exhaustion (the mid-stream hard-stop signal) ──────────────────────────────────────
+
+#[test]
+fn an_uncapped_lease_is_never_exhausted_and_has_no_finite_remaining() {
+    let mut h = CostHold::reserve(CostAmount(100), CostAmount(0), None);
+    assert!(!h.is_exhausted());
+    assert_eq!(h.remaining(), None);
+    h.settle_partial(CostAmount(10_000)); // far past the coarse reserve
+    assert!(!h.is_exhausted()); // no cap ⇒ never dry
+    assert_eq!(h.remaining(), None);
+}
+
+#[test]
+fn under_cap_is_not_exhausted_and_reports_the_headroom() {
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0), Some(CostAmount(1_000)));
+    h.settle_partial(CostAmount(600));
+    assert!(!h.is_exhausted());
+    assert_eq!(h.remaining(), Some(CostAmount(400))); // 1000 cap − 600 settled
+}
+
+#[test]
+fn at_cap_is_exhausted_with_zero_remaining() {
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0), Some(CostAmount(1_000)));
+    h.settle_partial(CostAmount(1_000)); // settled == cap
+    assert!(h.is_exhausted());
+    assert_eq!(h.remaining(), Some(CostAmount::ZERO));
+}
+
+#[test]
+fn over_cap_is_exhausted_and_remaining_saturates_at_zero() {
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0), Some(CostAmount(1_000)));
+    h.settle_partial(CostAmount(1_500)); // settled > cap
+    assert!(h.is_exhausted());
+    assert_eq!(h.remaining(), Some(CostAmount::ZERO)); // saturates, never negative
+}
+
+#[test]
+fn exhaustion_fires_against_the_cap_not_the_coarse_over_estimated_reserve() {
+    // The audit-B keystone: reserve a coarse OVER-estimate (10_000) but a tight true budget cap
+    // (1_000). A settle past the cap but well below the reserve MUST read as dry — the stop fires
+    // against the cap, not `settled ≥ reserved` (which would fire late by the over-estimate margin).
+    let mut h = CostHold::reserve(CostAmount(10_000), CostAmount(0), Some(CostAmount(1_000)));
+    h.settle_partial(CostAmount(1_200)); // > cap 1000, but « reserved 10_000
+    assert!(h.is_exhausted());
+    assert_eq!(h.remaining(), Some(CostAmount::ZERO));
+}
+
+#[test]
+fn a_zero_cap_is_refuse_all_exhausted_from_the_outset_and_distinct_from_no_cap() {
+    // Some(0) must NOT collapse into "no cap": it is a refuse-all budget, dry before any settle.
+    let refuse_all = CostHold::reserve(CostAmount(0), CostAmount(0), Some(CostAmount::ZERO));
+    assert!(refuse_all.is_exhausted());
+    assert_eq!(refuse_all.remaining(), Some(CostAmount::ZERO));
+
+    // ... whereas an uncapped lease with the same amounts is never exhausted.
+    let uncapped = CostHold::reserve(CostAmount(0), CostAmount(0), None);
+    assert!(!uncapped.is_exhausted());
+    assert_eq!(uncapped.remaining(), None);
 }
