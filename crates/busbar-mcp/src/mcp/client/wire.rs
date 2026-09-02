@@ -156,6 +156,11 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
         Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
+        Some(UpstreamWireKind::Duplex) => unreachable!(
+            "transport `{}` is a full-duplex framed wire, not an MCP client leg in this build; \
+             mcp/config.rs refuses any `transport:` that is not `streamable_http` or `stdio` at boot",
+            transport.name()
+        ),
         None => unreachable!(
             "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
              mcp/config.rs refuses any other `transport:` value at boot",

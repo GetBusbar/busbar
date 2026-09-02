@@ -137,6 +137,19 @@ pub enum Transport {
     /// is precisely the thing that would have become a second dispatch path if it had nowhere to
     /// hang.
     Stdio,
+    /// A FULL-DUPLEX FRAMED CONNECTION — one long-lived socket carrying framed messages in BOTH
+    /// directions at once, rather than the one-request-one-response exchange [`Transport::Http`]
+    /// models. The byte-duplex carrier that `busbar_substrate::ingress::byte_duplex` pumps: a
+    /// `AsyncRead`/`AsyncWrite` pair served until EOF, with each side free to send a frame at any
+    /// time without a prior request from the other.
+    ///
+    /// A variant rather than a flavour of [`Transport::Http`] because the two differ in exactly the
+    /// thing this axis names — the FRAMING. `Http` frames one buffered or streamed reply behind one
+    /// request; here the channel is symmetric and open-ended, so "which frame answers which" is not a
+    /// property the transport can assume. Armed by binding: the variant and its neutral wire shape
+    /// exist here, but no site drives a request down it yet, so every match below maps it to the
+    /// same safe default the other unwired legs take.
+    WebSocket,
 }
 
 /// THE TWO MCP CLIENT WIRES a [`Transport`] can select — the neutral hand-off
@@ -153,6 +166,11 @@ pub enum UpstreamWireKind {
     StreamableHttp,
     /// The child-process stdin/stdout wire (`mcp/client/stdio.rs`'s `StdioWire`).
     Stdio,
+    /// A BIDIRECTIONAL FRAMED BYTE WIRE — the full-duplex channel shape [`Transport::WebSocket`]
+    /// selects, distinct from the two request/response wires above because bytes flow both ways over
+    /// one open connection. No client leg resolves it yet (see `mcp/client/wire.rs`); it names the
+    /// wire the axis answers with, not a plane vtable it is already mapped to.
+    Duplex,
 }
 
 impl Transport {
@@ -172,6 +190,7 @@ impl Transport {
         Transport::HttpJson,
         Transport::Grpc,
         Transport::Stdio,
+        Transport::WebSocket,
     ];
 
     /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
@@ -192,6 +211,7 @@ impl Transport {
             // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
             Transport::Grpc => crate::plane::WIRE_GRPC,
             Transport::Stdio => "stdio",
+            Transport::WebSocket => "websocket",
         }
     }
 
@@ -219,7 +239,44 @@ impl Transport {
         match self {
             Transport::Http => Some(UpstreamWireKind::StreamableHttp),
             Transport::Stdio => Some(UpstreamWireKind::Stdio),
+            // The full-duplex framed wire the axis names neutrally. `mcp/client/wire.rs` has no leg
+            // that resolves it yet, so this is armed by binding: the discriminant exists, and the
+            // one site that would map it to a plane vtable treats it as the unreachable it is until a
+            // request drives it.
+            Transport::WebSocket => Some(UpstreamWireKind::Duplex),
             Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full-duplex leg is enumerated and carries the same bounded, unique label every other
+    /// variant does — so the axis stays walkable and no metric label collides.
+    #[test]
+    fn websocket_is_enumerated_with_a_stable_unique_label() {
+        assert_eq!(Transport::WebSocket.name(), "websocket");
+        assert!(
+            Transport::ALL.contains(&Transport::WebSocket),
+            "WebSocket must be in Transport::ALL or nothing enumerates it"
+        );
+        let names: Vec<_> = Transport::ALL.iter().map(|t| t.name()).collect();
+        let mut deduped = names.clone();
+        deduped.sort_unstable();
+        deduped.dedup();
+        assert_eq!(deduped.len(), names.len(), "transport names must be unique");
+    }
+
+    /// The axis answers the full-duplex leg with its neutral wire shape — the one match on this axis,
+    /// mapping WebSocket to the bidirectional framed byte wire.
+    #[cfg(feature = "dispatch")]
+    #[test]
+    fn websocket_selects_the_duplex_upstream_wire() {
+        assert_eq!(
+            Transport::WebSocket.upstream_wire(),
+            Some(UpstreamWireKind::Duplex)
+        );
     }
 }
