@@ -27,11 +27,11 @@ pub fn install_test_seams() {
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_substrate::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
     busbar_substrate::ingress::arrival::set_test_body_ingress(|| crate::BODY_INGRESS);
-    // The cross-protocol STREAMING translator factory. `busbar_core::proto::new_stream_translator`
+    // The cross-protocol STREAMING translator factory. `busbar_substrate::proto::new_stream_translator`
     // routes through this installed pointer in a `test-support`/plugin test binary (where core's
     // `cfg(test)` is FALSE), so without it every cross-protocol streaming forward falls back to raw
     // passthrough — the exact composition-root write `main.rs::run` makes in production. Set-once.
-    busbar_core::proto::install_stream_translator_factory(
+    busbar_substrate::proto::install_stream_translator_factory(
         crate::proto_stream::new_stream_translator,
     );
 }

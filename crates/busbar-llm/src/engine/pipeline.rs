@@ -2726,7 +2726,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
                 // bypass), cross-protocol builds the reframing translator, `!is_sse`/unknown-protocol
                 // yields `None` → legacy raw-chunk passthrough.
-                let translate = busbar_core::proto::new_stream_translator(
+                let translate = busbar_substrate::proto::new_stream_translator(
                     ingress_protocol,
                     egress_name_for_translate,
                     is_sse,

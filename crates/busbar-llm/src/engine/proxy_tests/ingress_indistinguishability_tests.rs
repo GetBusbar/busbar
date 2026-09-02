@@ -1153,7 +1153,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     // test names no witnessed codec type. `is_sse = true` + ingress != egress reproduces the prior
     // direct translator construction byte-for-byte.
     let translate =
-        busbar_core::proto::new_stream_translator("gemini", "openai", true).expect("translator");
+        busbar_substrate::proto::new_stream_translator("gemini", "openai", true).expect("translator");
     // Neutral seam: the array-stream framer is built the exact way production builds it
     // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
     let json_array: Box<dyn busbar_core::proto::ArrayStreamFramer> =
@@ -1234,7 +1234,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
-        busbar_core::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
+        busbar_substrate::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true,
@@ -1341,7 +1341,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
-        busbar_core::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
+        busbar_substrate::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse
@@ -3408,7 +3408,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     // translated anthropic output for usage.
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_substrate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate must construct");
 
     // Inner upstream stream:
@@ -3534,7 +3534,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
 
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_substrate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // A single OpenAI trailing usage-only chunk → translated anthropic message_delta whose usage
     // the tap reads (1000 billable tokens). NO overflow (no abort), NO error frame.
@@ -3642,7 +3642,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
 
     // Neutral seam: build the translator by NAME through the installed factory (as production
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
-    let translate = busbar_core::proto::new_stream_translator("anthropic", "openai", true)
+    let translate = busbar_substrate::proto::new_stream_translator("anthropic", "openai", true)
         .expect("anthropic<-openai translate");
     // chunk 1: usage-only OpenAI chunk → translated anthropic usage the tap captures (nonzero).
     // chunk 2: a >MAX_FRAME_BYTES run with NO SSE terminator → translate buffer overflows and

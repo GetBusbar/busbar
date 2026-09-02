@@ -969,7 +969,7 @@ pub(crate) async fn forward_once(
             // same-protocol SSE the verbatim same-proto translator (byte-exact re-emit + IR usage
             // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough.
             let translate =
-                busbar_core::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
+                busbar_substrate::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
                     busbar_substrate::proto::decl_for(ingress_protocol)
