@@ -146,7 +146,7 @@ pub(crate) struct PoolRuntime {
     pub(crate) affinity: Option<busbar_substrate::plane_host::LlmAffinityInput>,
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
     /// runtime `store::BreakerCfg` the FSM evaluates. `None` falls back to ADR-0002 defaults.
-    pub(crate) breaker: Option<busbar_core::store::BreakerCfg>,
+    pub(crate) breaker: Option<busbar_substrate::store::BreakerCfg>,
     // NOTE (1.6.0 money-path Phase 3-4 C — the RATIFIED pool-hook facade): the per-pool routing
     // `policy` / decision `gates` / `rewrite_hooks` USED to live here, resolved at config load from
     // `hooks::resolve_pool_*`. They carry the core-owned `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`

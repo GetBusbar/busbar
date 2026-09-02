@@ -193,3 +193,116 @@ pub enum Permit {
     Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
     Unbounded,
 }
+
+// ── The RESOLVED runtime breaker configuration the FSM evaluates. Neutral DATA (no serde, no config
+//    grammar attached — the serialized `config::BreakerCfg` grammar and the config->runtime lowering
+//    stay in core). Relocated DOWN here so the LLM plane names the breaker cfg in its money-path
+//    signatures and reconstructs it via `from_llm` without reaching into `busbar-core`; core's `store`
+//    re-exports `BreakerCfg`/`TripConfig`/`TripMode` at their historical `crate::store::*` paths (the
+//    breaker FSM, `appbuild`, and the store tests are untouched), and core owns the
+//    `config::BreakerCfg -> BreakerCfg` lowering as an inherent `to_runtime` method.
+
+/// Trip configuration mode.
+#[derive(Debug, Clone)]
+pub enum TripMode {
+    ErrorRate,
+    Consecutive,
+}
+
+/// Trip configuration parameters (ADR-0002 defaults).
+#[derive(Debug, Clone)]
+pub struct TripConfig {
+    pub mode: TripMode,
+    pub window_s: u64,
+    pub threshold: f64,
+    pub min_requests: usize,
+    pub consecutive_n: u32, // For consecutive mode
+}
+
+impl Default for TripConfig {
+    fn default() -> Self {
+        Self {
+            mode: TripMode::ErrorRate,
+            window_s: 30,
+            threshold: 0.5,
+            min_requests: 5,
+            consecutive_n: 3, // 3 consecutive errors
+        }
+    }
+}
+
+/// Breaker configuration per pool.
+#[derive(Debug, Clone)]
+pub struct BreakerCfg {
+    pub base_cooldown_secs: u64,
+    pub max_cooldown_secs: u64,
+    pub honor_retry_after: bool,
+    pub trip: TripConfig,
+    /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
+    /// for a cooldown. See ADR-0002 / `docs/circuit-breaker.md`: `true` on a walked (LLM) pool with
+    /// siblings, `false` on a degenerate single-member cell (MCP client leg / A2A relay) that would
+    /// otherwise refuse every caller after one blip.
+    pub bench_below_trip_threshold: bool,
+}
+
+impl Default for BreakerCfg {
+    fn default() -> Self {
+        Self {
+            base_cooldown_secs: 15,
+            max_cooldown_secs: 120,
+            honor_retry_after: true, // default to honoring Retry-After header
+            trip: TripConfig::default(),
+            // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
+            bench_below_trip_threshold: true,
+        }
+    }
+}
+
+impl BreakerCfg {
+    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
+    /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
+    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
+    /// carried anyway so a future divergence cannot silently drop.
+    pub fn to_llm(&self) -> crate::plane_host::LlmBreakerInput {
+        crate::plane_host::LlmBreakerInput {
+            base_cooldown_secs: self.base_cooldown_secs,
+            max_cooldown_secs: self.max_cooldown_secs,
+            honor_retry_after: self.honor_retry_after,
+            bench_below_trip_threshold: self.bench_below_trip_threshold,
+            trip: crate::plane_host::LlmTripInput {
+                mode: match self.trip.mode {
+                    TripMode::ErrorRate => crate::plane_host::LlmTripMode::ErrorRate,
+                    TripMode::Consecutive => crate::plane_host::LlmTripMode::Consecutive,
+                },
+                window_s: self.trip.window_s,
+                threshold: self.trip.threshold,
+                min_requests: self.trip.min_requests,
+                consecutive_n: self.trip.consecutive_n,
+            },
+        }
+    }
+
+    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_llm`],
+    /// called IN-PLANE by the LLM plane's `build_runtime` (the allowed plane->core edge; the plane
+    /// names only this pub constructor and the neutral input type).
+    ///
+    /// [`to_llm`]: Self::to_llm
+    pub fn from_llm(i: &crate::plane_host::LlmBreakerInput) -> Self {
+        Self {
+            base_cooldown_secs: i.base_cooldown_secs,
+            max_cooldown_secs: i.max_cooldown_secs,
+            honor_retry_after: i.honor_retry_after,
+            bench_below_trip_threshold: i.bench_below_trip_threshold,
+            trip: TripConfig {
+                mode: match i.trip.mode {
+                    crate::plane_host::LlmTripMode::ErrorRate => TripMode::ErrorRate,
+                    crate::plane_host::LlmTripMode::Consecutive => TripMode::Consecutive,
+                },
+                window_s: i.trip.window_s,
+                threshold: i.trip.threshold,
+                min_requests: i.trip.min_requests,
+                consecutive_n: i.trip.consecutive_n,
+            },
+        }
+    }
+}

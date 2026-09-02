@@ -206,7 +206,7 @@ pub(crate) fn build_runtime(
                 breaker: p
                     .breaker
                     .as_ref()
-                    .map(busbar_core::store::BreakerCfg::from_llm),
+                    .map(busbar_substrate::store::BreakerCfg::from_llm),
             },
         );
     }

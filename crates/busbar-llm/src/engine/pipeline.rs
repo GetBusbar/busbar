@@ -397,7 +397,7 @@ pub(crate) async fn translate_response_cross_protocol(
     ingress_protocol: &str,
     op: busbar_core::handlers::Op,
     pool: &str,
-    breaker_cfg: &busbar_core::store::BreakerCfg,
+    breaker_cfg: &busbar_substrate::store::BreakerCfg,
     r: axum::http::Response<hyper::body::Incoming>,
     read_deadline: tokio::time::Instant,
     permit: Permit,
@@ -1117,7 +1117,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // once and shared (Arc) so the streaming guard can record mid-stream failures with the same
     // thresholds the synchronous path used. The default (no per-pool breaker — the common case) is
     // a process-wide cached Arc, so the hot path pays no per-request allocation for it.
-    let breaker_cfg: std::sync::Arc<busbar_core::store::BreakerCfg> =
+    let breaker_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg> =
         resolve_breaker_cfg(app, pool_name);
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
@@ -3077,7 +3077,7 @@ fn fire_global_taps(
 pub(crate) fn resolve_breaker_cfg(
     app: &Arc<App>,
     pool_name: &str,
-) -> std::sync::Arc<busbar_core::store::BreakerCfg> {
+) -> std::sync::Arc<busbar_substrate::store::BreakerCfg> {
     match app
         .engine_tables()
         .pool_runtime()
@@ -3086,10 +3086,10 @@ pub(crate) fn resolve_breaker_cfg(
     {
         Some(cfg) => std::sync::Arc::new(cfg.clone()),
         None => {
-            static DEFAULT: std::sync::OnceLock<std::sync::Arc<busbar_core::store::BreakerCfg>> =
+            static DEFAULT: std::sync::OnceLock<std::sync::Arc<busbar_substrate::store::BreakerCfg>> =
                 std::sync::OnceLock::new();
             DEFAULT
-                .get_or_init(|| std::sync::Arc::new(busbar_core::store::BreakerCfg::default()))
+                .get_or_init(|| std::sync::Arc::new(busbar_substrate::store::BreakerCfg::default()))
                 .clone()
         }
     }

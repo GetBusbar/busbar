@@ -77,7 +77,7 @@ pub(crate) struct FirstByteBody<S, P> {
     lane_idx: usize,
     /// Resolved breaker config for the routing pool, so a mid-stream failure trips this lane using
     /// the same thresholds the synchronous path used (defaults on the degraded path).
-    breaker_cfg: Arc<busbar_core::store::BreakerCfg>,
+    breaker_cfg: Arc<busbar_substrate::store::BreakerCfg>,
     /// Routing pool name, so a mid-stream failure trips this lane's per-pool breaker cell (empty on
     /// the degraded path → the lane-default cell).
     pool: Box<str>,
@@ -161,7 +161,7 @@ where
         ceiling_deadline: tokio::time::Instant,
         app: Arc<App>,
         lane_idx: usize,
-        breaker_cfg: Arc<busbar_core::store::BreakerCfg>,
+        breaker_cfg: Arc<busbar_substrate::store::BreakerCfg>,
         pool: &str,
         translate: Option<Box<dyn busbar_substrate::proto::StreamTranslator>>,
         json_array: Option<Box<dyn busbar_substrate::proto::ArrayStreamFramer>>,

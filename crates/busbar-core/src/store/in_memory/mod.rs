@@ -570,51 +570,22 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
     (lane, (id as u32) + 1) // weight = id + 1 (so lane 0 has weight 1, lane 1 has weight 2, etc.)
 }
 
-/// Breaker configuration per pool.
-#[derive(Debug, Clone)]
-pub struct BreakerCfg {
-    pub base_cooldown_secs: u64,
-    pub max_cooldown_secs: u64,
-    pub honor_retry_after: bool,
-    pub trip: TripConfig,
-    /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
-    /// for a cooldown.
-    ///
-    /// ADR-0002 states the sub-threshold rule as one sentence with two halves: on
-    /// `TransientUpstream`, "drive trip evaluation ... and re-arm an exponential cooldown; **fail
-    /// over** to the next candidate". The cooldown is the DEPRIORITISATION half of a selection walk
-    /// — "prefer a sibling for a while" — and the failover half is what keeps the caller served
-    /// while it lasts. On a pool with siblings that is right, and this stays `true` there.
-    ///
-    /// A DEGENERATE SINGLE-MEMBER CELL HAS NO SIBLING, and on the MCP client leg and the A2A relay
-    /// there is no walk at all (`docs/circuit-breaker.md`: "on a live tool call or task submission
-    /// no second candidate is tried today — a tripped target is refused, never rerouted"). There,
-    /// the identical store means "refuse every caller of this server for the next 15-120s", handed
-    /// out after ONE blip and announced as "open after repeated failures" — a sentence the cell's
-    /// own `should_trip` had just refused to make true. So those cells set this `false` and refuse
-    /// only on a real trip, on the thresholds ADR-0002 and `docs/circuit-breaker.md` publish.
-    pub bench_below_trip_threshold: bool,
-}
+// The RESOLVED runtime breaker cfg (`BreakerCfg`/`TripConfig`/`TripMode`) is neutral DATA and now
+// lives in `busbar_substrate::store` (re-exported below via `pub use in_memory::*` from the parent
+// `store` module) so the LLM plane names it without reaching into `busbar-core`. Its `Default`,
+// `to_llm`, and `from_llm` move WITH it; only the config->runtime lowering stays here (core owns the
+// `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
+// is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
+// `on_exhausted`/`OnExhausted` lowering already uses.
+pub use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
 
-impl Default for BreakerCfg {
-    fn default() -> Self {
-        Self {
-            base_cooldown_secs: 15,
-            max_cooldown_secs: 120,
-            honor_retry_after: true, // default to honoring Retry-After header
-            trip: TripConfig::default(),
-            // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
-            bench_below_trip_threshold: true,
-        }
-    }
-}
-
-impl From<&crate::config::BreakerCfg> for BreakerCfg {
-    /// Resolve the parsed config into the runtime breaker config the FSM evaluates.
-    /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block
-    /// falls back to the ADR-0002 defaults.
-    fn from(c: &crate::config::BreakerCfg) -> Self {
-        let trip = c
+impl crate::config::BreakerCfg {
+    /// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
+    /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls
+    /// back to the ADR-0002 defaults. Was `From<&config::BreakerCfg> for store::BreakerCfg`; an
+    /// inherent method now that the runtime type is foreign (substrate-owned).
+    pub fn to_runtime(&self) -> BreakerCfg {
+        let trip = self
             .trip
             .as_ref()
             .map(|t| TripConfig {
@@ -628,9 +599,9 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
                 consecutive_n: t.consecutive_n,
             })
             .unwrap_or_default();
-        Self {
-            base_cooldown_secs: c.base_cooldown_secs,
-            max_cooldown_secs: c.max_cooldown_secs,
+        BreakerCfg {
+            base_cooldown_secs: self.base_cooldown_secs,
+            max_cooldown_secs: self.max_cooldown_secs,
             honor_retry_after: true,
             trip,
             // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
@@ -640,88 +611,13 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
     }
 }
 
-impl BreakerCfg {
-    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
-    /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
-    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path (see
-    /// `From<&config::BreakerCfg>`), carried anyway so a future divergence cannot silently drop.
-    pub fn to_llm(&self) -> busbar_substrate::plane_host::LlmBreakerInput {
-        busbar_substrate::plane_host::LlmBreakerInput {
-            base_cooldown_secs: self.base_cooldown_secs,
-            max_cooldown_secs: self.max_cooldown_secs,
-            honor_retry_after: self.honor_retry_after,
-            bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: busbar_substrate::plane_host::LlmTripInput {
-                mode: match self.trip.mode {
-                    TripMode::ErrorRate => busbar_substrate::plane_host::LlmTripMode::ErrorRate,
-                    TripMode::Consecutive => busbar_substrate::plane_host::LlmTripMode::Consecutive,
-                },
-                window_s: self.trip.window_s,
-                threshold: self.trip.threshold,
-                min_requests: self.trip.min_requests,
-                consecutive_n: self.trip.consecutive_n,
-            },
-        }
-    }
-
-    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_llm`], called
-    /// IN-PLANE by the LLM plane's `build_runtime` (the allowed plane→core edge; the plane names only
-    /// this pub constructor and the neutral input type, never a private `BreakerCfg`/`TripConfig` field).
-    ///
-    /// [`to_llm`]: Self::to_llm
-    pub fn from_llm(i: &busbar_substrate::plane_host::LlmBreakerInput) -> Self {
-        Self {
-            base_cooldown_secs: i.base_cooldown_secs,
-            max_cooldown_secs: i.max_cooldown_secs,
-            honor_retry_after: i.honor_retry_after,
-            bench_below_trip_threshold: i.bench_below_trip_threshold,
-            trip: TripConfig {
-                mode: match i.trip.mode {
-                    busbar_substrate::plane_host::LlmTripMode::ErrorRate => TripMode::ErrorRate,
-                    busbar_substrate::plane_host::LlmTripMode::Consecutive => TripMode::Consecutive,
-                },
-                window_s: i.trip.window_s,
-                threshold: i.trip.threshold,
-                min_requests: i.trip.min_requests,
-                consecutive_n: i.trip.consecutive_n,
-            },
-        }
-    }
-}
-
-/// Trip configuration mode.
-#[derive(Debug, Clone)]
-pub enum TripMode {
-    ErrorRate,
-    Consecutive,
-}
-
-/// Trip configuration parameters (ADR-0002 defaults).
-#[derive(Debug, Clone)]
-pub struct TripConfig {
-    pub mode: TripMode,
-    pub window_s: u64,
-    pub threshold: f64,
-    pub min_requests: usize,
-    pub consecutive_n: u32, // For consecutive mode
-}
+// `TripMode` / `TripConfig` (+ its `Default`) moved to `busbar_substrate::store` with `BreakerCfg`
+// (re-exported above); only the signal-catalog window const stays here.
 
 /// The window (seconds) the `Signal::CandidateErrorRate` catalog entry reads the
-/// breaker's existing outcome window over — matches [`TripConfig::default`]'s own `window_s` so
+/// breaker's existing outcome window over — matches `TripConfig::default`'s own `window_s` so
 /// the projected error rate reads over the same horizon the default breaker trip mode does.
 pub(crate) const DEFAULT_ERROR_RATE_WINDOW_S: u64 = 30;
-
-impl Default for TripConfig {
-    fn default() -> Self {
-        Self {
-            mode: TripMode::ErrorRate,
-            window_s: 30,
-            threshold: 0.5,
-            min_requests: 5,
-            consecutive_n: 3, // 3 consecutive errors
-        }
-    }
-}
 
 // Pool-aware breaker operations, shared by the lane-default trait methods (pool "") and the
 // `_in(pool, …)` trait methods. The lane-global checks (dead / budget) always read `lanes[lane]`;

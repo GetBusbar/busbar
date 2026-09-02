@@ -745,13 +745,14 @@ pub fn build_app_from_config(
                 .map(|o| on_exhausted_input_of(&o.to_runtime()))
                 .unwrap_or_default(),
             upstream_credentials: pool.upstream_credentials,
-            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg (`BreakerCfg::from`
-            // does the config→runtime lowering + ADR-0002 trip defaults) then flattened to the neutral
-            // carrier; the plane's `build_runtime` reconstructs it via `BreakerCfg::from_llm`.
+            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg
+            // (`config::BreakerCfg::to_runtime` does the config→runtime lowering + ADR-0002 trip
+            // defaults) then flattened to the neutral carrier; the plane's `build_runtime`
+            // reconstructs it via `BreakerCfg::from_llm`.
             breaker: pool
                 .breaker
                 .as_ref()
-                .map(store::BreakerCfg::from)
+                .map(crate::config::BreakerCfg::to_runtime)
                 .map(|b| b.to_llm()),
         });
     }

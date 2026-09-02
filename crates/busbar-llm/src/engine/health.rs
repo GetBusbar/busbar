@@ -24,7 +24,7 @@ use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use busbar_substrate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
 use busbar_substrate::plane_host::LlmHealthMode as HealthMode;
 use busbar_core::state::App;
-use busbar_core::store::{now, BreakerCfg};
+use busbar_substrate::store::{now, BreakerCfg};
 
 use crate::engine::AppEngineExt;
 
