@@ -478,7 +478,11 @@ impl<'a> EngineTables<'a> {
         &self.rt.on_exhausted_cfgs
     }
 
-    /// The health-probe schedule shared across snapshots of this lineage.
+    /// The health-probe schedule shared across snapshots of this lineage. TEST-ONLY now: production
+    /// health probing reads `NativeRuntime::probe_schedule` directly off the host runtime slot
+    /// (App-retype WEDGE 2f), so the only remaining callers are the schedule-inheritance tests — hence
+    /// `dead_code`-allowed for the non-test build that still compiles this accessor.
+    #[allow(dead_code)]
     pub(crate) fn probe_schedule(
         &self,
     ) -> &'a std::sync::Arc<crate::engine::health::ProbeSchedule> {

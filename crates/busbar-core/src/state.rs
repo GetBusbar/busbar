@@ -819,6 +819,17 @@ pub struct AppHandle {
     /// Debug-only overlap detector for [`swap`](Self::swap) — see the convention note there.
     #[cfg(debug_assertions)]
     swapping: std::sync::atomic::AtomicBool,
+    /// THE COMPOSITION-ROOT-OWNED per-generation ENGINE HOST — the `Arc<dyn EngineHost>` the active
+    /// health probers hold a `Weak` to (App-retype WEDGE 2f). The probers re-anchor on THIS host, not on
+    /// `Arc<App>`, so the plane's health module names no core `App` type; the handle owns it here so a
+    /// [`swap`](Self::swap) can DROP the retiring generation's host, making every stale prober's
+    /// `Weak::upgrade` fail (they exit) instead of pinning the old snapshot alive. `None` until the
+    /// composition root binds the boot host ([`set_snapshot_host`](Self::set_snapshot_host)); a
+    /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
+    /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
+    /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
+    snapshot_host:
+        std::sync::Mutex<Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>>,
 }
 
 impl AppHandle {
@@ -827,7 +838,23 @@ impl AppHandle {
             current: arc_swap::ArcSwap::new(app),
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
+            snapshot_host: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
+    /// health probers hold a `Weak` to (App-retype WEDGE 2f). Called once at boot after the probers are
+    /// spawned against this same host, so the handle owns the only strong reference the probers depend
+    /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
+    /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
+    pub fn set_snapshot_host(
+        &self,
+        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    ) {
+        *self
+            .snapshot_host
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
     /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only
@@ -897,10 +924,15 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
-        // The active-probe prober spawn RELOCATED into the LLM plane with `health.rs` (1.6.0 money-path
-        // Phase 3-4 C): the probers read the plane's own `Lane`/`NativeRuntime` tables, so the plane
-        // spawns them off its freshly-stored runtime through the `PlaneDecl::on_swap` seam fired in the
-        // loop above — core no longer names `crate::health::spawn_probers`.
+        // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
+        // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
+        // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
+        // probe a retired snapshot — the SAME no-strong-ref-across-reload guarantee the old `Weak<App>`
+        // gave, now anchored on the host holder. We re-bind the host for `next` so the invariant "the
+        // handle owns a host per current generation" holds; RE-SPAWNING the probers against `next` is
+        // the LLM plane's own concern (its `PlaneDecl::on_swap` seam — wired in the wedge-3 engine
+        // thread), so core still names no `crate::health::spawn_probers`.
+        self.set_snapshot_host(crate::plane_host::engine_host(&next));
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to

@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-core/src/health.rs`.
 
 use super::*;
+use crate::engine::AppEngineExt;
 use crate::test_support::{
     build_once, LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
@@ -38,7 +39,7 @@ async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockSe
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(&app, 0, Duration::from_secs(5)).await;
+    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     (app, server)
 }
 
@@ -67,7 +68,7 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(&app, 0, Duration::from_secs(5)).await;
+    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     // The probe carries the protocol's native-SDK User-Agent and Accept (non-streaming), exactly
     // as the organic forward path does (egress_user_agent / egress_accept).
     assert_eq!(
@@ -169,7 +170,7 @@ async fn test_probe_skips_lane_without_key() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(&app, 0, Duration::from_secs(1)).await;
+    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(1)).await;
     assert!(matches!(app.store.breaker_state(0), BreakerState::Closed));
 }
 
@@ -207,7 +208,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             status: StatusCode::OK,
             body: serde_json::json!({ "ok": true }),
         });
-        probe_lane(&app, 0, Duration::from_secs(5)).await;
+        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     }
     // 5 failing (503 transient) probes. The failure path records into the SAME cells. Even at the
     // 5th failure the windows hold 7 successes + 5 errors → 5/12 < 0.5 → no trip.
@@ -216,7 +217,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             status: StatusCode::SERVICE_UNAVAILABLE,
             body: serde_json::json!({ "error": "upstream down" }),
         });
-        probe_lane(&app, 0, Duration::from_secs(5)).await;
+        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     }
 
     assert!(
@@ -265,7 +266,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
         status: StatusCode::OK,
         body: serde_json::json!({ "ok": true }),
     });
-    probe_lane(&app, 0, Duration::from_secs(5)).await;
+    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     // 4 failing probes. With the success recorded the window is 1 success + 4 errors = 5 outcomes
     // (>= min_requests) at 4/5 = 0.8 >= 0.5 → trips Open. Without the success it would be 4 errors
     // only (< min_requests) → stays Closed.
@@ -274,7 +275,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
             status: StatusCode::SERVICE_UNAVAILABLE,
             body: serde_json::json!({ "error": "upstream down" }),
         });
-        probe_lane(&app, 0, Duration::from_secs(5)).await;
+        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     }
 
     assert!(
@@ -322,7 +323,7 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
             status: StatusCode::OK,
             body: serde_json::json!({ "ok": true }),
         });
-        probe_lane(&app, 0, Duration::from_secs(5)).await;
+        probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     }
 
     assert_eq!(
@@ -360,7 +361,7 @@ async fn test_probe_uses_upstream_model_override() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    probe_lane(&app, 0, Duration::from_secs(5)).await;
+    probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
 
     // Path must carry the upstream model ID (with SigV4-safe percent encoding for reserved `:`).
     let path = state
@@ -376,12 +377,15 @@ async fn test_probe_uses_upstream_model_override() {
     // wire name everywhere.
 }
 
-/// `spawn_probers` must capture a `Weak<App>`, never a strong `Arc`, so a
-/// config reload's old prober generation exits (and the old snapshot frees) instead of leaking one
-/// task-set per reload forever. Deterministic: the closure holds only a `Weak` regardless of task
-/// scheduling, so dropping the last strong ref must make `upgrade()` fail immediately.
+/// `spawn_probers` must capture a `Weak<dyn EngineHost>` over the composition-root-owned host, never a
+/// strong `Arc` — of the host OR of the `App` behind it — so a config reload that drops the retiring
+/// generation's host makes the old prober generation exit (and the old snapshot frees) instead of
+/// leaking one task-set per reload forever. Anchored on the HOST holder now (App-retype WEDGE 2f): the
+/// host holds an `Arc<App>`, so a strong host ref inside the prober would ALSO pin the snapshot — the
+/// same lifecycle bug, one indirection out. Deterministic: the closure holds only a `Weak` regardless
+/// of task scheduling, so dropping the last strong host ref must make `upgrade()` fail immediately.
 #[tokio::test]
-async fn test_spawn_probers_retains_no_strong_app_ref() {
+async fn test_spawn_probers_retains_no_strong_host_ref() {
     crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(
@@ -395,13 +399,25 @@ async fn test_spawn_probers_retains_no_strong_app_ref() {
         )
         .pool("p", &[(0, 1)])
         .build();
-    let weak = Arc::downgrade(&app);
-    spawn_probers(&app);
+    // The composition root owns this generation's host; the prober must hold only a `Weak` to it.
+    let host = busbar_core::plane_host::engine_host(&app);
+    let weak_host = Arc::downgrade(&host);
+    let weak_app = Arc::downgrade(&app);
+    spawn_probers(&host);
+    // Drop the composition root's ownership (what a reload does to the retiring generation) AND the
+    // local snapshot ref. If the prober kept a strong host ref, the host — and the `Arc<App>` it holds —
+    // would survive both drops.
+    drop(host);
     drop(app);
     assert!(
-            weak.upgrade().is_none(),
-            "spawn_probers must retain only a Weak<App>; a strong ref would leak the snapshot across reloads"
-        );
+        weak_host.upgrade().is_none(),
+        "spawn_probers must retain only a Weak<dyn EngineHost>; a strong host ref would leak the host \
+         (and the App it pins) across reloads"
+    );
+    assert!(
+        weak_app.upgrade().is_none(),
+        "no strong App ref may survive the host drop — the prober's host anchor must not pin the snapshot"
+    );
 }
 
 /// The active probe MUST sign the canonical URI from
@@ -465,7 +481,10 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
         .pool("p", &[(0, 1)])
         .build();
 
-    spawn_probers(&app);
+    // Each generation re-anchors on the composition root's host over the SAME snapshot (an unchanged
+    // lane set carries one probe schedule), so every spawn shares the one schedule under test.
+    let host = busbar_core::plane_host::engine_host(&app);
+    spawn_probers(&host);
     let first = app.engine_tables().probe_schedule().deadlines[0]
         .load(std::sync::atomic::Ordering::Relaxed);
     assert_ne!(
@@ -479,7 +498,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
     // moved, so without this the assertion cannot tell the two apart.
     for _ in 0..5 {
         std::thread::sleep(Duration::from_millis(6));
-        spawn_probers(&app);
+        spawn_probers(&host);
         assert_eq!(
             app.engine_tables().probe_schedule().deadlines[0]
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -553,7 +572,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // `App::clone`: the probe schedule rides the opaque plane runtime slot now, and it is the apply's
     // carry-over — not a field clone — that shares it across generations.
     let app = Arc::new(build_once(make_cfg(3600), None).expect("boot"));
-    spawn_probers(&app);
+    spawn_probers(&busbar_core::plane_host::engine_host(&app));
     let far = app.engine_tables().probe_schedule().deadlines[0]
         .load(std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -574,7 +593,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         "an unchanged lane set must carry the probe schedule across the apply — the Arc-sharing the \
          inherited-schedule clamp depends on"
     );
-    spawn_probers(&app2);
+    spawn_probers(&busbar_core::plane_host::engine_host(&app2));
 
     assert!(
         app.engine_tables().probe_schedule().deadlines[0]

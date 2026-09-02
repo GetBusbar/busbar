@@ -16,17 +16,26 @@
 //! lane's own auth/path. A 2xx recovers a tripped lane (→ Closed); any failure is recorded as a
 //! transient (which, on a Closed lane in `active` mode, can trip it out).
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
 use busbar_substrate::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
-use busbar_substrate::plane_host::HealthModeInput as HealthMode;
-use busbar_core::state::App;
+use busbar_substrate::plane_host::{EngineHost, HealthModeInput as HealthMode};
 use busbar_substrate::store::{now, BreakerCfg};
 
-use crate::engine::AppEngineExt;
+use crate::engine::NativeRuntime;
+
+/// This host snapshot's LLM data-plane runtime slot, type-erased — the seam the prober reads its
+/// `Lane` / `ProbeSchedule` / egress `client` tables through WITHOUT naming `busbar_core::state::App`.
+/// `None` when the bound snapshot carries no LLM runtime (the featureless zero-plane boot), in which
+/// case there is nothing to probe. The returned `Arc` MUST be held while the downcast borrow is live.
+fn host_runtime_slot(host: &dyn EngineHost) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    host.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
+        crate::PLANE_DECL.key,
+    ))
+}
 
 /// Cap on the bytes read from a non-2xx probe response before breaker classification, mirroring the
 /// request path's size-capped read: a hostile/misconfigured upstream must not force an unbounded
@@ -35,14 +44,14 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 
 // Default probe interval / timeout (the PROCESS-WIDE fallback used when a per-lane `health:` block
 // omits `interval_secs` / `timeout_secs`). Operator-tunable via `health.default_probe_interval_secs`
-// / `health.default_probe_timeout_secs` (defaults 30 / 5), read through `busbar_core::limits`. The per-lane
-// override still wins (see `unwrap_or` below).
+// / `health.default_probe_timeout_secs` (defaults 30 / 5), read through the host's
+// `default_probe_interval_secs` / `default_probe_timeout_secs` seams. The per-lane override still wins.
 
 /// The probe schedule, shared by every clone-derived snapshot of one `App` lineage.
 ///
-/// `AppHandle::swap` re-spawns the probers on EVERY config mutation — a hook PATCH, a group create,
-/// a settings apply — because a prober holds a `Weak<App>` and must be re-attached to the new
-/// snapshot. Each fresh generation built its own `interval`, whose first tick is discarded so the
+/// A prober holds a `Weak<dyn EngineHost>` to the composition-root-owned host of its generation and
+/// must be re-attached to each new snapshot on a config mutation — a hook PATCH, a group create,
+/// a settings apply. Each fresh generation built its own `interval`, whose first tick is discarded so the
 /// gateway does not probe a cold upstream before traffic has established health. That means a
 /// generation must survive a full interval before it can probe ONCE. Under swap churn faster than
 /// the probe interval — an onboarding wave that auto-provisions a group per new subject, or a script
@@ -113,21 +122,30 @@ impl ProbeSchedule {
 /// Spawn one background prober task per lane that has a probing mode configured. A no-op for lanes
 /// with `mode: none` (or no `health:` block).
 ///
-/// Each prober holds a `Weak<App>` to the snapshot it belongs to, NOT a strong `Arc`: on a config
-/// reload/apply a fresh `App` is built and `spawn_probers` is called again for it, while the old
-/// snapshot is swapped out of the `AppHandle`. Once the old snapshot's last in-flight request drops
-/// it, the old probers' `Weak::upgrade` returns `None` and they exit. This (a) re-establishes probing
-/// for lanes added/changed by the reload — a strong-`Arc` prober captured only the boot snapshot and
-/// never saw reloaded lanes — and (b) prevents the old generation from leaking forever (one task-set
-/// per reload) and writing outcomes into an orphaned store. Callers: boot (`main.rs`) and
-/// `AppHandle::swap` — which runs on EVERY config mutation (reload, apply, and each hook/auth swap), so
-/// no swap site can forget to re-attach probing.
-pub fn spawn_probers(app: &Arc<App>) {
+/// Each prober holds a `Weak<dyn EngineHost>` to the COMPOSITION-ROOT-OWNED host of the snapshot it
+/// belongs to, NOT a strong `Arc` and NOT an `Arc<App>`: the composition root (the `busbar` binary at
+/// boot, and `AppHandle::swap`) owns ONE `Arc<dyn EngineHost>` per generation. On a config reload/apply
+/// the composition root drops the OLD generation's host `Arc`; the old probers' `Weak::upgrade` then
+/// returns `None` and they exit. This (a) never pins the old snapshot alive — the host `Arc` was the
+/// only strong reference the prober contributed, so dropping it lets the old `App` free once its last
+/// in-flight request drains — and (b) prevents the old generation from leaking forever (one task-set
+/// per reload) and writing outcomes into an orphaned store. Anchoring on the host holder instead of the
+/// raw `App` is what lets this module name NO `busbar_core` type: the prober reaches its lanes/probe
+/// config/store/egress client entirely through the neutral [`EngineHost`] seams.
+pub fn spawn_probers(host: &Arc<dyn EngineHost>) {
     use std::sync::atomic::Ordering;
-    let schedule = app.engine_tables().probe_schedule().clone();
+    // Read THIS generation's runtime once for the lane table + shared probe schedule, through the host
+    // slot seam (no `App`). An absent slot — the featureless zero-plane boot — has nothing to probe.
+    let Some(rt_slot) = host_runtime_slot(host.as_ref()) else {
+        return;
+    };
+    let Some(rt) = rt_slot.downcast_ref::<NativeRuntime>() else {
+        return;
+    };
+    let schedule = rt.probe_schedule.clone();
     let my_gen = schedule.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    for i in 0..app.engine_tables().lanes().len() {
-        let Some(h) = app.engine_tables().lanes()[i].health.clone() else {
+    for i in 0..rt.lanes.len() {
+        let Some(h) = rt.lanes[i].health.clone() else {
             continue;
         };
         if h.mode == HealthMode::None {
@@ -135,17 +153,17 @@ pub fn spawn_probers(app: &Arc<App>) {
         }
         let interval = Duration::from_secs(
             h.interval_secs
-                .unwrap_or_else(busbar_core::limits::default_probe_interval_secs)
+                .unwrap_or_else(|| host.default_probe_interval_secs())
                 .max(1),
         );
         let timeout = Duration::from_secs(
             h.timeout_secs
-                .unwrap_or_else(busbar_core::limits::default_probe_timeout_secs)
+                .unwrap_or_else(|| host.default_probe_timeout_secs())
                 .max(1),
         );
         let mode = h.mode;
-        let weak = Arc::downgrade(app);
-        let model = app.engine_tables().lanes()[i].model.clone();
+        let weak: Weak<dyn EngineHost> = Arc::downgrade(host);
+        let model = rt.lanes[i].model.clone();
         // Inherit this lane's deadline, or schedule the first probe one interval out (the
         // deliberate "don't probe a cold upstream at startup" behaviour, now expressed as a
         // deadline instead of a discarded first tick).
@@ -195,11 +213,11 @@ pub fn spawn_probers(app: &Arc<App>) {
                         .saturating_add(interval.as_millis() as u64);
                     owned = advance_owned_deadline(slot, owned, next);
                 }
-                // Upgrade the Weak each tick (holding no strong ref across the sleep). `None` means
-                // this snapshot was replaced by a reload and fully released — this prober is now
+                // Upgrade the Weak each tick (holding no strong host ref across the sleep). `None` means
+                // the composition root dropped this generation's host on a reload — this prober is now
                 // stale, so exit rather than probe an orphaned store forever.
-                let Some(app) = weak.upgrade() else {
-                    tracing::debug!(lane = %model, "health prober exiting: app snapshot replaced by reload");
+                let Some(host) = weak.upgrade() else {
+                    tracing::debug!(lane = %model, "health prober exiting: host snapshot replaced by reload");
                     return;
                 };
                 let should = match mode {
@@ -207,13 +225,13 @@ pub fn spawn_probers(app: &Arc<App>) {
                     // Re-probe a lane the breaker is suppressing in ANY cell — whether fully tripped
                     // (Open) OR just in a soft cooldown (Closed but a sub-threshold transient armed a
                     // cooldown). Both make the lane unusable; dead mode's job is to recover either early.
-                    HealthMode::Dead => app.store.lane_needs_probe(i, now()),
+                    HealthMode::Dead => host.lane_store().lane_needs_probe(i, now()),
                     HealthMode::None => false,
                 };
                 if should {
-                    probe_lane(&app, i, timeout).await;
+                    probe_lane(host.as_ref(), i, timeout).await;
                 }
-                // `app` strong ref drops here, before the next tick wait — never held across the sleep.
+                // `host` strong ref drops here, before the next tick wait — never held across the sleep.
             }
         });
     }
@@ -245,8 +263,17 @@ pub fn spawn_probers(app: &Arc<App>) {
 ///     as malformed or too large for this model. Record NOTHING — penalizing the breaker here would
 ///     bench a working lane over a probe-construction issue, matching the organic "record nothing"
 ///     disposition for these classes.
-pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
-    let lane = &app.engine_tables().lanes()[i];
+pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duration) {
+    // Read this snapshot's runtime (lane table + egress client + per-pool breaker cfg) and its lane
+    // store through the neutral host seams — no `App`. An absent slot has nothing to probe.
+    let Some(rt_slot) = host_runtime_slot(host) else {
+        return;
+    };
+    let Some(rt) = rt_slot.downcast_ref::<NativeRuntime>() else {
+        return;
+    };
+    let store = host.lane_store();
+    let lane = &rt.lanes[i];
 
     // No key, no probe — we can't authenticate (e.g. a passthrough deployment with no static key),
     // and a guaranteed 401 would only thrash the breaker.
@@ -352,8 +379,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // capped error-body read (`read_capped_error_body`), so a black-holed upstream can never hang
     // the prober past its configured `timeout_secs`.
     let deadline = tokio::time::Instant::now() + timeout;
-    let res =
-        tokio::time::timeout_at(deadline, app.engine_tables().client().get().request(req)).await;
+    let res = tokio::time::timeout_at(deadline, rt.client.get().request(req)).await;
 
     // Classify the probe outcome through the organic disposition pipeline so auth/billing failures
     // reach HardDown instead of being mis-filed as transient cooldowns. Carry the server-requested
@@ -362,12 +388,12 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // Disposition).
     let (disposition, retry_after_secs) = match res {
         Ok(Ok(r)) if r.status().is_success() => {
-            if app.store.lane_needs_probe(i, now()) {
+            if store.lane_needs_probe(i, now()) {
                 // Probe tests the shared upstream → recover the lane in every cell (all pools +
                 // default), clearing both Open trips and soft cooldowns. This runs FIRST so that by
                 // the time we record the success outcome below, every cell is Closed and the success
                 // push can never force a HalfOpen→Closed transition (recovery already happened here).
-                app.store.recover_lane(i);
+                store.recover_lane(i);
                 tracing::info!(lane = %lane.model, "lane recovered via health probe");
             }
             // Record the 2xx as a SUCCESS in every cell's sliding error-rate window — the symmetric
@@ -376,7 +402,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // probes presented a 100%-error window to the error-rate breaker and tripped spuriously
             // (LOW #23). This does NOT force any breaker transition — recovery, when warranted,
             // already happened above; here we only push the outcome.
-            app.store.record_probe_success_all_cells(i);
+            store.record_probe_success_all_cells(i);
             return;
         }
         Ok(Ok(r)) => {
@@ -426,8 +452,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // membership (which took N per-pool locks and eagerly lazy-created a cell for every config
             // member the lane may never be routed against). Using the shared primitive keeps the trip
             // and recover bases in lockstep against any future change to how cells are materialized.
-            app.store
-                .record_hard_down_all_cells(i, "health-probe hard-down (auth/billing)");
+            store.record_hard_down_all_cells(i, "health-probe hard-down (auth/billing)");
             tracing::warn!(lane = %lane.model, "lane hard-down via health probe (parked dead, recovers on a 2xx probe)");
         }
         Disposition::TransientUpstream => {
@@ -435,18 +460,17 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // clears — the default cell AND every per-pool cell — because organic traffic routes
             // against per-pool cells. Each cell is evaluated against ITS OWN pool's resolved breaker
             // config (trip thresholds + cooldown backoff): resolve the per-pool `BreakerCfg` from
-            // `app.pool_runtime` by pool name, falling back to the ADR-0002 default for the bare `""`
+            // the runtime's `pool_runtime` by pool name, falling back to the ADR-0002 default for the bare `""`
             // default cell and any pool without its own breaker block — matching the per-pool cfg the
             // organic forward path resolves (proxy engine `breaker_cfg`). This replaces the prior
             // one-size `BreakerCfg::default()` that ignored per-pool thresholds/cooldowns (#24/#25).
             let resolve_cfg = |pool: &str| -> BreakerCfg {
-                app.engine_tables()
-                    .pool_runtime()
+                rt.pool_runtime
                     .get(pool)
                     .and_then(|r| r.breaker.clone())
                     .unwrap_or_default()
             };
-            app.store.record_probe_failure_all_cells(
+            store.record_probe_failure_all_cells(
                 i,
                 "health-probe",
                 &resolve_cfg,

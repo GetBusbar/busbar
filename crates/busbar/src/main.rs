@@ -1109,10 +1109,16 @@ async fn run(data_workers: usize) {
     export::configure(&resolved_export);
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
-    // `mode: none` / has no `health:` block. Re-spawned on every config reload/apply (see the admin
-    // swap sites) so reloaded lanes get probed and the old generation exits.
+    // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
+    // (App-retype WEDGE 2f): the probers re-anchor on a `Weak<dyn EngineHost>` over it — never an
+    // `Arc<App>` — so the plane's health module names no core `App` type. We hand the SAME host to the
+    // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
+    // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
+    // `Weak<App>` did when the boot snapshot drained.
     #[cfg(feature = "proto-llm")]
-    busbar_llm::spawn_probers(&app);
+    let boot_host = busbar_core::plane_host::engine_host(&app);
+    #[cfg(feature = "proto-llm")]
+    busbar_llm::spawn_probers(&boot_host);
 
     // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
     // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
@@ -1127,6 +1133,11 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
+    // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
+    // spawn_probers call above and `AppHandle::set_snapshot_host`.
+    #[cfg(feature = "proto-llm")]
+    app_handle.set_snapshot_host(boot_host);
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are

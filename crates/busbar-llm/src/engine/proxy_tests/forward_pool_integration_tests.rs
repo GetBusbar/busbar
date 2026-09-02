@@ -4687,7 +4687,7 @@ async fn test_health_probe_recovers_tripped_lane() {
         "lane should be tripped before the probe"
     );
 
-    crate::engine::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
+    crate::engine::health::probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
 
     assert_eq!(
         app.store.breaker_state(0),
@@ -4726,7 +4726,7 @@ async fn test_health_probe_failure_records_transient() {
         .build();
 
     let before = app.store.snapshot(0, busbar_core::store::now()).err;
-    crate::engine::health::probe_lane(&app, 0, Duration::from_secs(5)).await;
+    crate::engine::health::probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
     let after = app.store.snapshot(0, busbar_core::store::now()).err;
     assert_eq!(
         after,
