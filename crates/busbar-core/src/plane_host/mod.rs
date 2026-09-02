@@ -140,9 +140,9 @@ pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
     let scope = DispatchScope::new();
     with_borrowed_host(app, &scope, |host, vt| {
         // The slot is wired whenever a plane declares a card-signing domain (`plane-a2a`) and `None`
-        // otherwise (see the vtable's `card_sign`): an unwired slot signs nothing, so degrade to `None`
-        // rather than panic — the trait method must exist unconditionally across every feature combo.
-        let sign = vt.card_sign?;
+        // otherwise (see the vtable's `subkey_sign`): an unwired slot signs nothing, so degrade to
+        // `None` rather than panic — the trait method must exist unconditionally across every feature combo.
+        let sign = vt.subkey_sign?;
         let mut out = [0u8; 64];
         let status = sign(
             host,
@@ -938,8 +938,8 @@ pub fn gate_decide_over(
             request_id,
             container_ptr: container.as_ptr(),
             container_len: container.len(),
-            tool_ptr: tool.as_ptr(),
-            tool_len: tool.len(),
+            method_ptr: tool.as_ptr(),
+            method_len: tool.len(),
             args_ptr: args_json.as_ptr(),
             args_len: args_json.len(),
             key_id_ptr: key_id.as_ptr(),

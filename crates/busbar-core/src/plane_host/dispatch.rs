@@ -445,7 +445,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
         let app = state.app;
         // SAFETY: each borrowed `(ptr, len)` is a live range for the call (ABI discipline).
         let container = unsafe { borrow_str(s.container_ptr, s.container_len) }.unwrap_or("");
-        let tool = unsafe { borrow_str(s.tool_ptr, s.tool_len) }.unwrap_or("");
+        let tool = unsafe { borrow_str(s.method_ptr, s.method_len) }.unwrap_or("");
         // SAFETY: as above.
         let args = unsafe { borrow_bytes(s.args_ptr, s.args_len) };
         // Resolve the opaque ABI plane-key (a registration index) back to the plane's stable decl key
