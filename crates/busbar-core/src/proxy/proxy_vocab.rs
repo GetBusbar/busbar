@@ -39,92 +39,15 @@ pub use busbar_substrate::proxy::{
 // `fire_stage_taps` below, which takes `&StageShape` — resolves unchanged.
 pub use busbar_substrate::proxy::proxy_vocab::StageShape;
 
-/// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: serialize the shape-only
-/// projection + stage object ONCE, then spawn one detached task per tap. A tap can never delay,
-/// reorder, or fail the request; a serialization failure silently skips the fire (observation is
-/// best-effort). ZERO COST when the stage has no taps (first-line empty check).
-pub fn fire_stage_taps(
-    taps: &[crate::hooks::TapEntry],
-    shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
-    // The caller's `groups:` binding + the groups tree (1.5.3 SELECTION): a stage tap fires only for
-    // a caller in its `groups:` scope (empty = every caller). Walked self + ancestors.
-    caller_group: Option<&str>,
-    groups_tree: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
-) {
-    if taps.is_empty() {
-        return;
-    }
-    let hook_req = crate::hooks::wire::HookRequest {
-        op: crate::hooks::wire::OP_NOTIFY,
-        request: crate::hooks::wire::HookReqProjection {
-            request_id: shape.request_id,
-            pool: shape.pool,
-            ingress_protocol: shape.ingress_protocol,
-            message_count: shape.message_count,
-            has_tools: shape.has_tools,
-            total_chars: shape.total_chars,
-            max_tokens: shape.max_tokens,
-            stream: shape.stream,
-            system: None,
-            messages: None,
-            user: None,
-            // Stage taps (candidate/routing/response) project no catalog signals in this
-            // pass. Empty (never allocated), so the wire is byte-identical to before this change.
-            signals: Default::default(),
-        },
-        candidates: Vec::new(),
-        context: crate::hooks::wire::HookContext {
-            budget: &[],
-            budget_remaining: None,
-        },
-        stage: Some(stage),
-    };
-    let Ok(bytes) = crate::json::to_vec(&hook_req) else {
-        return;
-    };
-    let bytes = std::sync::Arc::new(bytes);
-    for (timeout, _send_prompt, hook, groups) in taps {
-        // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller.
-        if !crate::config::caller_in_hook_groups(caller_group, groups, groups_tree) {
-            continue;
-        }
-        let policy = hook.clone();
-        let budget = *timeout;
-        let proj = bytes.clone();
-        spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
-    }
-}
-
-/// Hard cap on concurrently in-flight fire-and-forget tap notifications. Taps fan out per stage x per
-/// tap hook x per request, so a slow/unreachable tap endpoint could otherwise accumulate unbounded
-/// Tokio tasks under load (OOM/DoS). Mirrors the bounded webhook-delivery guard in `observability`.
-const MAX_INFLIGHT_TAP_NOTIFICATIONS: usize = 1024;
-static TAP_INFLIGHT: std::sync::OnceLock<crate::limits::admission::AdmissionGate> =
-    std::sync::OnceLock::new();
-fn tap_inflight() -> &'static crate::limits::admission::AdmissionGate {
-    TAP_INFLIGHT.get_or_init(|| {
-        crate::limits::admission::AdmissionGate::new(MAX_INFLIGHT_TAP_NOTIFICATIONS, "tap")
-    })
-}
-
-/// Spawn a bounded fire-and-forget tap notification: at most MAX_INFLIGHT_TAP_NOTIFICATIONS run
-/// concurrently; when saturated the notification is dropped (metric) instead of accumulating tasks.
-/// The owned permit rides straight into the spawned task, so the slot is returned (by the permit's
-/// own `Drop`) even on a task panic.
-pub fn spawn_bounded_tap<F>(fut: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    let Some(permit) = tap_inflight().try_enter() else {
-        metrics::counter!(crate::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
-        return;
-    };
-    crate::state::spawn_detached(async move {
-        let _permit = permit;
-        fut.await;
-    });
-}
+// App-retype WEDGE 3 (THE FLIP): core's `fire_stage_taps` + `spawn_bounded_tap` (and their
+// `AdmissionGate`-backed 1024-permit `tap_inflight` cap) are RETIRED. Every tap fan-out — the LLM
+// engine's stage/global taps AND core's own auth-denial tap — now fires through the neutral
+// `busbar_substrate::proxy::proxy_vocab::{fire_stage_taps, spawn_bounded_tap}`, which owns the ONE
+// shared 1024-permit gate. Keeping a second core-side gate would split the cap into two independent
+// 1024 semaphores (the exact hazard WEDGE 2e parked this on core to avoid); with the pipeline flipped,
+// the single shared gate lives in the substrate and this core pair is dead, so it is deleted rather
+// than left to drift. The saturation metrics (`busbar_tap_notifications_dropped_total` +
+// `busbar_admission_denied_total{gate="tap"}`) are emitted byte-identically by the substrate twin.
 
 // THE GATE-REJECTION MARKER + tagger relocated DOWN to `busbar_substrate::proxy::proxy_vocab`
 // (App-retype WEDGE 2e), so a plane crate tags/reads the marker without reaching into `busbar-core`.

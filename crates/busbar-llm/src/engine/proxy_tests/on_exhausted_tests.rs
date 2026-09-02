@@ -172,6 +172,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
         )
         .on_exhausted("pe", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // alpha is the only eligible member and its breaker is Open → the pool is exhausted.
     app.store.force_open_in("pe", 0, now() + 300);
@@ -236,6 +237,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         .pool_failover("pl", pool_runtime_with_exclusions(None))
         .on_exhausted("pl", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     app.store.force_open_in("pl", 1, now() + 5);
 
@@ -288,6 +290,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
         .pool_failover("ps", pool_runtime_with_exclusions(None))
         .on_exhausted("ps", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     app.store.force_open_in("ps", 0, now() + 30);
 
@@ -360,6 +363,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
             pool_runtime_with_exclusions(Some(vec!["blocked".into()])),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Exhaust the primary so the request spills.
     app.store.force_open_in("pf", 0, now() + 300);
@@ -509,6 +513,7 @@ async fn at_capacity_reject_sheds_503_not_queued() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
 
@@ -536,6 +541,7 @@ async fn at_capacity_default_no_on_exhausted_sheds_503() {
         .failover(long_failover())
         // No `.on_exhausted(...)` → default OnExhausted::Status503.
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
 
@@ -577,6 +583,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app.clone(), vec![lane(0)], "primary").await;
 
@@ -612,6 +619,7 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
 
@@ -652,6 +660,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let n = 4usize;
     let futs = (0..n).map(|_| drive_shed(app.clone(), vec![lane(0)], "primary"));
@@ -706,6 +715,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
         )
         .fallback_pool("overflow", &[(2, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app.clone(), vec![lane(0), lane(1)], "primary").await;
 
@@ -742,6 +752,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Trip member 1's breaker (Open, not yet expired) so it is never admissible.
     app.store.force_open_in("p", 1, now() + 300);
@@ -785,6 +796,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
         )
         .fallback_pool("pc", &[(2, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app.clone(), vec![lane(0)], "pa").await;
 
@@ -816,6 +828,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
         )
         .fallback_pool("loop", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "loop").await;
 
@@ -846,6 +859,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
         .fallback_pool("overflow", &[(1, 1)])
         // No on_exhausted for "overflow" → default Status503 when it too is exhausted.
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "primary").await;
 
@@ -893,6 +907,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Primary member is tripped (Open) — the already-working exhaustion condition.
     app.store.force_open_in("primary", 0, now() + 300);
@@ -937,6 +952,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Both Open → pool exhausted → least_bad. idx 0 has the SOONER cooldown (it would be picked
     // first) but is saturated; idx 1 cools down later but has a free permit.
@@ -996,6 +1012,7 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     app.store.force_open_in("p", 1, now() + 40);
 
@@ -1024,6 +1041,7 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = drive_shed(app, vec![lane(0)], "p").await;
 
@@ -1053,9 +1071,10 @@ fn retry_after_empty_candidate_set_uses_floor_not_one() {
         )
         .pool("p", &[(0, 1)])
         .build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
     // Directly exercise the shed with an EMPTY candidate slice (the fallback-loop / unconfigured-target
     // shape) — no genuine cooldown, nothing at-capacity in `&[]`.
-    let resp = crate::engine::handle_status_503(&app, &[], now(), "p", "anthropic");
+    let resp = crate::engine::handle_status_503(&host, &[], now(), "p", "anthropic");
     assert_eq!(resp.status().as_u16(), 503);
     let ra = retry_after_secs(&resp);
     assert!(
@@ -1139,6 +1158,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
             busbar_core::config::OnExhausted::Queue { max_ms: 5000 },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req = spawn_request(app.clone());
     // Poll until the request has actually PARKED in the queue (not a fixed sleep — flaky under CI load).
@@ -1207,6 +1227,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
             busbar_core::config::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     // Make the member EXPIRED-OPEN so that when the freed permit is won the queue's `try_admit_breaker`
     // WINS a single-flight recovery probe (cell → HalfOpen) — the state that wedges without a guard.
     app.store.force_open_in("p", 0, 0);
@@ -1296,6 +1317,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Make lane 0 EXPIRED-Open so a single-flight recovery probe can be won on its pool cell.
     app.store.force_open_in("p", 0, 0);
@@ -1399,6 +1421,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
             busbar_core::config::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // TWO concurrent waiters on the single-permit saturated lane.
     let a = spawn_request(app.clone());
@@ -1472,6 +1495,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
         .failover(long_failover())
         .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 300 })
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let start = std::time::Instant::now();
     let resp = tokio::time::timeout(
@@ -1539,6 +1563,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
             busbar_core::config::OnExhausted::Queue { max_ms: 3000 },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     // Breaker Open (not expired) → the sole exclusion reason is BreakerOpen, never AtCapacity.
     app.store.force_open_in("p", 0, now() + 300);
 
@@ -1591,6 +1616,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
         // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
         .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 400 })
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req = spawn_request(app.clone());
     // Free the permit in the tight window right around when the waiter is registering its acquire.
@@ -1634,6 +1660,7 @@ async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
             busbar_core::config::OnExhausted::Queue { max_ms: 2000 },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req = spawn_request(app.clone());
     // Poll until the request has actually PARKED in the queue (deterministic; not a fixed sleep that is

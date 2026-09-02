@@ -4,42 +4,28 @@
 //! CORE'S IMPLEMENTATION of the neutral [`busbar_substrate::ingress::arrival::ArrivalHost`] — the
 //! request-pipeline seam a path-model dialect (gemini/bedrock, extracted to `busbar-llm`) calls back
 //! through. The dialect crate owns the URL parsing (its statement about its own URL space); core owns
-//! the `App`/`GovCtx`/`CallerToken`-bound resolution + forward + error shaping, reached here.
+//! the resolution + forward + error shaping, reached here.
 //!
 //! Mirrors `crate::plane_host::EngineHostImpl`: a stateless core object each method drives against the
-//! live `App` recovered from the opaque [`busbar_substrate::ingress::arrival::ArrivalCtx`] the dialect
-//! threads back. Every response-future method clones the cheap `Arc<App>`/`GovCtx`/`CallerToken` and
-//! owns the moved `HeaderMap`/`Bytes`, so the future it hands back over the `fn`-pointer arrival
-//! boundary borrows nothing.
+//! live engine recovered from the opaque [`busbar_substrate::ingress::arrival::ArrivalCtx`] the dialect
+//! threads back. App-retype WEDGE 3 (THE FLIP): the payload the dialect threads back is now the NEUTRAL
+//! [`busbar_substrate::ingress::arrival::ArrivalPayload`] carrying an `Arc<dyn EngineHost>` (minted
+//! core-side over the live `App`) rather than the `Arc<App>` it used to; each method reaches the engine
+//! through that host seam, so the neutral payload names no core type and the extracted LLM plane can
+//! downcast it without a backwards reach into `busbar-core`.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_substrate::ingress::arrival::{ArrivalCtx, ArrivalHost};
-
-use crate::governance::GovCtx;
-use crate::state::App;
-
-/// The core payload core boxes into the opaque [`ArrivalCtx`] at the catch-all: the `busbar-core`
-/// handles a dialect must NOT name, threaded back into every host method opaquely. `pub` (with the
-/// caller's bearer token flattened to a NEUTRAL `Option<String>` scalar rather than the core
-/// `CallerToken`) so the relocated LLM-plane universal ingress (in `busbar-llm`) downcasts it out of
-/// the opaque [`ArrivalCtx`] and reads `app`/`gov`/`caller_token` without naming a private core type
-/// (`gov`'s type alias `GovCtx` is `pub(crate)` but its underlying `busbar_api::PlaneRequestCtx` is
-/// public, so the plane reads the field as that public type).
-#[allow(private_interfaces)]
-pub struct ArrivalPayload {
-    pub app: Arc<App>,
-    pub gov: GovCtx,
-    /// The caller's resolved bearer token (for passthrough forwarding), flattened to a neutral scalar.
-    pub caller_token: Option<String>,
-}
+// Re-exported at the historical `crate::ingress::arrival_host::ArrivalPayload` path so core's arrival
+// construction sites keep naming it here after the type's pivot to the neutral substrate (WEDGE 3).
+pub use busbar_substrate::ingress::arrival::ArrivalPayload;
 
 fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
     ctx.downcast_ref::<ArrivalPayload>()
-        .expect("ArrivalCtx must carry core's ArrivalPayload — a wiring bug otherwise")
+        .expect("ArrivalCtx must carry the neutral ArrivalPayload — a wiring bug otherwise")
 }
 
 /// The one core arrival host. Stateless (all state arrives via [`ArrivalCtx`]); an `Arc` of it rides
@@ -57,7 +43,8 @@ impl ArrivalHost for CoreArrivalHost {
         resp: Response,
     ) -> Response {
         let p = payload(ctx);
-        super::finish_rejected(&p.app, &p.gov, proto, pool, started, charged_at, resp)
+        p.host
+            .finish_rejected(&p.gov, proto, pool, started, charged_at, resp)
     }
 
     fn ingress_error(
@@ -71,8 +58,7 @@ impl ArrivalHost for CoreArrivalHost {
     }
 
     fn envelope_dialect(&self, ctx: &ArrivalCtx, path: &str) -> &'static str {
-        let p = payload(ctx);
-        crate::ingress::native::envelope_dialect(p.app.planes.ingress_of(path))
+        payload(ctx).host.arrival_envelope_dialect(path)
     }
 
     fn fallback_not_found(
@@ -83,8 +69,9 @@ impl ArrivalHost for CoreArrivalHost {
         err_type: &str,
         message: &str,
     ) -> Response {
-        let p = payload(ctx);
-        crate::fallback_error_response(&p.app.planes, path, status, err_type, message)
+        payload(ctx)
+            .host
+            .arrival_fallback_error(path, status, err_type, message)
     }
 
     fn percent_decode(&self, s: &str) -> String {

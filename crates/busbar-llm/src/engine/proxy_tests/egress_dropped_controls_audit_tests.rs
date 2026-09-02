@@ -38,8 +38,10 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", http()),
@@ -91,8 +93,10 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", http()),

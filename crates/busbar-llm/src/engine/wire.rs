@@ -342,7 +342,8 @@ fn map_translate_req_reject(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn translate_request_cross_protocol(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
     i: usize,
     ingress_protocol: &str,
     op: busbar_substrate::handlers::Op,
@@ -364,7 +365,7 @@ pub(crate) fn translate_request_cross_protocol(
     // caller control is a first-class, hash-chained event, not just a log warn).
     caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
-    let egress_name = app.engine_tables().lanes()[i].protocol;
+    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
     // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
     // four separate registry scans of the same name).
     let egress_decl = busbar_substrate::proto::decl_for(egress_name);
@@ -377,13 +378,13 @@ pub(crate) fn translate_request_cross_protocol(
         (ingress_protocol != egress_name).then(|| busbar_substrate::ir::egress_prep::EgressPrep {
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
-            lane_default_max_tokens: app.engine_tables().lanes()[i].default_max_tokens,
-            global_default_max_tokens: app.default_max_tokens,
+            lane_default_max_tokens: EngineTables::new(rt).lanes()[i].default_max_tokens,
+            global_default_max_tokens: host.default_max_tokens(),
             reasoning_allowed,
-            reasoning_budgets: app.reasoning_effort_budgets,
+            reasoning_budgets: *host.reasoning_effort_budgets(),
             // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
             // (Bedrock) must assert `prompt_caching` to receive breakpoints.
-            prompt_caching_allowed: app.engine_tables().lanes()[i].prompt_caching
+            prompt_caching_allowed: EngineTables::new(rt).lanes()[i].prompt_caching
                 || !egress_decl.is_some_and(|d| d.cache_markers_model_gated),
             cache_control_cap: egress_decl.and_then(|d| d.max_cache_control_breakpoints),
             // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
@@ -391,7 +392,7 @@ pub(crate) fn translate_request_cross_protocol(
             // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the
             // sentinel bypass and has real reports of rejecting it.
             thought_signature_fill: egress_decl.is_some_and(|d| d.fills_thought_signature)
-                && app.engine_tables().lanes()[i].path_base.is_none(),
+                && EngineTables::new(rt).lanes()[i].path_base.is_none(),
         });
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
     // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
@@ -421,7 +422,7 @@ pub(crate) fn translate_request_cross_protocol(
                     },
                     Some(egress_name),
                     prep,
-                    app.engine_tables().lanes()[i].wire_model(),
+                    EngineTables::new(rt).lanes()[i].wire_model(),
                 )
                 .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
             return match translated.wire {
@@ -447,7 +448,7 @@ pub(crate) fn translate_request_cross_protocol(
         // one cross-protocol translation hop for this request (telemetry bank: per-thread cell,
         // fixed protocol×protocol slot table — no label allocation on the hop). `egress_prep.is_some()`
         // is exactly `ingress_protocol != egress_name`.
-        busbar_core::telemetry::translation(ingress_protocol, egress_name);
+        host.telemetry_translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
         let Some(ingress_dialect) =
             busbar_substrate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
@@ -498,7 +499,7 @@ pub(crate) fn translate_request_cross_protocol(
             busbar_substrate::handlers::TranslateReqInput::Json(&body),
             egress_handler.map(|_| egress_name),
             prep,
-            app.engine_tables().lanes()[i].wire_model(),
+            EngineTables::new(rt).lanes()[i].wire_model(),
         ) {
             Ok(t) => t,
             Err(e) => return Err(Box::new(map_translate_req_reject(ingress_protocol, e))),
@@ -508,7 +509,7 @@ pub(crate) fn translate_request_cross_protocol(
         // audit event — not just the writer's `warn!` — so the degradation is visible in the audit
         // trail. Emitted before the body is consumed; forwarding proceeds.
         for control in translated.dropped_controls {
-            busbar_core::admin::audit::AUDIT.record_by(
+            host.audit_record(
                 "egress.control_unrepresentable",
                 &format!("{control} on {egress_name}"),
                 busbar_substrate::audit::vocab::OUTCOME_DEGRADED,
@@ -543,12 +544,12 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
                                                                  // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
                                                                  // are identical: same dialect, same two mutations, same order.
-    let lane_dialect = busbar_substrate::proto::decl_for(app.engine_tables().lanes()[i].protocol)
+    let lane_dialect = busbar_substrate::proto::decl_for(EngineTables::new(rt).lanes()[i].protocol)
         .and_then(|d| d.dialect());
     pristine &= !lane_dialect
         .as_ref()
         .map(|dc| {
-            dc.rewrite_model_if_needed(&mut body, app.engine_tables().lanes()[i].wire_model())
+            dc.rewrite_model_if_needed(&mut body, EngineTables::new(rt).lanes()[i].wire_model())
         })
         .unwrap_or(false); // invalidator #3
                            // PATH-BASE BODY RESHAPE. A lane with a `path_base` carries the model in the URL, and some
@@ -556,7 +557,7 @@ pub(crate) fn translate_request_cross_protocol(
                            // `anthropic_version`). WHICH reshape, and whether there is one at all, is the writer's;
                            // this path only knows the lane's URL shape. A reshape necessarily mutates the body, so such
                            // a same-protocol passthrough is (correctly) no longer pristine.
-    if app.engine_tables().lanes()[i].path_base.is_some()
+    if EngineTables::new(rt).lanes()[i].path_base.is_some()
         && lane_dialect
             .as_ref()
             .map(|dc| dc.reshape_for_path_base(&mut body))

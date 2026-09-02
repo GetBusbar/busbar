@@ -353,7 +353,7 @@ pub async fn synthesize_completion_over(
     };
     let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(
         crate::ingress::arrival_host::ArrivalPayload {
-            app,
+            host: engine_host(&app),
             gov: gov.clone(),
             caller_token: None,
         },
@@ -907,6 +907,25 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn verify_token_test(
+        &self,
+        token: &str,
+    ) -> Option<Arc<busbar_api::VirtualKey>> {
+        self.app
+            .governance
+            .as_ref()
+            .and_then(|g| g.verify_token(token, crate::store::now(), None))
+    }
+
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        // The in-process admin ring `record_by` seals into the retained ring AND cascades the SAME
+        // sealed record onto the durable hostless journal — the superset of `audit_emit`'s durable-only
+        // path. The egress audit-and-allow trail reads this ring, so a dropped cross-dialect control
+        // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
+        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
+    }
+
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
         // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
         // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
@@ -973,6 +992,24 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .governance
             .as_ref()
             .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
+    }
+
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `envelope_dialect(app.planes.ingress_of(path))`.
+        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
+    }
+
+    fn arrival_fallback_error(
+        &self,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> axum::response::Response {
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `fallback_error_response(&app.planes, …)`.
+        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
     }
 
     async fn synthesize_completion(

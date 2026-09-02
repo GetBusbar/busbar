@@ -47,6 +47,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
             busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Drive the "fb" pool cell for lane 1 into expired-Open (cooldown_until in the PAST), so the
     // FallbackPool dispatch's `acquire_for_dispatch_in` transitions it Open→HalfOpen and CAS-wins
@@ -131,6 +132,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
             busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     app.store.force_open_in("fb", 1, t0.saturating_sub(10));
 
@@ -218,6 +220,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
             busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Drive the "fb" pool cell into expired-Open so the FallbackPool dispatch CAS-wins the
     // single-flight HalfOpen recovery probe — the precise state the leak wedges.
@@ -328,6 +331,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
             busbar_core::config::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Drive the "fb" pool cell into expired-Open so the FallbackPool dispatch CAS-wins the
     // single-flight HalfOpen recovery probe — the precise state where an errant transient penalty
@@ -547,6 +551,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
             },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     app.store.force_open_in("fb", 1, t0.saturating_sub(10));
     assert_eq!(app.store.lane_budget_remaining(1), Some(1));
@@ -615,22 +620,23 @@ fn test_metric_pool_label_resolves_model_for_default_cell() {
             "http://127.0.0.1:1",
         ))
         .build();
+    let (_host, rt) = crate::engine::test_host_rt(&app);
 
     // Default ("") cell → the routed lane's MODEL name (so upstream metrics align with
     // REQUESTS_TOTAL's model label instead of an empty-string series).
     assert_eq!(
-        metric_pool_label(&app, "", 0),
+        metric_pool_label(&rt, "", 0),
         "claude-sonnet",
         "default-cell traffic must be labeled by the routed model, not the empty cell key"
     );
     assert_eq!(
-        metric_pool_label(&app, "", 1),
+        metric_pool_label(&rt, "", 1),
         "gpt-4o",
         "the label tracks the specific routed lane's model"
     );
     // A NAMED pool keeps its pool name verbatim (bounded, operator-controlled label).
     assert_eq!(
-        metric_pool_label(&app, "prod-pool", 0),
+        metric_pool_label(&rt, "prod-pool", 0),
         "prod-pool",
         "named-pool traffic stays labeled by its pool name"
     );

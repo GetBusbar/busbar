@@ -569,6 +569,15 @@ pub trait EngineHost: Send + Sync {
     /// default short-circuits the whole loop. Byte-identical to the field read.
     fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
 
+    /// TEST-ONLY raw-token → resolved `VirtualKey` resolution over this deployment's governance state
+    /// (the data-plane boundary: no audience). The host-driven form of
+    /// `App::governance.and_then(|g| g.verify_token(token, now, None))`, for the test paths that
+    /// exercise the routing-policy seam WITHOUT building a full `PlaneRequestCtx` (production always
+    /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
+    /// production binary carries a raw-token verifier on the neutral seam.
+    #[cfg(any(test, feature = "test-support"))]
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
+
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
     /// `gov.rate_headroom(&app.cost, key, pool, now)`. `gov`/`cost` are the opaque handles the caller
@@ -688,6 +697,16 @@ pub trait EngineHost: Send + Sync {
     /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
 
+    /// Record ONE admin-audit event `(action, resource, outcome, principal)` through the IN-PROCESS
+    /// ADMIN RING (`busbar_core::admin::audit::AUDIT::record_by`), which seals it into the retained ring
+    /// AND cascades the SAME record onto the durable hostless journal seam. Distinct from
+    /// [`audit_emit`](Self::audit_emit) (durable-only): this is the seam the DATA-plane egress
+    /// audit-and-allow path (a dropped cross-dialect control) writes through, so the record lands in the
+    /// in-process ring the egress audit-trail assertions read. `outcome` is a fixed vocabulary literal.
+    ///
+    /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+
     /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
     /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
     /// registers no host handle, so the arena choice is immaterial). Identical to
@@ -795,6 +814,27 @@ pub trait EngineHost: Send + Sync {
     /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
     /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
     fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+
+    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
+    /// `busbar_core::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
+    /// mount-table read, no `HostCtx`.
+    ///
+    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
+    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
+    /// crosses the host seam like every other.
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
+
+    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
+    /// `busbar_core::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
+    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
+    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
+    fn arrival_fallback_error(
+        &self,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> axum::response::Response;
 
     /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
     /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,

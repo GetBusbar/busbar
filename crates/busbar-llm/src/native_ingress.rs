@@ -16,13 +16,12 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_core::state::App;
 use busbar_substrate::ingress::arrival::ArrivalCtx;
-// The neutral host seam — brings the `finish_rejected`/`finish_admitted`/`pool_label`/
-// `destination_guard` methods into scope on the borrowed `engine_host_value` carrier.
-use busbar_substrate::plane_host::EngineHost as _;
+// The neutral host seam — the plane holds an `Arc<dyn EngineHost>` (carried on the arrival) and reaches
+// the engine's finish/label/guard/admission capabilities through its typed methods (App-retype WEDGE 3).
+use busbar_substrate::plane_host::EngineHost;
 
-use crate::engine::{AppEngineExt, WeightedLane};
+use crate::engine::{native_runtime_arc, EngineTables, NativeRuntime, WeightedLane};
 
 fn multipart_model(body: &[u8]) -> Option<String> {
     // 64 KiB is far larger than any plausible run of text form fields preceding the audio blob.
@@ -38,7 +37,7 @@ fn multipart_model(body: &[u8]) -> Option<String> {
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn operation_ingress_inner(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     caller_token: Option<&str>,
     headers: &HeaderMap,
@@ -49,10 +48,8 @@ pub(crate) async fn operation_ingress_inner(
 ) -> Response {
     let started = Instant::now();
     let charged_at = busbar_substrate::store::now();
-    // The alloc-free borrowed host carrier (1.6.0 KEYSTONE): one Arc::clone, stack value coerced to
-    // `&dyn EngineHost`. The pre-routing finish/label/guard capabilities route through its narrow seam
-    // methods so this plane names no core ingress module. Not on the measured forward alloc path.
-    let host = busbar_core::plane_host::engine_host_value(app);
+    // App-retype WEDGE 3: the pre-routing finish/label/guard capabilities route through the `host`
+    // threaded in (the arrival's `Arc<dyn EngineHost>`), so this plane names no core ingress module.
 
     let Some(rh) = busbar_substrate::handlers::request_handler(proto) else {
         return host.finish_rejected(
@@ -154,7 +151,7 @@ pub(crate) async fn operation_ingress_inner(
     };
 
     operation_resolved(
-        app,
+        host,
         gov,
         proto,
         operation,
@@ -185,7 +182,7 @@ pub(crate) async fn operation_ingress_inner(
 /// shaping, same budget-door position, same stream-end metering. A later milestone relocates this
 /// impl into its plane crate; M3 only makes it a sibling on the shared seam.
 struct NativePlane<'a> {
-    app: &'a Arc<App>,
+    host: &'a Arc<dyn EngineHost>,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
@@ -209,8 +206,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         use busbar_substrate::plane_host::VerifyOutcome;
         // STAGE 2 — the pre-admission destination guard, verbatim. Its `Err` is the already-finished,
         // protocol-native rejection; the seam returns it as `Refuse` (byte-identical shaping).
-        let host = busbar_core::plane_host::engine_host_value(self.app);
-        match host.destination_guard(
+        match self.host.destination_guard(
             req.gov,
             self.proto,
             req.destination,
@@ -228,7 +224,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
     ) -> Response {
         // Move the owned per-request payload out of the box; the borrowed fields ride along.
         let NativePlane {
-            app,
+            host,
             proto,
             operation,
             op_handler,
@@ -238,14 +234,14 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             caller_token,
             model_not_found_message,
         } = *self;
-        // The alloc-free borrowed host carrier — the finish/label seam methods route through it so
-        // this served-path tail names no core ingress module. Off the measured forward alloc path.
-        let host = busbar_core::plane_host::engine_host_value(app);
+        // App-retype WEDGE 3: resolve this plane's runtime tables off the host slot ONCE (alloc-free:
+        // one `Arc::clone` + a downcast), borrowed for the whole served-path tail. The finish/label/
+        // admission seams route through `host`, so this tail names no core ingress module.
+        let rt = native_runtime_arc(host.as_ref());
 
-        // STAGE 3–4 — THE single budget-admission door charges the chain buckets. On rejection
-        // nothing was charged (the door finished it).
-        let (admit, downgraded) = match busbar_core::ingress::admission_door(
-            app,
+        // STAGE 3–4 — THE single budget-admission door charges the chain buckets, through the host seam.
+        // On rejection nothing was charged (the door finished it).
+        let (admit, downgraded) = match host.admission_door(
             req.gov,
             proto,
             req.destination,
@@ -262,9 +258,9 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 
         // STAGE 5 — candidate selection + THE ONE ENGINE.
         let (cands, pool_name): (Vec<WeightedLane>, &str) =
-            if let Some(c) = app.engine_tables().pools().get(model) {
+            if let Some(c) = EngineTables::new(&rt).pools().get(model) {
                 (c.clone(), model)
-            } else if let Some(&i) = app.engine_tables().by_model().get(model) {
+            } else if let Some(&i) = EngineTables::new(&rt).by_model().get(model) {
                 (
                     vec![WeightedLane {
                         reasoning: None,
@@ -305,11 +301,12 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
         // Session affinity: the pool's configured affinity header, read generically for EVERY
         // operation (sticky routing is an engine capability, not a chat feature).
         let affinity_key: Option<String> = headers
-            .get(affinity_header_for(app, model))
+            .get(affinity_header_for(&rt, model))
             .and_then(|h| h.to_str().ok())
             .map(str::to_string);
         let resp = crate::engine::forward_with_pool_parsed(
-            app,
+            host,
+            &rt,
             cands,
             body,
             parsed_v,
@@ -337,7 +334,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                 operation,
                 op_handler,
             ),
-            usage_sink(app, req.gov, pool_name, req.charged_at, admit),
+            usage_sink(host, req.gov, pool_name, req.charged_at, admit),
         )
         .await;
 
@@ -357,7 +354,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
@@ -372,7 +369,7 @@ pub async fn run(
     model_not_found_message: Option<&str>,
 ) -> Response {
     let plane = NativePlane {
-        app,
+        host,
         proto,
         operation,
         op_handler,
@@ -404,7 +401,7 @@ pub async fn run(
 /// keep their exact call surface while `run` becomes the single entry the plane hooks grow onto.
 #[allow(clippy::too_many_arguments)]
 pub async fn operation_resolved(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
@@ -419,7 +416,7 @@ pub async fn operation_resolved(
     model_not_found_message: Option<&str>,
 ) -> Response {
     run(
-        app,
+        host,
         gov,
         proto,
         operation,
@@ -436,18 +433,21 @@ pub async fn operation_resolved(
     .await
 }
 fn usage_sink(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     pool: &str,
     charged_at: u64,
-    admit: Option<busbar_core::governance::AdmitGrant>,
+    admit: Option<busbar_substrate::plane_host::AdmitHandle>,
 ) -> Option<crate::engine::UsageSink> {
-    match (&app.governance, &gov.key) {
+    // App-retype WEDGE 3: the sink holds the OPAQUE governance/cost handles the host mints over the
+    // SAME `GovState`/`CostModel` the pre-flip `app.governance`/`app.cost` named — byte-identical accrual
+    // at the stream-end metering seams. `governance()` is `Some` iff governance is configured.
+    match (host.governance(), &gov.key) {
         (Some(g), Some(key)) => Some(crate::engine::UsageSink {
-            gov: g.clone(),
-            // The resolved cost model rides along (an Arc bump) so the stream-end accrual can walk
-            // the key's budget-group chain without reaching back into the App snapshot.
-            cost: app.cost.clone(),
+            gov: g,
+            // The resolved cost model handle rides along (one Arc bump) so the stream-end accrual can
+            // walk the key's budget-group chain without reaching back into the App snapshot.
+            cost: host.cost(),
             // Share the resolved key by `Arc`: no per-request `id` String clone; it is read
             // through `sink.key` at charge time.
             key: key.clone(),
@@ -459,9 +459,9 @@ fn usage_sink(
             charged_at,
             // The admission's in-flight HOLDS (the `concurrent` limit gauges) ride the sink so
             // they release when the response stream completes / the request context unwinds - the
-            // sink is the one per-request object that provably lives to stream end. Arc'd because
-            // the sink clones per failover attempt; the LAST clone dropping releases the gauges.
-            admit: admit.map(std::sync::Arc::new),
+            // sink is the one per-request object that provably lives to stream end. The opaque
+            // `AdmitHandle` already wraps the grant in an `Arc`; the LAST clone dropping releases the gauges.
+            admit,
         }),
         // No governance/key = nothing was admitted through the limit engine; a grant cannot exist.
         _ => None,
@@ -475,9 +475,8 @@ const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
 
 /// The request header that pins a session to a lane for a pool. Defaults to `x-session-id`; a
 /// pool's `affinity` config (mode `session`) may name a different header (e.g. `x-user-id`).
-pub(crate) fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str {
-    match app
-        .engine_tables()
+pub(crate) fn affinity_header_for<'a>(rt: &'a Arc<NativeRuntime>, pool: &str) -> &'a str {
+    match EngineTables::new(rt)
         .pool_runtime()
         .get(pool)
         .and_then(|r| r.affinity.as_ref())
@@ -491,7 +490,7 @@ pub(crate) fn affinity_header_for<'a>(app: &'a Arc<App>, pool: &str) -> &'a str 
 
 #[allow(clippy::too_many_arguments)]
 async fn ingress_path_model_inner(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     caller_token: Option<&str>,
     headers: &HeaderMap,
@@ -506,9 +505,8 @@ async fn ingress_path_model_inner(
     let started = Instant::now();
     // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
     let charged_at = busbar_substrate::store::now();
-    // Alloc-free borrowed host carrier — the pre-routing finish seam routes through it (see the body-
-    // model twin). Off the measured forward alloc path.
-    let host = busbar_core::plane_host::engine_host_value(app);
+    // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
+    // twin does the same).
     let mut v: Value = match busbar_substrate::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -630,7 +628,7 @@ async fn ingress_path_model_inner(
         );
     };
     operation_resolved(
-        app,
+        host,
         gov,
         proto,
         operation,
@@ -649,9 +647,9 @@ async fn ingress_path_model_inner(
     .await
 }
 
-fn payload(ctx: &ArrivalCtx) -> &busbar_core::ingress::arrival_host::ArrivalPayload {
-    ctx.downcast_ref::<busbar_core::ingress::arrival_host::ArrivalPayload>()
-        .expect("ArrivalCtx must carry core's ArrivalPayload -- a wiring bug otherwise")
+fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayload {
+    ctx.downcast_ref::<busbar_substrate::ingress::arrival::ArrivalPayload>()
+        .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
 }
 
 /// BODY-MODEL UNIVERSAL INGRESS -- every operation whose model rides IN THE BODY.
@@ -665,7 +663,7 @@ pub async fn operation_ingress(
 ) -> Response {
     let p = payload(ctx);
     operation_ingress_inner(
-        &p.app,
+        &p.host,
         &p.gov,
         p.caller_token.as_deref(),
         &headers,
@@ -692,7 +690,7 @@ pub async fn ingress_path_model(
 ) -> Response {
     let p = payload(ctx);
     ingress_path_model_inner(
-        &p.app,
+        &p.host,
         &p.gov,
         p.caller_token.as_deref(),
         &headers,

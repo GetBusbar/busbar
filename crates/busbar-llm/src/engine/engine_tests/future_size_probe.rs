@@ -26,10 +26,22 @@ fn forward_future_size_is_pinned() {
         ))
         .pool("", &[(0, 1)])
         .build();
-    let fut = crate::engine::forward_with_pool(
-        &app,
+    // App-retype WEDGE 3: measure the PRODUCTION outermost forward future — `forward_with_pool_parsed`,
+    // the entry the ingress hot path (`native_ingress::drive`) calls directly. The pre-flip probe used
+    // the `forward_with_pool` bytes wrapper as a proxy, but that wrapper is now TEST-ONLY and mints the
+    // neutral `host`/`rt` (extra owned Arcs + an async layer) the production path threads in from the
+    // arrival — measuring it would pin test-only mint overhead, not the hot future. `host`/`rt` are
+    // resolved here (as the arrival does) and BORROWED into the future, exactly as production threads
+    // them; the bound is UNCHANGED.
+    let (host, rt) = crate::engine::test_host_rt(&app);
+    let fut = crate::engine::forward_with_pool_parsed(
+        &host,
+        &rt,
         vec![],
         bytes::Bytes::new(),
+        None,
+        crate::engine::APPLICATION_JSON,
+        None,
         None,
         "",
         None,

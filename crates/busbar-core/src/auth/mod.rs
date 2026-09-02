@@ -1296,7 +1296,10 @@ fn rate_limited_response() -> Response {
 /// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
 /// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
 /// gemini/bedrock ingress denial contradict the response the client actually got.
-fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
+fn unauthorized_with_completion_taps(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
     // mounted plane is tapped as that plane's dialect rather than as whichever LLM dialect its path
     // happens to resemble; a residual path that names none is labelled with the dialect its answer
@@ -1315,7 +1318,15 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
         // plane reader here.
         let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        crate::proxy::fire_stage_taps(
+        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
+        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
+        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
+        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
+        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
+        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
+        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
+        let host = crate::plane_host::engine_host_value(app);
+        busbar_substrate::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
             crate::hooks::wire::HookStageProjection {
@@ -1330,7 +1341,7 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
             None,
-            &app.groups_registry,
+            &host,
         );
     }
     unauthorized_response(app, path)

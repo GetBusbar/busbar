@@ -282,8 +282,8 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
 
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -303,6 +303,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         )
         .build();
     let lane = lane_app.engine_tables().lanes()[0].clone();
+    let (host, _rt) = crate::engine::test_host_rt(&lane_app);
 
     // A buffered completion carrying 600 input + 400 output = 1000 tokens, sourced from IrUsage
     // (Billing reads the IR usage the egress reader decoded, not a byte-scan).
@@ -311,7 +312,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         output: 400,
         ..Default::default()
     };
-    record_token_usage(&usage, &sink, Some(&lane));
+    record_token_usage(&host, &usage, &sink, Some(&lane));
 
     // The 1000 tokens must be ledgered in the charged_at day's window of the GROUP day bucket...
     let in_window = gov
@@ -374,8 +375,8 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
@@ -395,6 +396,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         )
         .build();
     let lane = lane_app.engine_tables().lanes()[0].clone();
+    let (host, _rt) = crate::engine::test_host_rt(&lane_app);
 
     // input_tokens + output_tokens overflows u64: u64::MAX + 5 would panic under an unchecked `+`.
     let usage = TokenUsage {
@@ -403,7 +405,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         ..Default::default()
     };
     // Must NOT panic (the assertion is reaching this line at all under a debug-overflow build).
-    record_token_usage(&usage, &sink, Some(&lane));
+    record_token_usage(&host, &usage, &sink, Some(&lane));
 }
 
 #[test]
@@ -482,8 +484,8 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -504,6 +506,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         )
         .build();
     let lane = lane_app.engine_tables().lanes()[0].clone();
+    let (host, _rt) = crate::engine::test_host_rt(&lane_app);
     assert_ne!(
         lane.wire_model(),
         lane.model,
@@ -511,6 +514,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     );
 
     record_token_usage(
+        &host,
         &TokenUsage {
             input: 600,
             output: 400,

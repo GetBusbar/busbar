@@ -532,8 +532,8 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -730,8 +730,8 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -765,6 +765,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         Ok::<Bytes, hyper::Error>(chunk1),
         Ok::<Bytes, hyper::Error>(chunk2),
     ]);
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let fbb = FirstByteBody::new(
         inner,
         false, // is_sse: same-protocol NON-STREAM application/json
@@ -772,7 +773,8 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
@@ -868,8 +870,8 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         .expect("create key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -903,6 +905,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         .map(|c| Ok(Bytes::copy_from_slice(c)))
         .collect();
     let inner = futures::stream::iter(chunks);
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let fbb = FirstByteBody::new(
         inner,
         false, // is_sse: same-protocol NON-STREAM application/json
@@ -910,7 +913,8 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
@@ -1026,8 +1030,8 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
@@ -1059,6 +1063,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
             Ok::<Bytes, hyper::Error>(chunk1.clone()),
             Ok::<Bytes, hyper::Error>(chunk2.clone()),
         ]);
+        let (host, rt) = crate::engine::test_host_rt(&app);
         let mut fbb = FirstByteBody::new(
             inner,
             false, // is_sse: same-protocol NON-STREAM application/json
@@ -1066,7 +1071,8 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
             crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            app.clone(),
+            host.clone(),
+            rt.clone(),
             0,
             Arc::new(busbar_core::store::BreakerCfg::default()),
             "pa",
@@ -1161,6 +1167,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
             .and_then(|d| d.dialect())
             .and_then(|dc| dc.make_array_stream_framer())
             .expect("gemini dialect builds an array-stream framer");
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse: streaming
@@ -1168,7 +1175,8 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
@@ -1235,6 +1243,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
         busbar_substrate::proto::new_stream_translator("anthropic", "openai", true).expect("translator");
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let fbb = FirstByteBody::new(
         inner,
         true,
@@ -1242,7 +1251,8 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
@@ -1305,8 +1315,8 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         .expect("key");
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -1342,6 +1352,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // does); `is_sse = true` + ingress != egress reproduces the prior direct translator construction byte-for-byte.
     let translate =
         busbar_substrate::proto::new_stream_translator("openai", "anthropic", true).expect("translator");
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let fbb = FirstByteBody::new(
         inner,
         true, // is_sse
@@ -1349,7 +1360,8 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         Arc::new(busbar_core::store::BreakerCfg::default()),
         "pa",
@@ -3093,6 +3105,8 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         "precondition: the pool cell is Closed after the optimistic success"
     );
 
+    let (host, rt) = crate::engine::test_host_rt(&app);
+
     let body = FirstByteBody::new(
         inner,
         true, // is_sse: streaming path
@@ -3100,7 +3114,8 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         crate::test_support::CHAT,
         (), // permit: a unit placeholder is sufficient for the Stream bounds
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         breaker_cfg,
         "p",
@@ -3181,6 +3196,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
         let inner = Box::pin(futures::stream::once(async move {
             Err::<Bytes, hyper::Error>(reqwest_err)
         }));
+        let (host, rt) = crate::engine::test_host_rt(&app);
         let body = FirstByteBody::new(
             inner,
             true, // is_sse
@@ -3188,7 +3204,8 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
             crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            app.clone(),
+            host.clone(),
+            rt.clone(),
             0,
             breaker_cfg.clone(),
             "p",
@@ -3277,6 +3294,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
         Ok::<Bytes, hyper::Error>(Bytes::from_static(b"{\"id\":\"x\",")),
         Err::<Bytes, hyper::Error>(reqwest_err),
     ]));
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let body = FirstByteBody::new(
         inner,
         false, // is_sse: NON-streaming same-protocol passthrough (application/json)
@@ -3284,7 +3302,8 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
         crate::test_support::CHAT,
         (), // permit placeholder
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         breaker_cfg,
         "p",
@@ -3396,8 +3415,8 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -3429,6 +3448,8 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         Ok::<Bytes, hyper::Error>(Bytes::from(overflow)),
     ]));
 
+    let (host, rt) = crate::engine::test_host_rt(&app);
+
     let body = FirstByteBody::new(
         inner,
         true, // is_sse: streaming cross-protocol path
@@ -3436,7 +3457,8 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         crate::test_support::CHAT,
         (),
         tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         0,
         breaker_cfg,
         "p",
@@ -3524,8 +3546,8 @@ async fn test_cancel_drop_bills_partial_tokens() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -3548,6 +3570,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     // Build, poll ONCE (consumes the usage chunk; usage_sink stays Some because Poll::Ready(None)
     // is never reached), then drop the body inside this block → Drop fires on the mid-stream cancel.
     {
+        let (host, rt) = crate::engine::test_host_rt(&app);
         let body = FirstByteBody::new(
             inner,
             true,
@@ -3555,7 +3578,8 @@ async fn test_cancel_drop_bills_partial_tokens() {
             crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            app.clone(),
+            host.clone(),
+            rt.clone(),
             0,
             Arc::new(BreakerCfg::default()),
             "p",
@@ -3632,8 +3656,8 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         )
         .expect("create key");
     let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
@@ -3660,6 +3684,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     // NOT poll to `None` — so `usage_sink` stays `Some` and the drop exercises the Drop path with
     // an aborted translate.
     {
+        let (host, rt) = crate::engine::test_host_rt(&app);
         let body = FirstByteBody::new(
             inner,
             true,
@@ -3667,7 +3692,8 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            app.clone(),
+            host.clone(),
+            rt.clone(),
             0,
             Arc::new(BreakerCfg::default()),
             "p",
@@ -3737,6 +3763,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
     )]));
 
     {
+        let (host, rt) = crate::engine::test_host_rt(&app);
         let body = FirstByteBody::new(
             inner,
             true, // is_sse
@@ -3744,7 +3771,8 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
             crate::test_support::CHAT,
             (),
             tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-            app.clone(),
+            host.clone(),
+            rt.clone(),
             0,
             Arc::new(BreakerCfg::default()),
             "p",

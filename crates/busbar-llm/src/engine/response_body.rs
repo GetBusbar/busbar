@@ -10,10 +10,16 @@ use busbar_substrate::diagnostics::{
 /// key + its budget period + the governance store). `None` when governance is off or no key resolved.
 #[derive(Clone)]
 pub(crate) struct UsageSink {
-    pub(crate) gov: Arc<busbar_core::governance::GovState>,
-    /// The resolved cost model (chain topology; rates are NOT used at accrual - tokens are the
-    /// ledger, spend derives at read time). Arc bump per request, rebuilt on config apply.
-    pub(crate) cost: Arc<busbar_core::cost::CostModel>,
+    /// The OPAQUE governance handle (App-retype WEDGE 3): the sink holds `busbar_substrate`'s
+    /// [`GovHandle`](busbar_substrate::plane_host::GovHandle) (minted host-side via
+    /// `EngineHost::governance`) rather than naming `busbar_core::governance::GovState`. It is handed
+    /// BACK to the host metering seams (`EngineHost::meter_ledger`/`meter_series`), which downcast it —
+    /// byte-identical accrual against the SAME `GovState` the handle wraps.
+    pub(crate) gov: busbar_substrate::plane_host::GovHandle,
+    /// The OPAQUE cost handle (App-retype WEDGE 3) — the twin of `gov`, minted via `EngineHost::cost`
+    /// and downcast host-side at accrual. Was `Arc<busbar_core::cost::CostModel>`; an Arc bump per
+    /// request, rebuilt on config apply.
+    pub(crate) cost: busbar_substrate::plane_host::CostHandle,
     /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
     /// charge time, so building the sink (once per request) and cloning it (once per failover
     /// attempt) is a refcount bump, not a per-request `String` clone.
@@ -37,7 +43,7 @@ pub(crate) struct UsageSink {
     /// a chain with no concurrent caps or a test sink built off the admission path. Never read:
     /// the field exists purely so its Drop (on the last clone) releases the gauges.
     #[allow(dead_code)]
-    pub(crate) admit: Option<Arc<busbar_core::governance::AdmitGrant>>,
+    pub(crate) admit: Option<busbar_substrate::plane_host::AdmitHandle>,
 }
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
@@ -73,7 +79,11 @@ pub(crate) struct FirstByteBody<S, P> {
     /// upstream CT) so a bedrock-ingress → SSE-egress reframe is handled correctly.
     ingress_eventstream: bool,
     permit: Option<P>,
-    app: Option<Arc<App>>,
+    /// App-retype WEDGE 3: the neutral engine host + this plane's runtime tables the mid-stream
+    /// breaker-trip / refund / stream-end metering reach, replacing the `Option<Arc<App>>` this body
+    /// held to stream end. `Option` for the same reason `app` was (a degraded/test body may carry none).
+    host: Option<Arc<dyn EngineHost>>,
+    rt: Option<Arc<NativeRuntime>>,
     lane_idx: usize,
     /// Resolved breaker config for the routing pool, so a mid-stream failure trips this lane using
     /// the same thresholds the synchronous path used (defaults on the degraded path).
@@ -159,7 +169,8 @@ where
         op: busbar_substrate::handlers::Op,
         permit: P,
         ceiling_deadline: tokio::time::Instant,
-        app: Arc<App>,
+        host: Arc<dyn EngineHost>,
+        rt: Arc<NativeRuntime>,
         lane_idx: usize,
         breaker_cfg: Arc<busbar_substrate::store::BreakerCfg>,
         pool: &str,
@@ -194,7 +205,8 @@ where
                 .unwrap_or_default(),
             op,
             permit: Some(permit),
-            app: Some(app),
+            host: Some(host),
+            rt: Some(rt),
             lane_idx,
             breaker_cfg,
             pool: Box::from(pool),
@@ -366,8 +378,8 @@ where
                     let had_first = this.first_byte_sent;
                     if had_first && this.is_sse {
                         // Mid-stream failure after first byte in SSE mode: record breaker failure then emit SSE error event
-                        if let Some(ref app) = this.app {
-                            let tripped = app.store.record_transient_in(
+                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
+                            let tripped = host.lane_store().record_transient_in(
                                 &this.pool,
                                 this.lane_idx,
                                 "mid-stream",
@@ -377,7 +389,7 @@ where
                             // A mid-stream failure that drives a Closed→Open trip is a breaker trip
                             // for this (pool, lane) — emit BREAKER_TRIPS_TOTAL once (#29).
                             if tripped {
-                                emit_breaker_trip(app, &this.pool, this.lane_idx);
+                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
                             }
                         }
                         // Mark the stream ended so the subsequent `Poll::Ready(None)` arm returns
@@ -454,13 +466,13 @@ where
                         // zero usable bytes), exactly like the buffered `ReadEnd::TransportError` paths,
                         // which already record a transient with no first-byte gate. Budget is still
                         // refunded below (no usable response was delivered); the two are independent.
-                        if let Some(ref app) = this.app {
+                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
                             let what = if had_first {
                                 "mid-body-transport"
                             } else {
                                 "pre-first-byte-transport"
                             };
-                            let tripped = app.store.record_transient_in(
+                            let tripped = host.lane_store().record_transient_in(
                                 &this.pool,
                                 this.lane_idx,
                                 what,
@@ -469,7 +481,7 @@ where
                             );
                             // A threshold-based Closed→Open trip here is a breaker trip (#29).
                             if tripped {
-                                emit_breaker_trip(app, &this.pool, this.lane_idx);
+                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
                             }
                         }
                         // Symmetric with the buffered `ReadEnd::TransportError` path (#21): the 2xx
@@ -484,8 +496,8 @@ where
                         // budget above its cap. Mark the stream ended and clear the flag so the inner
                         // stream's trailing `Poll::Ready(None)` neither double-refunds nor token-bills.
                         if this.budget_spent {
-                            if let Some(ref app) = this.app {
-                                app.store.refund_budget(this.lane_idx);
+                            if let Some(host) = this.host.as_ref() {
+                                host.lane_store().refund_budget(this.lane_idx);
                             }
                             this.budget_spent = false;
                         }
@@ -534,7 +546,7 @@ where
                         .is_some();
                     let breaker_failed = stream_terminal_error || translate_aborted;
                     if this.is_sse && this.first_byte_sent && breaker_failed {
-                        if let Some(app) = this.app.as_ref() {
+                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
                             // Distinguish the two failure lineages in the recorded reason so the
                             // terminal-error path and its translate-abort sibling remain
                             // separable in breaker telemetry.
@@ -545,7 +557,7 @@ where
                                 // terminal_error) — name the sibling lineage explicitly.
                                 "stream-translate-abort"
                             };
-                            let tripped = app.store.record_transient_in(
+                            let tripped = host.lane_store().record_transient_in(
                                 &this.pool,
                                 this.lane_idx,
                                 reason,
@@ -558,7 +570,7 @@ where
                             // for a streaming Responses FAILURE, which would otherwise record as a
                             // success.
                             if tripped {
-                                emit_breaker_trip(app, &this.pool, this.lane_idx);
+                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
                             }
                         }
                     }
@@ -685,12 +697,14 @@ where
                                 .as_ref()
                                 .map(crate::engine::usage::tier_tokens)
                                 .unwrap_or_default();
-                            if let Some(lane) = this
-                                .app
-                                .as_ref()
-                                .and_then(|a| a.engine_tables().lanes().get(this.lane_idx))
-                            {
+                            if let (Some(host), Some(lane)) = (
+                                this.host.as_ref(),
+                                this.rt
+                                    .as_ref()
+                                    .and_then(|rt| EngineTables::new(rt).lanes().get(this.lane_idx)),
+                            ) {
                                 crate::engine::usage::ledger_and_meter(
+                                    host,
                                     &sink,
                                     lane,
                                     token_usage.as_ref(),
@@ -719,8 +733,8 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // `budget_spent` guards both against refunding a no-op spend and against double-refunding
         // the transport-error arm's own clear of the flag.
         if !self.ended && self.budget_spent {
-            if let Some(ref app) = self.app {
-                app.store.refund_budget(self.lane_idx);
+            if let Some(host) = self.host.as_ref() {
+                host.lane_store().refund_budget(self.lane_idx);
             }
             self.budget_spent = false;
         }
@@ -757,14 +771,15 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             .map(crate::engine::usage::tier_tokens)
             .unwrap_or_default();
         if !tier.is_zero() {
-            if let Some(lane) = self
-                .app
-                .as_ref()
-                .and_then(|a| a.engine_tables().lanes().get(self.lane_idx))
-            {
+            if let (Some(host), Some(lane)) = (
+                self.host.as_ref(),
+                self.rt
+                    .as_ref()
+                    .and_then(|rt| EngineTables::new(rt).lanes().get(self.lane_idx)),
+            ) {
                 // Ledger + meter the partial through the one accrual seam (the tokens were
                 // really generated + delivered before the drop).
-                crate::engine::usage::ledger_and_meter(&sink, lane, usage.as_ref(), &tier);
+                crate::engine::usage::ledger_and_meter(host, &sink, lane, usage.as_ref(), &tier);
             }
         }
     }

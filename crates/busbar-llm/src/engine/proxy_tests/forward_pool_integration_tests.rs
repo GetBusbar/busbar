@@ -74,6 +74,7 @@ async fn capture_latency_metrics() {
         ))
         .pool("p", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let body = bytes::Bytes::from(
         serde_json::to_vec(&json!({
             "model": "m",
@@ -284,6 +285,7 @@ async fn test_non_stream_json_relay() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
@@ -347,6 +349,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
         )
         .pool("pa", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let body = serde_json::to_vec(
         &json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}),
@@ -460,6 +463,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
             None, 0, &groups,
         ))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -597,6 +601,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
             None, 0, &groups,
         ))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -681,6 +686,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
         )
         .pool("pc", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let cands = vec![crate::engine::WeightedLane {
         reasoning: None,
@@ -797,6 +803,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
             },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let cands = vec![
         crate::engine::WeightedLane {
@@ -863,6 +870,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -916,6 +924,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     let app = TestApp::new()
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -990,6 +999,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     let secret = token.as_str();
 
     let app = TestApp::new().keys_chain().governance(gov).build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1109,6 +1119,7 @@ async fn test_governance_budget_over_quota() {
         .governance(gov)
         .cost(cost)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1227,6 +1238,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .governance(gov)
         .cost(cost)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1462,6 +1474,7 @@ async fn test_governance_rate_limit_429() {
             None, 0, &groups,
         ))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1574,6 +1587,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
             None, 0, &groups,
         ))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1788,6 +1802,7 @@ async fn test_governance_admin_api() {
     );
 
     let app = TestApp::new().keys_chain().governance(gov).build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1902,6 +1917,7 @@ async fn test_sse_incremental_arrival() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
@@ -1960,6 +1976,7 @@ async fn test_sse_done_terminator_has_data_prefix() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
@@ -2015,6 +2032,7 @@ async fn test_sse_events_single_data_prefix() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     let response = forward(
@@ -2071,6 +2089,7 @@ async fn test_permit_lifetime_during_stream() {
         )
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
     assert_eq!(sem.available_permits(), 1);
@@ -2141,6 +2160,7 @@ async fn test_pre_first_byte_failover() {
         ))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2220,6 +2240,7 @@ async fn test_midstream_abort_records_and_no_failover() {
         ))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2479,6 +2500,7 @@ async fn test_passthrough_forwards_caller_token() {
         // `upstream_credentials:`, independent of the (open) front-door chain.
         .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Caller's Bearer token (NOT busbar's key)
     let caller_bearer_token = "caller-specific-token-abc123";
@@ -2544,6 +2566,7 @@ async fn test_failover_exclusions() {
         ))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2631,6 +2654,7 @@ async fn test_failover_cap() {
         ))
         .pool("default", &[(0, 1), (1, 1), (2, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2722,6 +2746,7 @@ async fn test_failover_deadline() {
             max_hops: 3,
         })
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2803,6 +2828,7 @@ async fn test_stream_inspection_tap_usage_parsing() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -2986,6 +3012,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3047,6 +3074,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3111,6 +3139,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3170,6 +3199,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3229,6 +3259,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let _response = forward(
@@ -3288,6 +3319,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3632,6 +3664,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3713,6 +3746,7 @@ mod disposition_matrix_tests {
             )
             .pool("default", &[(0, 1), (1, 1)])
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward(
@@ -3792,6 +3826,7 @@ async fn test_exhaustion_status_503_with_retry_after() {
         ))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -3886,6 +3921,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
         .pool("leastbad", &[(0, 1), (1, 1)])
         .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -3972,6 +4008,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
         .pool("leastbad", &[(0, 1)])
         .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let before = app.store.snapshot(0, store_now());
     assert_eq!(before.ok, 0, "precondition: no successes yet");
@@ -4036,6 +4073,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
         )
         .pool("p", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // openai ingress; SAME-protocol (openai egress) so the response is a passthrough SSE stream.
     let req_body = serde_json::to_vec(&json!({
@@ -4123,6 +4161,7 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
             .pool("leastbad", &[(0, 1)])
             .on_exhausted("leastbad", busbar_core::config::OnExhausted::LeastBad)
             .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
         let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
         let response = forward_with_pool(
@@ -4215,6 +4254,7 @@ async fn test_fallback_pool_loop_guard() {
             busbar_core::config::OnExhausted::FallbackPool("pool_a".to_string()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -4303,6 +4343,7 @@ async fn test_fallback_pool_routes_to_backup() {
             busbar_core::config::OnExhausted::FallbackPool("backup".to_string()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -4389,6 +4430,7 @@ async fn test_sticky_session_while_healthy() {
         .lane(mk_lane(server2.base_url(), "test-key-2"))
         .pool("sticky-test", &[(0, 1), (1, 1), (2, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -4596,6 +4638,7 @@ async fn test_sticky_yields_when_tripped() {
         )
         .pool("failover-test", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -4678,6 +4721,7 @@ async fn test_health_probe_recovers_tripped_lane() {
             }),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Trip the lane out of band (hard-down → Open with a sticky cooldown).
     app.store.record_hard_down(0, "test trip");
@@ -4724,6 +4768,7 @@ async fn test_health_probe_failure_records_transient() {
             }),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let before = app.store.snapshot(0, busbar_core::store::now()).err;
     crate::engine::health::probe_lane(busbar_core::plane_host::engine_host(&app).as_ref(), 0, Duration::from_secs(5)).await;
@@ -4778,6 +4823,7 @@ async fn test_sticky_from_system_block() {
         )
         .pool("system-test", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Request with system block
     let req_body = serde_json::to_vec(&json!({
@@ -4948,6 +4994,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
             .api_key("test-key"),
         )
         .build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
 
     // Build an OpenAI-format request body with model in the BODY (must match by_model key)
     let req_body = serde_json::json!({
@@ -4958,7 +5005,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
 
     // Call openai_ingress handler directly
     let response = crate::native_ingress::operation_ingress_inner(
-        &app,
+        &host,
         &busbar_core::governance::GovCtx::default(),
         None,
         &HeaderMap::new(),
@@ -5016,6 +5063,7 @@ async fn test_openai_ingress_missing_model() {
 
     // Build a minimal App (no lanes needed for this test)
     let app = TestApp::new().build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
 
     // Missing "model" field in body
     let req_body = serde_json::json!({
@@ -5024,7 +5072,7 @@ async fn test_openai_ingress_missing_model() {
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
     let response = crate::native_ingress::operation_ingress_inner(
-        &app,
+        &host,
         &busbar_core::governance::GovCtx::default(),
         None,
         &HeaderMap::new(),
@@ -5058,6 +5106,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
             .max(1),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let body = Bytes::from_static(b"{\"messages\":[]}");
 
@@ -5102,6 +5151,7 @@ async fn test_openai_ingress_unknown_model() {
 
     // Build a minimal App with no "nope" model
     let app = TestApp::new().build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
 
     // Unknown model in body
     let req_body = serde_json::json!({
@@ -5111,7 +5161,7 @@ async fn test_openai_ingress_unknown_model() {
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
     let response = crate::native_ingress::operation_ingress_inner(
-        &app,
+        &host,
         &busbar_core::governance::GovCtx::default(),
         None,
         &HeaderMap::new(),
@@ -5157,6 +5207,7 @@ async fn test_cross_protocol_openai_to_anthropic() {
                 .provider("anthropic"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // OpenAI-format body (system inside first message)
     let openai_body = json!({
@@ -5251,10 +5302,11 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
             .provider("z.ai"),
         )
         .build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
 
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
     let resp = crate::native_ingress::operation_ingress_inner(
-        &app,
+        &host,
         &busbar_core::governance::GovCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
@@ -5311,9 +5363,10 @@ async fn forwarded_openai_to_anthropic(
         spec = spec.default_max_tokens(d);
     }
     let app = TestApp::new().lane(spec).build();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
 
     let resp = crate::native_ingress::operation_ingress_inner(
-        &app,
+        &host,
         &busbar_core::governance::GovCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
@@ -5411,6 +5464,7 @@ async fn test_same_protocol_anthropic_passthrough() {
                 .api_key("test-key"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Anthropic-format body (system at top level)
     let anthropic_body = json!({
@@ -5468,6 +5522,7 @@ async fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
                 .provider("openai-provider"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Anthropic-format streaming request; egress lane is openai → response stream translated back.
     let anthropic_body =
@@ -5545,6 +5600,7 @@ async fn test_cross_protocol_nonstream_openai_lane_to_anthropic_client() {
                 .provider("openai-provider"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Anthropic-format NON-streaming request; egress lane is openai → response translated back.
     let anthropic_body = json!({"model":"m","messages":[{"role":"user","content":"hi"}]});
@@ -5633,6 +5689,7 @@ async fn test_context_length_failover_no_penalty() {
         .lane(mk_lane("k0"))
         .lane(mk_lane("k1"))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let body = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
     let response = forward(
@@ -5724,6 +5781,7 @@ async fn test_prefers_larger_context_max() {
         )
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "small-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -5795,6 +5853,7 @@ async fn test_same_size_pool_exhausts() {
         .lane(mk_lane("test-key-1"))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "model-8k", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
 
@@ -5870,6 +5929,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     use http_body_util::BodyExt as _;
     for _ in 0..STREAMS {
@@ -5936,6 +5996,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
         ))
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50})).unwrap();
     // Sampled BEFORE the request, not after. The store arms the cooldown as
@@ -6005,6 +6066,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
             exclusions: None,
         })
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // Take the lane's only permit and hold it.
     let held = app.store.try_acquire(0).expect("first permit acquires");
@@ -6068,6 +6130,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
         )
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // A burst WAY above the old default cap (10). Every acquire must succeed — no throttling.
     const BURST: usize = 5_000;
@@ -6114,6 +6177,7 @@ async fn test_bounded_max_concurrent_still_enforces_the_cap() {
         )
         .pool("default", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let p1 = app.store.try_acquire(0).expect("permit 1 of 2 acquires");
     let p2 = app.store.try_acquire(0).expect("permit 2 of 2 acquires");
@@ -6150,6 +6214,7 @@ fn test_lanespec_sem_override_is_shared() {
             .sem(sem.clone()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     // The lane's runtime semaphore is the SAME handle we passed in: acquiring a permit through
     // our clone must be visible to the store's view of the lane (and vice-versa). Observed via the
@@ -6190,6 +6255,7 @@ fn test_lanespec_runtime_state_setters_land_in_built_app() {
             .default_max_tokens(1234),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let snap = app.store.snapshot(0, now());
     assert_eq!(snap.streak, 3, "streak setter must propagate");

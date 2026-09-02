@@ -74,6 +74,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
         builder = builder.hook("declarer", declaring_hook(signals));
     }
     let app = builder.build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     run_decide(&app).await
 }
 
@@ -81,6 +82,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
 /// per-candidate signal bags the policy observed. Split out of [`run_with_declared`] so a test can
 /// hand in a snapshot produced by the ADMIN builders rather than by the `TestApp` fixture.
 async fn run_decide(app: &std::sync::Arc<busbar_core::state::App>) -> Vec<busbar_api::SignalBag> {
+    let (host, rt) = crate::engine::test_host_rt(app);
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: std::sync::Arc::new(CapturingCandidatesPolicy { seen: seen.clone() }),
@@ -100,7 +102,8 @@ async fn run_decide(app: &std::sync::Arc<busbar_core::state::App>) -> Vec<busbar
     let rc = RequestCtx::new(60, 1);
     let v = serde_json::json!({"model": "m0", "messages": [{"role": "user", "content": "hi"}]});
     let _out = decide_policy_order(
-        app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -168,6 +171,7 @@ async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
         ))
         .pool("p", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     // Nothing declared at boot: the baseline the operator is about to change.
     assert!(
         run_decide(&app).await[0]
@@ -251,6 +255,7 @@ async fn breaker_state_projects_open_after_a_trip() {
             declaring_hook(vec![Signal::CandidateBreakerState]),
         )
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     // Force the ROUTING POOL cell (not the lane-default cell) Open with a cooldown far in the
     // future, so the projected state reads "open" (not an already-expired-back-to-recoverable one).
     app.store
@@ -275,7 +280,8 @@ async fn breaker_state_projects_open_after_a_trip() {
     let rc = RequestCtx::new(60, 1);
     let v = serde_json::json!({"model": "m0", "messages": [{"role": "user", "content": "hi"}]});
     let _ = decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -316,6 +322,7 @@ async fn error_rate_projects_the_outcome_window_fraction() {
         .pool("p", &[(0, 1)])
         .hook("declarer", declaring_hook(vec![Signal::CandidateErrorRate]))
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let cfg = busbar_core::store::BreakerCfg::default();
     // 1 error + 3 successes = 25% error rate, well under the default trip threshold (so the
     // breaker itself stays Closed — this test is purely about the PROJECTED rate).
@@ -343,7 +350,8 @@ async fn error_rate_projects_the_outcome_window_fraction() {
     let rc = RequestCtx::new(60, 1);
     let v = serde_json::json!({"model": "m0", "messages": [{"role": "user", "content": "hi"}]});
     let _ = decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,

@@ -85,6 +85,7 @@ async fn run(
         ))
         .pool("p", &[(0, 1)])
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: Arc::new(CapturingPolicy {
@@ -106,7 +107,8 @@ async fn run(
     }];
     let rc = RequestCtx::new(60, 1);
     let out = decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -396,6 +398,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
             pool_runtime_with(&[(0, &["baa"]), (1, &[])], Vec::new()),
         )
         .build();
+    let (_host, rt) = crate::engine::test_host_rt(&app);
     let cands = vec![
         WeightedLane {
             reasoning: None,
@@ -419,7 +422,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
         on_empty: busbar_core::config::PolicyOnError::Reject,
         name: "baa-gate",
     });
-    let out = rc.enforce_restricts(&app, "fb", cands.clone()).unwrap();
+    let out = rc.enforce_restricts(&rt, "fb", cands.clone()).unwrap();
     assert_eq!(
         out.iter().map(|w| w.idx).collect::<Vec<_>>(),
         vec![0],
@@ -435,7 +438,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     });
     assert!(
         rc_reject
-            .enforce_restricts(&app, "fb", cands.clone())
+            .enforce_restricts(&rt, "fb", cands.clone())
             .is_err(),
         "a required restrict with no eligible fallback lane must fail closed, not spill"
     );
@@ -448,7 +451,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
         name: "hipaa-advisory",
     });
     let out = rc_weighted
-        .enforce_restricts(&app, "fb", cands.clone())
+        .enforce_restricts(&rt, "fb", cands.clone())
         .unwrap();
     assert_eq!(
         out.len(),
@@ -459,7 +462,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     // No active restrict → identity.
     let rc_none = RequestCtx::new(60, 1);
     assert_eq!(
-        rc_none.enforce_restricts(&app, "fb", cands).unwrap().len(),
+        rc_none.enforce_restricts(&rt, "fb", cands).unwrap().len(),
         2
     );
 }
@@ -555,7 +558,7 @@ fn lanes(n: usize) -> Vec<WeightedLane> {
         .collect()
 }
 
-async fn fire(app: Arc<App>, n_lanes: usize) -> Response {
+async fn fire(app: Arc<busbar_core::state::App>, n_lanes: usize) -> Response {
     forward_with_pool(
         &app,
         lanes(n_lanes),
@@ -1076,6 +1079,7 @@ async fn pool_scoped_rw_gate_rewrites_the_body() {
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let upstream_body = state
@@ -1279,6 +1283,7 @@ async fn pool_gate_reject_fires_from_pool_runtime_gates() {
             ),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let resp = fire(app, 1).await;
     assert_eq!(
         resp.status().as_u16(),
@@ -1689,6 +1694,7 @@ async fn send_user_projects_governance_key_identity() {
         .pool("p", &[(0, 1)])
         .governance(gov)
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: Arc::new(CapturingPolicy {
@@ -1711,7 +1717,8 @@ async fn send_user_projects_governance_key_identity() {
     let rc = RequestCtx::new(60, 1);
     let v = body();
     decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -1751,6 +1758,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         ))
         .pool("p", &[(0, 1)])
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: Arc::new(CapturingPolicy {
@@ -1790,7 +1798,8 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     let v = body();
     // caller_token is the RAW SSO bearer — NOT a virtual-key secret, so lookup would miss.
     decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -1856,6 +1865,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         .pool("p", &[(0, 1)])
         .governance(gov)
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: Arc::new(CapturingPolicy {
@@ -1895,7 +1905,8 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     let rc = RequestCtx::new(60, 1);
     let v = body();
     decide_policy_order(
-        &app,
+        &host,
+        &rt,
         &resolved,
         &cands,
         &rc,
@@ -1952,6 +1963,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let synth = std::sync::Arc::new(busbar_api::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
@@ -2083,6 +2095,7 @@ async fn reject_rides_the_full_forward_path() {
             },
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let body = serde_json::to_vec(&serde_json::json!({
         "model": "pa",
         "messages": [{"role": "user", "content": "hi"}],
@@ -2202,6 +2215,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
         ))
         .pool("p", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let a = app.next_request_id();
     let b = app.next_request_id();
     let c = app.next_request_id();

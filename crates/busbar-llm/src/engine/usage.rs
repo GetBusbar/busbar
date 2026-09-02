@@ -17,6 +17,7 @@ use busbar_substrate::diagnostics::LANE_BREAKER_TRIPPED;
 /// the additive-cache convention). Non-token meters (duration/characters/images/flat) are carried in
 /// the client-visible body today and priced by the 1.3 engine; nothing to record here yet.
 pub(crate) fn record_resp_usage(
+    host: &Arc<dyn EngineHost>,
     usage: Option<busbar_substrate::billing::Billing>,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
@@ -27,13 +28,15 @@ pub(crate) fn record_resp_usage(
         // `TranslateCodec::translate_response` — bill straight from it. This seam never holds the
         // concrete IR (byte-identical: the ledger/meter sinks read only
         // input/output/cache-read/cache-write).
-        record_token_usage(&t, usage_sink, lane);
+        record_token_usage(host, &t, usage_sink, lane);
     } else if let Some(sink) = usage_sink {
         // A delivered response with NO token usage (a flat-fee op, e.g. moderations) still METERS as
         // one request against the serving model — FinOps consumers count requests per model even
-        // when nothing token-bills.
+        // when nothing token-bills. Routed through the host `meter_series` seam over the sink's opaque
+        // `GovHandle` — byte-identical to the pre-flip `sink.gov.record_metering(...)`.
         if let Some(lane) = lane {
-            sink.gov.record_metering(
+            host.meter_series(
+                &sink.gov,
                 &sink.key.id,
                 &lane.model,
                 &lane.provider,
@@ -80,6 +83,7 @@ pub(crate) fn tier_tokens(u: &busbar_substrate::billing::TokenUsage) -> busbar_a
 /// tokens to no model, so nothing is ledgered or metered (unreachable in production: every delivered
 /// response has a serving lane).
 pub(crate) fn ledger_and_meter(
+    host: &Arc<dyn EngineHost>,
     sink: &UsageSink,
     lane: &crate::engine::Lane,
     usage: Option<&busbar_substrate::billing::TokenUsage>,
@@ -88,8 +92,11 @@ pub(crate) fn ledger_and_meter(
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
     // differently under the rate card) against the key's budget chain, in the SAME window as the
     // flat per-request fee (`sink.charged_at`, the header-arrival epoch), so token accrual and the
-    // per-request fee never split across windows (#29). `record_usage` no-ops on an all-zero tier.
-    sink.gov.record_usage(
+    // per-request fee never split across windows (#29). `meter_ledger` no-ops on an all-zero tier.
+    // Routed through the host seam over the sink's opaque `GovHandle`/`CostHandle` — byte-identical to
+    // the pre-flip `sink.gov.record_usage(&sink.cost, …)`.
+    host.meter_ledger(
+        &sink.gov,
         &sink.cost,
         &sink.key,
         &sink.pool,
@@ -99,7 +106,8 @@ pub(crate) fn ledger_and_meter(
     );
     // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
     // delivered response counts its request. Same pinned epoch as the budget charges (#29).
-    sink.gov.record_metering(
+    host.meter_series(
+        &sink.gov,
         &sink.key.id,
         &lane.model,
         &lane.provider,
@@ -113,13 +121,14 @@ pub(crate) fn ledger_and_meter(
 /// `None` (an unknown/unresolvable lane) can attribute tokens to no model, so nothing is ledgered
 /// or metered (unreachable in production: every delivered response has a serving lane).
 pub(crate) fn record_token_usage(
+    host: &Arc<dyn EngineHost>,
     usage: &busbar_substrate::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::engine::Lane>,
 ) {
     if let Some(sink) = usage_sink {
         let Some(lane) = lane else { return };
-        ledger_and_meter(sink, lane, Some(usage), &tier_tokens(usage));
+        ledger_and_meter(host, sink, lane, Some(usage), &tier_tokens(usage));
     }
 }
 
@@ -134,9 +143,13 @@ pub(crate) fn record_token_usage(
 /// counter for non-pool traffic. Resolve the metric label to the routed lane's model name when the
 /// cell key is empty, leaving named-pool traffic labeled by its pool name. This decouples the metric
 /// label from the cell key WITHOUT touching the cell key itself.
-pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: usize) -> &'a str {
+pub(crate) fn metric_pool_label<'a>(
+    rt: &'a Arc<NativeRuntime>,
+    pool_name: &'a str,
+    i: usize,
+) -> &'a str {
     if pool_name.is_empty() {
-        app.engine_tables().lanes()[i].model.as_str()
+        EngineTables::new(rt).lanes()[i].model.as_str()
     } else {
         pool_name
     }
@@ -147,14 +160,17 @@ pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: us
 /// reports a fresh trip, mirroring the HardDown arm so threshold-based trips are counted too (#29). The
 /// `pool` label is the bounded, operator-controlled canonical pool name, or the routed model name for
 /// the default (`""`) cell (see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
-pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
-    use busbar_substrate::plane_host::EngineHost as _;
-    // KEYSTONE: route the trip metric through the neutral host seam (an alloc-free borrowed host — one
-    // atomic `Arc::clone`, no heap) instead of naming core's telemetry module. Fired only on a real
-    // Closed→Open trip, so the per-call clone is off the steady-state hot path and the alloc gate.
-    busbar_core::plane_host::engine_host_value(app)
-        .telemetry_breaker_trip(metric_pool_label(app, pool_name, i), i);
-    diag_warn!(LANE_BREAKER_TRIPPED, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, "lane breaker tripped (Closed→Open)");
+pub(crate) fn emit_breaker_trip(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    pool_name: &str,
+    i: usize,
+) {
+    // App-retype WEDGE 3: route the trip metric through the neutral host seam directly (the host is
+    // already threaded through the forward loop — no per-call `engine_host_value` mint). Fired only on
+    // a real Closed→Open trip, so it is off the steady-state hot path and the alloc gate.
+    host.telemetry_breaker_trip(metric_pool_label(rt, pool_name, i), i);
+    diag_warn!(LANE_BREAKER_TRIPPED, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "lane breaker tripped (Closed→Open)");
 }
 
 /// The effective per-attempt time-to-response-headers cap for pool member `i`: the pool-member

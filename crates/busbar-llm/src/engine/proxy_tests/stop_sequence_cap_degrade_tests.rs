@@ -37,8 +37,10 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", http()),
@@ -75,8 +77,10 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         "stop": ["a", "b", "c", "d", "e"]
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", http()),
@@ -113,8 +117,10 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", http()),
@@ -152,8 +158,10 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "anthropic",
         busbar_substrate::handlers::chat("anthropic", http()),
@@ -193,8 +201,10 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         "stop_sequences": ["a", "b", "c", "d", "e", "f"]
     });
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "cohere",
         busbar_substrate::handlers::chat("cohere", http()),

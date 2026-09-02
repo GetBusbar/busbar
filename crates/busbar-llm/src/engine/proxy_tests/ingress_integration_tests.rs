@@ -70,7 +70,8 @@ fn test_affinity_header_defaults_to_session_id() {
     crate::testkit::install_test_seams();
     // No pool_runtime entry → default header.
     let app = minimal_app();
-    assert_eq!(affinity_header_for(&app, "anypool"), "x-session-id");
+    let (_host, rt) = crate::engine::test_host_rt(&app);
+    assert_eq!(affinity_header_for(&rt, "anypool"), "x-session-id");
 }
 
 #[test]
@@ -93,9 +94,10 @@ fn test_affinity_header_honors_configured_name() {
     // App is behind Arc; rebuild with the populated map.
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.llm_runtime_mut().pool_runtime = pr;
-    assert_eq!(affinity_header_for(&app, "tenant-pool"), "x-user-id");
+    let (_host, rt) = crate::engine::test_host_rt(&app);
+    assert_eq!(affinity_header_for(&rt, "tenant-pool"), "x-user-id");
     // A pool without an entry still falls back to the default.
-    assert_eq!(affinity_header_for(&app, "other"), "x-session-id");
+    assert_eq!(affinity_header_for(&rt, "other"), "x-session-id");
 }
 
 #[test]
@@ -117,7 +119,8 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
     );
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.llm_runtime_mut().pool_runtime = pr;
-    assert_eq!(affinity_header_for(&app, "p"), "x-session-id");
+    let (_host, rt) = crate::engine::test_host_rt(&app);
+    assert_eq!(affinity_header_for(&rt, "p"), "x-session-id");
 }
 
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
@@ -260,8 +263,9 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     // A malformed-JSON request on the SAME key fails pre-routing (model never resolved) → 400.
     let caller = busbar_core::auth::CallerToken(None);
     let headers = HeaderMap::new();
+    let (host, _rt) = crate::engine::test_host_rt(&app);
     let resp = futures::executor::block_on(operation_ingress_inner(
-        &app,
+        &host,
         &gov,
         caller.0.as_deref(),
         &headers,
@@ -584,6 +588,7 @@ async fn test_cohere_ingress_to_openai_backend() {
         )
         .pool("co", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -636,6 +641,7 @@ async fn test_responses_ingress_to_anthropic_backend() {
         )
         .pool("re", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -693,6 +699,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     // Non-stream action.
@@ -769,6 +776,7 @@ async fn test_gemini_unknown_action_is_404() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:countTokens"))
@@ -816,6 +824,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -917,6 +926,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1051,6 +1061,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1189,6 +1200,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1282,6 +1294,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1365,6 +1378,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1430,6 +1444,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1499,6 +1514,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1570,6 +1586,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1625,6 +1642,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1714,6 +1732,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -1799,6 +1818,7 @@ async fn test_unresolved_model_uses_bounded_pool_label_not_raw_string() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     // A unique, attacker-flavored model string that is NOT a configured pool/by-model key.
@@ -1872,6 +1892,7 @@ async fn test_body_model_parse_error_is_observable() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
@@ -1924,6 +1945,7 @@ async fn test_bedrock_invoke_unresolvable_body_is_observable() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
@@ -1985,6 +2007,7 @@ async fn test_served_request_increments_hot_path_metrics() {
         )
         .pool(POOL, &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let dur_count = format!("{}_count", busbar_core::metrics::REQUEST_DURATION_SECONDS);
@@ -2177,6 +2200,7 @@ async fn timing_gate_hot_path_p50_p99() {
         )
         .pool("timing-gate-pool", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let client = reqwest::Client::new();
@@ -2240,6 +2264,7 @@ async fn test_body_model_missing_model_is_observable() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
@@ -2290,6 +2315,7 @@ async fn test_path_model_non_object_body_is_observable() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
@@ -2341,6 +2367,7 @@ async fn test_gemini_unsupported_action_is_observable() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let before = requests_total_for(
@@ -2432,6 +2459,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -2501,6 +2529,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -2576,6 +2605,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -2636,6 +2666,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -2705,6 +2736,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
         .pool("foo", &[(0, 1)])
         .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -2744,6 +2776,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/gemini-flash"))
@@ -2777,6 +2810,7 @@ async fn test_gemini_empty_model_is_404() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/:generateContent"))
@@ -2802,6 +2836,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     // Unsupported-action branch on the v1 surface.
@@ -2864,6 +2899,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:countTokens"))
@@ -2900,6 +2936,7 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     // (a) Colon-less stable `/v1/models/{id}` ⇒ OpenAI `not_found_error` (the model.retrieve
@@ -3075,6 +3112,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
         )
         .pool("tunedModels/abc:1", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -3150,6 +3188,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -3618,6 +3657,7 @@ async fn test_cohere_bad_json_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
@@ -3652,6 +3692,7 @@ async fn test_responses_bad_json_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
@@ -3676,6 +3717,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -3707,6 +3749,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -3734,6 +3777,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
@@ -3762,6 +3806,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
@@ -3797,6 +3842,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -3830,6 +3876,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
@@ -3862,6 +3909,7 @@ async fn test_responses_numeric_model_is_400_native_envelope() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
@@ -3894,6 +3942,7 @@ async fn test_gemini_non_object_body_is_400() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1beta/models/foo:generateContent"))
@@ -3933,6 +3982,7 @@ async fn test_bedrock_non_object_body_is_400() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/foo/converse"))
@@ -3968,6 +4018,7 @@ async fn test_gemini_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!(
@@ -3997,6 +4048,7 @@ async fn test_bedrock_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/model/no-such/converse"))
@@ -4028,6 +4080,7 @@ async fn test_cohere_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v2/chat"))
@@ -4052,6 +4105,7 @@ async fn test_responses_unknown_model_404_native_shape() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
@@ -4145,6 +4199,7 @@ async fn test_openai_ingress_stream_emits_native_openai_frames() {
         )
         .pool("gpt-4o", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4234,6 +4289,7 @@ async fn test_cohere_ingress_stream_emits_native_cohere_frames() {
         )
         .pool("co", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4323,6 +4379,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
         )
         .pool("re", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4411,6 +4468,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
         )
         .pool("anthropic.claude-3:haiku", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4477,6 +4535,7 @@ async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
         )
         .pool("co", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4552,6 +4611,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
         )
         .pool("re", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -4668,6 +4728,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
         // note above), so a served 2xx can only have come from the real retry loop failing over.
         .pool(POOL, &[(0, 100), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
     let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
@@ -4754,6 +4815,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
         // Same determinism trick: member 1 (the one that fails mid-stream) is guaranteed first.
         .pool(POOL, &[(0, 100), (1, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
     let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
@@ -4830,6 +4892,7 @@ async fn test_no_client_error_message_carries_router_prefix() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     let client = reqwest::Client::new();
 
@@ -4966,6 +5029,7 @@ async fn governed_pool_acl_router(
         .lane(LaneSpec::new(model, protocol, "http://127.0.0.1:1").provider(provider))
         .pool(model, &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     (addr, handle, secret)
 }
@@ -5252,6 +5316,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
             busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     // Request pool A via the named Anthropic ingress. The key is allowed on A, but A→B fallback
@@ -5342,6 +5407,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
             busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5393,6 +5459,7 @@ async fn test_adhoc_success_round_trip_via_router() {
             .provider("anthropic"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5428,6 +5495,7 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
             .provider("anthropic"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5511,6 +5579,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
             .provider("anthropic"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5577,6 +5646,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let app = TestApp::new().build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     for (path, version) in [
@@ -5641,6 +5711,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5719,6 +5790,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
         )
         .pool("foo", &[(0, 1)])
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -5851,6 +5923,7 @@ async fn governed_limit_router(
             None, 0, &groups,
         ))
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
     (addr, handle, secret)
 }
@@ -6023,6 +6096,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
             .provider("anthropic"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
     let resp = reqwest::Client::new()
@@ -6109,6 +6183,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
                 .provider("zai"),
         )
         .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
     // Hold a handle to the same App the router serves so the breaker op_handler can be inspected after
     // the request (`serve` only needs a clone of the Arc).
     let app_for_inspect = app.clone();

@@ -487,7 +487,8 @@ fn policy_fault_clear(key: &str) {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn decide_policy_order(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
     resolved: &busbar_substrate::hooks::ResolvedPolicy,
     cands: &[WeightedLane],
     request_ctx: &RequestCtx,
@@ -554,15 +555,18 @@ pub(crate) async fn decide_policy_order(
     // tests DO exercise the raw token-resolution path without building a full `GovCtx`), so it is
     // compiled out of the production binary entirely instead of shipping unreachable logic behind a
     // live-looking arm.
-    let gov = app.governance.as_ref();
+    // App-retype WEDGE 3: the governance/cost reaches now cross the host seam. `gov_handle`/`cost_handle`
+    // are the opaque handles the host mints over the SAME `GovState`/`CostModel` the pre-flip
+    // `app.governance`/`app.cost` named; `rate_headroom`/`budget_state` downcast them host-side and drive
+    // the identical pure observation.
+    let gov_handle = host.governance();
+    let cost_handle = host.cost();
     let gov_key = resolved_gov_key.cloned().or_else(|| {
         #[cfg(test)]
         {
-            match (gov, caller_token) {
-                // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience).
-                (Some(g), Some(tok)) => g.verify_token(tok, busbar_substrate::store::now(), None),
-                _ => None,
-            }
+            // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience), through the
+            // test-support host seam (the neutral form of `App::governance.verify_token(...)`).
+            caller_token.and_then(|tok| host.verify_token_test(tok))
         }
         #[cfg(not(test))]
         {
@@ -570,8 +574,8 @@ pub(crate) async fn decide_policy_order(
             None
         }
     });
-    let rate_headroom: Option<f64> = match (gov, gov_key.as_ref()) {
-        (Some(g), Some(key)) => g.rate_headroom(&app.cost, key, Some(pool_name), now()),
+    let rate_headroom: Option<f64> = match (gov_handle.as_ref(), gov_key.as_ref()) {
+        (Some(g), Some(key)) => host.rate_headroom(g, &cost_handle, key, Some(pool_name), now()),
         _ => None,
     };
 
@@ -608,8 +612,7 @@ pub(crate) async fn decide_policy_order(
     // allocation cost lives entirely behind the flag — a shape-only pool never runs this.
     let prompt = enforce_content_cap(send_prompt.then(|| facts.prompt()));
 
-    let member_meta = app
-        .engine_tables()
+    let member_meta = EngineTables::new(rt)
         .pool_runtime()
         .get(pool_name)
         .map(|r| &r.members);
@@ -644,13 +647,13 @@ pub(crate) async fn decide_policy_order(
     // single `u64` comparison — never recomputed per request. `is_empty()` short-circuits the
     // WHOLE candidate-signal loop below on the zero-cost default (no hook anywhere declared a
     // catalog signal): no `SignalBag` is ever pushed to, so it never spills its inline capacity.
-    let requested = app.requested_signals;
+    let requested = host.requested_signals();
     let now_ts = now();
 
     let candidates: Vec<Candidate> = live
         .iter()
         .map(|wl| {
-            let lane = &app.engine_tables().lanes()[wl.idx];
+            let lane = &EngineTables::new(rt).lanes()[wl.idx];
             let meta = member_meta.and_then(|m| m.get(&wl.idx));
             let mut signals = busbar_api::SignalBag::new();
             if !requested.is_empty() {
@@ -660,7 +663,7 @@ pub(crate) async fn decide_policy_order(
                 // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
                 if requested.wants(busbar_api::Signal::CandidateBreakerState) {
-                    let label = match app.store.breaker_state_snapshot_in(pool_name, wl.idx) {
+                    let label = match host.lane_store().breaker_state_snapshot_in(pool_name, wl.idx) {
                         busbar_substrate::store::BreakerState::Closed => "closed",
                         busbar_substrate::store::BreakerState::Open { .. } => "open",
                         busbar_substrate::store::BreakerState::HalfOpen => "half_open",
@@ -671,7 +674,7 @@ pub(crate) async fn decide_policy_order(
                     );
                 }
                 if requested.wants(busbar_api::Signal::CandidateErrorRate) {
-                    if let Some(rate) = app.store.error_rate_in(pool_name, wl.idx, now_ts) {
+                    if let Some(rate) = host.lane_store().error_rate_in(pool_name, wl.idx, now_ts) {
                         signals.push(
                             busbar_api::Signal::CandidateErrorRate,
                             busbar_api::SignalValue::F64(rate),
@@ -688,9 +691,9 @@ pub(crate) async fn decide_policy_order(
                 tier: meta.and_then(|m| m.tier.as_deref()),
                 cost_per_mtok: meta.and_then(|m| m.cost_per_mtok),
                 tags: meta.map(|m| m.tags.as_slice()).unwrap_or(&[]),
-                latency_ms: app.store.lane_latency_ms(wl.idx),
-                available_concurrency: app.store.available_permits(wl.idx),
-                budget_remaining: app.store.lane_budget_remaining(wl.idx),
+                latency_ms: host.lane_store().lane_latency_ms(wl.idx),
+                available_concurrency: host.lane_store().available_permits(wl.idx),
+                budget_remaining: host.lane_store().lane_budget_remaining(wl.idx),
                 rate_headroom,
                 signals,
             }
@@ -703,8 +706,9 @@ pub(crate) async fn decide_policy_order(
     // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays
     // off the default hot path. Busbar exposes the READ surface only; downshifting to a cheaper
     // model on it is the hook's policy, never core's.
-    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (gov, gov_key.as_ref()) {
-        (Some(g), Some(key)) => g.budget_state(&app.cost, key, now()),
+    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (gov_handle.as_ref(), gov_key.as_ref())
+    {
+        (Some(g), Some(key)) => host.budget_state(g, &cost_handle, key, now()),
         _ => Vec::new(),
     };
     let ctx = RoutingContext {
@@ -980,15 +984,14 @@ pub(crate) fn coerce_on_error(
 // marker. Only `capture_stage_shape` below (which reads the LLM IR to fill the shape) stays here, and
 // it fills the neutral `StageShape` (its fields are `pub`) across the crate boundary.
 //
-// WEDGE 2e: `StageShape`, `gate_rejected`, and `GateRejected` are named straight off the neutral
-// substrate. `fire_stage_taps` and `spawn_bounded_tap` are still named off `busbar_core::proxy`:
-// - `fire_stage_taps` — the substrate twin takes `host: &dyn EngineHost` (for the group-scope seam),
-//   which only the wedge-3 forward thread provides; core's `groups_tree`-taking version is what the
-//   pipeline call sites still pass `&app.groups_registry` to, so it stays until wedge 3 flips them.
-// - `spawn_bounded_tap` — kept on core so the global (`fire_global_taps`) and stage taps keep sharing
-//   core's ONE 1024-permit admission gate; repointing only this reach would split that cap into two.
-pub(crate) use busbar_core::proxy::{fire_stage_taps, spawn_bounded_tap};
-pub(crate) use busbar_substrate::proxy::proxy_vocab::{gate_rejected, GateRejected, StageShape};
+// WEDGE 3 (THE FLIP): `fire_stage_taps` and `spawn_bounded_tap` now name the NEUTRAL substrate twins
+// directly — the wedge-3 forward thread provides the `host: &dyn EngineHost` the substrate
+// `fire_stage_taps` reads the group-scope seam through, and unifying the bounded-spawn on the substrate
+// `spawn_bounded_tap` keeps stage + global taps (and core's own auth-denial tap) on ONE 1024-permit
+// gate. Core's `fire_stage_taps`/`spawn_bounded_tap` are retired with this flip.
+pub(crate) use busbar_substrate::proxy::proxy_vocab::{
+    fire_stage_taps, gate_rejected, spawn_bounded_tap, GateRejected, StageShape,
+};
 
 /// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
 /// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader

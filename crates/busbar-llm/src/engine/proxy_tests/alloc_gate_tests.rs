@@ -113,11 +113,19 @@ fn alloc_gate_translate_write_stable() {
     let hop_bytes = openai_chat_body();
     let body_value: serde_json::Value = serde_json::from_slice(&hop_bytes).unwrap();
 
+    // App-retype WEDGE 3: the surgical write path now takes the neutral `host`/`rt` the production
+    // forward thread passes. Both are resolved ONCE, OUTSIDE the measured window (the host is one
+    // `Arc::new`, the runtime an alloc-free slot read), so the pinned per-call count still measures
+    // ONLY `translate_request_cross_protocol`'s own allocations — which stay ZERO.
+    let host = busbar_core::plane_host::engine_host(&app);
+    let rt = crate::engine::native_runtime_arc(host.as_ref());
+
     // WARM the path once OUTSIDE the measured window: first-touch lazy statics (the protocol
     // registry, etc.) allocate once per process, not per request, and must not be charged to the
     // per-request count.
     let _ = crate::engine::translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         crate::test_support::CHAT,
@@ -130,7 +138,8 @@ fn alloc_gate_translate_write_stable() {
 
     let before = CountingJemalloc::reset();
     let out = crate::engine::translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         crate::test_support::CHAT,

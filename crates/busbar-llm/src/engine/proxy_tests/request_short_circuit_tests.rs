@@ -21,8 +21,10 @@ fn shape_same_proto(
     let app = app_with_lane(proto, lane_model);
     // hop_bytes = the exact serialized source bytes the caller retained for this hop.
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         proto_name,
         busbar_substrate::handlers::chat(proto_name, busbar_substrate::transport::Transport::Http),
@@ -97,8 +99,10 @@ fn upstream_model_override_rewrites_body_and_url_model() {
         .build();
     let body = json!({"model":"client-alias","messages":[]});
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "openai",
         busbar_substrate::handlers::chat("openai", busbar_substrate::transport::Transport::Http),
@@ -163,8 +167,10 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
         .build();
     let body = json!({"model":"claude-3-5-sonnet","max_tokens":7,"messages":[{"role":"user","content":"hi"}]});
     let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
-        &app,
+        &host,
+        &rt,
         0,
         "anthropic",
         busbar_substrate::handlers::chat("anthropic", busbar_substrate::transport::Transport::Http),

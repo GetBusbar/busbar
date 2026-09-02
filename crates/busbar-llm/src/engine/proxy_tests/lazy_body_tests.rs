@@ -127,9 +127,11 @@ fn head_pristine_matches_translate_output() {
             .build();
         let hop_bytes = Bytes::from(busbar_substrate::json::to_vec(body).unwrap());
         let lazy = LazyBody::parse(&hop_bytes).unwrap();
-        let head_says = head_provably_pristine(&app, 0, lazy.probe());
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let head_says = head_provably_pristine(&rt, 0, lazy.probe());
         let out = translate_request_cross_protocol(
-            &app,
+            &host,
+            &rt,
             0,
             name,
             busbar_substrate::handlers::chat(name, busbar_substrate::transport::Transport::Http),
@@ -163,11 +165,12 @@ fn non_object_body_is_head_pristine() {
             "http://unused.local",
         ))
         .build();
+    let (_host, rt) = crate::engine::test_host_rt(&app);
     for raw in [r#"[1,2,3]"#, r#""s""#, r#"null"#] {
         let bytes = Bytes::from(raw.as_bytes().to_vec());
         let lazy = LazyBody::parse(&bytes).unwrap();
         assert!(
-            head_provably_pristine(&app, 0, lazy.probe()),
+            head_provably_pristine(&rt, 0, lazy.probe()),
             "non-object body {raw} must be head-pristine"
         );
     }

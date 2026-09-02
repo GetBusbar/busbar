@@ -82,94 +82,96 @@ impl EgressSendError {
 /// Test-only convenience now: every production ingress route holds a `GovCtx` and goes through
 /// [`forward_with_pool_keyed`]; this bytes-only, key-less form survives solely for the many tests
 /// that construct a request from raw bytes.
+// App-retype WEDGE 3 (THE FLIP): the two bytes-in, key-less/keyed TEST-ONLY convenience entries live
+// in a `#[cfg(test)] mod` so they keep taking a `&Arc<busbar_core::state::App>` (the ~81 test call
+// sites are unchanged) WITHOUT that `App` name reddening the neutral-purity scanner — the scanner
+// exempts `#[cfg(test)] mod` scope. Each mints the neutral `host`/`rt` the production forward path
+// threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot read) and delegates to the
+// production `forward_with_pool_parsed`. Production ingress never routes through here (it holds a host
+// already and calls `forward_with_pool_parsed` directly), so nothing ships this mint.
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn forward_with_pool(
-    // BORROWED: the whole forward runs inline inside the request future, so nothing here needs an
-    // owned Arc — ownership is taken ONLY at the escape points (streaming bodies, spawned
-    // completions), each with its own explicit clone. Every by-value pass was a shared-refcount
-    // RMW pair ping-ponging across workers (wave-6 profile).
-    app: &Arc<App>,
-    cands: Vec<WeightedLane>,
-    body: Bytes,
-    caller_token: Option<&str>,
-    pool_name: &str,
-    affinity_key: Option<&str>,
-    ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
-    usage_sink: Option<UsageSink>,
-) -> Response {
-    forward_with_pool_keyed(
-        app,
-        cands,
-        body,
-        caller_token,
-        None,
-        pool_name,
-        affinity_key,
-        ingress_protocol,
-        op,
-        usage_sink,
-    )
-    .await
-}
+pub(crate) use test_forward_entry::{forward_with_pool, forward_with_pool_keyed};
 
-/// [`forward_with_pool`] plus the caller's pre-resolved governance key (`GovCtx.key`). The named /
-/// ad-hoc anthropic-dialect routes use this so a GROUP/SSO principal — whose bearer token is not a
-/// virtual-key secret and so never resolves via the `lookup` fallback — still projects
-/// `rate_headroom` / `identity` into a pool's routing policy, matching the universal dispatch path.
-// A plain fn returning `Either<ready(400), forward_future>` rather than an async fn (wave-8a
-// future-shrink): an async fn layer here stored its ten parameters in ITS coroutine and then moved
-// them into `forward_with_pool_parsed`'s — double-stored per-request state (+280 bytes of
-// await-boundary memcpy) for a wrapper whose only own work is one synchronous parse. The parse runs
-// eagerly at call time — every caller `.await`s the returned future immediately, and `LazyBody::
-// parse` is pure CPU with no I/O, so nothing observable moves — and the parameters land in exactly
-// one coroutine. The malformed-body 400 contract is unchanged (`Either::Left` resolves to the same
-// `ingress_error` on first poll).
-#[allow(clippy::too_many_arguments)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn forward_with_pool_keyed<'a>(
-    app: &'a Arc<App>,
-    cands: Vec<WeightedLane>,
-    body: Bytes,
-    caller_token: Option<&'a str>,
-    resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
-    pool_name: &'a str,
-    affinity_key: Option<&'a str>,
-    ingress_protocol: &'a str,
-    op: busbar_substrate::handlers::Op,
-    usage_sink: Option<UsageSink>,
-) -> impl std::future::Future<Output = Response> + 'a {
-    // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
-    // eager parse — `LazyBody::parse` goes through the identical `busbar_substrate::json` guard + parser).
-    let _parse = busbar_substrate::profile::start(busbar_substrate::profile::Stage::InboundParse);
-    let v: LazyBody = match LazyBody::parse(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
-            return futures::future::Either::Left(std::future::ready(ingress_error(
-                ingress_protocol,
-                StatusCode::BAD_REQUEST,
-                KIND_INVALID_REQUEST,
-                "We could not parse the JSON body of your request.",
-            )));
-        }
-    };
-    drop(_parse);
-    futures::future::Either::Right(forward_with_pool_parsed(
-        app,
-        cands,
-        body,
-        Some(v),
-        APPLICATION_JSON,
-        caller_token,
-        resolved_gov_key,
-        pool_name,
-        affinity_key,
-        ingress_protocol,
-        op,
-        usage_sink,
-    ))
+#[cfg(test)]
+mod test_forward_entry {
+    use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn forward_with_pool(
+        app: &Arc<busbar_core::state::App>,
+        cands: Vec<WeightedLane>,
+        body: Bytes,
+        caller_token: Option<&str>,
+        pool_name: &str,
+        affinity_key: Option<&str>,
+        ingress_protocol: &str,
+        op: busbar_substrate::handlers::Op,
+        usage_sink: Option<UsageSink>,
+    ) -> Response {
+        forward_with_pool_keyed(
+            app,
+            cands,
+            body,
+            caller_token,
+            None,
+            pool_name,
+            affinity_key,
+            ingress_protocol,
+            op,
+            usage_sink,
+        )
+        .await
+    }
+
+    /// [`forward_with_pool`] plus the caller's pre-resolved governance key (`GovCtx.key`), so a
+    /// GROUP/SSO principal still projects `rate_headroom` / `identity` into a pool's routing policy.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn forward_with_pool_keyed(
+        app: &Arc<busbar_core::state::App>,
+        cands: Vec<WeightedLane>,
+        body: Bytes,
+        caller_token: Option<&str>,
+        resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+        pool_name: &str,
+        affinity_key: Option<&str>,
+        ingress_protocol: &str,
+        op: busbar_substrate::handlers::Op,
+        usage_sink: Option<UsageSink>,
+    ) -> Response {
+        // Mint the neutral host/rt the production path threads (see the module note).
+        let host = busbar_core::plane_host::engine_host(app);
+        let rt = crate::engine::native_runtime_arc(host.as_ref());
+        // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the
+        // production entry — identical `LazyBody::parse` guard + parser).
+        let v: LazyBody = match LazyBody::parse(&body) {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+                return ingress_error(
+                    ingress_protocol,
+                    StatusCode::BAD_REQUEST,
+                    KIND_INVALID_REQUEST,
+                    "We could not parse the JSON body of your request.",
+                );
+            }
+        };
+        forward_with_pool_parsed(
+            &host,
+            &rt,
+            cands,
+            body,
+            Some(v),
+            APPLICATION_JSON,
+            caller_token,
+            resolved_gov_key,
+            pool_name,
+            affinity_key,
+            ingress_protocol,
+            op,
+            usage_sink,
+        )
+        .await
+    }
 }
 
 /// The forward implementation. `v` is the request body ALREADY parsed by the caller (the ingress
@@ -202,7 +204,8 @@ pub(crate) fn forward_with_pool_keyed<'a>(
 // the record call is a no-op there, the same one-relaxed-atomic-check cost) costs no per-request
 // allocation.
 pub(crate) fn forward_with_pool_parsed<'a>(
-    app: &'a Arc<App>,
+    host: &'a Arc<dyn EngineHost>,
+    rt: &'a Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
     body: Bytes,
     mut v: Option<LazyBody>,
@@ -234,7 +237,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
         let _wrap = busbar_substrate::profile::start(busbar_substrate::profile::Stage::WrapSetup);
-        let request_id = app.next_request_id();
+        let request_id = host.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
         // the default info filter: `record` on a disabled span is the same single relaxed check
@@ -245,7 +248,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
         // response this fires at response-HEAD time (status known, body still flowing) — stream-tail
         // outcomes are a later increment. ZERO COST when no response tap is configured.
-        let completion_shape = if app.tap_hooks_response.is_empty() {
+        let completion_shape = if host.tap_hooks_response().is_empty() {
             None
         } else {
             // `stream` is a captured head key — read it via `probe` (no DOM needed); the SHAPE capture
@@ -273,7 +276,8 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         };
         drop(_wrap);
         let resp = forward_with_pool_parsed_inner(
-            app,
+            host,
+            rt,
             cands,
             body,
             v,
@@ -297,7 +301,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
                 "failed"
             };
             fire_stage_taps(
-                &app.tap_hooks_response,
+                host.tap_hooks_response(),
                 &shape,
                 busbar_substrate::hooks::wire::HookStageProjection {
                     at: "response",
@@ -309,7 +313,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
                     status: Some(resp.status().as_u16()),
                 },
                 resolved_gov_key.and_then(|k| k.group.as_deref()),
-                &app.groups_registry,
+                &**host,
             );
         }
         resp
@@ -392,7 +396,8 @@ impl Drop for BudgetSpendGuard<'_> {
 ///     on both call sites (machine-filterable instead of embedded in a format string).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn translate_response_cross_protocol(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
     i: usize,
     ingress_protocol: &str,
     op: busbar_substrate::handlers::Op,
@@ -410,7 +415,7 @@ pub(crate) async fn translate_response_cross_protocol(
     chosen_policy_name: Option<&'static str>,
     degraded: bool,
 ) -> Response {
-    let egress_name = app.engine_tables().lanes()[i].protocol;
+    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
 
     // Size-capped buffer under the COMPLETION cap (not the tight error-body cap): a legitimate 2xx
     // completion can far exceed 256 KiB and must be buffered WHOLE to parse+translate. `truncated`
@@ -449,12 +454,11 @@ pub(crate) async fn translate_response_cross_protocol(
             "cross-protocol non-stream upstream body failed mid-transfer; \
              not recording success/usage, refunding budget, returning ingress-native error"
         );
-        let tripped = app
-            .store
+        let tripped = host.lane_store()
             .record_transient_in(pool, i, ERR_NET_TRANSPORT, breaker_cfg, None);
         // A threshold-based Closed→Open trip here is a breaker trip too (#29).
         if tripped {
-            emit_breaker_trip(app, pool, i);
+            emit_breaker_trip(host, rt, pool, i);
         }
         // `budget_guard` is still armed here (nothing has disarmed it): dropping it on this `return`
         // refunds ONLY if the headers-spend actually decremented (#21).
@@ -514,7 +518,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 busbar_substrate::handlers::TranslateRespInput::Opaque(&bytes),
                 ingress_op.is_some(),
                 ingress_protocol,
-                &app.engine_tables().lanes()[i].model,
+                &EngineTables::new(rt).lanes()[i].model,
                 now(),
                 false,
                 None,
@@ -537,7 +541,7 @@ pub(crate) async fn translate_response_cross_protocol(
                         // Delivered: bill + disarm the spend guard here (tokens are now committed to
                         // this key; keep the lane unit too rather than refund it out from under an
                         // already-billed request).
-                        record_resp_usage(usage, &usage_sink, app.engine_tables().lanes().get(i));
+                        record_resp_usage(host, usage, &usage_sink, EngineTables::new(rt).lanes().get(i));
                         budget_guard.disarm();
                         let rb = Response::builder()
                             .status(status)
@@ -546,7 +550,7 @@ pub(crate) async fn translate_response_cross_protocol(
                         let rb = maybe_attach_route_policy(
                             rb,
                             chosen_policy_name,
-                            &app.engine_tables().lanes()[i].model,
+                            &EngineTables::new(rt).lanes()[i].model,
                         );
                         return rb
                             .body(Body::from(wire.bytes))
@@ -577,7 +581,7 @@ pub(crate) async fn translate_response_cross_protocol(
                     busbar_substrate::handlers::TranslateRespInput::Json(rv),
                     ingress_op.is_some(),
                     ingress_protocol,
-                    &app.engine_tables().lanes()[i].model,
+                    &EngineTables::new(rt).lanes()[i].model,
                     now(),
                     wants_stream,
                     stream_elapsed_ms,
@@ -626,9 +630,10 @@ pub(crate) async fn translate_response_cross_protocol(
                                 | busbar_substrate::wire::TranslatedResponse::Json(_)
                         ) {
                             record_resp_usage(
+                                host,
                                 usage,
                                 &usage_sink,
-                                app.engine_tables().lanes().get(i),
+                                EngineTables::new(rt).lanes().get(i),
                             );
                             budget_guard.disarm();
                         }
@@ -647,7 +652,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                 let rb = maybe_attach_route_policy(
                                     rb,
                                     chosen_policy_name,
-                                    &app.engine_tables().lanes()[i].model,
+                                    &EngineTables::new(rt).lanes()[i].model,
                                 );
                                 return rb
                                     .body(Body::from(frames))
@@ -672,7 +677,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                 let rb = maybe_attach_route_policy(
                                     rb,
                                     chosen_policy_name,
-                                    &app.engine_tables().lanes()[i].model,
+                                    &EngineTables::new(rt).lanes()[i].model,
                                 );
                                 return rb
                                     .body(Body::from(wire.bytes))
@@ -711,7 +716,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                     let rb = maybe_attach_route_policy(
                                         rb,
                                         chosen_policy_name,
-                                        &app.engine_tables().lanes()[i].model,
+                                        &EngineTables::new(rt).lanes()[i].model,
                                     );
                                     return rb
                                         .body(Body::from(
@@ -734,7 +739,7 @@ pub(crate) async fn translate_response_cross_protocol(
                                 let rb = maybe_attach_route_policy(
                                     rb,
                                     chosen_policy_name,
-                                    &app.engine_tables().lanes()[i].model,
+                                    &EngineTables::new(rt).lanes()[i].model,
                                 );
                                 // sonic-rs: SIMD serialize of the translated client body (the
                                 // response-path hot spot); fall back on the impossible serialize error.
@@ -778,11 +783,10 @@ pub(crate) async fn translate_response_cross_protocol(
     // The 2xx headers optimistically recorded a breaker SUCCESS, but an undecodable body is exactly as
     // much a lane fault as a transport failure — without this, a lane returning undecodable 200s
     // forever never trips (unlike its TransportError sibling above, which already compensates).
-    let tripped = app
-        .store
+    let tripped = host.lane_store()
         .record_transient_in(pool, i, "untranslatable-2xx", breaker_cfg, None);
     if tripped {
-        emit_breaker_trip(app, pool, i);
+        emit_breaker_trip(host, rt, pool, i);
     }
     // `budget_guard` is still armed here (nothing on this fallthrough disarmed it): dropping it on
     // this `return` refunds the headers-time unit, symmetric with the TransportError branch above.
@@ -800,7 +804,8 @@ pub(crate) async fn translate_response_cross_protocol(
 // Plumbing function: same parameter set as the public wrapper.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_with_pool_parsed_inner(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
     mut body: Bytes,
     // The request body VALIDATED once by the caller for JSON-body operations, carried as a
@@ -836,11 +841,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
     let _prep = busbar_substrate::profile::start(busbar_substrate::profile::Stage::Prepare);
-    // The alloc-free borrowed host carrier (KEYSTONE): the failover loop's telemetry emits
-    // (upstream-attempt/failure, failover) route through this neutral seam instead of naming core's
-    // telemetry module. One `Arc::clone` (atomic, no heap — off the alloc-gate count).
-    use busbar_substrate::plane_host::EngineHost as _;
-    let host = busbar_core::plane_host::engine_host_value(app);
+    // App-retype WEDGE 3: the failover loop's telemetry emits (upstream-attempt/failure, failover) and
+    // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
+    // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
+    // the await loop.
     // EGRESS deletion switch: every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
@@ -848,7 +852,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // removed (the deletion test).
     let mut cands: Vec<WeightedLane> = {
         let supports = |wl: &WeightedLane| {
-            busbar_substrate::handlers::request_handler(app.engine_tables().lanes()[wl.idx].protocol)
+            busbar_substrate::handlers::request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))
                 .is_some()
         };
@@ -933,8 +937,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let pool_rewrites: &[(
         std::time::Duration,
         std::sync::Arc<dyn busbar_api::RoutingPolicy>,
-    )] = app.pool_rewrites(pool_name);
-    if !app.rewrite_hooks.is_empty() || !pool_rewrites.is_empty() {
+    )] = host.pool_rewrites(pool_name);
+    if !host.rewrite_hooks().is_empty() || !pool_rewrites.is_empty() {
         if let Some(lazy) = v.as_mut() {
             // A rewrite hook's REJECT stops the request here — the same client shaping a decide-
             // path gate rejection gets (clamped status, sanitized message, native envelope).
@@ -965,7 +969,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 return reject(500, "request rewrite could not be applied".to_string());
             };
             let mut applied = match apply_global_rewrites(
-                &app.rewrite_hooks,
+                host.rewrite_hooks(),
                 parsed,
                 pool_name,
                 ingress_protocol,
@@ -1024,7 +1028,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // GATED ON THE DEPLOYMENT, resolved at config apply: `any_content_hook` is true only when some
     // hook holds a `prompt: ro`/`rw` grant. A deployment that grants no hook access to content —
     // the default — takes a single predictable always-false branch and builds nothing.
-    if app.any_content_hook {
+    if host.any_content_hook() {
         if let Some(lazy) = v.as_mut() {
             let _ = lazy.ensure_ir(ingress_protocol, op);
         }
@@ -1041,10 +1045,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // tap count. ZERO COST when no tap is configured (empty-list branch).
     // Hoisted empty check (mirrors `fire_global_taps`'s own first-line early return) so the DOM is
     // only materialized when a tap is actually configured — ZERO COST stays zero-parse.
-    if !app.tap_hooks.is_empty() {
+    if !host.tap_hooks().is_empty() {
         if let Some(Ok(dom)) = v.as_mut().map(|l| l.ensure_dom()) {
             fire_global_taps(
-                app,
+                host,
                 dom,
                 &body,
                 req_content_type,
@@ -1104,12 +1108,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // The client must restart the request itself after receiving the error event.
 
     // Failover config: prefer this pool's own settings, fall back to the global default.
-    let pool_failover = app
-        .engine_tables()
+    let pool_failover = EngineTables::new(rt)
         .pool_runtime()
         .get(pool_name)
         .and_then(|r| r.failover.as_ref())
-        .or(app.engine_tables().failover_cfg().as_ref());
+        .or(EngineTables::new(rt).failover_cfg().as_ref());
     let (deadline_secs, max_cap) = match pool_failover {
         Some(f) => (f.timeout_secs, f.max_hops),
         None => (
@@ -1123,7 +1126,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // thresholds the synchronous path used. The default (no per-pool breaker — the common case) is
     // a process-wide cached Arc, so the hot path pays no per-request allocation for it.
     let breaker_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg> =
-        resolve_breaker_cfg(app, pool_name);
+        resolve_breaker_cfg(rt, pool_name);
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
 
@@ -1139,7 +1142,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         cands.retain(|wl| {
             !excl
                 .iter()
-                .any(|m| m == &app.engine_tables().lanes()[wl.idx].model)
+                .any(|m| m == &EngineTables::new(rt).lanes()[wl.idx].model)
         });
     }
 
@@ -1177,13 +1180,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // when no gate is configured (both sources empty ⇒ the pass is skipped).
     // The pool's resolved decision gates, read through the core-side pool-hook facade (see the rewrite
     // chain above for why these live core-side rather than on the plane's `PoolRuntime`).
-    let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = app.pool_gates(pool_name);
+    let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
-    if !app.global_gates.is_empty() || !pool_gates.is_empty() {
+    if !host.global_gates().is_empty() || !pool_gates.is_empty() {
         // The chain: globals (pre-sorted ascending by priority) then pool gates (config order),
         // stable-sorted by priority — ties keep globals-first, then config order.
         let mut chain: Vec<&(u16, busbar_substrate::hooks::ResolvedPolicy)> =
-            app.global_gates.iter().chain(pool_gates.iter()).collect();
+            host.global_gates().iter().chain(pool_gates.iter()).collect();
         chain.sort_by_key(|(p, _)| *p);
         // Every concurrently-firing gate borrows the same parsed body; the shared Null stands in
         // for a non-JSON body (the same projection the sequential path used). Gates project
@@ -1199,7 +1202,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let outcomes: Vec<PolicyOutcome> =
             futures::future::join_all(chain.iter().map(|(_, gate)| {
                 decide_policy_order(
-                    app,
+                    host,
+                    rt,
                     gate,
                     &cands,
                     &request_ctx,
@@ -1281,8 +1285,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     on_empty: on_empty.clone(),
                     name,
                 });
-                let members = app
-                    .engine_tables()
+                let members = EngineTables::new(rt)
                     .pool_runtime()
                     .get(pool_name)
                     .map(|r| &r.members);
@@ -1377,7 +1380,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         Some(order)
     } else {
         // The pool's resolved routing policy, read through the core-side pool-hook facade.
-        match app.pool_policy(pool_name) {
+        match host.pool_policy(pool_name) {
             // Default fast path: no policy ⇒ SWRR, byte-identical to pre-feature behavior. NOTHING below
             // this arm runs — no projection, no async, one predictable branch.
             None => None,
@@ -1403,7 +1406,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // pattern as the exhaustion boxes below; the concurrent GATE firing above already
                 // heap-allocates its futures via `join_all`.)
                 let outcome = Box::pin(decide_policy_order(
-                    app,
+                    host,
+                    rt,
                     resolved,
                     &cands,
                     &request_ctx,
@@ -1504,8 +1508,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             on_empty: on_empty.clone(),
                             name,
                         });
-                        let members = app
-                            .engine_tables()
+                        let members = EngineTables::new(rt)
                             .pool_runtime()
                             .get(pool_name)
                             .map(|r| &r.members);
@@ -1582,7 +1585,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
     // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
     // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
-    let stage_shape = if app.tap_hooks_candidate.is_empty() && app.tap_hooks_routing.is_empty() {
+    let stage_shape = if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
         None
     } else {
         // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
@@ -1604,7 +1607,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     };
     if let Some(shape) = &stage_shape {
         fire_stage_taps(
-            &app.tap_hooks_candidate,
+            host.tap_hooks_candidate(),
             shape,
             busbar_substrate::hooks::wire::HookStageProjection {
                 at: "candidate",
@@ -1616,7 +1619,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 status: None,
             },
             resolved_gov_key.and_then(|k| k.group.as_deref()),
-            &app.groups_registry,
+                &**host,
         );
     }
     // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
@@ -1629,7 +1632,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // register read on the always-on egress path — restoring the pre-1.5.3 `Copy` read that the
     // per-pool override turned into a per-call `App::pool_upstream_creds(pool_name)` map probe. Same
     // value the accessor returns (pool override else all-pools default), same passthrough-40x logic.
-    let upstream_creds = app.engine_tables().pool_upstream_creds(pool_name);
+    let upstream_creds = EngineTables::new(rt).pool_upstream_creds(pool_name);
 
     // PREPARE ends here (dispatch loop begins). From here on, `v` IS the first-hop body: the loop
     // consumes it on hop 1 (`v.take()` / the pristine short-circuit) and failover hops 2+ re-parse
@@ -1655,7 +1658,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // WHOLE dispatch window — including a dropped future — so this path no longer scatters explicit
         // (and formerly unowned) `release_probe_*` calls across its early-return arms.
         let (i, permit, probe_epoch) = match pick_among(
-            app,
+            host,
+            rt,
             &cands,
             &mut request_ctx,
             affinity_key_hash,
@@ -1683,7 +1687,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // per-request future every happy-path request carries; the alloc only happens on
                 // the already-degraded path. (Same pattern as walk.rs's recursive box.)
                 return Box::pin(handle_exhaustion_for_pool(
-                    app.clone(),
+                    host.clone(),
+                    rt.clone(),
                     &cands,
                     now(),
                     pool_name,
@@ -1716,7 +1721,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // once: the pre-dispatch sites used the UNOWNED `release_probe_in` (which could revert a peer's
         // live probe), and NONE of the calls ran on a dropped future (the strand this closes).
         let mut probe_guard = probe_epoch.map(|epoch| crate::engine::select::ProbeGuard {
-            store: app.store.as_ref(),
+            store: host.lane_store(),
             pool: pool_name,
             lane: i,
             armed: true,
@@ -1740,11 +1745,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .filter(|wl| !request_ctx.excluded.contains(&wl.idx))
                 .count();
             fire_stage_taps(
-                &app.tap_hooks_routing,
+                host.tap_hooks_routing(),
                 shape,
                 busbar_substrate::hooks::wire::HookStageProjection {
                     at: "routing",
-                    model: Some(&app.engine_tables().lanes()[i].model),
+                    model: Some(&EngineTables::new(rt).lanes()[i].model),
                     attempt_number: Some(
                         u32::try_from(attempt.saturating_add(1)).unwrap_or(u32::MAX),
                     ),
@@ -1754,7 +1759,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     status: None,
                 },
                 resolved_gov_key.and_then(|k| k.group.as_deref()),
-                &app.groups_registry,
+                &**host,
             );
         }
 
@@ -1765,13 +1770,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Held as a borrow; every metric emit below goes through the TELEMETRY BANK (telemetry.rs),
         // which resolves `(metric_pool, i)` to this generation's pre-registered per-thread slots —
         // no label allocation and no shared-atomic contention on the walk.
-        let metric_pool: &str = metric_pool_label(app, pool_name, i);
+        let metric_pool: &str = metric_pool_label(rt, pool_name, i);
 
         // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
         host.telemetry_upstream_attempt(metric_pool, i);
-        tracing::debug!(pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, "upstream attempt");
+        tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
 
-        let egress_name = app.engine_tables().lanes()[i].protocol;
+        let egress_name = EngineTables::new(rt).lanes()[i].protocol;
         // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
         // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
         // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
@@ -1791,7 +1796,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // re-serialized in lockstep by the rewrite pass — the check stays sound.
         let head_pristine = ingress_protocol == egress_name
             && v.as_ref()
-                .is_some_and(|l| head_provably_pristine(app, i, l.probe()));
+                .is_some_and(|l| head_provably_pristine(rt, i, l.probe()));
         let payload = if head_pristine {
             // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
             // from the retained pristine bytes, unchanged. `Bytes::clone` = refcount bump.
@@ -1840,7 +1845,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // it, inline exactly as always. The common path pays one length compare — real chat
             // bodies sit two orders of magnitude under the threshold.
             let translated = if body.len() >= TRANSLATE_OFFLOAD_THRESHOLD {
-                let app2 = app.clone();
+                // Owned host/rt clones (Arc bumps, no heap) moved into the blocking task so the
+                // borrowed forward-loop refs never cross the `spawn_blocking` boundary.
+                let host2 = host.clone();
+                let rt2 = rt.clone();
                 let body2 = body.clone();
                 let ip: String = ingress_protocol.to_string();
                 let ct: String = req_content_type.to_string();
@@ -1849,10 +1857,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     .unwrap_or("anonymous")
                     .to_string();
                 let reasoning =
-                    effective_reasoning(&cands, i, app.engine_tables().lanes()[i].reasoning);
+                    effective_reasoning(&cands, i, EngineTables::new(rt).lanes()[i].reasoning);
                 match tokio::task::spawn_blocking(move || {
                     translate_request_cross_protocol(
-                        &app2, i, &ip, op, hop_v, &ct, reasoning, &body2, &key,
+                        &host2, &rt2, i, &ip, op, hop_v, &ct, reasoning, &body2, &key,
                     )
                 })
                 .await
@@ -1873,13 +1881,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 }
             } else {
                 translate_request_cross_protocol(
-                    app,
+                    host,
+                    rt,
                     i,
                     ingress_protocol,
                     op,
                     hop_v,
                     req_content_type,
-                    effective_reasoning(&cands, i, app.engine_tables().lanes()[i].reasoning),
+                    effective_reasoning(&cands, i, EngineTables::new(rt).lanes()[i].reasoning),
                     &body,
                     resolved_gov_key
                         .map(|k| k.id.as_str())
@@ -1961,7 +1970,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // passthrough+configured-key case.
             busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
             busbar_api::UpstreamCreds::Own => {
-                app.engine_tables().lanes()[i].api_key.expose_secret()
+                EngineTables::new(rt).lanes()[i].api_key.expose_secret()
             }
         };
 
@@ -1980,7 +1989,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // lookup miss is the exact condition the old `upstream_path` `None` arm caught: the
         // lane's protocol has no registered handler — bail safely, releasing any single-flight
         // probe this lane won so it cannot wedge HalfOpen.
-        let Some(target) = app.engine_tables().lanes()[i].egress_target(op.operation, wants_stream)
+        let Some(target) = EngineTables::new(rt).lanes()[i].egress_target(op.operation, wants_stream)
         else {
             // Pre-dispatch bail (protocol has no handler for this op): the armed `probe_guard`
             // releases any won single-flight probe on drop (owner-checked).
@@ -2000,11 +2009,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // the attempt loop, per attempt (the 5-minute-skew rule), never hoisted out of it.
         let attempt_wall = now();
         let signing_ctx = busbar_substrate::proto::SigningContext {
-            host: &app.engine_tables().lanes()[i].signing_host,
+            host: &EngineTables::new(rt).lanes()[i].signing_host,
             canonical_uri: &target.canonical_uri,
             body: &payload,
             timestamp_epoch: attempt_wall,
-            upstream_creds: app.engine_tables().upstream_creds(),
+            upstream_creds: EngineTables::new(rt).upstream_creds(),
         };
         // Own-mode dispatch on a lane-constant credential takes the boot-prebuilt header map (one
         // buffer copy, byte-identical to the live build — see `Lane::prebuilt_auth`). Passthrough
@@ -2013,12 +2022,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // MEASUREMENT ONLY: `egress_sigv4` isolates the live auth-header build (SigV4 signing on
         // Bedrock; a cheap static/bearer build on other non-prebuilt arms, where this reads ~0).
         let egress_auth = match (
-            &app.engine_tables().lanes()[i].prebuilt_auth,
+            &EngineTables::new(rt).lanes()[i].prebuilt_auth,
             upstream_creds,
         ) {
             (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
             _ => convert_headers(busbar_timing::scope("egress_sigv4", || {
-                lane_auth_headers(&app.engine_tables().lanes()[i], key, &signing_ctx)
+                lane_auth_headers(&EngineTables::new(rt).lanes()[i], key, &signing_ctx)
             })),
         };
         drop(_cb_auth);
@@ -2094,7 +2103,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         //     either arm classifies as a transport timeout — what reqwest's is_timeout() reported.
         let send_deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(if wants_stream {
-                app.client_settings.upstream_request_timeout_secs.max(1)
+                EngineTables::new(rt).client_settings().upstream_request_timeout_secs.max(1)
             } else {
                 request_ctx.remaining(attempt_wall).max(1)
             });
@@ -2123,13 +2132,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let attempt_ms = effective_attempt_timeout_ms(
             &cands,
             i,
-            app.engine_tables().lanes()[i].attempt_timeout_ms,
+            EngineTables::new(rt).lanes()[i].attempt_timeout_ms,
         );
         // The non-stream budget deadline wraps BOTH send arms (reqwest applied it to the whole
         // request; the attempt cap, when smaller, still fires first inside). An expired budget
         // classifies as a transport timeout — exactly what reqwest's `is_timeout()` reported.
         let send_fut = async {
-            let send = app.engine_tables().client().get().request(hreq);
+            let send = EngineTables::new(rt).client().get().request(hreq);
             match attempt_ms {
                 Some(ms) => {
                     let cap = attempt_cap(ms, request_ctx.remaining(attempt_wall));
@@ -2154,7 +2163,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // `attempt_timeout` disposition/reason labels so operators can see hang-hops as
                 // their own series, and the warn naming the cap.
                 record_upstream_rtt(upstream_started.elapsed());
-                let tripped = app.store.record_transient_in(
+                let tripped = host.lane_store().record_transient_in(
                     pool_name,
                     i,
                     ERR_NET_TIMEOUT,
@@ -2162,7 +2171,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     None,
                 );
                 if tripped {
-                    emit_breaker_trip(app, pool_name, i);
+                    emit_breaker_trip(host, rt, pool_name, i);
                 }
                 host.telemetry_upstream_failure(metric_pool,
                     i,
@@ -2172,7 +2181,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 diag_debug!(
                     ATTEMPT_TIMEOUT_FAILOVER,
                     pool = %pool_name,
-                    lane = %app.engine_tables().lanes()[i].model,
+                    lane = %EngineTables::new(rt).lanes()[i].model,
                     attempt_timeout_ms = ms,
                     "no response headers within the attempt cap; failing over"
                 );
@@ -2208,14 +2217,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     ERR_NET_CONNECT
                 };
                 let tripped =
-                    app.store
+                    host.lane_store()
                         .record_transient_in(pool_name, i, err_type, &breaker_cfg, None);
                 // A threshold-based Closed→Open trip is a breaker trip for this (pool, lane) — emit
                 // BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29). `record_transient_in`
                 // returns `true` only on a logical trip (not a HalfOpen reopen or already-Open no-op),
                 // so the counter is not multi-counted per cell or per cooldown bump.
                 if tripped {
-                    emit_breaker_trip(app, pool_name, i);
+                    emit_breaker_trip(host, rt, pool_name, i);
                 }
                 host.telemetry_upstream_failure(metric_pool,
                     i,
@@ -2351,7 +2360,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // normalize_raw_error propagates it into CanonicalSignal.retry_after and the
                     // store honors it as a cooldown floor.
                     raw.retry_after_secs = retry_after_secs;
-                    let sig = normalize_raw_error(&raw, &app.engine_tables().lanes()[i].error_map);
+                    let sig = normalize_raw_error(&raw, &EngineTables::new(rt).lanes()[i].error_map);
                     let disposition = classify_disposition(&sig);
 
                     // Exhaustive match on Disposition - no `_` arm, so a new disposition breaks the build
@@ -2359,7 +2368,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         Disposition::ClientFault => {
                             // ADR-0002: Client fault (caller's bad input) → no breaker penalty.
                             // Track client_fault separately from upstream err.
-                            app.store.record_client_fault(i);
+                            host.lane_store().record_client_fault(i);
                             // `record_client_fault` only bumps an observability counter — it does NOT
                             // clear `probe_in_flight`. Both ClientFault exits below (cross-protocol
                             // reshape and same-protocol verbatim relay) return without recording any
@@ -2406,7 +2415,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // Transient upstream failure → cooldown + err counter
                             // Record based on specific error type (exhaustive over remaining variants)
                             let tripped = if matches!(sig.class, StatusClass::RateLimit) {
-                                app.store.record_rate_limit_in(
+                                host.lane_store().record_rate_limit_in(
                                     pool_name,
                                     i,
                                     now(),
@@ -2435,7 +2444,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                     | StatusClass::ClientError
                                     | StatusClass::ContextLength => "transient",
                                 };
-                                app.store.record_transient_in(
+                                host.lane_store().record_transient_in(
                                     pool_name,
                                     i,
                                     what,
@@ -2446,7 +2455,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // A threshold-based Closed→Open trip is a breaker trip for this (pool,
                             // lane) — emit BREAKER_TRIPS_TOTAL once, mirroring the HardDown arm (#29).
                             if tripped {
-                                emit_breaker_trip(app, pool_name, i);
+                                emit_breaker_trip(host, rt, pool_name, i);
                             }
                             host.telemetry_upstream_failure(metric_pool,
                                 i,
@@ -2491,7 +2500,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // only `pool_name`'s cell left the same dead upstream Closed in the other
                             // cells, so legacy/cross-protocol routes kept hammering it until the
                             // out-of-band prober caught it (the asymmetry this fixes).
-                            let newly_tripped = app.store.record_hard_down_all_cells(i, &reason);
+                            let newly_tripped = host.lane_store().record_hard_down_all_cells(i, &reason);
                             // A hard-down is a breaker trip for this lane — but only count a LOGICAL
                             // Closed→Open trip. A persistently-dead auth/billing lane re-enters this arm
                             // on every recovery-probe cycle (a HalfOpen reopen, not a fresh trip); gating
@@ -2504,9 +2513,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // still-down probe logs at `debug!`.
                             if newly_tripped {
                                 host.telemetry_breaker_trip(metric_pool, i);
-                                diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, reason = %reason, "lane hard-down (breaker trip)");
+                                diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, reason = %reason, "lane hard-down (breaker trip)");
                             } else {
-                                diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.engine_tables().lanes()[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
+                                diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
                             host.telemetry_upstream_failure(metric_pool,
                                 i,
@@ -2571,12 +2580,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // so don't waste attempts on them — failover lands on a larger-context
                             // (or unknown-context) member. If failed lane's context_max is None,
                             // exclude only the failed lane.
-                            let failed_context_max = app.engine_tables().lanes()[i].context_max;
+                            let failed_context_max = EngineTables::new(rt).lanes()[i].context_max;
 
                             // Exclude candidates that cannot handle this request due to context limits.
                             for cand in &cands {
                                 if let Some(cand_context_max) =
-                                    app.engine_tables().lanes()[cand.idx].context_max
+                                    EngineTables::new(rt).lanes()[cand.idx].context_max
                                 {
                                     // If this candidate has a known limit <= failed lane's limit, exclude it.
                                     if let Some(failed_limit) = failed_context_max {
@@ -2615,7 +2624,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // the per-lane `ok` counter and the breaker's success window) and consume one unit
                 // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
                 // admitting the lane once it reaches 0).
-                app.store.record_success_in(pool_name, i);
+                host.lane_store().record_success_in(pool_name, i);
                 // DISARM the probe guard: `record_success_in` recorded this dispatch's legitimate
                 // outcome (HalfOpen→Closed, probe cleared), so the request now owns the probe through
                 // to that outcome. From here the streamed/buffered success body (or its own mid-stream
@@ -2630,7 +2639,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // completion) — a cheap, bounded proxy that does NOT wait out an unbounded streaming
                 // body. Lane-global + off the selection path; a no-op unless a `route: fastest` (or a
                 // webhook/script policy reading `latency_ms`) consults it.
-                app.store.record_latency_in(
+                host.lane_store().record_latency_in(
                     pool_name,
                     i,
                     upstream_started.elapsed().as_secs_f64() * 1000.0,
@@ -2644,13 +2653,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // the refund on this bool. `budget_spent` is `true` for an unlimited lane (the spend
                 // is a no-op success there) and `refund_budget` is likewise a no-op there, so an
                 // unlimited lane neither over-counts nor under-counts.
-                let budget_spent = app.store.spend_budget(i);
+                let budget_spent = host.lane_store().spend_budget(i);
                 // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed
                 // now, disarmed at every exit below that must KEEP the charge. Disarmed (without
                 // refunding) just before the streaming builder, which hands the same `budget_spent`
                 // value to `FirstByteBody` for its own cancellation-safe refund.
                 let mut budget_guard = BudgetSpendGuard {
-                    store: app.store.as_ref(),
+                    store: host.lane_store(),
                     lane: i,
                     armed: budget_spent,
                 };
@@ -2686,7 +2695,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // non-streaming cross-protocol response → buffer the whole JSON and
                 // translate egress.read_response → IR → ingress.write_response. (Streaming
                 // cross-protocol is handled in FirstByteBody below; same-protocol passes through.)
-                if ingress_protocol != app.engine_tables().lanes()[i].protocol && !is_sse {
+                if ingress_protocol != EngineTables::new(rt).lanes()[i].protocol && !is_sse {
                     // Box::pin: the buffered cross-protocol translate future (~2.4 KB — the
                     // whole-body read + codec arms) is COLD relative to the pinned hot path (the
                     // same-protocol passthrough never enters, nor does any streaming response),
@@ -2697,7 +2706,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // exhaustion boxes below and the boxed path-model ingress arms in
                     // `ingress::dispatch`.)
                     return Box::pin(translate_response_cross_protocol(
-                        app,
+                        host,
+                        rt,
                         i,
                         ingress_protocol,
                         op,
@@ -2720,7 +2730,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
                 // Use FirstByteBody wrapper to track first byte and emit SSE error events on mid-stream failures
                 // on a cross-protocol SSE response, translate egress frames → ingress frames.
-                let egress_name_for_translate = app.engine_tables().lanes()[i].protocol;
+                let egress_name_for_translate = EngineTables::new(rt).lanes()[i].protocol;
                 // ONE registry-resolved factory, IDENTICAL to the degraded `walk.rs` path (extracted so
                 // the two cannot drift): same-protocol SSE builds the verbatim same-proto translator
                 // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
@@ -2769,7 +2779,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     op,
                     permit,
                     send_deadline,
-                    app.clone(),
+                    host.clone(),
+                    rt.clone(),
                     i,
                     breaker_cfg.clone(),
                     pool_name,
@@ -2787,7 +2798,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
                 // the upstream CT verbatim..
-                let cross_protocol = ingress_protocol != app.engine_tables().lanes()[i].protocol;
+                let cross_protocol = ingress_protocol != EngineTables::new(rt).lanes()[i].protocol;
                 if gemini_json_array && is_sse {
                     // JSON-array streaming body: a `[ {...}, {...} ]` document, not SSE.
                     rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
@@ -2824,7 +2835,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 rb = maybe_attach_route_policy(
                     rb,
                     chosen_policy_name,
-                    &app.engine_tables().lanes()[i].model,
+                    &EngineTables::new(rt).lanes()[i].model,
                 );
                 drop(_rbf_attach);
                 let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
@@ -2838,7 +2849,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Box::pin: cold path (candidates exhausted), boxed for the same coroutine-size reason as the
     // in-loop exhaustion return above — the happy path never allocates here.
     Box::pin(handle_exhaustion_for_pool(
-        app.clone(),
+        host.clone(),
+        rt.clone(),
         &cands,
         now(),
         pool_name,
@@ -2964,7 +2976,7 @@ fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
 /// when no tap is configured (the empty-list early return).
 #[allow(clippy::too_many_arguments)]
 fn fire_global_taps(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
     body: &Value,
     raw_body: &[u8],
     content_type: &str,
@@ -2978,13 +2990,12 @@ fn fire_global_taps(
     // unscoped taps. Walked against `app.groups_registry` (self + ancestors).
     caller_group: Option<&str>,
 ) {
-    if app.tap_hooks.is_empty() {
+    if host.tap_hooks().is_empty() {
         return;
     }
     // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
-    let fires = |groups: &[String]| {
-        busbar_core::config::caller_in_hook_groups(caller_group, groups, &app.groups_registry)
-    };
+    let fires =
+        |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
     let ctx = busbar_api::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
@@ -3026,17 +3037,15 @@ fn fire_global_taps(
     // Shape-only is needed whenever any FIRING tap lacks the prompt grant; the prompt projection only
     // when at least one FIRING tap holds `prompt: ro`. Build each at most once. A tap filtered out by
     // its caller-group scope is not counted (it will not fire, so its projection need not be built).
-    let any_prompt = app
-        .tap_hooks
+    let any_prompt = host.tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| *send_prompt && fires(groups));
-    let any_shape = app
-        .tap_hooks
+    let any_shape = host.tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| !*send_prompt && fires(groups));
     let shape_proj = if any_shape { build_proj(false) } else { None };
     let prompt_proj = if any_prompt { build_proj(true) } else { None };
-    for (timeout, send_prompt, hook, groups) in &app.tap_hooks {
+    for (timeout, send_prompt, hook, groups) in host.tap_hooks() {
         // SELECTION: skip a tap whose `groups:` scope does not admit this caller.
         if !fires(groups) {
             continue;
@@ -3064,11 +3073,10 @@ fn fire_global_taps(
 /// EVERY forwarded request for a value that never changes; the cached Arc reduces that to a refcount
 /// bump. Behavior is identical — the resolved thresholds are byte-for-byte the same.
 pub(crate) fn resolve_breaker_cfg(
-    app: &Arc<App>,
+    rt: &Arc<NativeRuntime>,
     pool_name: &str,
 ) -> std::sync::Arc<busbar_substrate::store::BreakerCfg> {
-    match app
-        .engine_tables()
+    match EngineTables::new(rt)
         .pool_runtime()
         .get(pool_name)
         .and_then(|r| r.breaker.as_ref())

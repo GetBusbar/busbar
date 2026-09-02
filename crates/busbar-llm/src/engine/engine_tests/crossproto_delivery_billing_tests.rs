@@ -92,9 +92,10 @@ struct Outcome {
 /// does. The guard is dropped (its refund seam) before we read the budget back.
 async fn drive(op: busbar_substrate::handlers::Op, ingress: &'static str, body: Vec<u8>) -> Outcome {
     let (app, gov, cost, key) = fixture();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let sink = Some(crate::engine::UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
+        gov: busbar_substrate::plane_host::GovHandle(gov.clone()),
+        cost: busbar_substrate::plane_host::CostHandle(cost.clone()),
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at: 1_700_000_000,
@@ -151,7 +152,8 @@ async fn drive(op: busbar_substrate::handlers::Op, ingress: &'static str, body: 
                 .expect("fixture upstream send")
         };
         let resp = translate_response_cross_protocol(
-            &app,
+            &host,
+            &rt,
             0,
             ingress,
             op,

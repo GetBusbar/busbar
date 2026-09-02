@@ -37,7 +37,11 @@ use busbar_substrate::plane_host::OnExhaustedInput as OnExhausted;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_substrate::breaker::StatusClass;
 use busbar_substrate::proto::convert_headers;
-use busbar_core::state::App;
+// App-retype WEDGE 3 (THE FLIP): the engine no longer names `busbar_core::state::App`. The forward
+// path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
+// the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach
+// flipped to the host seam (`host.X()`) or the runtime tables (`EngineTables::new(rt)`).
+use busbar_substrate::plane_host::EngineHost;
 use busbar_substrate::store::{now, Permit};
 
 pub(crate) mod build_runtime;
@@ -221,5 +225,5 @@ mod usage_tap_tests;
 // the counting `#[global_allocator]` its instrument reads (`crate::CountingJemalloc`), ported below in
 // `lib.rs` under the same target gate.
 #[cfg(all(test, not(target_env = "msvc")))]
-#[path = "proxy_tests/alloc_gate.rs"]
-mod alloc_gate;
+#[path = "proxy_tests/alloc_gate_tests.rs"]
+mod alloc_gate_tests;

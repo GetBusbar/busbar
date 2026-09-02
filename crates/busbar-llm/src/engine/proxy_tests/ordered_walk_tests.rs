@@ -59,6 +59,7 @@ fn cands() -> Vec<WeightedLane> {
 async fn sticky_affinity_never_selects_zero_weight_drained_member() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     // Single candidate, weight 0 (fully drained). The affinity key hashes to pos 0 (the only
     // candidate), so the sticky path is exercised ON the drained lane. With the drain gate it is
     // skipped, and SWRR (which also excludes weight 0) finds nothing → None. WITHOUT the gate this
@@ -71,7 +72,8 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
     }];
     let mut rc = RequestCtx::new(60, 1);
     let picked = pick_among(
-        &app,
+        &host,
+        &rt,
         &drained_only,
         &mut rc,
         Some(crate::engine::stable_hash("session-abc")),
@@ -105,7 +107,8 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
     for key in ["s1", "s2", "session-xyz", "abc", "00000", "user-42"] {
         let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) = pick_among(
-            &app,
+            &host,
+            &rt,
             &drained_and_healthy,
             &mut rc,
             Some(crate::engine::stable_hash(key)),
@@ -126,9 +129,10 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
 async fn ordered_walk_picks_first_preferred_when_healthy() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("a healthy preferred lane is selected");
     assert_eq!(idx, 2, "the #1 ranked healthy lane must be chosen");
@@ -139,6 +143,7 @@ async fn ordered_walk_picks_first_preferred_when_healthy() {
 async fn ordered_walk_skips_tripped_preferred_to_next() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     // Trip lane 2 (the #1 preference) Open with a cooldown well past the REAL wall clock that
     // `pick_among` reads (it passes `state::now()` to `ready_in`/SWRR), so the lane is not
     // breaker-ready. No test clock here — everything uses the real clock consistently.
@@ -146,7 +151,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
         .force_open_in("p", 2, busbar_core::state::now() + 1_000_000);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("falls to the next ranked lane");
     assert_eq!(
@@ -160,10 +165,11 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
 async fn ordered_walk_skips_excluded_preferred() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let mut rc = RequestCtx::new(60, 1);
     rc.exclude(2); // lane 2 already tried
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("excluded #1 falls to next");
     assert_eq!(idx, 0, "an excluded #1 preference is skipped");
@@ -175,11 +181,12 @@ async fn ordered_walk_skips_excluded_preferred() {
 async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     app.store
         .force_open_in("p", 2, busbar_core::state::now() + 1_000_000); // the only ranked lane is tripped
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize]; // ranked subset of one, now unhealthy
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("SWRR finds an unranked healthy lane");
     assert!(
@@ -196,6 +203,7 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
 async fn ordered_walk_empty_order_is_swrr() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let order: [usize; 0] = [];
 
     // (a) Distribution: over many empty-order picks, SWRR must rotate — more than one distinct lane is
@@ -204,7 +212,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     for _ in 0..9 {
         let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
-            pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+            pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
                 .await
                 .expect("empty order behaves as SWRR");
         assert!(idx <= 2, "picked an out-of-range lane {idx}");
@@ -222,7 +230,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     for _ in 0..9 {
         let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
-            pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+            pick_among(&host, &rt, &cands(), &mut rc, None, "p", Some(&order))
                 .await
                 .expect("SWRR finds a healthy lane");
         assert!(
@@ -257,6 +265,7 @@ fn request_ctx_new_huge_deadline_does_not_panic() {
 async fn ordered_walk_skips_weight_zero_drained_preferred() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     // Lane 2 drained (weight 0); 0 and 1 still serve.
     let cands = vec![
         WeightedLane {
@@ -281,7 +290,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
     let mut rc = RequestCtx::new(60, 1);
     // Policy ranks the drained lane #1.
     let order = [2usize, 0, 1];
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands, &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&host, &rt, &cands, &mut rc, None, "p", Some(&order))
         .await
         .expect("a non-drained ranked lane is selected");
     assert_ne!(
@@ -301,6 +310,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
 async fn ordered_walk_all_weight_zero_selects_none() {
     crate::testkit::install_test_seams();
     let app = three_lane_app();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let cands = vec![
         WeightedLane {
             reasoning: None,
@@ -323,7 +333,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
     ];
     let mut rc = RequestCtx::new(60, 1);
     let order = [0usize, 1, 2];
-    let picked = pick_among(&app, &cands, &mut rc, None, "p", Some(&order)).await;
+    let picked = pick_among(&host, &rt, &cands, &mut rc, None, "p", Some(&order)).await;
     assert!(
         picked.is_none(),
         "a fully-drained candidate set must select no lane, got {:?}",
@@ -349,6 +359,7 @@ async fn excluded_reasons_records_at_capacity() {
         )
         .pool("p", &[(0, 1)])
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     // Occupy the lane's only permit so admission fails at capacity.
     let _held = app.store.try_acquire(0).expect("occupy the only permit");
     let one = vec![WeightedLane {
@@ -358,7 +369,7 @@ async fn excluded_reasons_records_at_capacity() {
         attempt_timeout_ms: None,
     }];
     let mut rc = RequestCtx::new(60, 1);
-    let picked = pick_among(&app, &one, &mut rc, None, "p", None).await;
+    let picked = pick_among(&host, &rt, &one, &mut rc, None, "p", None).await;
     assert!(picked.is_none(), "a fully at-capacity pool yields no pick");
     assert!(
         rc.excluded_reasons
@@ -387,6 +398,7 @@ async fn sticky_fall_through_records_reason() {
         )
         .pool("p", &[(0, 1)])
         .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
     let _held = app.store.try_acquire(0).expect("occupy the only permit");
     let one = vec![WeightedLane {
         reasoning: None,
@@ -397,7 +409,8 @@ async fn sticky_fall_through_records_reason() {
     let mut rc = RequestCtx::new(60, 1);
     // Single candidate ⇒ the affinity hash lands on lane 0, exercising the sticky path on it.
     let picked = pick_among(
-        &app,
+        &host,
+        &rt,
         &one,
         &mut rc,
         Some(crate::engine::stable_hash("session-k")),

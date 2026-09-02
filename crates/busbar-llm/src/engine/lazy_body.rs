@@ -282,7 +282,7 @@ impl LazyBody {
 ///
 /// The parity test `head_pristine_matches_translate_output` pins this mirror against the real
 /// translate seam so the two cannot silently drift.
-pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool {
+pub(crate) fn head_provably_pristine(rt: &Arc<NativeRuntime>, i: usize, probe: &Value) -> bool {
     let Some(obj) = probe.as_object() else {
         return true;
     };
@@ -293,7 +293,7 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
     {
         return false;
     }
-    let lane = &app.engine_tables().lanes()[i];
+    let lane = &EngineTables::new(rt).lanes()[i];
     let model_in_url =
         busbar_substrate::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
     // #2: `stream` is a path shim for a path-model egress (same-proto ⇒ egress == this lane).

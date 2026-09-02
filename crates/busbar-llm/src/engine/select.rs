@@ -102,14 +102,13 @@ impl RequestCtx {
     /// so the caller REJECTS rather than spilling to an ineligible lane.
     pub(crate) fn enforce_restricts(
         &self,
-        app: &App,
+        rt: &Arc<NativeRuntime>,
         pool_name: &str,
         cands: Vec<WeightedLane>,
     ) -> Result<Vec<WeightedLane>, &'static str> {
         let mut cands = cands;
         for r in &self.active_restricts {
-            let members = app
-                .engine_tables()
+            let members = EngineTables::new(rt)
                 .pool_runtime()
                 .get(pool_name)
                 .map(|rt| &rt.members);
@@ -260,7 +259,8 @@ impl Drop for ProbeGuard<'_> {
 /// per-request `String` allocation here (the hash is the only thing this function ever needed from the
 /// key). `None` = no sticky preference (pure SWRR).
 pub(crate) async fn pick_among(
-    app: &Arc<App>,
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
     cands: &[WeightedLane],
     request_ctx: &mut RequestCtx,
     affinity_key_hash: Option<u64>,
@@ -284,7 +284,7 @@ pub(crate) async fn pick_among(
         .iter()
         .map(|wl| LaneCandidate {
             wl,
-            model: app.engine_tables().lanes()[wl.idx].model.as_str(),
+            model: EngineTables::new(rt).lanes()[wl.idx].model.as_str(),
             pool: pool_name,
         })
         .collect();
@@ -318,7 +318,7 @@ pub(crate) async fn pick_among(
     };
 
     let mut order = SwrrOrder {
-        app,
+        host,
         cands,
         request_ctx,
         pool_name,
@@ -369,7 +369,7 @@ pub(crate) async fn pick_among(
         &attempt,
         &mut order,
         &mut passed_over,
-        &mut |_position, c: &LaneCandidate<'_>| app.store.try_admit(pool_name, c.wl.idx, admit_now),
+        &mut |_position, c: &LaneCandidate<'_>| host.lane_store().try_admit(pool_name, c.wl.idx, admit_now),
     );
 
     // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`), replaced
@@ -438,7 +438,7 @@ impl busbar_substrate::failover::Candidate for LaneCandidate<'_> {
 /// and stickiness can live on this plane without being a second selection loop — they answer "who is
 /// asked first", never "who is allowed".
 struct SwrrOrder<'a> {
-    app: &'a Arc<App>,
+    host: &'a Arc<dyn EngineHost>,
     /// This pool's membership, in the SAME order as the walk's `members` slice — so a position here
     /// is a position there.
     cands: &'a [WeightedLane],
@@ -553,11 +553,11 @@ impl busbar_substrate::failover::Order for SwrrOrder<'_> {
                         .iter()
                         .position(|c| c == idx)
                         .is_some_and(|pos| self.weights[pos] != 0)
-                        && self.app.store.ready_in(self.pool_name, *idx, now_t)
+                        && self.host.lane_store().ready_in(self.pool_name, *idx, now_t)
                 });
                 match preferred {
                     Some(idx) => idx,
-                    None => self.app.store.select_weighted_in(
+                    None => self.host.lane_store().select_weighted_in(
                         self.pool_name,
                         &self.candidates,
                         &self.weights,
@@ -566,7 +566,7 @@ impl busbar_substrate::failover::Order for SwrrOrder<'_> {
                 }
             }
             // Zero-cost default: today's exact inline SWRR, one predictable branch.
-            None => self.app.store.select_weighted_in(
+            None => self.host.lane_store().select_weighted_in(
                 self.pool_name,
                 &self.candidates,
                 &self.weights,
