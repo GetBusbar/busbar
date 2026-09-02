@@ -871,13 +871,9 @@ impl AdminService {
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
-        let providers: std::collections::BTreeSet<&str> = self
-            .app
-            .engine_tables()
-            .lanes()
-            .iter()
-            .map(|l| l.provider.as_str())
-            .collect();
+        let tables = self.app.engine_tables();
+        let providers: std::collections::BTreeSet<&str> =
+            tables.lanes().iter().map(|l| l.provider.as_str()).collect();
 
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
@@ -889,8 +885,8 @@ impl AdminService {
             uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
             started_at: PROCESS_START_EPOCH.get().copied(),
             topology: TopologyInfo {
-                pools: self.app.engine_tables().pools().len(),
-                models: self.app.engine_tables().by_model().len(),
+                pools: tables.pools().len(),
+                models: tables.by_model().len(),
                 providers: providers.len(),
             },
             config_persistence: self.app.overlay_path.is_some(),
