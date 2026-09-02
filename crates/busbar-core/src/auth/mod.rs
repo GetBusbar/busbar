@@ -60,7 +60,7 @@ pub use busbar_api::UpstreamCreds;
 /// The caller's bearer token, threaded into request extensions by `auth_middleware` so handlers can
 /// forward it upstream in passthrough mode. `None` when no usable bearer token was presented.
 #[derive(Clone, Default)]
-pub(crate) struct CallerToken(pub(crate) Option<String>);
+pub struct CallerToken(pub Option<String>);
 
 // MANUAL Debug that NEVER prints the token contents. `CallerToken` wraps a caller credential and is
 // threaded into request extensions, so it can be reached by any future code that debug-formats the
@@ -119,7 +119,7 @@ pub(crate) enum ChainVerdict {
 // holds only the `AuthModule` contract (re-exported above from `busbar-api`).
 
 /// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
-pub(crate) struct AuthMiddleware {
+pub struct AuthMiddleware {
     // 1.5.3: `upstream_creds` is NO LONGER a field here. The mode moved off `auth:` onto the `pools:`
     // section (an all-pools default plus a per-pool override), because whose credential
     // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on
@@ -795,11 +795,10 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// per-protocol decision lives in the writer vtable, not in this agnostic function. `BedrockWriter`
 /// overrides to (403, "auth"); `GeminiWriter` to (400, "invalid_request_error"); all others use the
 /// default (401, "authentication_error"). An unknown future proto falls back to the default.
-pub(crate) fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .map(|d| d.auth_failure_status_and_kind)
-        .unwrap_or((StatusCode::UNAUTHORIZED, crate::proxy::KIND_AUTHENTICATION))
-}
+// RELOCATED to `busbar_substrate::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
+// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
+// historical path are unchanged.
+pub use busbar_substrate::proxy::auth_failure_status_and_kind;
 
 /// Build an auth-failure response carrying the inferred ingress protocol's NATIVE error envelope.
 /// Auth runs before routing, so the protocol is inferred from the request path. A native vendor SDK
@@ -1297,7 +1296,10 @@ fn rate_limited_response() -> Response {
 /// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
 /// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
 /// gemini/bedrock ingress denial contradict the response the client actually got.
-fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
+fn unauthorized_with_completion_taps(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
     // mounted plane is tapped as that plane's dialect rather than as whichever LLM dialect its path
     // happens to resemble; a residual path that names none is labelled with the dialect its answer
@@ -1310,18 +1312,21 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
         // correlation id rather than a misleading placeholder.
         // The pre-routing auth denial has no resolved operation and no readable body — `operation:
         // None` short-circuits the seam to the zeroed shape before any read (MINOR-8).
-        let shape = crate::proxy::capture_stage_shape(
-            None,
-            &[],
-            "",
-            "",
-            proto,
-            None,
-            false,
-            app.next_request_id(),
-        );
+        // The pre-routing auth denial has no resolved operation and no readable body — build the
+        // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
+        // `operation: None` capture to exactly this before any IR read, MINOR-8), so core names no
+        // plane reader here.
+        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        crate::proxy::fire_stage_taps(
+        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
+        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
+        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
+        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
+        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
+        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
+        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
+        let host = crate::plane_host::engine_host_value(app);
+        busbar_substrate::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
             crate::hooks::wire::HookStageProjection {
@@ -1336,7 +1341,7 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
             None,
-            &app.groups_registry,
+            &host,
         );
     }
     unauthorized_response(app, path)

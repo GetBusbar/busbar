@@ -35,6 +35,15 @@ path = "src/lib.rs"
 # test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
 # The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-core/test-support"]
+# Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
+# `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
+# guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
+# `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
+timing = ["busbar-timing/timing"]
+# Passthrough to `busbar-core`'s built-in admin-tokens auth plugin, mirroring `busbar-core`'s feature:
+# a relocated money-path test (`forward_pool_integration_tests`) gates an admin-token assertion on
+# `#[cfg(feature = "auth-admin-tokens")]`, so this flag must resolve in lock-step with core's.
+auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
 # this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through
@@ -65,8 +74,24 @@ busbar-api = { path = "../api" }
 busbar-timing = { path = "../busbar-timing" }
 axum = { workspace = true }
 bytes = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+sonic-rs = { workspace = true }
 tracing = { workspace = true }
+# The relocated money-path engine (src/engine): the pool/lane routing tables, the egress pipeline,
+# the active-probe health loop and the native fallback plane. These are the runtime deps those files
+# name directly; the engine calls DOWN into busbar-core for the neutral egress/auth/health primitives.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures = { workspace = true }
+metrics = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+url = { workspace = true }
+smallvec = { workspace = true }
+# The relocated native-plane gauntlet (`native_ingress::NativePlane`) implements the async
+# `busbar_substrate::plane_host::GauntletPlane` trait.
+async-trait = { workspace = true }
 # Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
 # bytes, hex-encoded.
 getrandom = { workspace = true }
@@ -83,3 +108,24 @@ busbar-core = { path = "../busbar-core", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp" }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The relocated money-path tests (src/engine/{proxy_tests,engine_tests}) drive the engine through
+# core's test_support mock harness and name these directly.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
+reqwest = { workspace = true, features = ["http2", "json"] }
+proptest = { workspace = true }
+hyper-util = { workspace = true }
+# The relocated money-path tests drive these directly (config round-trips + the audit-chain crc).
+serde_yaml = { workspace = true }
+crc32fast = { workspace = true }
+rcgen = { workspace = true }
+http-body-util = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+metrics = { workspace = true }
+http = { workspace = true }
+
+# The allocation-count PERF gate (`engine/proxy_tests/alloc_gate.rs`) reads a per-thread counter off a
+# jemalloc-wrapping `#[global_allocator]` this crate's TEST binary installs (see `lib.rs`), mirroring
+# busbar-core. Target-gated exactly as core's is.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }

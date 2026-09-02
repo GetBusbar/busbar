@@ -97,14 +97,14 @@ pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
 // SAME fn pointer (the plane-decl identity pin); it seeds nothing and relies on the accessors below
 // (read on essentially every request path) having seeded the hook first.
 #[cfg(not(test))]
-pub(crate) use busbar_substrate::proto::registry;
+pub use busbar_substrate::proto::registry;
 #[cfg(not(test))]
 pub use busbar_substrate::proto::{
     declared_verbs, detect_protocol, residual_default_protocol, residual_protocol_for_path,
 };
 
 #[cfg(test)]
-pub(crate) fn registry() -> &'static Registry {
+pub fn registry() -> &'static Registry {
     busbar_substrate::proto::set_test_builtins(builtin_decls);
     busbar_substrate::proto::registry()
 }

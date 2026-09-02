@@ -4,315 +4,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(crate) use crate::store::now;
+pub use crate::store::now;
 pub(crate) use crate::store::LaneRuntime;
 
-use crate::proxy::EgressClient as Client;
-
-// ---------- lane (one per model) ----------
-#[derive(Clone)]
-pub(crate) struct Lane {
-    pub(crate) model: String,
-    pub(crate) provider: String,
-    pub(crate) base_url: String,
-    /// The SigV4 signed-`host` header value, derived ONCE at boot from `base_url` (scheme + userinfo
-    /// stripped, authority only — see `proxy::host_from_base`). Precomputed so the request path borrows
-    /// it into `SigningContext` instead of re-running the parse + `String` allocation on every
-    /// forwarded request (it is a pure function of the immutable `base_url`). Only the Bedrock SigV4
-    /// writer reads it; other protocols ignore `SigningContext::host`.
-    pub(crate) signing_host: String,
-    /// The resolved provider credential (api key / SigV4 secret material / OAuth credential string),
-    /// held [`busbar_api::Redacted`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
-    /// the plaintext only at the egress seam via `expose_secret()`.
-    pub(crate) api_key: busbar_api::Redacted<String>,
-    /// This lane's protocol, as the registry's interned `&'static str` NAME. Post-G6-A4b the concrete
-    /// `Protocol` (reader + writer) lives in the `busbar-llm` plugin and core names none of it; a lane
-    /// reaches its dialect's neutral computed-codec facade via `proto::decl_for(self.protocol).dialect()`
-    /// and its constant facts via `decl_for(self.protocol).<field>`. Copy-cheap, so `Lane: Clone` stays.
-    pub(crate) protocol: &'static str,
-    /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
-    /// at boot from (protocol, auth). See `crate::egress_auth`; the request path calls `headers_for`.
-    pub(crate) credential: Arc<dyn crate::egress_auth::CredentialProvider>,
-    pub(crate) max: usize,
-    // error_map cloned into each lane at startup for Stage 1b normalization
-    pub(crate) error_map: Arc<std::collections::HashMap<String, String>>,
-    /// Optional maximum context window size for this lane's model.
-    pub(crate) context_max: Option<usize>,
-    /// Optional upstream request-path override. When set, used verbatim instead of the protocol's
-    /// default path (for providers that embed the API version in base_url and serve /chat/completions).
-    pub(crate) path: Option<String>,
-    /// Optional path-BASE override for URL-model protocols (Gemini): replaces the hardcoded base
-    /// segment while keeping the per-request `/{model}:verb` suffix (Vertex AI). See `EgressCtx`.
-    pub(crate) path_base: Option<String>,
-    /// Optional active health-probe settings (from the provider's `health:` block). `None` or
-    /// `mode: none` means no background probing for this lane.
-    pub(crate) health: Option<crate::config::HealthCfg>,
-    /// Model-level per-ATTEMPT time-to-response-headers cap (ms) — the hang detector. A pool
-    /// member's `attempt_timeout_ms` overrides it per workload; see `ModelCfg::attempt_timeout_ms`.
-    pub(crate) attempt_timeout_ms: Option<u64>,
-    /// Operator-declared: this model accepts reasoning/thinking request params (the cross-protocol
-    /// reasoning-carry gate). A pool member's `reasoning` overrides it. See `ModelCfg::reasoning`.
-    pub(crate) reasoning: bool,
-    /// Operator-declared: this model accepts prompt-cache markers on model-gated dialects
-    /// (Bedrock `cachePoint`). Gates the cross-protocol cache-breakpoint carry; see
-    /// `ModelCfg::prompt_caching`.
-    pub(crate) prompt_caching: bool,
-    /// Optional default max output tokens, injected at the cross-protocol translation seam when the
-    /// source request omitted `max_tokens` (legal for OpenAI) but this lane's protocol REQUIRES it
-    /// (Anthropic Messages — see `ProtocolWriter::requires_max_tokens`). Falls back to
-    /// `crate::proto::DEFAULT_MAX_TOKENS` when unset.
-    pub(crate) default_max_tokens: Option<u32>,
-    /// Optional upstream model name override. When set, this value is sent to the provider as the
-    /// model identifier in the body and URL path, instead of `self.model` (the config key).
-    /// Useful when the provider expects a different model string (e.g. Bedrock model IDs).
-    pub(crate) upstream_model: Option<String>,
-    /// Boot-precomputed `(operation, stream) → (wire URL, SigV4 canonical URI)` — every egress
-    /// target this lane can be dispatched to is a pure function of lane-constant config, so the
-    /// forward path does one table read instead of rendering the path, URI-encoding it, and
-    /// WHATWG-parsing the URL per request. Built by `proxy::build_egress_targets` (which
-    /// documents the vocabulary and the never-`Url::join` encoding rule). A lookup miss is exactly
-    /// the old per-request `upstream_path` `None` arm: the lane's protocol has no handler.
-    pub(crate) egress_targets:
-        HashMap<(crate::operation::Operation, bool), crate::proxy::EgressTarget>,
-    /// Boot-prebuilt egress auth headers for `Own`-mode dispatch, or `None` when this lane's
-    /// credential is not lane-constant (OAuth mints, SigV4 signs — those stay per-request). Built
-    /// by `egress_auth::prebuild_auth` from the SAME `headers_for` call the request path makes, so
-    /// a clone of this map is byte-identical to the per-request build; the request path takes the
-    /// clone (one buffer copy) iff the resolved credential mode is `Own` — Passthrough carries the
-    /// CALLER's credential and always builds live.
-    pub(crate) prebuilt_auth: Option<http::header::HeaderMap>,
-}
-
-impl Lane {
-    /// The model name to send on the wire. Returns `upstream_model` when set,
-    /// otherwise falls back to the config key (`self.model`).
-    pub(crate) fn wire_model(&self) -> &str {
-        self.upstream_model.as_deref().unwrap_or(&self.model)
-    }
-    /// The precomputed egress target for one `(operation, stream)` — the forward path's URL/canonical
-    /// read. `None` == the old `upstream_path` `None` arm (no handler for this lane's protocol).
-    pub(crate) fn egress_target(
-        &self,
-        op: crate::operation::Operation,
-        stream: bool,
-    ) -> Option<&crate::proxy::EgressTarget> {
-        self.egress_targets.get(&(op, stream))
-    }
-}
-
-/// A pool lane with its associated weight.
-#[derive(Clone)]
-pub(crate) struct WeightedLane {
-    pub(crate) idx: usize,  // index into lanes array
-    pub(crate) weight: u32, // member weight from config
-    /// Pool-member override of the lane's `reasoning` capability flag (member wins). `None` =
-    /// inherit the model-level flag. See `ModelCfg::reasoning`.
-    pub(crate) reasoning: Option<bool>,
-    /// Pool-member override of the lane's `attempt_timeout_ms` (one model, different budgets per
-    /// workload/pool). `None` = inherit the model-level value.
-    pub(crate) attempt_timeout_ms: Option<u64>,
-}
-
-/// Operator-declared per-member routing metadata (config), projected into the routing `Candidate`
-/// at the seam. Lives on `PoolRuntime` keyed by lane idx (NOT on the shared `Lane`, since the same
-/// lane can be a member of several pools with different tier/cost/tags). Building this ONLY for pools
-/// that declare a non-default `route:` is NOT required — it is cheap to populate for every pool, but it is
-/// READ only inside the policy arm of the seam, so the zero-cost default path never touches it.
-#[derive(Clone, Default)]
-pub(crate) struct MemberMeta {
-    pub(crate) tier: Option<String>,
-    pub(crate) cost_per_mtok: Option<f64>,
-    pub(crate) tags: Vec<String>,
-}
-
-/// Per-pool runtime config resolved from config.yaml. Keyed by pool name so the re-entrant
-/// `forward_with_pool` (which knows its pool name) can look up the right failover/breaker/affinity
-/// settings — pools are first-class, but lanes are shared, so this config lives per pool.
-#[derive(Clone, Default)]
-pub(crate) struct PoolRuntime {
-    /// Operator-declared member metadata (tier / cost / tags) keyed by lane idx, for the routing
-    /// `Candidate` projection. Read ONLY inside the policy arm of the seam; the default SWRR path
-    /// never touches it. Empty for a pool with no members declaring metadata.
-    pub(crate) members: std::collections::HashMap<usize, MemberMeta>,
-    /// Per-pool failover settings (deadline, cap, and member exclusions).
-    pub(crate) failover: Option<crate::config::FailoverCfg>,
-    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3).
-    /// `None` = inherit `App::upstream_credentials`. Read per request by
-    /// [`App::pool_upstream_creds`].
-    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
-    /// Per-pool session-affinity settings (which request header pins a session to a lane).
-    pub(crate) affinity: Option<crate::config::AffinityCfg>,
-    /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
-    /// runtime `store::BreakerCfg` the FSM evaluates. `None` falls back to ADR-0002 defaults.
-    pub(crate) breaker: Option<crate::store::BreakerCfg>,
-    /// Per-pool routing policy, resolved ONCE at config load. `None` is the ZERO-COST default
-    /// (`route: weighted` / absent / explicit-native-weighted): no policy object, no projection, the
-    /// unchanged inline SWRR hot path. `Some(_)` is a non-default policy whose ranked order feeds the
-    /// failover loop: `proxy::decide_policy_order` invokes it per request and `pick_among` walks the
-    /// resulting order.
-    pub(crate) policy: Option<crate::hooks::ResolvedPolicy>,
-    /// This pool's DECISION GATES (`hook:` / the non-strategy names in `hooks: [...]`), resolved once
-    /// at config load, each with its `priority`, in config order. Fired in the phase-2 decision
-    /// reconcile alongside the global gates (one priority-sorted chain; stable sort keeps
-    /// globals-before-pool on ties, then config order). Empty (the default) = no pool gates — the
-    /// phase-2 pass is skipped entirely when this and `global_gates` are both empty.
-    pub(crate) gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
-    /// This pool's REWRITE chain — the `prompt: rw` gates in its `hooks: [...]` list, resolved once
-    /// at config load, ascending-priority order. Fired in the phase-1 transform pass AFTER the
-    /// global rewrite chain, only for requests routed to this pool. Empty (the default) = no pool
-    /// rewrites, zero cost.
-    pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-}
-
-// ── DATA-PLANE TOPOLOGY, published once by the composition root ─────────────────────────────────
-// The `busbar` binary spawns N per-worker data runtimes (thread-per-core; see main.rs) and tells
-// core two things before any request is served: HOW MANY workers exist (sizes the client shards
-// below, and the per-worker state stripes later stages add) and, on each worker thread, WHICH
-// worker this thread is. Both are process-topology facts — set at boot, immutable, no config.
-
-/// Total data-plane workers, set once by the composition root before serving. Unset (tests,
-/// embedded uses) falls back to the machine-derived default at each consumer.
-static DATA_WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-/// Publish the data-plane worker count. First call wins; later calls are ignored (boot runs once).
-pub fn set_data_workers(n: usize) {
-    let _ = DATA_WORKERS.set(n.max(1));
-    // The egress engine's connect gate sizes its per-shard establishment share from this same
-    // topology fact, and the engine lives in substrate, which cannot name core — so the publish
-    // FORWARDS in the same boot act: one composition-root call, two subscribers, no second
-    // source of the number.
-    busbar_substrate::egress::engine::set_establishment_shards(n);
-}
-
-thread_local! {
-    /// This thread's data-plane worker id (0..N), or `usize::MAX` on every non-worker thread
-    /// (the control runtime, the blocking pool). A plain `Cell` read — no atomic — because the id
-    /// is a per-thread constant after spawn.
-    static WORKER_ID: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-}
-
-/// Mark the current thread as data-plane worker `id`. Called exactly once per worker thread by the
-/// composition root, after pinning and before the worker's runtime starts serving.
-pub fn set_worker_id(id: usize) {
-    WORKER_ID.with(|w| w.set(id));
-}
-
-/// The current thread's worker id, or `usize::MAX` for a non-worker thread.
-pub(crate) fn worker_id() -> usize {
-    WORKER_ID.with(|w| w.get())
-}
-
-/// Stripe count for per-worker striped store state: one stripe per data worker PLUS one shared
-/// FALLBACK stripe (the last) for every non-worker thread. Constant for the process lifetime
-/// (`set_data_workers` runs before anything builds; the machine-derived fallback is stable).
-pub(crate) fn worker_stripes() -> usize {
-    DATA_WORKERS.get().copied().unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .min(16)
-    }) + 1
-}
-
-/// The current thread's stripe index in a `stripes`-slot stripe array: its worker id, or the
-/// last (fallback) slot for a non-worker thread. `min`: defensive clamp only.
-pub(crate) fn worker_stripe(stripes: usize) -> usize {
-    let id = worker_id();
-    if id == usize::MAX {
-        stripes - 1
-    } else {
-        id.min(stripes - 1)
-    }
-}
-
-/// The upstream HTTP client, SHARDED: N identical `reqwest::Client`s, each owning its own
-/// connection pool, one selected per thread. ONE shared client meant one pool mutex that every
-/// request crossed twice (connection checkout + checkin) across every worker — a lock convoy
-/// that grows with core count (measured: throughput fell ~36% from concurrency 64 → 1024 on a
-/// 4-core pin, and inverted busbar's standing against per-worker-sharded gateways on 32-thread
-/// x86). Each worker thread is assigned one shard on first use and keeps it: warm connections
-/// and TLS sessions stay worker-local, and each shard's pool lock is contended by ~1/Nth of the
-/// threads. NOT configurable — the shard count is one per data-plane worker (published by the
-/// composition root; machine-derived fallback for embedded/test uses) and the per-host idle
-/// budget is divided across shards so the TOTAL kept-alive sockets toward any upstream are
-/// unchanged.
-#[derive(Clone)]
-pub struct UpstreamClients {
-    shards: Arc<[Client]>,
-}
-
-impl UpstreamClients {
-    /// The shard count: ONE SHARD PER DATA-PLANE WORKER when the composition root published the
-    /// count (`set_data_workers` — the thread-per-core binary always does), so every worker gets a
-    /// pool of its own and shard selection is a direct index by worker id. Unset (tests, embedded
-    /// uses that never call `set_data_workers`) falls back to the machine-derived
-    /// `min(cores, 16).next_power_of_two()` the pre-topology sharding used.
-    pub fn shard_count() -> usize {
-        match DATA_WORKERS.get() {
-            Some(&n) => n,
-            None => {
-                let n = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-                    .next_power_of_two()
-                    .min(16);
-                // UNPUBLISHED-TOPOLOGY UNIFICATION: the engine's
-                // establishment machinery (connect gate permits + the pool's dial bound) divides
-                // one GLOBAL per-authority budget by the shard count. When the composition root
-                // never published a worker count (tests, embedded uses), this fallback is the
-                // shard count — so it must ALSO be the establishment divisor, or an unpublished
-                // build runs up to 16 pools × an undivided per-shard budget (16× the invariant).
-                // Publishing the value HERE — from the one function that derives it — keeps a
-                // single source instead of substrate re-deriving the formula cross-crate (the
-                // exact drift shape the single-source rule forbids). First call wins on both
-                // sides; the thread-per-core binary always publishes at boot and never gets here.
-                busbar_substrate::egress::engine::set_establishment_shards(n);
-                n
-            }
-        }
-    }
-
-    /// Build N shards from a builder factory (each shard is an IDENTICAL client; reqwest clients
-    /// cannot be cloned into independent pools, so the builder runs once per shard).
-    pub fn build(count: usize, mut make: impl FnMut() -> Client) -> Self {
-        let shards: Arc<[Client]> = (0..count.max(1)).map(|_| make()).collect();
-        UpstreamClients { shards }
-    }
-
-    /// This thread's client. A DATA-PLANE WORKER (id set at spawn) indexes its own shard directly —
-    /// one thread-local `Cell` read, no shared write ever, and its warm connections/TLS sessions
-    /// never cross another worker's pool lock. Any OTHER thread (the control runtime's prober,
-    /// blocking-pool threads, non-unix workers without ids) keeps the prior behavior: assigned a
-    /// shard round-robin on FIRST use for its lifetime — a once-per-thread counter bump, never a
-    /// per-request write.
-    pub(crate) fn get(&self) -> &Client {
-        let id = crate::state::worker_id();
-        if id != usize::MAX {
-            // min: defensive only — the composition root sizes shards to the worker count, so a
-            // worker id is always in range.
-            return &self.shards[id.min(self.shards.len() - 1)];
-        }
-        static NEXT_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        thread_local! {
-            static SHARD: std::cell::OnceCell<usize> = const { std::cell::OnceCell::new() };
-        }
-        let idx = SHARD.with(|s| {
-            *s.get_or_init(|| NEXT_THREAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-        });
-        // Modulo, not mask: with worker-published counts the shard count is exact (= N workers),
-        // not a power of two. Cold path — the result is cached per thread above.
-        &self.shards[idx % self.shards.len()]
-    }
-
-    /// Do two `UpstreamClients` share the SAME underlying shard set (`Arc::ptr_eq`)? True exactly
-    /// when one was cloned from the other (a config apply that REUSED the prior client for pool
-    /// warmth); false when the shards were freshly built. Lets the apply path — and its tests —
-    /// distinguish "carried the warm pool forward" from "rebuilt with new client settings".
-    #[cfg(test)]
-    pub(crate) fn shares_pool_with(&self, other: &UpstreamClients) -> bool {
-        Arc::ptr_eq(&self.shards, &other.shards)
-    }
-}
+// ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
+// (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
+// process facts and the per-worker-sharded upstream client without naming `busbar-core`. Re-exported
+// here at their historical `busbar_core::state::…` paths so every in-core call site — the
+// composition root's boot publish (`set_data_workers`/`set_worker_id`), the store-striping readers
+// (`worker_stripes`/`worker_stripe`), `appbuild`/`engine_facade`'s `UpstreamClients` — is unchanged.
+// The two worker accessors kept `pub(crate)` here (they were `pub(crate)` before the move); the rest
+// keep their prior `pub` visibility.
+pub use busbar_substrate::topology::{set_data_workers, set_worker_id, UpstreamClients};
+pub(crate) use busbar_substrate::topology::{worker_stripe, worker_stripes};
 
 /// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
 /// whose change must produce a different client. On a config apply the prior client is reused (for
@@ -323,10 +27,10 @@ impl UpstreamClients {
 /// timers, and the `redirect: none` SSRF posture) is a compile-time constant, so this snapshot is
 /// exhaustive over the client-affecting configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UpstreamClientSettings {
+pub struct UpstreamClientSettings {
     /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
     /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
     pub(crate) pool_max_idle_per_host: usize,
     /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
@@ -347,54 +51,6 @@ impl UpstreamClientSettings {
             upstream_http1_only: limits.upstream_http1_only,
             upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
         }
-    }
-}
-
-/// Live per-pool depth of requests currently PARKED in an `on_exhausted: queue` wait — the real
-/// source behind the `busbar_pool_queued{pool}` gauge, which reads this at scrape time.
-/// A parked request calls [`park`](QueuedDepth::park) on entry and holds
-/// the returned RAII guard for the whole wait; the guard decrements on EVERY exit (dispatch, deadline
-/// shed, or a dropped future on client disconnect), so the depth can never leak. Arc-shared across
-/// config swaps (`App::clone` clones the Arc) so an in-flight parked request on an old `App` snapshot
-/// and a `/metrics` scrape on a new one agree on the count. The map lock is taken only at park
-/// enter/exit and at scrape time — the already-slow queue path, never hot dispatch.
-#[derive(Default)]
-pub(crate) struct QueuedDepth {
-    counts: std::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
-}
-
-impl QueuedDepth {
-    /// Register a request parking in `pool`'s queue wait; returns a guard that decrements on drop. The
-    /// per-pool counter is created on first use.
-    pub(crate) fn park(&self, pool: &str) -> QueueDepthGuard {
-        let counter = {
-            let mut m = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            m.entry(pool.to_string())
-                .or_insert_with(|| Arc::new(std::sync::atomic::AtomicU64::new(0)))
-                .clone()
-        };
-        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        QueueDepthGuard { counter }
-    }
-
-    /// Current parked depth for `pool` (0 if nothing has ever queued there).
-    pub(crate) fn depth(&self, pool: &str) -> u64 {
-        let m = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        m.get(pool)
-            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(0)
-    }
-}
-
-/// RAII decrement for a parked queue request — see [`QueuedDepth::park`].
-pub(crate) struct QueueDepthGuard {
-    counter: Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl Drop for QueueDepthGuard {
-    fn drop(&mut self) {
-        self.counter
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -441,7 +97,7 @@ pub struct App {
     /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
     /// flat field encoded), never a panic. Neutral: names no dialect.
     pub(crate) llm_runtime_key: &'static str,
-    pub(crate) store: Arc<dyn LaneRuntime>,
+    pub store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
     /// clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
@@ -487,15 +143,15 @@ pub struct App {
     /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
     /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
-    pub(crate) client_settings: UpstreamClientSettings,
-    pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
+    pub client_settings: UpstreamClientSettings,
+    pub auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
     /// dispatch to mutate the request body (compression/redaction). Empty (the default) = no rewrite
     /// pass, zero cost. Only `rw` gates land here — the grant is enforced at RESOLUTION, so a
     /// `ro`/`no` hook can never rewrite (the bidirectional grant holds by construction). Each entry is
     /// `(per-hook transform deadline, transport)`.
-    pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
+    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
     /// GLOBAL request-stage TAP hooks — the `kind: tap` hooks in `global_hooks` observing at the
     /// `request` stage, resolved to their transports. Fired FIRE-AND-FORGET (spawned off the request
     /// path) before dispatch — a tap can never delay or fail the request. Empty (the default) = no
@@ -503,24 +159,44 @@ pub struct App {
     /// carries the tap's `prompt: ro` grant so a granted tap receives the prompt-content projection and
     /// a `prompt: no` tap receives shape-only. Other stages (candidate/routing/response + synthetic
     /// rejected-completion) are follow-ups.
-    pub(crate) tap_hooks: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub(crate) tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
     /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub(crate) tap_hooks_routing: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
     /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
     /// see gate denials too) and response status.
-    pub(crate) tap_hooks_response: Vec<crate::hooks::TapEntry>,
+    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
     /// GLOBAL DECISION gates — the non-rewrite `kind: gate` hooks in `global_hooks`, resolved to
     /// their full `ResolvedPolicy` (transport + on_error/on_empty/grants), each with its `priority`.
     /// Fired CONCURRENTLY on every request in the phase-2 decision reconcile, merged with the pool's
     /// own gates into one priority-sorted chain (reject wins / restricts intersect / order
     /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
     /// priority so the merge's stable sort keeps globals-first on ties.
-    pub(crate) global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
+    /// (money-path Phase 3-4 C — the RATIFIED pool-hook facade). These USED to live on the LLM plane's
+    /// `PoolRuntime`, but their resolved values are the core-owned `ResolvedPolicy` / `Arc<dyn
+    /// RoutingPolicy>` (an Arc over a dlopen plugin), which the plane's `build_runtime` cannot resolve
+    /// (no `hook_env`, no usable current-`&App`). So they stay resolved-and-read CORE-SIDE, keyed by
+    /// pool, and the relocated engine reaches them through the [`App::pool_policy`] / [`App::pool_gates`]
+    /// / [`App::pool_rewrites`] down-facades — byte-identical objects (the SAME resolution
+    /// `hooks::resolve_pool_*` produced), read via the facade instead of stored across the plane seam.
+    /// Absent pool ⇒ the zero-cost default (no policy / empty chain).
+    pub(crate) pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
+    pub(crate) pool_decision_gates:
+        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) pool_rewrite_chains: std::collections::HashMap<
+        String,
+        Vec<(
+            std::time::Duration,
+            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        )>,
+    >,
     /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
     /// resolved to their transports ONCE per config generation and keyed by server name.
     ///
@@ -563,7 +239,7 @@ pub struct App {
     /// per request. All-zero (the default) when no hook
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
     /// check downstream short-circuits on.
-    pub(crate) requested_signals: crate::hooks::RequestedSignals,
+    pub requested_signals: crate::hooks::RequestedSignals,
     /// Does this config generation grant ANY hook access to prompt CONTENT (`prompt: ro` / `rw`)?
     /// Built ONCE alongside `requested_signals` above by `hooks::any_content_hook`, and recomputed
     /// on every snapshot that rewrites `hook_registry` — never per request.
@@ -572,7 +248,7 @@ pub struct App {
     /// every deployment that runs no content hook) means the IR is never built and the request path
     /// pays nothing at all. See `hooks::any_content_hook` for why the gate keys on the deployment's
     /// grants rather than on the request's protocols.
-    pub(crate) any_content_hook: bool,
+    pub any_content_hook: bool,
     /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
     /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
     /// from the resolved `export:` block, never per request.
@@ -597,7 +273,7 @@ pub struct App {
     /// projection in `cost.groups()` (which buckets limits per window and drops `child_default`).
     /// A group mutation swaps a new `App` snapshot (clone → mutate this map → re-validate → rebuild
     /// `cost` via `CostModel::with_groups`), never mutating in place. Empty when none configured.
-    pub(crate) groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    pub groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     /// Group names defined in the BASE config file (pre-overlay). A `PUT`/`DELETE` on a base group is
     /// a 409 (edit config.yaml — the API cannot silently shadow or subtract operator file config, and
     /// the additive overlay can't durably remove a base group); API-created (overlay) groups mutate
@@ -739,7 +415,7 @@ pub struct App {
     /// `auth.role_bindings:` - module -> role -> operator policy (nested by module). Read by
     /// the admin authorization resolution and the governance re-key; an unbound role grants
     /// nothing (fail closed).
-    pub(crate) role_bindings: crate::config::RoleBindings,
+    pub role_bindings: crate::config::RoleBindings,
     /// The config.yaml path busbar booted from — `POST /api/v1/admin/config/reload` re-runs the boot
     /// disk-load pipeline against it. `None` (tests / ephemeral) ⇒ reload is `invalid_request`.
     pub(crate) config_path: Option<std::path::PathBuf>,
@@ -778,7 +454,7 @@ pub struct App {
     /// The resolved COST MODEL (rate card + budget groups + flat fee), rebuilt with the config on
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
-    pub(crate) cost: std::sync::Arc<crate::cost::CostModel>,
+    pub cost: std::sync::Arc<crate::cost::CostModel>,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -792,12 +468,12 @@ pub struct App {
     /// Global fallback for the translation-injected `max_tokens` (`limits.default_max_tokens`), used
     /// at the cross-protocol seam when a lane has no per-lane `default_max_tokens`. Defaults to
     /// `proto::DEFAULT_MAX_TOKENS` (4096). Read by `IrReq::prepare_for_egress` at the cross-protocol seam.
-    pub(crate) default_max_tokens: u32,
+    pub default_max_tokens: u32,
     /// Resolved effort-word → thinking-budget table for the cross-protocol reasoning carry
     /// (`limits.reasoning_effort_budgets`, defaults 1024/4096/8192/16384), ordered
     /// [minimal, low, medium, high]. Stamped onto the IR at the egress seam so writers project
     /// effort words and numeric budgets with the operator's numbers.
-    pub(crate) reasoning_effort_budgets: [u32; 4],
+    pub reasoning_effort_budgets: [u32; 4],
     /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
     /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
@@ -846,221 +522,7 @@ pub struct App {
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
-/// THE LLM DATA-PLANE RUNTIME — the pool/lane/failover/egress tables that were 12 flat `App` fields,
-/// now ONE bundle built once per config apply ([`crate::appbuild`]) and carried on the snapshot in the
-/// opaque plane slot ([`App::plane_slots`]) under `runtime_slot_key(<llm plane key>)`, reached through
-/// the [`App::llm_runtime`] downcast (R3/R4 sub-phase B). Grouping them was sub-phase A's payoff (core
-/// carries no LLM-shaped FLAT state); sub-phase B then moved the bundle off its typed field into the
-/// SAME type-erased slot every other plane's runtime already rides, so `App` names one `&'static str`
-/// key ([`App::llm_runtime_key`]) instead of this type. `cost` deliberately stays OUTSIDE this (it is
-/// NEUTRAL — MCP/A2A meter through it too). Still `Clone` (Phase 3 relocates the type to `busbar-llm`;
-/// today the apply-path `build_runtime` seam clones the freshly-lowered bundle into the shared slot).
-/// Neutral: names no dialect, adds no LLM type to core (the freeze witness stays 0).
-#[derive(Clone)]
-pub(crate) struct NativeRuntime {
-    pub(crate) lanes: Vec<Lane>,
-    pub(crate) by_model: HashMap<String, usize>,
-    pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
-    pub(crate) pool_runtime: HashMap<String, PoolRuntime>,
-    pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
-    pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
-    pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
-    pub(crate) queued_depth: Arc<QueuedDepth>,
-    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
-    pub(crate) any_pool_upstream_creds_override: bool,
-    pub(crate) client: UpstreamClients,
-}
-
-impl NativeRuntime {
-    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
-    /// Moved verbatim from `App::upstream_creds`.
-    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.upstream_credentials
-    }
-
-    /// The upstream-credential mode in force for `pool` — the pool's own `upstream_credentials:` when
-    /// it sets one, else the all-pools default. SCALAR override. Moved verbatim from
-    /// `App::pool_upstream_creds` (same fast path, same SipHash-probe skip when no override exists).
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
-        if !self.any_pool_upstream_creds_override {
-            return self.upstream_credentials;
-        }
-        self.pool_runtime
-            .get(pool)
-            .and_then(|rt| rt.upstream_credentials)
-            .unwrap_or(self.upstream_credentials)
-    }
-}
-
-/// NEUTRAL READ-SIDE PROJECTION of this runtime's routing tables for the core-resident scrape/
-/// discovery readers (1.6.0 money-path Phase 3-4 B). `NativeRuntime` is still a core type this commit
-/// (the pivot relocates it to `busbar-llm`); implementing the substrate trait now lets `/metrics`, the
-/// `/v1/models` listing, and the telemetry label bank read these tables through neutral projections —
-/// naming no `Lane`/`WeightedLane` — so they need not move when the tables do. Every projection is a
-/// cold/scrape-path read that may allocate; the hot engine path never touches this seam (it reads the
-/// concrete fields directly).
-impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
-    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
-        self.pools
-            .iter()
-            .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
-            .collect()
-    }
-    fn model_indices(&self) -> Vec<(&str, usize)> {
-        self.by_model
-            .iter()
-            .map(|(m, &idx)| (m.as_str(), idx))
-            .collect()
-    }
-    fn model_index(&self, model: &str) -> Option<usize> {
-        self.by_model.get(model).copied()
-    }
-    fn lane_view(&self, idx: usize) -> Option<busbar_substrate::plane_host::LaneView<'_>> {
-        self.lanes
-            .get(idx)
-            .map(|lane| busbar_substrate::plane_host::LaneView {
-                model: &lane.model,
-                provider: &lane.provider,
-                base_url: &lane.base_url,
-            })
-    }
-    fn queued_depth(&self, pool: &str) -> u64 {
-        self.queued_depth.depth(pool)
-    }
-}
-
-/// COMPOSE THE FALLBACK (LLM) PLANE'S PER-GENERATION RUNTIME OBJECT into the opaque `Arc<dyn Any>` slot
-/// every plane's runtime rides — the constructor `appbuild` calls to seed
-/// `plane_slots[runtime_slot_key(<fallback plane key>)]` (R3/R4 sub-phase B: the bundle moved off the
-/// flat `App::llm_runtime` field). The `PlaneDecl::build_runtime` fn pointer the sibling planes carry
-/// stays `None` for THIS plane this phase — the plane crate that owns the decl (`busbar-llm`) may not
-/// name a `busbar_core::` item, and [`NativeRuntime`] is still a core type — so `appbuild` calls this
-/// core-local constructor by name instead. Phase 3 relocates `NativeRuntime` to `busbar-llm`, at which
-/// point this becomes the plane's own `build_runtime` and the decl carries the pointer like MCP.
-pub(crate) fn compose_native_runtime_slot(
-    rt: NativeRuntime,
-) -> Arc<dyn std::any::Any + Send + Sync> {
-    Arc::new(rt)
-}
-
-/// THE PROCESS-LIFETIME EMPTY LLM RUNTIME the money-path read ([`App::llm_runtime`]) falls back to when
-/// no LLM plane contributed a slot — the featureless zero-plane binary, whose `appbuild` inserted none.
-/// Zero lanes, zero pools, a single default egress shard that is never dialled (nothing routes without a
-/// lane). Built once, lazily, and ONLY if such a build actually reads `engine_tables()` (a boot
-/// health/metrics/telemetry probe); a normal LLM-planed boot always finds its slot and never touches
-/// this. Replicates the emptiness the always-present-but-empty flat `llm_runtime` field used to carry,
-/// so the field→slot move stays byte-identical for the zero-plane case — an empty read, never a panic.
-fn empty_native_runtime() -> &'static NativeRuntime {
-    static EMPTY: std::sync::OnceLock<NativeRuntime> = std::sync::OnceLock::new();
-    EMPTY.get_or_init(|| NativeRuntime {
-        lanes: Vec::new(),
-        by_model: HashMap::new(),
-        pools: HashMap::new(),
-        pool_runtime: HashMap::new(),
-        fallback_pools: HashMap::new(),
-        on_exhausted_cfgs: std::collections::HashMap::new(),
-        failover_cfg: None,
-        queued_depth: Arc::new(QueuedDepth::default()),
-        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
-        upstream_credentials: crate::auth::UpstreamCreds::default(),
-        any_pool_upstream_creds_override: false,
-        client: UpstreamClients::build(1, || {
-            crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-                4, 300, false, false,
-            ))
-        }),
-    })
-}
-
-/// THE LLM DATA-PLANE ROUTING TABLES, behind ONE accessor surface. A zero-cost newtype over
-/// `&NativeRuntime`, so every read through it is
-/// byte-identical to reading the bundle directly. It exists so the engine and the model-plane readers
-/// reach the pool/lane/failover tables through ONE named seam — the seam whose SOURCE sub-phase B
-/// flipped from the flat `App::llm_runtime` field to the LLM plane's opaque `plane_slot` (downcast ONCE
-/// per [`App::engine_tables`] call), WITHOUT touching a single reader.
-#[derive(Clone, Copy)]
-pub(crate) struct EngineTables<'a> {
-    rt: &'a NativeRuntime,
-}
-
-impl<'a> EngineTables<'a> {
-    /// The pool table — each pool name to its weighted lane members.
-    pub(crate) fn pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
-        &self.rt.pools
-    }
-
-    /// The direct-model index — a model name to its lane position.
-    pub(crate) fn by_model(&self) -> &'a HashMap<String, usize> {
-        &self.rt.by_model
-    }
-
-    /// The lane table — each resolved upstream (model, provider, dialect, credential, egress target).
-    pub(crate) fn lanes(&self) -> &'a [Lane] {
-        &self.rt.lanes
-    }
-
-    /// The global default failover config (the fallback for pools that set none), if configured.
-    /// Returns the field as-is so a call site keeps its own `.as_ref()` (a drop-in for `app.failover_cfg`).
-    pub(crate) fn failover_cfg(&self) -> &'a Option<crate::config::FailoverCfg> {
-        &self.rt.failover_cfg
-    }
-
-    /// Per-pool runtime (resolved members / per-pool `upstream_credentials:` override state).
-    pub(crate) fn pool_runtime(&self) -> &'a HashMap<String, PoolRuntime> {
-        &self.rt.pool_runtime
-    }
-
-    /// The ALL-POOLS upstream-credential default (the pool-less egress path's `Own`/`Passthrough`).
-    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.rt.upstream_creds()
-    }
-
-    /// The upstream-credential mode for `pool` — its own `upstream_credentials:` override, else the
-    /// all-pools default (the scalar combine rule).
-    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
-        self.rt.pool_upstream_creds(pool)
-    }
-
-    /// The fallback-pool routing table — a pool's `on_exhausted = fallback_pool:<name>` target set.
-    pub(crate) fn fallback_pools(&self) -> &'a HashMap<String, Vec<WeightedLane>> {
-        &self.rt.fallback_pools
-    }
-
-    /// The per-pool queue-depth gauge (the `on_exhausted = queue` waiter park counter).
-    pub(crate) fn queued_depth(&self) -> &'a std::sync::Arc<QueuedDepth> {
-        &self.rt.queued_depth
-    }
-
-    /// The per-pool `on_exhausted:` policy table (fallback-pool / queue / least-bad / 503).
-    pub(crate) fn on_exhausted_cfgs(
-        &self,
-    ) -> &'a std::collections::HashMap<String, crate::config::OnExhausted> {
-        &self.rt.on_exhausted_cfgs
-    }
-
-    /// The health-probe schedule shared across snapshots of this lineage.
-    pub(crate) fn probe_schedule(&self) -> &'a std::sync::Arc<crate::health::ProbeSchedule> {
-        &self.rt.probe_schedule
-    }
-
-    /// The shared upstream HTTP client pool (the LLM egress transport).
-    pub(crate) fn client(&self) -> &'a UpstreamClients {
-        &self.rt.client
-    }
-}
-
 impl App {
-    /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam. A
-    /// zero-cost newtype over [`App::llm_runtime`] — sub-phase B re-sourced it from the flat
-    /// `llm_runtime` field to the LLM plane's opaque runtime slot, so this is ONE `plane_slots` lookup +
-    /// ONE downcast per call, then plain field reads through the returned borrow.
-    pub(crate) fn engine_tables(&self) -> EngineTables<'_> {
-        EngineTables {
-            rt: self.llm_runtime(),
-        }
-    }
-
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
     /// (`busbar_substrate::plane_host`) read seam — the projection the core-resident scrape/discovery
     /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not relocate when the
@@ -1071,52 +533,20 @@ impl App {
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
     pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
-        match self
-            .plane_slot(self.llm_runtime_key)
-            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
-        {
-            Some(rt) => rt,
-            None => &busbar_substrate::plane_host::EMPTY_VIEW,
-        }
-    }
-
-    /// THIS SNAPSHOT'S LLM DATA-PLANE RUNTIME, read through the opaque plane slot (R3/R4 sub-phase B).
-    /// ONE `plane_slots` lookup by the pre-interned [`llm_runtime_key`](Self::llm_runtime_key) + ONE
-    /// downcast; the returned borrow is then plain-field-read (by [`EngineTables`] and the peripheral
-    /// LLM readers). When the slot is ABSENT — the featureless binary boots with no LLM plane, so
-    /// `appbuild` inserted none — this yields the process-lifetime EMPTY default (zero lanes/pools), the
-    /// byte-identical successor to the always-present-but-empty flat field the zero-plane build carried.
-    /// Never panics on absence: a boot health/metrics/telemetry probe sees empty tables and does nothing.
-    pub(crate) fn llm_runtime(&self) -> &NativeRuntime {
-        match self
-            .plane_slot(self.llm_runtime_key)
-            .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
-        {
-            Some(rt) => rt,
-            None => empty_native_runtime(),
-        }
-    }
-
-    /// TEST-ONLY in-place mutable access to this snapshot's LLM runtime — the successor to the deleted
-    /// flat `llm_runtime` field's `&mut` for the fixtures that build an `App`, take sole `Arc` ownership
-    /// and then poke a lane/pool into its tables before asserting. Downcasts the UNIQUELY-OWNED plane
-    /// slot back to `NativeRuntime`; panics if the slot is absent or shared (a mutating fixture always
-    /// holds it alone). Production never mutates the runtime in place post-build — `appbuild` rebuilds a
-    /// fresh bundle every apply — so this stays test-gated. Read only by core's own `cfg(test)`
-    /// fixtures; a `test-support`-only lib build (the plane suites' dependency-copy) links it unused,
-    /// so it is allowed dead there exactly as the MCP plane's `&App`-typed test reads are.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
+        // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in `busbar-llm`, so core
+        // no longer names it. Project the plane's opaque runtime slot into the neutral view through the
+        // fallback plane decl's `viewer` fn-pointer (the plane downcasts its OWN runtime inside). An
+        // absent slot — the featureless zero-plane boot, or a decl with no viewer — yields the
+        // substrate-resident EMPTY_VIEW (zero pools/models).
         let key = self.llm_runtime_key;
-        Arc::get_mut(
-            self.plane_slots
-                .get_mut(key)
-                .expect("fallback-plane runtime slot present for in-place test mutation"),
-        )
-        .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")
-        .downcast_mut::<NativeRuntime>()
-        .expect("fallback-plane runtime slot is a NativeRuntime")
+        match (
+            crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+                .and_then(|d| d.viewer),
+            self.plane_slot(key),
+        ) {
+            (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
+            _ => &busbar_substrate::plane_host::EMPTY_VIEW,
+        }
     }
 }
 
@@ -1129,8 +559,12 @@ impl App {
     /// Prefer [`App::pool_upstream_creds`] on any path that knows its pool: a pool's own
     /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
-    pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.llm_runtime().upstream_creds()
+    pub fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
+        // The plane runtime relocated out of core (money-path Phase 3-4 C), so this pool-less default
+        // is read through the NEUTRAL view seam rather than by downcasting the plane's `NativeRuntime`.
+        // Byte-identical: the view projects the same `upstream_credentials` field, and the zero-plane
+        // EMPTY_VIEW returns the type default the always-present-but-empty runtime carried.
+        self.engine_tables_view().upstream_creds()
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no
@@ -1158,6 +592,27 @@ impl App {
         self.plane_slots.get(key)
     }
 
+    /// MUTABLE plane-slot access for in-place TEST mutation — the successor to the deleted inherent
+    /// `App::llm_runtime_mut`, now that the plane's runtime type lives in the plane crate and core
+    /// names none of it. A plane's relocated tests reach their own runtime through this neutral seam:
+    /// `Arc::get_mut(app.plane_slot_mut(key)?).downcast_mut::<TheirRuntime>()`. Returns the slot's
+    /// `Arc` mutably so the caller can `Arc::get_mut` it (uniquely-owned in a sole-owner test `App`).
+    #[allow(dead_code)]
+    pub fn plane_slot_mut(
+        &mut self,
+        key: &str,
+    ) -> Option<&mut Arc<dyn std::any::Any + Send + Sync>> {
+        self.plane_slots.get_mut(key)
+    }
+
+    /// The INTERNED runtime-slot key for the fallback (LLM) plane, precomputed ONCE at build
+    /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
+    /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
+    /// on every `engine_tables()`/`llm_runtime()` call — the hot-path allocation the alloc gate pins.
+    pub fn llm_runtime_key(&self) -> &'static str {
+        self.llm_runtime_key
+    }
+
     /// The per-container submission-gate map for the plane identified by the opaque registry
     /// `plane_key`, or `None` when the plane attached no gates this generation — a pure
     /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a
@@ -1166,6 +621,41 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
         self.plane_gates.get(plane_key)
+    }
+
+    // THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
+    // resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
+    // `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
+    // cannot cross the `build_runtime` downcast). Byte-identical: the SAME objects `appbuild` resolved
+    // via `hooks::resolve_pool_*`, read by pool name. `pub` — the plane names them; the allowed
+    // plane→core edge (no core type crosses a downcast, the plane just calls these directly).
+
+    /// This pool's resolved routing policy, or `None` for the zero-cost SWRR default (no `route:`/hook).
+    pub fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy> {
+        self.pool_orderings.get(pool)
+    }
+
+    /// This pool's resolved DECISION GATES `(priority, policy)` in config order (empty ⇒ no pool gates).
+    pub fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)] {
+        self.pool_decision_gates
+            .get(pool)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// This pool's resolved REWRITE chain `(timeout, policy)` (empty ⇒ no pool rewrites, zero cost).
+    #[allow(clippy::type_complexity)]
+    pub fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+    )] {
+        self.pool_rewrite_chains
+            .get(pool)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
@@ -1329,6 +819,16 @@ pub struct AppHandle {
     /// Debug-only overlap detector for [`swap`](Self::swap) — see the convention note there.
     #[cfg(debug_assertions)]
     swapping: std::sync::atomic::AtomicBool,
+    /// THE COMPOSITION-ROOT-OWNED per-generation ENGINE HOST — the `Arc<dyn EngineHost>` the active
+    /// health probers hold a `Weak` to (App-retype WEDGE 2f). The probers re-anchor on THIS host, not on
+    /// `Arc<App>`, so the plane's health module names no core `App` type; the handle owns it here so a
+    /// [`swap`](Self::swap) can DROP the retiring generation's host, making every stale prober's
+    /// `Weak::upgrade` fail (they exit) instead of pinning the old snapshot alive. `None` until the
+    /// composition root binds the boot host ([`set_snapshot_host`](Self::set_snapshot_host)); a
+    /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
+    /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
+    /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
+    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_substrate::plane_host::EngineHost>>>,
 }
 
 impl AppHandle {
@@ -1337,7 +837,17 @@ impl AppHandle {
             current: arc_swap::ArcSwap::new(app),
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
+            snapshot_host: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
+    /// health probers hold a `Weak` to (App-retype WEDGE 2f). Called once at boot after the probers are
+    /// spawned against this same host, so the handle owns the only strong reference the probers depend
+    /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
+    /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
+    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_substrate::plane_host::EngineHost>) {
+        *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
     /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only
@@ -1407,7 +917,15 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
-        crate::health::spawn_probers(&next);
+        // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
+        // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
+        // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
+        // probe a retired snapshot — the SAME no-strong-ref-across-reload guarantee the old `Weak<App>`
+        // gave, now anchored on the host holder. We re-bind the host for `next` so the invariant "the
+        // handle owns a host per current generation" holds; RE-SPAWNING the probers against `next` is
+        // the LLM plane's own concern (its `PlaneDecl::on_swap` seam — wired in the wedge-3 engine
+        // thread), so core still names no `crate::health::spawn_probers`.
+        self.set_snapshot_host(crate::plane_host::engine_host(&next));
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
@@ -1439,7 +957,7 @@ impl AppHandle {
 /// post-apply configuration: a handler takes `CurrentApp(app): CurrentApp` instead of
 /// `State(app): State<Arc<App>>`, and the rest of its body is unchanged (`app` is still `Arc<App>`).
 /// A local newtype is required because the orphan rule forbids `impl FromRef<_> for Arc<App>`.
-pub struct CurrentApp(pub(crate) Arc<App>);
+pub struct CurrentApp(pub Arc<App>);
 
 impl<S> axum::extract::FromRequestParts<S> for CurrentApp
 where
@@ -1458,10 +976,6 @@ where
         Ok(CurrentApp(handle.load()))
     }
 }
-
-#[cfg(test)]
-#[path = "tests/worker_shard_tests.rs"]
-mod worker_shard_tests;
 
 // ── DETACHED-WORK DRAIN — RELOCATED to `busbar-substrate::detached` so the plane crates (which
 // deliberately never link busbar-core) reach the same seam. Re-exported here for core callers

@@ -70,6 +70,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     parse_endpoint: None,
     lower_endpoint: None,
     build_runtime: None,
+    viewer: None,
     retain_verify_gates: None,
     default_section: None,
 };
@@ -195,6 +196,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };
@@ -534,6 +536,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };
@@ -584,6 +587,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };
@@ -637,6 +641,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };
@@ -682,6 +687,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };
@@ -725,6 +731,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
+        viewer: None,
         retain_verify_gates: None,
         default_section: None,
     };

@@ -321,14 +321,16 @@ pub type VerifyDecideFn =
 /// of [`ApprovalRedeemFn`].
 pub type ApprovalRedeemQFn =
     extern "C-unwind" fn(host: HostCtx, query: *const ApprovalQuery) -> StatusClass;
-/// Sign a detached-JWS signing input with the HOST-OWNED card subkey. The plane builds the RFC 7515
+/// Sign a detached-JWS signing input with a HOST-OWNED signing subkey. The plane builds the RFC 7515
 /// signing input (`<protected>.<payload>`) and passes its bytes as `(input_ptr, input_len)`; the host
-/// derives its domain-separated card subkey, signs, and writes the 64-byte Ed25519 signature into
-/// `out` (a caller-provided 64-byte buffer) on [`StatusClass::Ok`]. The card SECRET is derived and
-/// held host-side and NEVER crosses to the plane. [`StatusClass::Refused`] when the host holds no
-/// card-signing key (nothing to sign with); [`StatusClass::Fault`] on a caught panic — `out` is left
-/// untouched on any non-`Ok` return.
-pub type CardSignFn = extern "C-unwind" fn(
+/// derives its domain-separated signing subkey, signs, and writes the 64-byte Ed25519 signature into
+/// `out` (a caller-provided 64-byte buffer) on [`StatusClass::Ok`]. The signing SECRET is derived and
+/// held host-side and NEVER crosses to the plane. (The a2a plane uses this to sign its agent cards,
+/// but the capability is named for what it does — sign a caller-framed input with a host subkey —
+/// not for any one protocol's document.) [`StatusClass::Refused`] when the host holds no signing
+/// subkey (nothing to sign with); [`StatusClass::Fault`] on a caught panic — `out` is left untouched
+/// on any non-`Ok` return.
+pub type SubkeySignFn = extern "C-unwind" fn(
     host: HostCtx,
     input_ptr: *const u8,
     input_len: usize,
@@ -501,13 +503,13 @@ pub struct PlaneHostVtable {
     pub journal_compact: Option<JournalCompactFn>,
     /// Verify one scope's persisted chain (writes a verify report).
     pub journal_verify_scoped: Option<JournalVerifyScopedFn>,
-    // ── APPENDED (minor-10, the CARD-SIGN seam): the host-owned agent-card signer. The plane frames
-    //    the RFC 7515 signing input and passes the bytes; the host derives the domain-separated card
-    //    subkey, signs, and returns the 64-byte Ed25519 signature — so the card SECRET is derived and
-    //    held host-side and never crosses to the plane. Trailing slot, append-only, same
-    //    sized/versioned discipline (the minor-10 bump). ─────────────────────────────────────────────
-    /// Sign a card signing-input with the host-owned card subkey (writes 64 signature bytes).
-    pub card_sign: Option<CardSignFn>,
+    // ── APPENDED (minor-10, the SUBKEY-SIGN seam): the host-owned subkey signer (the a2a plane uses
+    //    it to sign agent cards). The plane frames the RFC 7515 signing input and passes the bytes; the
+    //    host derives the domain-separated signing subkey, signs, and returns the 64-byte Ed25519
+    //    signature — so the signing SECRET is derived and held host-side and never crosses to the
+    //    plane. Trailing slot, append-only, same sized/versioned discipline (the minor-10 bump). ──────
+    /// Sign a caller-framed signing input with the host-owned signing subkey (writes 64 signature bytes).
+    pub subkey_sign: Option<SubkeySignFn>,
     // ── APPENDED (minor-12, the URL-GUARD seam): the host-owned structural SSRF/URL guard for a
     //    URL-shaped tool argument. The host owns the scheme allowlist + host normalization + the
     //    cloud-metadata / obfuscated-encoding / internal-address checks (its `net_guard` internals a
@@ -593,7 +595,7 @@ impl PlaneHostVtable {
         journal_forget: None,
         journal_compact: None,
         journal_verify_scoped: None,
-        card_sign: None,
+        subkey_sign: None,
         guard_url: None,
         identity_admit: None,
         gate_decide: None,
@@ -645,7 +647,7 @@ impl PlaneHostVtable {
         journal_forget: Some(stub::journal_forget),
         journal_compact: Some(stub::journal_compact),
         journal_verify_scoped: Some(stub::journal_verify_scoped),
-        card_sign: Some(stub::card_sign),
+        subkey_sign: Some(stub::subkey_sign),
         guard_url: Some(stub::guard_url),
         identity_admit: Some(stub::identity_admit),
         gate_decide: Some(stub::gate_decide),
@@ -962,13 +964,13 @@ pub mod stub {
         unimplemented!("PlaneHost::journal_verify_scoped — stub")
     }
     /// Stub: see module docs.
-    pub extern "C-unwind" fn card_sign(
+    pub extern "C-unwind" fn subkey_sign(
         _host: HostCtx,
         _input_ptr: *const u8,
         _input_len: usize,
         _out: *mut u8,
     ) -> StatusClass {
-        unimplemented!("PlaneHost::card_sign — stub")
+        unimplemented!("PlaneHost::subkey_sign — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn guard_url(

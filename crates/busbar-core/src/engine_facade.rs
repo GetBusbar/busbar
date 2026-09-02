@@ -57,12 +57,17 @@ pub use crate::proxy::{
 // so the plane-grep meter is unmoved. NOTHING in core consumes this section — the engine has not moved
 // (wire the seam in place, THEN relocate).
 //
-// ── the boot egress-client + target-table build (proxy) ──────────────────────────────────────────
-pub use crate::proxy::{build_egress_client, build_egress_targets, host_from_base, EgressTarget};
+// ── the boot egress-client build (proxy) ─────────────────────────────────────────────────────────
+// `build_egress_targets`/`host_from_base`/`EgressTarget` RELOCATED with the engine into `busbar-llm`
+// (1.6.0 money-path Phase 3-4 C): the lane/pool lowering that names them now lives in-plane, so core
+// no longer surfaces them on the DOWN facade.
+pub use crate::proxy::build_egress_client;
 // ── the outbound credential resolve + boot prebuild + SSRF posture (egress_auth) ─────────────────
 pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, MetadataSsrfPolicy};
-// ── the per-shard upstream client fan-out + the active-probe schedule (state / health) ───────────
-pub use crate::health::ProbeSchedule;
+// ── the per-shard upstream client fan-out (state) ────────────────────────────────────────────────
+// `ProbeSchedule` (the active-probe schedule) RELOCATED with the engine + `health.rs` into
+// `busbar-llm` (1.6.0 money-path Phase 3-4 C): the plane names its OWN schedule, so core no longer
+// surfaces it on the DOWN facade.
 pub use crate::state::UpstreamClients;
 // ── the neutral lane-protocol-name resolver the lowering keys egress targets on (proto) ──────────
 pub use crate::proto::lane_protocol_name;

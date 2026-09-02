@@ -65,8 +65,34 @@ pub trait EngineTablesView {
     /// A neutral view of the lane at `idx`, or `None` when the index is out of range.
     fn lane_view(&self, idx: usize) -> Option<LaneView<'_>>;
 
+    /// The total number of configured lanes — the upper bound the staying `/stats` and telemetry
+    /// readers iterate `0..lane_count()` over (each index then read through [`Self::lane_view`] /
+    /// the neutral store cell). Zero for the empty view.
+    fn lane_count(&self) -> usize;
+
+    /// The `(lane index, member weight)` pairs of `pool`'s members, in config order — the NEUTRAL
+    /// projection the core-resident admin pool listing (`GET /admin/pools[/{name}][?detail]`) renders
+    /// each member's weight and (via [`Self::lane_view`]) model from, so it names no plane
+    /// `WeightedLane`. Empty for an unknown pool. Cold admin path; allocates.
+    fn pool_members(&self, pool: &str) -> Vec<(usize, u32)>;
+
     /// The live `on_exhausted: queue` park depth for `pool` (0 when the pool never queues).
     fn queued_depth(&self, pool: &str) -> u64;
+
+    /// The FALLBACK-POOL target `pool` fails over to on exhaustion, if its `on_exhausted:` policy is
+    /// `fallback_pool:<name>` — else `None` (every other policy, `503`/`least_bad`/`queue`, stays
+    /// within the pool and introduces no new pool name; an unconfigured pool defaults to `503`). A
+    /// NEUTRAL projection of the plane's `on_exhausted` config (the config enum is a plane type this
+    /// seam must not name), used by the staying ingress ACL walk (`fallback_pools_authorized`) to
+    /// re-enforce a key's `allowed_pools` against every reachable fallback pool.
+    fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
+
+    /// The ALL-POOLS upstream-credential DEFAULT (`Own` vs `Passthrough`) — a NEUTRAL scalar the
+    /// staying pool-less core readers (`auth::open_door` keys-in-chain guard, the admin
+    /// upstream-credentials render) consult after the plane's runtime relocated out of core. A pure
+    /// projection of the plane runtime's `upstream_credentials` field; the empty view returns the
+    /// type's default, byte-identical to the always-present-but-empty zero-plane runtime.
+    fn upstream_creds(&self) -> busbar_api::UpstreamCreds;
 }
 
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
@@ -93,7 +119,19 @@ impl EngineTablesView for EmptyEngineTablesView {
     fn lane_view(&self, _idx: usize) -> Option<LaneView<'_>> {
         None
     }
+    fn lane_count(&self) -> usize {
+        0
+    }
+    fn pool_members(&self, _pool: &str) -> Vec<(usize, u32)> {
+        Vec::new()
+    }
     fn queued_depth(&self, _pool: &str) -> u64 {
         0
+    }
+    fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
+        None
+    }
+    fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
+        busbar_api::UpstreamCreds::default()
     }
 }

@@ -31,6 +31,25 @@ pub mod auth {
 pub mod detached;
 pub mod diagnostics;
 pub mod net_guard;
+// A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
+// relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of
+// reaching back into `busbar_core::profile`. Pure std (atomics/Mutex/Instant), no `App`/`Store`
+// reach, and — like the metrics registry — its accumulator buckets live SINGLE-COMPILED here so a
+// dual-compiled plane test binary shares one profiler rather than splitting the sample set across
+// two core instances. Core re-exports it from `busbar_core::profile` so its own call sites (the
+// `auth`/`ingress` stage spans) are unchanged.
+pub mod profile;
+// A′ (ABI-purity P4): the neutral hot-path OBSERVABILITY floor a plane names via the ABI. Only the
+// pure `HOTPATH_LEVEL` compile-time const lives here (the OTLP/stderr two-filter split's DEBUG
+// floor); the App/webhook/net_guard-facing remainder of observability stays in busbar-core. Core
+// re-exports this const from `busbar_core::observability::HOTPATH_LEVEL` so its call sites are
+// unchanged.
+pub mod observability {
+    /// The tracing level at/above which the per-request hot-path spans (`forward`, lane-pick, egress)
+    /// are emitted; the OTLP export floors here. A `const`, so both dual-compiled core instances in a
+    /// plane test binary see one identical value — no registry, no split.
+    pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+}
 // wt2/neutral-utils: the five NEUTRAL transport/crypto utility leaves relocated down from
 // busbar-core so a plane crate (busbar-llm) names them via the ABI instead of reaching back into
 // `busbar_core::`. Each is pure (no plane/`App`/`Store` knowledge): JSON canonicalization + the
@@ -68,6 +87,19 @@ pub mod ingress {
     // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,
     // `metadata_handler`) stays in core and re-exports these.
     pub mod protocol;
+
+    /// The NEUTRAL model-not-found copy shaper: the human string a router returns when a request
+    /// names a model the deployment has no lane for. Pure text — the operator-shaped
+    /// `model_not_found_message` override when present, else the historical default phrasing — with no
+    /// `App` and no dialect. Relocated here (1.6.0 KEYSTONE) so the relocated engine names it without
+    /// reaching into `busbar-core`; core re-exports it so its own call sites resolve unchanged.
+    #[must_use]
+    pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
+        match model_not_found_message {
+            Some(shaped) => shaped.to_string(),
+            None => format!("The model '{model}' does not exist or you do not have access to it."),
+        }
+    }
 }
 pub mod billing;
 pub mod breaker;
@@ -113,20 +145,48 @@ pub mod proxy;
 pub mod tls;
 pub mod transport;
 pub mod trust;
-pub mod egress_auth {
-    pub mod gate;
-}
+// THE EGRESS-AUTH SEAM: the outbound credential dispatch (`resolve`/`prebuild_auth`/
+// `CredentialProvider`/`MetadataSsrfPolicy`), the two self-minting OAuth mechanisms (`jwt_bearer` /
+// `oauth_client_credentials`, RFC 7523 / RFC 6749 §4.4) with their shared cached-token machinery,
+// and the egress `gate` submodule. Relocated DOWN from `busbar_core::egress_auth` (the LLM plane
+// named it as its last backwards reach); core re-exports every item at its historical
+// `busbar_core::egress_auth::*` path so every in-core caller is unchanged. Secret material stays
+// `busbar_api::Redacted` and the mint wire form is byte-identical — proven by the migrated mint
+// suite (`jwt_bearer` / `oauth_client_credentials` / `helper` / `bearer_token` tests).
 pub mod catalogue;
+pub mod egress_auth;
 pub mod failover;
 pub mod store;
 pub mod telemetry;
+// The neutral METRIC-NAME facade: the `&'static str` Prometheus names a plane's engine emits. Pure
+// data, no registry/`App`; core re-exports each from `crate::metrics`. The recorder + `render()` +
+// scrape-time gauges stay in core (they flush the core-resident telemetry bank), so only the NAMES
+// are neutral and the scrape stays ONE registry, byte-identical.
+pub mod metrics;
 // The neutral GOVERNANCE value families — the busbar-signed token crypto, the mint-parameter struct
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
 // each from its old `busbar_core::governance::…` path.
 pub mod governance;
+// ABI-purity CONFIG-ENUMS: the neutral LLM-runtime config VALUE enums (`PolicyOnError` /
+// `ProviderAuth`) a plane names via the ABI. Fieldless serde enums moved DOWN with their derives +
+// `#[serde(...)]` attrs VERBATIM (byte-identical wire form); core re-exports each from its historical
+// `busbar_core::config::` path so the frozen config grammar + every deserialization are unchanged.
+pub mod config;
+
+// THE NEUTRAL hook value/wire layer (1.6.0 hooks seam): the plain-data resolved-policy carriers
+// (`ResolvedPolicy`/`FallbackHook`) and the outbound hook-request `wire` projection, relocated off
+// `busbar_core::hooks::` so the LLM model plane names the substrate ABI. Core re-exports these from its
+// historical `busbar_core::hooks::` paths; the reply-side normalizers stay core-side.
+pub mod hooks;
 
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
 // crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
 // Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
+
+// WEDGE 3-PREP: the neutral data-plane topology facts (worker count / per-thread worker id) + the
+// per-worker-sharded upstream client they size, relocated DOWN from `busbar_core::state` so a plane
+// crate names them without reaching into `busbar-core`. Core re-exports each at its historical
+// `busbar_core::state::…` path.
+pub mod topology;

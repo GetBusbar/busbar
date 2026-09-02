@@ -128,7 +128,8 @@ impl SwrrStripes {
     /// Sum of the LIVE stripes (stale-generation slots count as their logical 0) — the whole-cell
     /// accumulator view the SWRR invariant assertions read. Test-only, like its reader
     /// `cell_current_weight`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn sum(&self) -> i64 {
         let g = self.gen.load(Ordering::Relaxed);
         self.slots
@@ -141,7 +142,8 @@ impl SwrrStripes {
     /// TEST-ONLY: force the CALLING thread's stripe to `v` at the current generation (and settle
     /// every other stripe at a live 0), so the summed accumulator view reads exactly `v` — the
     /// stale-accumulator precondition of the SWRR-reset regression tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn force(&self, v: i64) {
         let g = self.gen.load(Ordering::Relaxed);
         let mine = crate::state::worker_stripe(self.slots.len());
@@ -641,7 +643,8 @@ impl HealthState {
     /// Test-only: the production recovery path (`recover_lane`) now closes cells through
     /// `cell_closed_if_recoverable` (which re-validates suppression under the lock); the only
     /// remaining caller of this unconditional close is the `closed_state` test handle.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn cell_closed(c: &dyn BreakerCellAccess) {
         let _tx = lock_recover(c.transition_lock());
         Self::cell_closed_locked(c);

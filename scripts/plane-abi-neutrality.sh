@@ -61,9 +61,17 @@ alt="$(IFS='|'; echo "${banned[*]}")"
 # `server_stream` — is exactly the leak to catch, and `-w` would miss it. The declaration-line
 # pre-filter keeps prose in `///`/`//` doc comments (which legitimately discuss neutrality) out of
 # scope, so only names the ABI actually exports are scanned.
+#
+# MATCH THE CODE, NOT THE PATH: `grep -rIn` prefixes each hit with `<file>:<lineno>:`, and that
+# `<file>` is an ABSOLUTE path — under a checkout dir that happens to contain a banned noun (a git
+# worktree is literally named `agent-<hash>`, and `agent` is banned) a naive `grep -iE "$alt"` over
+# the prefixed line matches the PATH on EVERY declaration and the witness fails everywhere,
+# spuriously. So strip the `<file>:<lineno>:` prefix and test the CODE ONLY — exactly as
+# `plane-purity-lint` scans the source line, never the path it lives under. The full prefixed line
+# is still what we PRINT, so a real hit is still reported with its file:line.
 hits="$(
   grep -rInE '^[[:space:]]*(pub[[:space:]]+)?(struct|enum|fn|type|const|trait|mod|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[:(=,])' "$crate_src" \
-    | grep -iE "$alt" \
+    | awk -v pat="$alt" '{ code = $0; sub(/^[^:]*:[0-9]+:/, "", code); if (tolower(code) ~ tolower(pat)) print }' \
     || true
 )"
 

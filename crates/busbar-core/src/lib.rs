@@ -71,10 +71,15 @@ mod alloc_gate_instrument {
 
     impl CountingJemalloc {
         /// Allocations observed on THIS thread since process start (or last `reset`).
+        // The alloc-count PERF gate that read these moved to `busbar-llm` (see `proxy/mod.rs`), so the
+        // read APIs are now unexercised in core's own test binary while the `#[global_allocator]`
+        // counting seam stays wired for parity; keep the seam intact rather than delete it.
+        #[allow(dead_code)]
         pub(crate) fn count() -> u64 {
             ALLOC_COUNT.with(|c| c.get())
         }
         /// Reset this thread's counter to zero, returning the previous value.
+        #[allow(dead_code)]
         pub(crate) fn reset() -> u64 {
             ALLOC_COUNT.with(|c| c.replace(0))
         }
@@ -163,7 +168,10 @@ pub mod export;
 pub mod failover;
 pub mod governance;
 pub mod handlers;
-pub mod health;
+// `health` (the active-probe schedule + prober loop) RELOCATED into `busbar-llm/src/engine/health.rs`
+// with the money-path engine (1.6.0 money-path Phase 3-4 C): the probers read the plane's own
+// `Lane`/`NativeRuntime` tables, so they moved in-plane. Core no longer names a `ProbeSchedule`; the
+// LLM plane spawns its probers off its own runtime through the plane `on_swap` seam.
 pub mod hooks;
 pub mod ingress;
 pub mod ir;
@@ -182,12 +190,10 @@ pub mod oauth_as;
 pub mod observability;
 // `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
 // from `busbar-api` so `crate::operation::Operation` and `busbar_core::operation::*` are unchanged
-// for every existing user. Core makes it a local module (rather than a bare `pub use`) to hang THE
-// ONE GAUNTLET on it: `operation::run` is the single canonical resolved-operation entry every
-// arrival converges on — the named seam the plane hooks (1.6 M2–M5) grow onto — with the body living
-// in `ingress::dispatch::run` where it can reach the ingress core's private helpers.
+// for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
+// every arrival converges on) RELOCATED with the LLM engine into `busbar-llm`; core reaches it only
+// through the neutral body-arrival seam, so this is now a plain re-export of the neutral vocabulary.
 pub mod operation {
-    pub use crate::ingress::dispatch::run;
     pub use busbar_api::operation::*;
 }
 
@@ -201,7 +207,10 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
-pub mod profile;
+// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so the
+// busbar-llm engine names it via the ABI. Re-exported here so `crate::profile::…` (the auth/ingress
+// stage spans) is unchanged and byte-identical.
+pub use busbar_substrate::profile;
 pub mod proto;
 pub mod proxy;
 pub mod session;

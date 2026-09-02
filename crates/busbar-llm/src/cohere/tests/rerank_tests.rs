@@ -357,7 +357,7 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
 #[test]
 fn no_rerank_handler_on_the_other_four() {
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let rh = busbar_core::handlers::request_handler(proto).expect(proto);
+        let rh = busbar_substrate::handlers::request_handler(proto).expect(proto);
         assert!(
             rh.operation_handler(Operation::RERANK).is_none(),
             "{proto} must have no rerank handler"

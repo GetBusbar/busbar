@@ -5,15 +5,13 @@
 //! `Reader` (wire → signal/IR) and a `Writer` (IR/intent → wire). `Protocol` bundles a Reader and
 //! Writer; a string-keyed registry maps a provider's protocol name to its `Protocol`.
 
-use axum::http::{header::HeaderValue, HeaderName};
-
 // StatusClass and CanonicalSignal are defined in breaker.rs and re-exported here for compatibility.
 // The `CanonicalSignal` re-export is consumed only by the per-protocol `classify` test helpers (which
 // are themselves `#[cfg(test)]`), so it is gated to test builds to avoid an unused-import warning in
 // the 1.0 binary; production code refers to the canonical `crate::breaker::CanonicalSignal` directly.
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::breaker::CanonicalSignal;
-pub(crate) use crate::breaker::StatusClass;
+pub use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
@@ -51,34 +49,10 @@ pub use busbar_substrate::proto::{
 ///
 /// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
 /// these fields survives byte-for-byte — never logs a word about them.
-pub(crate) fn warn_untranslatable_response_metadata(
-    egress: &str,
-    ingress: &str,
-    body: &serde_json::Value,
-) {
-    // WHICH fields are present, and the SHAPE of the lookup (Gemini reads `candidates[].k`, Bedrock a
-    // top-level key), are the egress dialect's own knowledge — declared on its
-    // `ProtocolDecl::vendor_response_metadata` and read here by name so core spells no dialect. A
-    // dialect with no such vendor-scoped artifact declares `None` and reports nothing.
-    let present: Vec<&str> = decl_for(egress)
-        .and_then(|d| d.vendor_response_metadata)
-        .map(|report| report(body))
-        .unwrap_or_default();
-    if present.is_empty() {
-        return;
-    }
-    crate::diagnostics::diag_debug!(
-        crate::diagnostics::PROTO_DROP_PROVIDER_METADATA,
-        egress = %egress,
-        ingress = %ingress,
-        fields = %present.join(","),
-        "dropping response-side provider metadata on the cross-protocol seam: the field(s) named \
-         here are vendor-scoped artifacts (a guardrail assessment is an AWS account resource; a \
-         harm-category rating uses Google's own vocabulary) and the caller's protocol has no shape \
-         to receive them. If this metadata is compliance evidence, route the request to a \
-         same-protocol lane, where the upstream body reaches the client verbatim"
-    );
-}
+// RELOCATED DOWN to `busbar_substrate::proto` (the cross-protocol response seam lives in `busbar-llm`,
+// which now names the substrate fn directly); re-exported here at its historical
+// `busbar_core::proto::warn_untranslatable_response_metadata` path so core's call sites are unchanged.
+pub use busbar_substrate::proto::warn_untranslatable_response_metadata;
 
 /// Conservative fallback for the `max_tokens` injected at a translation boundary when the source
 /// protocol omitted it (legal for OpenAI) but the target REQUIRES it (Anthropic, Bedrock — see
@@ -143,7 +117,7 @@ pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'
 /// THE REGISTRY-SUPPLIED RESIDUAL DEFAULT dialect — the name core falls back to when no dialect
 /// claims a request yet one must be named. `None` when no residual-default protocol is installed.
 /// Reads [`ProtocolDecl::residual_default`], so the literal default dialect name leaves core.
-pub(crate) fn residual_default_dialect() -> Option<&'static str> {
+pub fn residual_default_dialect() -> Option<&'static str> {
     registry::residual_default_protocol()
 }
 
@@ -161,11 +135,8 @@ pub(crate) fn residual_default_dialect() -> Option<&'static str> {
 /// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
 /// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
 /// the default generic copy.
-pub(crate) fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    registry::decl_for(proto)
-        .map(|d| d.auth_failure_message)
-        .unwrap_or("authentication failed")
-}
+// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
+pub use busbar_substrate::proto::vendor_auth_failure_message;
 
 // Per-request signing context. RELOCATED DOWN to the neutral `busbar_substrate::proto` leaf so the
 // substrate `ProtocolDecl`'s `egress_auth_headers` builder names it without depending on
@@ -197,29 +168,26 @@ pub use busbar_substrate::proto::{ArrayStreamFramer, DialectCodec};
 /// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
 /// folded once at boot from `ProtocolDecl::streaming_content_type` — where it used to be an
 /// `OnceLock` sweep that built a `Protocol` per known name to read one `&'static` off its writer.
-pub fn streaming_content_types() -> &'static [&'static str] {
-    registry::registry().streaming_content_types()
-}
+// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
+pub use busbar_substrate::proto::streaming_content_types;
 
 /// The set of array-stream shim keys across every declared protocol (only Gemini declares one).
 /// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
 /// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
-pub fn array_stream_shim_keys() -> &'static [&'static str] {
-    registry::registry().array_stream_shim_keys()
-}
+// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
+pub use busbar_substrate::proto::array_stream_shim_keys;
 
 /// The array-stream shim key the NAMED protocol declares, or `None` if it declares none (most
 /// don't) or is not registered. The INJECTION site (`ingress::ingress_path_model`) reads it by name
 /// so it names no protocol submodule: delete a protocol and the marker is simply never injected.
-pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
-    registry::decl_for(protocol_name).and_then(|d| d.array_stream_shim_key)
-}
+// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at its historical path.
+pub use busbar_substrate::proto::array_stream_shim_key_for;
 
 /// The NEUTRAL streaming-translator seam (`StreamTranslator` trait + the fn-ptr factory) — STAYS in
 /// core (names zero concrete stream IR). See `stream_translator.rs`.
 pub(crate) mod stream_translator;
 pub use stream_translator::install_stream_translator_factory;
-pub(crate) use stream_translator::new_stream_translator;
+pub use stream_translator::new_stream_translator;
 /// Core's OWN test binary routes the streaming-translator seam straight to the `busbar-llm` concrete
 /// factory through this `tests/` fixture (the neutral-purity lint excludes it), so the streaming
 /// suites that drive `new_stream_translator` standalone keep working after the `#[path]` witness of the
@@ -368,19 +336,8 @@ pub use busbar_substrate::proto::known_protocols;
 /// lane protocols). Post-G6-A4b a lane stores this name, not a constructed `Protocol` (the concrete
 /// codec lives in the plugin and core reaches it via `decl_for(name).dialect()`), so the old
 /// `ProtocolRegistry` `Arc<Protocol>` cache is gone — this is the whole of what lane-build needed from it.
-pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
-    registry::decl_for(name)
-        .filter(|d| d.codec.is_some())
-        .map(|d| d.name)
-}
-
-pub(crate) fn convert_headers(headers: Vec<(HeaderName, HeaderValue)>) -> http::header::HeaderMap {
-    let mut map = http::header::HeaderMap::new();
-    for (name, value) in headers {
-        map.insert(name, value);
-    }
-    map
-}
+// RELOCATED DOWN to `busbar_substrate::proto`; re-exported here at their historical paths.
+pub use busbar_substrate::proto::{convert_headers, lane_protocol_name};
 
 // THE CODEC/IR TEST SUITES that used to live here (`tests/tests.rs`, `registry_tests`,
 // `stream_fanout_tests`, `stream_translate_tests`, `same_proto_fidelity_tests`, `gemini_tests`,

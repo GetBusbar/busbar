@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, health, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -617,6 +617,21 @@ fn register_protocols() {
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
     busbar_core::proto::registry::install_protocols_with_path_ingress(installed, path_ingress);
+
+    // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
+    // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's
+    // universal ingress by name through `body_ingress_for`; each protocol crate contributes its
+    // `(name, arrival)` pairs so the composition root registers the whole set once. Without this a
+    // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
+    // `BODY_INGRESS` exists to close).
+    #[allow(unused_mut)]
+    let mut body_ingress: Vec<(
+        &'static str,
+        busbar_substrate::ingress::arrival::BodyIngress,
+    )> = Vec::new();
+    #[cfg(feature = "proto-llm")]
+    body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
+    busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
@@ -1094,9 +1109,16 @@ async fn run(data_workers: usize) {
     export::configure(&resolved_export);
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
-    // `mode: none` / has no `health:` block. Re-spawned on every config reload/apply (see the admin
-    // swap sites) so reloaded lanes get probed and the old generation exits.
-    health::spawn_probers(&app);
+    // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
+    // (App-retype WEDGE 2f): the probers re-anchor on a `Weak<dyn EngineHost>` over it — never an
+    // `Arc<App>` — so the plane's health module names no core `App` type. We hand the SAME host to the
+    // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
+    // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
+    // `Weak<App>` did when the boot snapshot drained.
+    #[cfg(feature = "proto-llm")]
+    let boot_host = busbar_core::plane_host::engine_host(&app);
+    #[cfg(feature = "proto-llm")]
+    busbar_llm::spawn_probers(&boot_host);
 
     // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
     // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
@@ -1111,6 +1133,11 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
+    // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
+    // spawn_probers call above and `AppHandle::set_snapshot_host`.
+    #[cfg(feature = "proto-llm")]
+    app_handle.set_snapshot_host(boot_host);
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are

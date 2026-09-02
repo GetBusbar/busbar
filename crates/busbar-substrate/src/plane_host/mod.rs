@@ -22,6 +22,9 @@
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
 pub mod breaker;
+// THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
+// DTO `busbar-core`'s `appbuild` populates and hands to the LLM plane's `build_runtime` seam.
+pub mod build_input;
 // THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
 // the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
 // readers name so they need not move when the tables relocate into `busbar-llm`.
@@ -39,6 +42,11 @@ pub mod trust_anchor;
 use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
+pub use crate::plane_host::build_input::{
+    AffinityInput, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput, HealthInput,
+    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
+    TripInput, TripModeInput,
+};
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
 };
@@ -214,6 +222,36 @@ pub fn runtime_slot_key(plane_key: &str) -> &'static str {
 /// so a config swap between calls is seen. Handed to transports that re-mint per frame.
 pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// OPAQUE GOVERNANCE HANDLES (App-retype WEDGE 2) — the neutral carrier tokens a plane HOLDS on its
+// per-request sink so the sink's field types stop naming `busbar_core::governance::GovState` /
+// `busbar_core::cost::CostModel` / `busbar_core::governance::AdmitGrant`. Each wraps an
+// `Arc<dyn Any + Send + Sync>` the host minted over the concrete engine value; the plane never
+// introspects it — it hands [`GovHandle`]/[`CostHandle`] BACK to the metering seams
+// ([`EngineHost::meter_ledger`]/[`EngineHost::meter_series`]), which downcast host-side. This keeps
+// the byte-identical `sink.gov`/`sink.cost` the plane minted (a custom test cost, the live app cost —
+// whichever the sink was built from), NOT a re-read of the host snapshot.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An OPAQUE, cheaply-cloned (one `Arc` bump) handle to the deployment's governance state — minted
+/// host-side ([`EngineHost::governance`]) and consumed host-side ([`EngineHost::meter_ledger`] /
+/// [`EngineHost::meter_series`]). The plane holds it on its per-request sink WITHOUT naming
+/// `busbar_core::governance::GovState`.
+#[derive(Clone)]
+pub struct GovHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
+/// The cost-model twin of [`GovHandle`] — an opaque handle to the resolved `CostModel` the sink was
+/// built from, produced by [`EngineHost::cost`] and consumed by [`EngineHost::meter_ledger`].
+#[derive(Clone)]
+pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
+/// An opaque handle to a governance ADMISSION grant (`AdmitGrant`), held DROP-ONLY on a plane's
+/// per-request sink so the admission's in-flight concurrency holds release when the last sink clone
+/// drops. The plane never introspects it; it exists purely so its `Drop` (on the last clone) releases
+/// the gauges — byte-identical to the sink's current `Option<Arc<busbar_core::governance::AdmitGrant>>`.
+#[derive(Clone)]
+pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -344,15 +382,337 @@ pub trait EngineHost: Send + Sync {
         seconds: f64,
     );
 
+    /// Count ONE dispatch ATTEMPT on `(pool_label, lane)` — the `busbar_upstream_attempts_total`
+    /// upstream-attempt metric — through the host, so the engine emits it without naming core's
+    /// telemetry module. `pool_label` is the bounded metric label (a named pool, or the routed model
+    /// name for the default `""` cell); `lane` is the lane index the host resolves the `lane` label
+    /// from off the bound snapshot. A pure snapshot-scoped metric emit, no `HostCtx`; identical to
+    /// `busbar_core::telemetry::upstream_attempt` over the bound snapshot.
+    fn telemetry_upstream_attempt(&self, pool_label: &str, lane: usize);
+
+    /// Count ONE classified upstream FAILURE on `(pool_label, lane)` by `disposition` — the
+    /// `busbar_upstream_failures_total` metric — through the host. The telemetry twin of
+    /// [`telemetry_upstream_attempt`](Self::telemetry_upstream_attempt); identical to
+    /// `busbar_core::telemetry::upstream_failure` over the bound snapshot.
+    fn telemetry_upstream_failure(&self, pool_label: &str, lane: usize, disposition: &'static str);
+
+    /// Count ONE logical Closed→Open breaker TRIP on `(pool_label, lane)` — the
+    /// `busbar_breaker_trips_total` metric — through the host. Identical to
+    /// `busbar_core::telemetry::breaker_trip` over the bound snapshot.
+    fn telemetry_breaker_trip(&self, pool_label: &str, lane: usize);
+
+    /// Count ONE FAILOVER event on `pool_label` by `reason` — the `busbar_failovers_total` metric —
+    /// through the host. Identical to `busbar_core::telemetry::failover` over the bound snapshot.
+    fn telemetry_failover(&self, pool_label: &str, reason: &'static str);
+
+    /// Count ONE cross-protocol TRANSLATION hop `from → to` — the `busbar_translations_total`
+    /// metric — through the host. Both names come from the fixed protocol vocabulary, so the emit is
+    /// snapshot-independent; identical to `busbar_core::telemetry::translation`.
+    fn telemetry_translation(&self, from: &str, to: &str);
+
+    /// Map a client-supplied model/name string to the BOUNDED `pool` metric label through the host:
+    /// the string verbatim when it names a configured pool or by-model lane, else the fixed
+    /// `"unresolved"` sentinel. Bounds the Prometheus label cardinality on every finish/webhook path.
+    /// Identical to `busbar_core::ingress::pool_label` over the bound snapshot; the returned slice
+    /// borrows `model` (or a `'static` sentinel), independent of the host.
+    fn pool_label<'a>(&self, model: &'a str) -> &'a str;
+
+    /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
+    /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
+    /// protocol-native rejection response (finished via the not-charged terminal). Identical to
+    /// `busbar_core::ingress::destination_guard` over the bound snapshot + `gov` scope.
+    fn destination_guard(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>>;
+
+    /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
+    /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
+    /// admission (`charged`). Identical to `busbar_core::ingress::finish_admitted` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_admitted(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response;
+
+    /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
+    /// refund, for a request rejected BEFORE the admission charge ever ran (governance guard denial or
+    /// a pre-routing failure). Identical to `busbar_core::ingress::finish_rejected` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_rejected(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response;
+
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
+
+    /// The breaker/lane store this deployment routes through, as the NEUTRAL
+    /// [`busbar_substrate::store::LaneRuntime`](crate::store::LaneRuntime) view — the seam the engine's
+    /// `app.store` reads (select/health/pipeline lane admit/settle/snapshot) resolve to WITHOUT naming
+    /// core's `state::App`. A pure borrow of the bound snapshot's store, no `HostCtx`; the returned
+    /// `&dyn LaneRuntime` shares the live in-memory breaker engine, identical to `&*App::store`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the transitional seam the wedge-3 `app.store → host.lane_store()`
+    /// flip targets. The `LaneRuntime` trait already lives in substrate (wedge 1), so this names no core type.
+    fn lane_store(&self) -> &dyn crate::store::LaneRuntime;
+
+    /// The process-wide active-probe INTERVAL fallback (whole seconds) a lane with no
+    /// `health.interval_secs` inherits — the host-read form of `busbar_core::limits::default_probe_interval_secs`.
+    /// A pure read of the live limits registry, no `HostCtx`; byte-identical to that free fn.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `health.rs` probe-spawn flip targets. The
+    /// limits fns read core's runtime `LIMITS` global, so they CANNOT relocate to substrate by-identity;
+    /// this host seam is the neutral home instead.
+    fn default_probe_interval_secs(&self) -> u64;
+
+    /// The process-wide active-probe TIMEOUT fallback (whole seconds) a lane with no `health.timeout_secs`
+    /// inherits — the host-read twin of [`default_probe_interval_secs`](Self::default_probe_interval_secs).
+    /// Byte-identical to `busbar_core::limits::default_probe_timeout_secs`.
+    fn default_probe_timeout_secs(&self) -> u64;
+
+    /// Whether `caller_group` sits within (any ancestor of) one of `hook_groups` — the group-membership
+    /// walk a hook's `groups:` filter consults, resolved against this deployment's group registry.
+    /// Identical to `busbar_core::config::caller_in_hook_groups(caller_group, hook_groups, &App::groups_registry)`;
+    /// a pure tree walk over the bound snapshot's registry, no `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `pipeline.rs` flip targets. Folding the
+    /// `&App::groups_registry` argument HOST-side means the engine reads group membership without naming
+    /// `busbar_core::config` or `App::groups_registry`.
+    fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool;
+
+    // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) ────────────────────────────────────────────
+    // The residual `busbar-llm` request-path reads off the resolved hook/config facades, each given a
+    // NEUTRAL borrowed home here so the wedge-3 flip (`app.X` → `host.X()`) names no `busbar_core`
+    // type. Every borrow is tied to `&self` (elided): when wedge 3 threads `host: &dyn EngineHost` as
+    // a STABLE forward-loop param, the returned slice/ref outlives the await loop, unlike a per-call
+    // `engine_host_value` stack temporary. Purely ADDITIVE — the engine still reads `app.X`, so
+    // `--baseline` is unchanged; these become live at the wedge-3 flip.
+
+    /// This pool's resolved REWRITE chain `(timeout, policy)` — the phase-1 transform hooks fired for
+    /// requests routed to `pool`, empty (the default) ⇒ no pool rewrites. Byte-identical to
+    /// `busbar_core::state::App::pool_rewrites(pool)`; a pure keyed map read, no `HostCtx`. The tuple is
+    /// purely neutral (`Duration`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait object — api).
+    fn pool_rewrites(
+        &self,
+        pool: &str,
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+    )];
+
+    /// The GLOBAL (all-pools) rewrite chain `(timeout, policy)` fired in the phase-1 transform pass
+    /// BEFORE any pool rewrites — the borrow of `App::rewrite_hooks`. Empty (the default) ⇒ no globals.
+    /// Same neutral tuple shape as [`pool_rewrites`](Self::pool_rewrites).
+    fn rewrite_hooks(
+        &self,
+    ) -> &[(
+        std::time::Duration,
+        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+    )];
+
+    /// Whether ANY registered hook holds a prompt-CONTENT grant (`prompt: ro`/`rw`) this generation —
+    /// the deployment gate that decides whether the request IR is built for the hook seam. A single
+    /// bool load of `App::any_content_hook`, byte-identical; `false` (the default) is the whole
+    /// zero-cost-when-off property.
+    fn any_content_hook(&self) -> bool;
+
+    /// The GLOBAL request-stage `kind: tap` observers — the borrow of `App::tap_hooks`. Each
+    /// [`TapEntry`](crate::hooks::TapEntry) is a neutral `(deadline, prompt-grant, transport, groups)`
+    /// tuple. Held BY REF across the forward await-loop (the tap-fire pass reads it after each hop), so
+    /// the borrow is deliberately tied to the stable host `&self`, not a per-call temporary.
+    fn tap_hooks(&self) -> &[crate::hooks::TapEntry];
+
+    /// The RESPONSE-stage tap observers — the borrow of `App::tap_hooks_response`. Same
+    /// [`TapEntry`](crate::hooks::TapEntry) shape as [`tap_hooks`](Self::tap_hooks); fired once the
+    /// upstream response outcome is known.
+    fn tap_hooks_response(&self) -> &[crate::hooks::TapEntry];
+
+    /// The ROUTING-stage tap observers — the borrow of `App::tap_hooks_routing`. Fired per failover hop
+    /// with the routing/attempt projection; same [`TapEntry`](crate::hooks::TapEntry) shape.
+    fn tap_hooks_routing(&self) -> &[crate::hooks::TapEntry];
+
+    /// The CANDIDATE-stage tap observers — the borrow of `App::tap_hooks_candidate`. Fired once the
+    /// decision reconcile has produced the final candidate set; same [`TapEntry`](crate::hooks::TapEntry)
+    /// shape.
+    fn tap_hooks_candidate(&self) -> &[crate::hooks::TapEntry];
+
+    /// This pool's resolved DECISION GATES `(priority, policy)` in config order — the borrow of
+    /// `App::pool_gates(pool)`. Empty ⇒ no pool gates. The [`ResolvedPolicy`](crate::hooks::ResolvedPolicy)
+    /// carrier is already neutral substrate; a pure keyed map read, no `HostCtx`.
+    fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)];
+
+    /// The GLOBAL decision gates `(priority, policy)` fired alongside the pool gates in the phase-2
+    /// reconcile — the borrow of `App::global_gates`. Empty (the default) ⇒ the phase-2 pass is skipped.
+    /// Same neutral `(u16, ResolvedPolicy)` shape as [`pool_gates`](Self::pool_gates).
+    fn global_gates(&self) -> &[(u16, crate::hooks::ResolvedPolicy)];
+
+    /// This pool's resolved routing POLICY, or `None` for the zero-cost weighted/SWRR default — the
+    /// borrow of `App::pool_policy(pool)`. The [`ResolvedPolicy`](crate::hooks::ResolvedPolicy) is
+    /// neutral substrate; a pure keyed map read, no `HostCtx`.
+    fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy>;
+
+    /// The config generation's declared-signal bitmask — the borrow of `App::requested_signals`. A
+    /// single load of the neutral [`RequestedSignals`](crate::hooks::RequestedSignals) newtype the
+    /// candidate-signal loop gates on (`requested.is_empty()` / `requested.wants(sig)`); the all-zero
+    /// default short-circuits the whole loop. Byte-identical to the field read.
+    fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
+
+    /// TEST-ONLY raw-token → resolved `VirtualKey` resolution over this deployment's governance state
+    /// (the data-plane boundary: no audience). The host-driven form of
+    /// `App::governance.and_then(|g| g.verify_token(token, now, None))`, for the test paths that
+    /// exercise the routing-policy seam WITHOUT building a full `PlaneRequestCtx` (production always
+    /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
+    /// production binary carries a raw-token verifier on the neutral seam.
+    #[cfg(any(test, feature = "test-support"))]
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
+
+    /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
+    /// chain, `None` when unconstrained) — the host-driven form of
+    /// `gov.rate_headroom(&app.cost, key, pool, now)`. `gov`/`cost` are the opaque handles the caller
+    /// minted (via [`governance`](Self::governance)/[`cost`](Self::cost)); the host downcasts them to the
+    /// concrete `GovState`/`CostModel` and drives the SAME pure observation (no cell mutation). No
+    /// `HostCtx`. `key` is the already-neutral [`VirtualKey`](busbar_api::VirtualKey) (api).
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `hooks.rs::decide_policy_order` `&app.cost`
+    /// read flips onto (the `gov` object is already the sink's own via the handle, so byte-identical).
+    fn rate_headroom(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: Option<&str>,
+        now: u64,
+    ) -> Option<f64>;
+
+    /// The HOOK-seam budget projection for `key`: `{bucket_id, spend_at_current_rate, remaining, window}`
+    /// per chain bucket, derived fresh from the token ledger × the current rate card — the host-driven
+    /// form of `gov.budget_state(&app.cost, key, now)`. `gov`/`cost` are the opaque handles; the host
+    /// downcasts and drives the SAME read. Returns the neutral
+    /// [`BudgetBucketState`](busbar_api::BudgetBucketState) vec (empty when the key has no chain), built
+    /// ONLY on a routing-policy pool. No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the twin of [`rate_headroom`](Self::rate_headroom) for the
+    /// budget-chain projection the wedge-3 flip targets.
+    fn budget_state(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        now: u64,
+    ) -> Vec<busbar_api::BudgetBucketState>;
+
+    /// The GLOBAL fallback `max_tokens` the cross-protocol translation seam injects when a lane has no
+    /// per-lane `default_max_tokens` — the read of `App::default_max_tokens`. A single `u32` load, no
+    /// `HostCtx`, byte-identical.
+    fn default_max_tokens(&self) -> u32;
+
+    /// The four reasoning-effort token budgets (`limits.reasoning_effort_budgets`, low→high) the
+    /// cross-protocol seam maps a request's declared effort onto — the borrow of
+    /// `App::reasoning_effort_budgets`. A pure array borrow, no `HostCtx`, byte-identical.
+    fn reasoning_effort_budgets(&self) -> &[u32; 4];
+
+    /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
+    /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane
+    /// holds the handle on its per-request sink and hands it back to the metering seams.
+    ///
+    /// WEDGE 2 (App-retype): additive — the neutral producer of the sink's `gov` field, so wedge 3 can
+    /// retype `sink.gov: Arc<busbar_core::governance::GovState>` to [`GovHandle`].
+    fn governance(&self) -> Option<GovHandle>;
+
+    /// Mint the OPAQUE [`CostHandle`] for this deployment's resolved cost model — one `Arc` bump, no
+    /// `HostCtx`. Byte-identical to cloning `App::cost`; the twin of [`governance`](Self::governance)
+    /// for the sink's `cost` field.
+    fn cost(&self) -> CostHandle;
+
+    /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
+    /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
+    /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /
+    /// [`cost`](Self::cost)); the host downcasts them to the concrete `GovState`/`CostModel` and drives
+    /// the SAME accrual. A no-op on an all-zero tier, exactly as `record_usage`. No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs::ledger_and_meter` flip targets.
+    #[allow(clippy::too_many_arguments)]
+    fn meter_ledger(
+        &self,
+        gov: &GovHandle,
+        cost: &CostHandle,
+        key: &busbar_api::VirtualKey,
+        pool: &str,
+        model: &str,
+        tokens: &busbar_api::TierTokens,
+        now: u64,
+    );
+
+    /// Record one delivered response's RAW consumption into the per-(key, bucket, model, provider)
+    /// metering series — the host-driven form of
+    /// `sink.gov.record_metering(key_id, model, provider, usage, now)`. `gov` is the opaque handle the
+    /// sink minted; the host downcasts it and drives the SAME write-behind accrual (a zero-token
+    /// response still counts its request). No `HostCtx`.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `usage.rs` metering flips target.
+    fn meter_series(
+        &self,
+        gov: &GovHandle,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        usage: Option<&crate::billing::TokenUsage>,
+        now: u64,
+    );
+
+    /// STAGE 3–4 budget-admission door: charge the chain buckets for one request under `gov` on
+    /// `pool`, returning the ADMISSION grant (as the opaque [`AdmitHandle`] the sink holds Drop-only)
+    /// and any budget DOWNGRADE re-pool, or the already-finished not-charged rejection. Identical to
+    /// `busbar_core::ingress::admission_door` over the bound snapshot; the returned `AdmitHandle`
+    /// wraps the SAME `AdmitGrant` the in-place door produced, so `.is_some()` (charged?) and the
+    /// gauge-releasing `Drop` are byte-identical. No `HostCtx` on this path.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `native_ingress::drive` flip targets
+    /// (a host is already minted there). The `AdmitGrant`→[`AdmitHandle`] carrier-field retype
+    /// (`response_body.rs` / `native_ingress.rs`) rides the same wedge-3 governance flip.
+    fn admission_door(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
 
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
     /// records. Identical to `busbar_core::plane::auditlog::emit_admin_hostless_now` — this seam needs
     /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
+
+    /// Record ONE admin-audit event `(action, resource, outcome, principal)` through the IN-PROCESS
+    /// ADMIN RING (`busbar_core::admin::audit::AUDIT::record_by`), which seals it into the retained ring
+    /// AND cascades the SAME record onto the durable hostless journal seam. Distinct from
+    /// [`audit_emit`](Self::audit_emit) (durable-only): this is the seam the DATA-plane egress
+    /// audit-and-allow path (a dropped cross-dialect control) writes through, so the record lands in the
+    /// in-process ring the egress audit-trail assertions read. `outcome` is a fixed vocabulary literal.
+    ///
+    /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
 
     /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
     /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
@@ -461,6 +821,27 @@ pub trait EngineHost: Send + Sync {
     /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
     /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
     fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+
+    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
+    /// `busbar_core::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
+    /// mount-table read, no `HostCtx`.
+    ///
+    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
+    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
+    /// crosses the host seam like every other.
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
+
+    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
+    /// `busbar_core::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
+    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
+    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
+    fn arrival_fallback_error(
+        &self,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> axum::response::Response;
 
     /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
     /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,

@@ -80,7 +80,7 @@ use crate::audit::{verify_window, ChainBreak, ChainLabels, ChainedRecord, Digest
 
 /// The outcome and reason tokens this stream uses, from the ONE audit vocabulary. Re-exported so the
 /// call site keeps one import path; the definitions, and the argument for each word, live in core.
-pub(crate) use crate::audit::vocab::{
+pub use crate::audit::vocab::{
     OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_LIMIT_EXCEEDED, REASON_NOT_GRANTED,
     REASON_UPSTREAM_FAILED,
 };
@@ -91,7 +91,7 @@ pub(crate) type RequestChain = crate::audit::Chain<RequestRecord>;
 
 /// The scope an UNGOVERNED request is chained under. A fixed engine-chosen string, never anything a
 /// caller can influence, so no request can be steered into a governed principal's chain.
-pub(crate) const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
+pub const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 
 /// How many records the process keeps, across every principal.
 ///
@@ -151,17 +151,17 @@ pub(crate) struct RequestInput {
 /// NOT persisted (see the header): a type in the plugin ABI that no store method takes would be an
 /// invitation to believe a durable path exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestRecord {
-    pub(crate) principal: String,
-    pub(crate) seq: u64,
-    pub(crate) ts: u64,
-    pub(crate) ingress_protocol: String,
-    pub(crate) pool: String,
-    pub(crate) outcome: String,
-    pub(crate) reason: String,
-    pub(crate) status: u16,
-    pub(crate) prev_hash: String,
-    pub(crate) hash: String,
+pub struct RequestRecord {
+    pub principal: String,
+    pub seq: u64,
+    pub ts: u64,
+    pub ingress_protocol: String,
+    pub pool: String,
+    pub outcome: String,
+    pub reason: String,
+    pub status: u16,
+    pub prev_hash: String,
+    pub hash: String,
 }
 
 impl ChainedRecord for RequestRecord {
@@ -304,7 +304,7 @@ struct LogState {
 }
 
 #[derive(Default)]
-pub(crate) struct RequestLog {
+pub struct RequestLog {
     state: Mutex<LogState>,
 }
 
@@ -314,8 +314,7 @@ pub(crate) struct RequestLog {
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse
 /// than no chain at all.
-pub(crate) static REQUESTS: std::sync::LazyLock<RequestLog> =
-    std::sync::LazyLock::new(RequestLog::new);
+pub static REQUESTS: std::sync::LazyLock<RequestLog> = std::sync::LazyLock::new(RequestLog::new);
 
 impl RequestLog {
     pub(crate) fn new() -> Self {
@@ -387,7 +386,7 @@ impl RequestLog {
     /// amnestied. The tests drive the PRODUCTION path and then read through here, which is the only
     /// thing that can distinguish "the plane chains its requests" from "the chain works".
     #[allow(dead_code)]
-    pub(crate) fn records_for(&self, principal: &str) -> Vec<RequestRecord> {
+    pub fn records_for(&self, principal: &str) -> Vec<RequestRecord> {
         self.state()
             .ring
             .iter()
@@ -403,7 +402,7 @@ impl RequestLog {
     /// ever finds out that it does not verify. Nothing anywhere may describe this stream as
     /// continuously verified.
     #[allow(dead_code)]
-    pub(crate) fn verify_principal_chain(&self, principal: &str) -> Result<(), ChainBreak> {
+    pub fn verify_principal_chain(&self, principal: &str) -> Result<(), ChainBreak> {
         verify_window(&self.records_for(principal))
     }
 }

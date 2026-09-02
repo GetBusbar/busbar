@@ -94,9 +94,9 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
         //    capability marker, enabled by that plane); absent otherwise. ──
         #[cfg(feature = "card-signing")]
-        card_sign: Some(card_sign),
+        subkey_sign: Some(card_sign),
         #[cfg(not(feature = "card-signing"))]
-        card_sign: None,
+        subkey_sign: None,
         // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
         //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
         //    net_guard internals whatever the plane); no plane feature gates it. ─────────────────────────

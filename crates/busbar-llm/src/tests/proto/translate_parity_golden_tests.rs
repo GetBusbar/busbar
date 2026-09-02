@@ -85,7 +85,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
     );
     let ir = req;
     let mut out = openai.writer().write_request(&ir);
-    busbar_core::proxy::strip_router_shim_keys(&mut out, "openai");
+    crate::engine::strip_router_shim_keys(&mut out, "openai");
     openai
         .writer()
         .rewrite_model_if_needed(&mut out, LANE_MODEL);

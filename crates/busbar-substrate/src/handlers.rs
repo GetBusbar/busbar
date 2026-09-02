@@ -493,3 +493,144 @@ pub trait RequestHandler: Send + Sync {
     /// This is the sole path mechanism; chat uses it too.
     fn upstream_path(&self, ctx: &EgressCtx) -> String;
 }
+
+/// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
+/// registered handler may still return `None` from `operation_handler` for an op it lacks — that IS
+/// the no-handler 404. A read of `ProtocolDecl::handler` — the cell a protocol DECLARES beside the
+/// codec, the verbs and the head keys, in the same struct.
+///
+/// RELOCATED DOWN from `busbar_core::handlers` so the dialect crates resolve dispatch through the
+/// neutral ABI rather than reaching BACK into `busbar-core`. `busbar-core` re-exports every item in
+/// this block at its historical `busbar_core::handlers::…` path so in-core / plugin callers are
+/// unchanged. Every dependency (`Transport`, `RawUpstreamError`, `Operation`, `TokenUsage`,
+/// `TEXT_EVENT_STREAM`, the registry `decl_for`) already lives on the substrate, so the move is
+/// by-identity.
+pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
+    crate::proto::decl_for(protocol).and_then(|d| d.handler)
+}
+
+/// A `(operation, transport, OperationHandler)` dispatch handle — ONE CELL of the matrix, framed —
+/// threaded through the forward engine by value (`Copy`). The engine reads operation behavior off it
+/// without ever naming an operation, and carries the transport the request arrived on without ever
+/// naming one of those either.
+#[derive(Clone, Copy)]
+pub struct OpDispatch {
+    pub operation: Operation,
+    /// The channel this exchange rides. A VALUE, like `operation`: the engine labels with it and hands
+    /// it on, and never compares or matches it (that would be a transport-identity branch).
+    pub(crate) transport: crate::transport::Transport,
+    pub op_handler: &'static dyn OperationHandler,
+}
+
+/// The engine's operation handle. (Kept as `Op` so the engine's signatures read unchanged.)
+pub type Op = OpDispatch;
+
+/// Build one framed dispatch cell. The free-function form of what was `Transport::frame`. The
+/// transport is handed in whole and is not consulted, wrapped or re-implemented: a transport decides
+/// how a codec's bytes reach and leave a peer, never what those bytes say.
+pub const fn frame(
+    transport: crate::transport::Transport,
+    operation: Operation,
+    op_handler: &'static dyn OperationHandler,
+) -> OpDispatch {
+    OpDispatch {
+        operation,
+        transport,
+        op_handler,
+    }
+}
+
+impl OpDispatch {
+    /// Stable identifier — a bounded metric label / tracing span field. VALUE use only.
+    pub fn name(&self) -> &'static str {
+        self.operation.name()
+    }
+    /// The transport this exchange rides — a bounded label. VALUE use only.
+    pub fn transport(&self) -> crate::transport::Transport {
+        self.transport
+    }
+    /// WHAT THIS ATTEMPT'S FAILURE MEANT — the attributed outcome the breaker classifies, read by THIS
+    /// cell's own codec. It needs nothing but the cell.
+    pub fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        self.op_handler.extract_error(status, body)
+    }
+    /// Can this cell produce a client-facing incremental stream? `OpShape::may_stream` is the floor;
+    /// the cell may always say less and never more.
+    pub fn streaming(&self) -> bool {
+        self.operation.shape().may_stream() && self.op_handler.streaming()
+    }
+    /// The caller's stream INTENT, under the same shape floor.
+    pub fn wants_stream(&self, body: &Value) -> bool {
+        self.operation.shape().may_stream() && self.op_handler.wants_stream(body)
+    }
+    pub fn body_affinity_key<'a>(&self, body: &'a Value) -> Option<&'a str> {
+        self.op_handler.body_affinity_key(body)
+    }
+    pub fn taps_nonstream_usage(&self) -> bool {
+        self.op_handler.taps_usage()
+    }
+    pub fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<TokenUsage> {
+        self.op_handler.extract_usage(ingress_protocol, body)
+    }
+    pub fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
+        // The registry read the trait default used to do, hoisted here so the `OperationHandler`
+        // relocation names no core registry. Resolve the egress protocol's declared streaming `Accept`
+        // and hand it in; the trait picks it (streaming) or the universal `application/json`.
+        let egress_stream_accept = crate::proto::decl_for(egress_protocol)
+            .map(|d| d.egress_stream_accept)
+            .unwrap_or(crate::proxy::TEXT_EVENT_STREAM);
+        self.op_handler
+            .egress_accept(egress_stream_accept, wants_stream)
+    }
+}
+
+/// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and framed
+/// by the channel it rides. `None` when the protocol does not serve the operation. A verb a protocol
+/// did NOT declare is refused here (the registry's rule): a cell reachable through an undeclared verb
+/// would be a capability the declaration did not name.
+pub fn op_for(
+    protocol: &str,
+    operation: Operation,
+    transport: crate::transport::Transport,
+) -> Option<Op> {
+    let decl = crate::proto::decl_for(protocol)?;
+    if !decl.verbs.contains(&operation) {
+        return None;
+    }
+    decl.handler
+        .and_then(|rh| rh.operation_handler(operation))
+        .map(|op_handler| frame(transport, operation, op_handler))
+}
+
+/// Resolve the chat dispatch THROUGH the registry — the same path every other operation takes:
+/// `request_handler(protocol).operation_handler(Chat)`. The chat codec lives in the `busbar-llm`
+/// plugin, so this resolves it through the registry the composition root populated; the `panic` can
+/// only fire in a build that links no chat-serving protocol at all, which no shipped configuration is.
+/// The TRANSPORT is the caller's to state — which channel an exchange arrived on is a fact about the
+/// arrival, and a protocol has no opinion about it — so it is a parameter.
+pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
+    op_for(protocol, Operation::CHAT, transport).unwrap_or_else(|| {
+        // Unreachable in any shipped configuration: a chat plugin always registers the residual chat
+        // protocol and its siblings, and the sole production caller asks for that residual name. The
+        // diagnostic names the registry's residual-default protocol rather than a hard-coded dialect,
+        // so the substrate spells no dialect here.
+        panic!(
+            "a chat-serving protocol is registered (registry residual chat protocol: {:?})",
+            crate::proto::residual_default_protocol()
+        )
+    })
+}
+
+/// ONE HTTP LLM PROTOCOL'S ERROR ENVELOPE, SHARED BY EVERY OPERATION IT SERVES. Through the neutral
+/// dialect seam: the concrete reader relocated to the busbar-llm plugin, so this names it by protocol
+/// only. Falls back to the status alone when the name resolves to no protocol.
+pub fn protocol_error(
+    protocol: &str,
+    status: u16,
+    body: &[u8],
+) -> crate::breaker::RawUpstreamError {
+    match crate::proto::decl_for(protocol).and_then(|d| d.dialect()) {
+        Some(dc) => dc.extract_error(status, body),
+        None => crate::breaker::RawUpstreamError::from_status(status),
+    }
+}

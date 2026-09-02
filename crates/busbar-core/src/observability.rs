@@ -367,7 +367,11 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 /// design exists for. Both stay OFF at the default `RUST_LOG=info` filter either way: `DEBUG` is
 /// less verbose than `TRACE`, so nothing about the "off by default" contract changes with this
 /// choice.
-pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+// A′ (ABI-purity P4): the hot-path tracing floor relocated DOWN to busbar-substrate so the
+// busbar-llm engine names it via the ABI (`busbar_substrate::observability::HOTPATH_LEVEL`). A pure
+// compile-time `const` (no registry, no dual-compile concern). Re-exported here so `crate::
+// observability::HOTPATH_LEVEL` and every in-core reference stay unchanged and byte-identical.
+pub use busbar_substrate::observability::HOTPATH_LEVEL;
 
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus an

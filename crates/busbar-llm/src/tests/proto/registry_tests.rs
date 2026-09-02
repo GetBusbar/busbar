@@ -10,11 +10,10 @@
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
 use busbar_api::operation::Operation;
-use busbar_core::handlers::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
-};
 use busbar_core::proto::registry::{IngressAuth, ProtocolDecl, Registry};
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
+use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 
 /// The registry as PRODUCTION builds it, for THIS plugin's dialects — `busbar_llm::DECLS`, the slice
@@ -84,12 +83,12 @@ fn the_derived_protocol_list_is_not_empty() {
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     crate::ensure_test_protocols_registered();
     assert_eq!(
-        busbar_core::proto::streaming_content_types(),
+        busbar_substrate::proto::streaming_content_types(),
         &["application/vnd.amazon.eventstream", "text/event-stream"],
         "absorbed proto::streaming_content_types()"
     );
     assert_eq!(
-        busbar_core::proto::array_stream_shim_keys(),
+        busbar_substrate::proto::array_stream_shim_keys(),
         &[crate::gemini::GEMINI_JSON_ARRAY_SHIM_KEY],
         "absorbed proto::array_stream_shim_keys()"
     );
@@ -197,7 +196,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     // extracted crate (`busbar-mcp`), and the deleted `#[path]` witness used to net its codec into
     // core's test binary. `busbar-llm` dev-depends on `busbar-mcp` solely for this assertion.
     busbar_substrate::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
-    let d = busbar_core::proto::decl_for("mcp").expect("mcp declares itself");
+    let d = busbar_substrate::proto::decl_for("mcp").expect("mcp declares itself");
     assert!(d.codec.is_none());
     assert!(d.handler.is_some(), "mcp serves operations");
     assert!(
@@ -359,8 +358,8 @@ impl busbar_substrate::ir::handle::IrHandle for TelexRespHandle {
         &self,
         _ingress_protocol: &str,
         _ingress_serves_op: bool,
-    ) -> busbar_core::handlers::TranslatedResponse {
-        busbar_core::handlers::TranslatedResponse::Typed(WireBody::typed(
+    ) -> busbar_substrate::wire::TranslatedResponse {
+        busbar_substrate::wire::TranslatedResponse::Typed(WireBody::typed(
             Bytes::from(
                 self.0
                     .registration
@@ -420,7 +419,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     let resp = cell
         .read_response(b"REGISTERED paris")
         .expect("its cell reads its own response");
-    let busbar_core::handlers::TranslatedResponse::Typed(out) =
+    let busbar_substrate::wire::TranslatedResponse::Typed(out) =
         resp.write_ingress_response("telex", true)
     else {
         panic!("telex response writes a typed body");
@@ -445,7 +444,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     //    still knows only the built-ins, which is the proof that admitting `telex` above required
     //    no edit here rather than a hidden one.
     assert!(
-        busbar_core::proto::decl_for("telex").is_none(),
+        busbar_substrate::proto::decl_for("telex").is_none(),
         "the built-in table was not touched"
     );
 }

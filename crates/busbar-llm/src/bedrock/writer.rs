@@ -1,7 +1,7 @@
 use super::*;
 
 /// AWS SigV4 signing for a Bedrock Converse request — the egress credential for `bedrock` lanes
-/// (dispatched via `busbar_core::egress_auth`, and called by the Bedrock auth tests). Lane key encodes
+/// (dispatched via `busbar_substrate::egress_auth`, and called by the Bedrock auth tests). Lane key encodes
 /// `ACCESS:SECRET[:SESSION]`; region parsed from the host; service=`bedrock`. A misconfigured key or
 /// un-encodable byte yields an empty header set (AWS 403, surfaced as auth) rather than panicking.
 pub fn sigv4_sign_headers(

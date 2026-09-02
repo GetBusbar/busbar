@@ -18,7 +18,7 @@
 //! feature, which carries the dependency edge too, so dropping the feature drops the whole LLM
 //! protocol and the deletion gate watches busbar refuse all six names at boot.
 //!
-//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_core::proto::openai_family` — the `ERR_TYPE_*` bank,
+//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_substrate::proto::openai_family` — the `ERR_TYPE_*` bank,
 //! `bearer_error_code`, `tool_arguments_to_string`, `MESSAGE_NAMES_SENTINEL` — reads like it should
 //! have travelled with the OpenAI dialects, and it must not: `busbar-core` itself consumes it in
 //! PRODUCTION (`proxy`'s whole `KIND_*` vocabulary, `admin`'s error envelopes, `auth`'s bearer error
@@ -34,10 +34,82 @@
 //! from one file deeper — because the parent module is this crate's root in one shape and
 //! `crate::proto` in the other, and only a relative path is correct in both.
 
+// THE ALLOCATION-COUNT PERF-GATE INSTRUMENT, ported from busbar-core WITH the money-path engine tests
+// (money-path Phase 3-4 C M4). The gate (`engine/proxy_tests/alloc_gate.rs`) drives one openai>openai
+// passthrough through the real forward path and asserts the per-request heap-allocation count has not
+// regressed. Its instrument must be THIS test binary's `#[global_allocator]` (an allocator is a binary
+// property, set by the crate under test), so it is installed here under the same target gate core uses.
+// jemalloc-delegating so the telemetry tests' mallctl counters stay byte-accurate; per-thread counter
+// so concurrent `cargo test` threads never inflate the measured thread.
+#[cfg(all(test, not(target_env = "msvc")))]
+pub(crate) use alloc_gate_instrument::CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+mod alloc_gate_instrument {
+    use std::alloc::{GlobalAlloc, Layout};
+    use tikv_jemallocator::Jemalloc;
+
+    thread_local! {
+        static ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A jemalloc wrapper that counts allocations per-thread — the instrument behind the alloc gate.
+    pub(crate) struct CountingJemalloc;
+
+    impl CountingJemalloc {
+        /// Allocations observed on THIS thread since process start (or last `reset`).
+        pub(crate) fn count() -> u64 {
+            ALLOC_COUNT.with(|c| c.get())
+        }
+        /// Reset this thread's counter to zero, returning the previous value.
+        pub(crate) fn reset() -> u64 {
+            ALLOC_COUNT.with(|c| c.replace(0))
+        }
+        #[inline]
+        fn bump() {
+            ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    // SAFETY: every method delegates verbatim to `Jemalloc` (a sound `GlobalAlloc`); the only added
+    // work is a per-thread `Cell` increment, which allocates nothing and cannot re-enter the allocator.
+    // `dealloc` is NOT counted — the gate measures allocation COUNT.
+    unsafe impl GlobalAlloc for CountingJemalloc {
+        #[inline]
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc(layout)
+        }
+        #[inline]
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            Jemalloc.dealloc(ptr, layout)
+        }
+        #[inline]
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc_zeroed(layout)
+        }
+        #[inline]
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            Self::bump();
+            Jemalloc.realloc(ptr, layout, new_size)
+        }
+    }
+}
+
 /// **G6 A4b relocation.** The concrete chat IR + leaf-op IR, moved here from busbar-core. Core keeps
 /// the neutral `ir::facts` trait / `ir::handle` / `ir::invoke` / `ir::subscribe` and re-includes this
 /// module via `#[path]` for its test build so `crate::ir::IrRequest` still resolves there.
 pub mod ir;
+
+/// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
+/// pipeline, health probe loop and native fallback plane — see [`engine`].
+pub mod engine;
 
 /// **G6 A4b dissolve.** The chat `IrHandle` (`ChatReqHandle`/`ChatRespHandle`) + its
 /// `prepare_for_egress`/`_ingress`/`usage` bodies, lifted from the dissolved `IrReq::Chat`/`IrResp::Chat`
@@ -62,6 +134,34 @@ pub mod openai_responses;
 /// [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, so this crate names no `busbar_core::`
 /// item. Registered via [`PATH_INGRESS`].
 pub mod arrival;
+
+/// THE NATIVE-PLANE UNIVERSAL INGRESS (pool/model resolution + governance admission + the-one-engine
+/// forward), RELOCATED here from `busbar-core` — it reads the LLM routing tables so it lives in the
+/// plane and calls DOWN into core's neutral accounting. The two dialect arrival families
+/// ([`arrival`]) converge on its [`native_ingress::operation_ingress`] / [`native_ingress::
+/// ingress_path_model`] entry points.
+pub mod native_ingress;
+
+/// THE MONEY-PATH TEST FIXTURE, re-exported from core's now-plane-agnostic `test_support` (money-path
+/// Phase 3-4 C M4). The relocated engine tests name `crate::test_support::{LaneSpec, TestApp,
+/// MockServer, …}`; the fixture builds the LLM runtime through the neutral `PlaneBuildInput` +
+/// `build_runtime` seam (naming no `Lane`/`NativeRuntime`), so it lives ONCE in core and the plane's
+/// tests reach it here. Gated exactly as core's is.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    pub use busbar_core::test_support::*;
+
+    /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
+    /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
+    /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep
+    /// back-edge); with the money-path tests relocated here it is built in-plane, naming its own cell —
+    /// no cross-crate `#[cfg(test)]` reach, and no `busbar-core[test-support] → busbar-llm` cycle.
+    pub const CHAT: busbar_substrate::handlers::Op = busbar_substrate::handlers::frame(
+        busbar_substrate::transport::Transport::Http,
+        busbar_api::operation::Operation::CHAT,
+        &crate::chat_handle::ChatOperation("openai"),
+    );
+}
 
 /// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
 /// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).
@@ -90,7 +190,7 @@ pub(crate) mod leaf_codec;
 pub mod proto_codec;
 
 /// **G6 A4b relocation.** The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_core::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
+/// `busbar_substrate::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
 /// and reaches it in production via the installed factory.
 pub mod proto_stream;
 
@@ -107,7 +207,7 @@ pub mod testkit;
 /// It exists because the deleted `#[path]` witness re-includes used to make `busbar-core`'s
 /// `test`/`test-support` builds carry these dialects as built-ins AUTOMATICALLY. With the witnesses
 /// gone, `busbar-core`'s built-in table is empty and the process registry is populated only by
-/// registration — so a codec that resolves a protocol fact through `busbar_core::proto::decl_for`
+/// registration — so a codec that resolves a protocol fact through `busbar_substrate::proto::decl_for`
 /// (the `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
 /// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling this
 /// at those few entry points makes every codec-exercising test in THIS crate's binary
@@ -131,13 +231,13 @@ pub(crate) fn ensure_test_protocols_registered() {
 /// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
 /// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
-/// `busbar_core::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
+/// `busbar_substrate::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
 /// `busbar-a2a` own theirs. The composition root installs it through
 /// `busbar_core::plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
 /// `proto-llm`); core's own test binary names it through the `#[cfg(test)]` row in
 /// `plane::registry::BUILTIN_PLANE_DECLS`, so both shapes boot the same `[llm, mcp, a2a]` plane list.
 ///
-/// `wire_format_names` is [`busbar_core::proto::known_protocols`] itself — the model plane's dialects
+/// `wire_format_names` is [`busbar_substrate::proto::known_protocols`] itself — the model plane's dialects
 /// ARE the registered protocols, so a seventh dialect moves that list with nothing edited here. Every
 /// other field is `None`/trivial (the fallback plane claims no path, mounts nothing and reconciles
 /// nothing). R3/R4 sub-phase B DID move the LLM data-plane runtime (lanes/pools/failover/egress) off its
@@ -191,10 +291,17 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // and a plane crate may not name a `busbar_core::` item, so `busbar-core`'s `appbuild` composes
         // the slot through a core-local constructor rather than through this pointer. Phase 3 relocates
         // the type here, at which point this becomes `Some(<this crate's build_runtime>)` like MCP's.
-        build_runtime: None,
+        build_runtime: Some(crate::engine::build_runtime::build_runtime),
+        viewer: Some(crate::engine::build_runtime::viewer),
         retain_verify_gates: None,
         default_section: None,
     };
+
+/// SPAWN THE ACTIVE HEALTH PROBERS for a freshly-built/-swapped snapshot — the relocated
+/// `busbar-core::health::spawn_probers` (the prober loop reads the plane's own `Lane`/`NativeRuntime`
+/// tables, so it lives here). The composition root (the `busbar` binary) calls it at boot and the
+/// admin swap path re-attaches probers to each new generation. No-op when every lane is `mode: none`.
+pub use crate::engine::health::spawn_probers;
 
 pub static DECLS: &[&busbar_substrate::proto::ProtocolDecl] = &[
     &anthropic::DECL,
@@ -229,9 +336,45 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
     ),
 ];
 
+/// THE BODY-MODEL DIALECT ARRIVALS — the body-axis twin of [`PATH_INGRESS`]. The convenience surfaces
+/// (`named`/`adhoc` `/v1/messages`) and the generic body-model dispatch arm resolve a dialect's
+/// universal ingress by NAME through `busbar_substrate::ingress::arrival::body_ingress_for`; this slice
+/// states each dialect's NAME→arrival pairing. The composition root
+/// (`crates/busbar/src/main.rs::register_protocols`) hands it to
+/// `busbar_substrate::ingress::arrival::install_body_ingress`; the test-kit seeds it through
+/// `set_test_body_ingress`. Every dialect appears (each routes its body-model traffic through the ONE
+/// engine); the URL-model pair (gemini/bedrock) also carry a body entry for the dispatch arm's
+/// symmetry, even though their primary surface is [`PATH_INGRESS`].
+pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
+    (
+        crate::proto_codec::PROTO_ANTHROPIC,
+        crate::arrival::anthropic_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_OPENAI,
+        crate::arrival::openai_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_GEMINI,
+        crate::arrival::gemini_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_BEDROCK,
+        crate::arrival::bedrock_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_RESPONSES,
+        crate::arrival::responses_body_arrival,
+    ),
+    (
+        crate::proto_codec::PROTO_COHERE,
+        crate::arrival::cohere_body_arrival,
+    ),
+];
+
 /// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_DECL`, pinned HERE because this is the crate
 /// that owns the declaration — and the only place its `wire_format_names` field and
-/// `busbar_core::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
+/// `busbar_substrate::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
 /// identity is meaningful (core's own test binary links two core instances and cannot check it — see
 /// `busbar_core`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
 /// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses

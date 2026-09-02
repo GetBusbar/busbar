@@ -19,7 +19,7 @@
 pub mod contract;
 pub mod json;
 mod named_def_views;
-pub(crate) mod service;
+pub mod service;
 
 #[cfg(test)]
 #[path = "tests/hook_stage_projection.rs"]

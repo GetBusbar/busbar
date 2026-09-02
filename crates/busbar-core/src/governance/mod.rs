@@ -20,7 +20,7 @@ use crate::diagnostics::{
 /// TEST code can reference it as `crate::governance::SECS_PER_DAY`; production modules that need the
 /// same value independently (e.g. `sigv4.rs`) keep a private copy where layering prohibits importing
 /// it for a one-line constant.
-pub(crate) const SECS_PER_DAY: u64 = 86_400;
+pub const SECS_PER_DAY: u64 = 86_400;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
@@ -258,7 +258,7 @@ impl BudgetCell {
 /// NAMES the exact blocking bucket (group + metric + window). Built only on the rejection path
 /// (cold), so the owned Strings are off the admit hot path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LimitBlocked {
+pub enum LimitBlocked {
     /// A specific limit bucket blocked: the owning group, the metric (`requests` | `tokens` |
     /// `budget` | `concurrent`), the window word (`None` for the instantaneous `concurrent`
     /// gauge), the pool scope (`Some` when a pool-qualified limit blocked - only that pool's
@@ -289,7 +289,7 @@ pub(crate) enum LimitBlocked {
 /// context unwinds on any error path). The Vec is EMPTY (no allocation) for the common chain with
 /// no concurrent caps.
 #[derive(Default)]
-pub(crate) struct AdmitGrant {
+pub struct AdmitGrant {
     gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
 }
 
@@ -320,10 +320,10 @@ impl std::fmt::Debug for AdmitGrant {
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
 /// the token ledger x the current rate card at the moment of the read - never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct DerivedUsage {
-    pub(crate) spend_cents: i64,
-    pub(crate) tokens: u64,
-    pub(crate) requests: u64,
+pub struct DerivedUsage {
+    pub spend_cents: i64,
+    pub tokens: u64,
+    pub requests: u64,
 }
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
@@ -775,7 +775,7 @@ pub use busbar_api::PlaneRequestCtx;
 /// The name core uses internally for the resolved governance context. Core owns the governance
 /// concept and keeps its own spelling; a plane names [`PlaneRequestCtx`] instead so an extracted
 /// plane carries no core-private governance type.
-pub(crate) type GovCtx = PlaneRequestCtx;
+pub type GovCtx = PlaneRequestCtx;
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
 /// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit
@@ -926,9 +926,13 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 // for their in-test store doubles); the rest stay crate-internal. All are already public in `busbar_api`,
 // so this widens no NEW type — it only makes the existing path nameable from a test-support dependent.
 pub use busbar_api::Store;
+// `VirtualKey` is re-exported `pub` (the relocated LLM engine names `busbar_core::governance::
+// VirtualKey` in its pool-credential lowering); already `pub` in `busbar_api`, so this widens no
+// NEW type — it only makes the existing path nameable from the plane crate.
+pub use busbar_api::VirtualKey;
 pub(crate) use busbar_api::{
     CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, StoreError,
-    StoreResult, TierTokens, UsageDelta, VirtualKey,
+    StoreResult, TierTokens, UsageDelta,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.

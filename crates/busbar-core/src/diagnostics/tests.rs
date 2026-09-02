@@ -15,11 +15,11 @@
 /// Paths relative to `crates/busbar-core` (this crate's manifest dir).
 const MIGRATED_FILES: &[&str] = &[
     "src/admin/audit.rs",
-    "src/proxy/response_body.rs",
-    "src/proxy/usage.rs",
-    "src/proxy/hooks.rs",
-    "src/proxy/engine/mod.rs",
-    "src/proxy/engine/walk.rs",
+    // The forward-engine sources (`proxy/response_body.rs`, `proxy/usage.rs`, `proxy/hooks.rs`,
+    // `proxy/engine/{mod,walk}.rs`) RELOCATED to the `busbar-llm` plugin's `src/engine/` with the
+    // money-path pivot (1.6.0 money-path Phase 3-4 C). Core does NOT scan a plane crate's tree — the
+    // plane-purity lint forbids core naming a plane path — and `busbar-llm` carries its own
+    // uncoded-diagnostic floor, so these are no longer listed here (mirroring the substrate/plane note).
     "src/handlers/mod.rs",
     "src/metrics.rs",
     "src/auth/exchange.rs",
@@ -27,7 +27,9 @@ const MIGRATED_FILES: &[&str] = &[
     "src/auth/mod.rs",
     "src/auth/self_keys.rs",
     "src/egress_auth/mod.rs",
-    "src/egress_auth/bearer_token.rs",
+    // `egress_auth/bearer_token.rs` (the OAuth cached-token refresh loop, the one egress_auth file
+    // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
+    // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
     "src/trust/verify.rs",
     "src/oauth_as/plane.rs",
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub mod overlay;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
-pub(crate) mod groups;
+pub mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub(crate) mod migrate_export;
@@ -405,7 +405,7 @@ pub struct RootCfg {
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
-    pub(crate) oauth_as: Option<crate::oauth_as::config::AsIdentity>,
+    pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
     /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -413,7 +413,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub(crate) tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -428,7 +428,7 @@ pub struct RootCfg {
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
     /// `pools.upstream_credentials:` key (1.5.3 — moved off the retired `auth.upstream_credentials:`).
     /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule).
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
+    pub upstream_credentials: crate::auth::UpstreamCreds,
     /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
     /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
     /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
@@ -436,24 +436,24 @@ pub struct RootCfg {
     /// The ADMIN auth chain module names (from `auth.admin_auth:`, in order) gating
     /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
     /// warning).
-    pub(crate) admin_auth: Vec<String>,
+    pub admin_auth: Vec<String>,
     /// The top-level `groups:` limit tree.
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
     /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`.
-    pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
+    pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
-    pub(crate) per_request_fee: i64,
+    pub per_request_fee: i64,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
-    pub(crate) store: Option<StoreCfg>,
+    pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
     /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
     /// built-in `env` / `file` modules take no config and must not appear here.
-    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Names of hooks that fire on EVERY request — the registry names lowered from the reserved
     /// all-pools attach key `pools.hooks:` (1.5.3), in order. RUNTIME-only: there is no
     /// config-facing `global_hooks:` key any more.
-    pub(crate) global_hooks: Vec<String>,
+    pub global_hooks: Vec<String>,
     /// Operator-supplied additions to the hardcoded cloud-metadata denylist (see
     /// [`SecurityCfg::blocked_metadata_hosts`]). Resolved from `DeployCfg.security`; empty when no
     /// `security:` block is present. Threaded into `config_validate::validate` so a provider
@@ -465,7 +465,7 @@ pub struct RootCfg {
     /// when the guard runs; a host on the denylist is permitted iff it appears in this union (or
     /// `allow_all_metadata` is set). Matched with the same canonicalization as the block check (an IP
     /// entry unblocks all its spellings). Default empty.
-    pub(crate) allow_metadata_hosts: Vec<String>,
+    pub allow_metadata_hosts: Vec<String>,
     /// Nuclear override (`security.allow_all_metadata`): when true the metadata SSRF guard is fully
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
@@ -479,16 +479,16 @@ pub struct RootCfg {
     /// The resolved `export:` block — the built-in observability exporters. Default
     /// (all-`None`) ⇒ collection inert. Read at App construction to install the recorder + build the
     /// `/metrics` plugin route (prometheus) and to configure the request-log sinks.
-    pub(crate) export: ExportCfg,
+    pub export: ExportCfg,
     /// The `identity-providers:` NAMED-DEFINITION map, carried through resolve VERBATIM (the
     /// EFFECTIVE map: base `config.yaml` + the overlay's API-applied entries, merged pre-resolve).
     /// `auth`/`admin_auth` above are the RESOLVED projection of it; this is the definition surface
     /// the admin API reads and rewrites (`GET/PUT/PATCH/DELETE /identity-providers/{name}`).
-    pub(crate) identity_providers: IdentityProviders,
+    pub identity_providers: IdentityProviders,
     /// The `export:` NAMED-DEFINITION map, carried through resolve VERBATIM — the definition twin of
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
-    pub(crate) export_defs: ExportDefs,
+    pub export_defs: ExportDefs,
     /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
     /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
     /// control plane derives its runtime `AgentRegistration` from this plus what the store has
@@ -500,10 +500,10 @@ pub struct RootCfg {
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
-    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
     /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
-    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
 }
 
 impl RootCfg {
@@ -627,7 +627,7 @@ pub(crate) type IdentityProviders = indexmap::IndexMap<String, IdentityProviderC
 /// definition). This is an INTERNAL type built by [`resolve_auth`] — it is never deserialized, because
 /// 1.5.3 removed the inline chain-entry form entirely (a chain is now a list of bare NAMES).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AuthChainEntry {
+pub struct AuthChainEntry {
     /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
     /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
     pub(crate) name: String,
@@ -647,7 +647,7 @@ pub(crate) struct AuthChainEntry {
 
 impl AuthChainEntry {
     /// A bare, definition-less built-in entry (`chain: [keys]` / `admin_auth: [admin-tokens]`).
-    pub(crate) fn bare(module: impl Into<String>) -> Self {
+    pub fn bare(module: impl Into<String>) -> Self {
         let module = module.into();
         Self {
             name: module.clone(),
@@ -665,23 +665,23 @@ impl AuthChainEntry {
 /// An unbound role grants NOTHING (fail closed). Limits live on the bound `group`, never here.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RoleBindingCfg {
+pub struct RoleBindingCfg {
     /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools;
     /// an explicit `[]` = NO pools (empty list is the empty set).
     #[serde(default)]
-    pub(crate) allowed_pools: Option<Vec<String>>,
+    pub allowed_pools: Option<Vec<String>>,
     /// The `groups:` bucket this role's principals charge through. Absent = no group (unlimited).
     #[serde(default)]
-    pub(crate) group: Option<String>,
+    pub group: Option<String>,
     /// The ADMIN scope this role grants: `read-only` | `full`. Absent = no admin access from this
     /// role. A principal holds the UNION of what its bound roles grant (see `Grants` in the contract
     /// module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
-    pub(crate) admin_scope: Option<String>,
+    pub admin_scope: Option<String>,
 }
 
 /// `role_bindings:` - module name -> role name -> grant.
-pub(crate) type RoleBindings =
+pub type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
 
 /// A TOKEN BINDING MODE (`auth.policy.binding_modes:` / a mint ceiling's `binding_modes:`), 1.6.0.
@@ -899,7 +899,7 @@ pub struct AuthCfg {
 
 impl AuthCfg {
     /// Create a default (open front door, default admin chain) AuthCfg for initialization.
-    pub(crate) fn default_none() -> Self {
+    pub fn default_none() -> Self {
         Self {
             signing_key: None,
             chain: vec![],
@@ -908,6 +908,18 @@ impl AuthCfg {
             methods: AuthMethods::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
+        }
+    }
+
+    /// TEST-SUPPORT constructor: the default (open, default-admin) posture with ONLY the data-plane
+    /// `chain` overridden — the shape the relocated hook-seam tests need. Gated to the test-support
+    /// surface so the private-field FRU stays in-crate; the plane's tests reach it through this seam
+    /// rather than a cross-crate struct literal over the private `signing_key`/`policy`/… fields.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_chain(chain: Vec<AuthChainEntry>) -> Self {
+        Self {
+            chain,
+            ..Self::default_none()
         }
     }
 
@@ -1237,35 +1249,35 @@ pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
     #[serde(default = "default_protocol")]
-    pub(crate) protocol: String,
-    pub(crate) base_url: String,
+    pub protocol: String,
+    pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
-    pub(crate) api_key: SecretRef,
+    pub api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
-    pub(crate) health: Option<HealthCfg>,
+    pub health: Option<HealthCfg>,
     // error_map is REQUIRED on every provider — NO default (fail loud if missing)
-    pub(crate) error_map: HashMap<String, String>,
+    pub error_map: HashMap<String, String>,
     /// Optional upstream request-path override (see ProviderDef::path).
     #[serde(default)]
-    pub(crate) path: Option<String>,
+    pub path: Option<String>,
     /// Optional path-BASE override (see ProviderDef::path_base) — replaces a URL-model protocol's
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
-    pub(crate) path_base: Option<String>,
+    pub path_base: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
-    pub(crate) token_url: Option<String>,
+    pub token_url: Option<String>,
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
-    pub(crate) scope: Option<String>,
+    pub scope: Option<String>,
     /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
     #[serde(default)]
-    pub(crate) subject: Option<String>,
+    pub subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
-    pub(crate) auth: Option<ProviderAuth>,
+    pub auth: Option<ProviderAuth>,
     /// Per-provider SURGICAL escape hatch: the cloud-metadata hosts/IPs to UNBLOCK for THIS
     /// provider's `base_url` (and path-override composition) only. Each entry carves a single
     /// exception out of the metadata denylist (hardcoded ∪ `security.blocked_metadata_hosts`) — e.g.
@@ -1279,7 +1291,7 @@ pub struct ProviderCfg {
     /// client-driven SSRF and local models (Ollama / vLLM) "just work" with no entry. Default empty
     /// (all metadata blocked).
     #[serde(default)]
-    pub(crate) allow_metadata_hosts: Vec<String>,
+    pub allow_metadata_hosts: Vec<String>,
 }
 
 /// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
@@ -1294,34 +1306,16 @@ fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
 }
 
-/// Per-provider auth-style override. Closed set: the request is signed with the protocol's native
-/// auth (`bearer`) unless `api-key` selects an `api-key: <key>` header (Azure OpenAI). The wire
-/// strings are unchanged from the pre-enum `Option<String>` field (`bearer` / `api-key`), so an
-/// unknown spelling is now a deserialize error instead of a hand-checked validation error.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderAuth {
-    #[serde(rename = "bearer")]
-    Bearer,
-    #[serde(rename = "api-key")]
-    ApiKey,
-    /// OAuth 2.0 JWT-bearer grant (RFC 7523): the provider's credential is a signing key (delivered as
-    /// a Google service-account JSON in `api_key_env`), which busbar uses to mint + auto-refresh a
-    /// short-lived bearer token per lane. Generic — Vertex AI is the first provider to select it. The
-    /// token minting/refresh lives in `crate::egress_auth::jwt_bearer`; this is only the selector.
-    #[serde(rename = "jwt-bearer")]
-    JwtBearer,
-    /// OAuth 2.0 client-credentials grant (RFC 6749 §4.4): `api_key_env` carries
-    /// `client_id:client_secret`, and the provider's `token_url` + `scope` complete the exchange for
-    /// an auto-refreshed bearer. Generic — Azure OpenAI via Microsoft Entra ID is the first consumer.
-    /// The token minting/refresh lives in `crate::egress_auth::oauth_client_credentials`.
-    #[serde(rename = "oauth-client-credentials")]
-    OAuthClientCredentials,
-}
+// ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is an LLM-runtime config value
+// concept; it moved DOWN to `busbar_substrate::config` (serde `Deserialize` + the `#[serde(rename)]`
+// wire strings VERBATIM, byte-identical) so a plane names it via the ABI. Re-exported here at its
+// historical `config::ProviderAuth` path so the frozen providers.yaml grammar parse is unchanged.
+pub use busbar_substrate::config::ProviderAuth;
 
 /// Active health-probe mode for a provider's lanes.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum HealthMode {
+pub enum HealthMode {
     /// No active probing. Health is inferred purely from organic traffic (the breaker trips on
     /// real failures and recovers via the half-open probe). This is the default.
     #[default]
@@ -1340,21 +1334,21 @@ pub struct HealthCfg {
     /// Probing strategy (see `HealthMode`). Defaults to `none` — a `health:` block with only an
     /// interval does nothing until a mode is chosen.
     #[serde(default)]
-    pub(crate) mode: HealthMode,
+    pub mode: HealthMode,
     /// Seconds between probes for this provider's lanes (default 30, floored at 1).
     #[serde(default)]
-    pub(crate) interval_secs: Option<u64>,
+    pub interval_secs: Option<u64>,
     /// Per-probe request timeout in seconds (default 5, floored at 1).
     #[serde(default)]
-    pub(crate) timeout_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCfg {
     #[serde(default = "neg1")]
-    pub(crate) max_requests: i64,
-    pub(crate) provider: String,
+    pub max_requests: i64,
+    pub provider: String,
     /// Per-lane concurrency limiter: the max number of in-flight requests admitted to this lane at
     /// once (excess requests park on the lane's semaphore until a slot frees or the request budget
     /// expires). OPTIONAL — omitted means UNBOUNDED (no concurrency cap), the same opt-in-limiter
@@ -1364,23 +1358,23 @@ pub struct ModelCfg {
     /// "effectively unbounded"; a literal `usize::MAX` would panic (tokio caps permits at
     /// `MAX_PERMITS`).
     #[serde(default)]
-    pub(crate) max_concurrent: Option<usize>,
+    pub max_concurrent: Option<usize>,
     /// Default max output tokens injected when a cross-protocol translation targets a backend that
     /// REQUIRES `max_tokens` (Anthropic Messages) and the source request omitted it (legal for
     /// OpenAI). Unset falls back to `crate::proto::DEFAULT_MAX_TOKENS`. Must be > 0 when set.
     #[serde(default)]
-    pub(crate) default_max_tokens: Option<u32>,
+    pub default_max_tokens: Option<u32>,
     /// Optional upstream model name override. When set, this value is sent to the provider as the
     /// model identifier in the request body and URL path, instead of the config key. Useful when
     /// the provider expects a different model string (e.g. Bedrock model IDs).
     #[serde(default)]
-    pub(crate) upstream_model: Option<String>,
+    pub upstream_model: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms). If this lane has not returned response headers
     /// within the budget, the attempt is abandoned (transient → breaker) and the request FAILS OVER
     /// to the next member — the hang detector. Model-level default; a pool member's
     /// `attempt_timeout_ms` overrides it per workload. Absent = bounded only by the request budget.
     #[serde(default)]
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// Operator declaration that THIS model accepts reasoning/thinking request parameters
     /// (Anthropic `thinking`, Gemini `thinkingConfig`, OpenAI `reasoning_effort`). Capability is
     /// per-MODEL, not per-provider (Sonnet takes `thinking`, Haiku 400s on it), and busbar keeps no
@@ -1390,7 +1384,7 @@ pub struct ModelCfg {
     /// translation). A pool member's `reasoning` overrides this per pool. Same-protocol passthrough
     /// is byte-exact and ignores the flag.
     #[serde(default)]
-    pub(crate) reasoning: Option<bool>,
+    pub reasoning: Option<bool>,
     /// Operator declaration that THIS model accepts prompt-cache markers on dialects where the
     /// marker is model-gated (Bedrock Converse `cachePoint`: Claude accepts it, Amazon Nova
     /// hard-rejects it with 400 "extraneous key"). Same family as `reasoning` — busbar keeps no
@@ -1400,7 +1394,7 @@ pub struct ModelCfg {
     /// whose cache form is universally accepted (Anthropic `cache_control`) ignore this flag, as
     /// does same-protocol passthrough (byte-exact).
     #[serde(default)]
-    pub(crate) prompt_caching: Option<bool>,
+    pub prompt_caching: Option<bool>,
 }
 
 fn neg1() -> i64 {
@@ -1535,53 +1529,53 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
 
 #[derive(Debug, Clone, Default)]
 pub struct PoolCfg {
-    pub(crate) members: Vec<PoolMember>,
+    pub members: Vec<PoolMember>,
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (a
     /// SCALAR, so the entity value REPLACES the inherited one — it does not union). `None` = inherit
     /// the `pools:`-level default. Moved here (out of the retired `auth.upstream_credentials:`) in
     /// 1.5.3: whose credential reaches the upstream is a routing property of the pool, not of the
     /// inbound auth chain.
-    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// Per-pool breaker settings (resolved into `store::BreakerCfg` at startup; drives trip
     /// thresholds and cooldown backoff for this pool's lanes).
-    pub(crate) breaker: Option<BreakerCfg>,
-    pub(crate) failover: Option<FailoverCfg>,
-    pub(crate) on_exhausted: Option<OnExhaustedCfg>,
-    pub(crate) affinity: Option<AffinityCfg>,
+    pub breaker: Option<BreakerCfg>,
+    pub failover: Option<FailoverCfg>,
+    pub on_exhausted: Option<OnExhaustedCfg>,
+    pub affinity: Option<AffinityCfg>,
     /// The pool's native ranking STRATEGY (a strategy name in `hooks: [...]`). `weighted`
     /// (default / absent) is today's SWRR
     /// with ZERO added cost — no `RoutingPolicy` object, byte-identical hot path. `cheapest`/`fastest`/
     /// `least_busy`/`usage` resolve a native ordering policy that runs once before the failover loop.
     /// This is the pool's ranking FLOOR.
-    pub(crate) policy: PoolPolicy,
+    pub policy: PoolPolicy,
     /// The pool's GATES (the non-strategy names in `hooks: [...]`). Each names an entry in the
     /// top-level `hooks:` registry; validated to be `kind: gate` at startup.
     /// Empty = no per-pool gate (pure native ordering). Config order is preserved — it is the
     /// phase-2 chain order (order last-wins; reject/restrict commute).
-    pub(crate) gates: Vec<String>,
+    pub gates: Vec<String>,
     /// Whether the pool EXPLICITLY named its base ordering strategy (a strategy name in
     /// `hooks: [...]`), vs leaving it defaulted. `false` (defaulted) is the pool that INHERITS the
     /// `default:` hook when one is registered (else the compiled-in `weighted` backstop); `true` means
     /// the operator picked a base, so the `default:` hook does NOT override it. `policy` alone can't
     /// carry this — it defaults to `Weighted` indistinguishably from an explicit `weighted`.
-    pub(crate) base_named: bool,
+    pub base_named: bool,
     /// NEUTRAL ROUTING KNOB (1.6.0): pool-level member weights, `{ member-name: weight }`. When
     /// present, the pool load-balances by these weights; when absent, the pool fails over in member
     /// order (first = primary). This is the uniform-grammar way to weight members without per-member
     /// rich objects; on the LLM plane a per-member `weight:` still wins for byte-identity, and this
     /// map refines any member the operator did not weight inline. Empty ⇒ ordered failover.
-    pub(crate) weights: std::collections::BTreeMap<String, u32>,
+    pub weights: std::collections::BTreeMap<String, u32>,
     /// NEUTRAL ROUTING KNOB (1.6.0): the pool's routing tier label (`large`/`small`/…), a plane-neutral
     /// hint read by ranking policies. Applies to every member lacking its own inline `tier:`. `None` ⇒
     /// no pool tier.
-    pub(crate) tier: Option<String>,
+    pub tier: Option<String>,
     /// NEUTRAL ROUTING KNOB (1.6.0): pool-level per-attempt response-headers cap (ms), applied to every
     /// member lacking an inline `attempt_timeout_ms:`. `None` ⇒ the model-level default stands.
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// NEUTRAL ROUTING KNOB: the operations that may be performed TWICE after a dispatch has gone out
     /// (reads/searches/queries). Plane-neutral field; the values name the plugin's verbs. EMPTY BY
     /// DEFAULT = fail-safe (reroute-before-first-byte only). Read on the MCP/A2A planes; inert on LLM.
-    pub(crate) repeatable: Vec<String>,
+    pub repeatable: Vec<String>,
 }
 
 /// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
@@ -1897,7 +1891,7 @@ pub(crate) fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Ve
 /// FLOOR; a gate named in the pool's `hooks:` list can override it per-request.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PoolPolicy {
+pub enum PoolPolicy {
     /// Smooth-weighted-round-robin (SWRR). Default and also the absent case. Zero added cost.
     #[default]
     Weighted,
@@ -2052,20 +2046,11 @@ pub(crate) const CORE_HOOK_PHASES: &[HookStage] = &[
     HookStage::Response,
 ];
 
-/// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
-/// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
-/// request. `Reject` is fail-closed (503). `First` uses the configured member order (a
-/// deterministic degraded pick). The `on_error` CONFIG field is a free string (a fallback chain of
-/// hook names bottoming out on one of these three reserved terminals); `on_empty` parses this enum
-/// directly.
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyOnError {
-    #[default]
-    Weighted,
-    Reject,
-    First,
-}
+// ABI-purity CONFIG-ENUMS: the resolved on_error/on_empty TERMINAL is an LLM-runtime config value
+// concept; it moved DOWN to `busbar_substrate::config` (serde derives + rename VERBATIM, byte-
+// identical wire form) so a plane names it via the ABI. Re-exported here at its historical
+// `config::PolicyOnError` path so the frozen config grammar + every deserialization are unchanged.
+pub use busbar_substrate::config::PolicyOnError;
 
 /// The serde default for a hook's `on_error` — `nothing`: a failing gate
 /// DOES NOT PARTICIPATE by default — it cannot steer, and it cannot displace another gate's
@@ -2349,7 +2334,7 @@ impl HookCfg {
 /// `user:bob` leaf whose chain climbs through `engineering`. The walk is bounded by the tree size (a
 /// validated-acyclic tree cannot revisit a node without a cycle), so an untrusted/malformed tree can
 /// never spin here.
-pub(crate) fn caller_in_hook_groups(
+pub fn caller_in_hook_groups(
     caller_group: Option<&str>,
     hook_groups: &[String],
     groups_tree: &std::collections::BTreeMap<String, GroupCfg>,
@@ -2374,39 +2359,39 @@ pub(crate) fn caller_in_hook_groups(
 /// The default hard wall-clock deadline for a gate decision, in milliseconds. Used by serde's
 /// `default = "default_policy_timeout_ms"`. Also the single source of truth consumed at the
 /// resolution sites in [`crate::limits`] and [`crate::hooks`].
-pub(crate) const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
+pub const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
 
 fn default_policy_timeout_ms() -> u64 {
     DEFAULT_POLICY_TIMEOUT_MS
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PoolMember {
+pub struct PoolMember {
     /// The member's REFERENCED NAME — a `models:` key on the LLM plane, a `tools:` key on the MCP
     /// plane, an `agents:` key on the A2A plane. Named `model` for the LLM byte-identity path that
     /// reads it; the [`PoolMember::name`] accessor is the plane-neutral reader. 1.6.0: a member may
     /// be written as a BARE NAME (uniform grammar across every plane) or, on the LLM plane, as the
     /// legacy rich object `{ model, weight, context_max, tier, attempt_timeout_ms, reasoning, tags }`.
-    pub(crate) model: String,
-    pub(crate) weight: u32,
-    pub(crate) context_max: Option<usize>,
+    pub model: String,
+    pub weight: u32,
+    pub context_max: Option<usize>,
     /// Operator-declared routing tier (e.g. `"large"`/`"small"`/`"primary"`/`"overflow"`). Projected
     /// into the routing `Candidate` (via `MemberMeta`) and read by hook plugin policies.
-    pub(crate) tier: Option<String>,
+    pub tier: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms) for THIS member in THIS pool — overrides the
     /// model-level `attempt_timeout_ms`, so one model can be patient in an image pool (10000) and
     /// ruthless in a realtime pool (50). See `ModelCfg::attempt_timeout_ms` for semantics.
-    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub attempt_timeout_ms: Option<u64>,
     /// Per-pool override of the model-level `reasoning` capability flag (member wins), so the same
     /// lane can allow thinking in a research pool and refuse it in a latency-critical one. See
     /// `ModelCfg::reasoning` for semantics.
-    pub(crate) reasoning: Option<bool>,
+    pub reasoning: Option<bool>,
     /// Free-form operator tags (e.g. `["opus"]`) a policy can match on. Projected into the routing
     /// `Candidate` and read by hook plugin policies.
     ///
     /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED: `rate_card` is the ONLY cost
     /// source, and routing (`cheapest`) derives its scalar from the member's model's rate entry.
-    pub(crate) tags: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 impl PoolMember {
@@ -2562,7 +2547,7 @@ fn default_consecutive_n() -> u32 {
 /// Breaker configuration per pool with full trip settings (ADR-0002).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BreakerCfg {
+pub struct BreakerCfg {
     #[serde(default = "default_cooldown")]
     pub(crate) base_cooldown_secs: u64,
     #[serde(default = "default_max_cooldown")]
@@ -2608,26 +2593,24 @@ pub struct FailoverCfg {
     /// Failover wall-clock budget in seconds (one canonical name; the pre-1.0 `deadline_secs`
     /// alias is GONE).
     #[serde(default = "default_failover_timeout")]
-    pub(crate) timeout_secs: u64,
+    pub timeout_secs: u64,
     /// Member model names excluded from this pool's candidate set — never selected (primary or
     /// failover). A per-pool blocklist for temporarily benching a member without editing `members`.
     #[serde(default)]
-    pub(crate) exclusions: Option<Vec<String>>,
+    pub exclusions: Option<Vec<String>>,
     /// Maximum failover hops per request (one canonical name; the pre-1.0 `cap` alias is GONE).
     #[serde(default = "default_max_hops")]
-    pub(crate) max_hops: usize,
+    pub max_hops: usize,
 }
 
-/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
-pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
-/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
-/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
-/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
-/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
-/// monotonic-clock `Instant` math (see `RequestCtx::new`).
-pub(crate) const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
-/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
-pub const DEFAULT_FAILOVER_CAP: usize = 3;
+// The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
+// they now live in the neutral `busbar_substrate::failover` (a plane names the per-request failover
+// budget without reaching into `busbar-core`); re-exported here at their historical
+// `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
+// the `serde` default fns below) resolves unchanged.
+pub use busbar_substrate::failover::{
+    DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
+};
 
 fn default_failover_timeout() -> u64 {
     DEFAULT_FAILOVER_DEADLINE_SECS
@@ -2646,7 +2629,7 @@ fn default_max_hops() -> usize {
 /// on_exhausted: { queue: { max_ms: 250 } }   # bounded wait for a freed permit, then reject
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OnExhaustedCfg {
+pub enum OnExhaustedCfg {
     Reject,
     LeastBad,
     FallbackPool(String),
@@ -2660,7 +2643,7 @@ pub(crate) enum OnExhaustedCfg {
 
 impl OnExhaustedCfg {
     /// The executable behavior this config value selects.
-    pub(crate) fn to_runtime(&self) -> OnExhausted {
+    pub fn to_runtime(&self) -> OnExhausted {
         match self {
             OnExhaustedCfg::Reject => OnExhausted::Status503,
             OnExhaustedCfg::LeastBad => OnExhausted::LeastBad,
@@ -2769,7 +2752,7 @@ pub enum OnExhausted {
 /// is unchanged from the pre-enum `String` field.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum AffinityMode {
+pub enum AffinityMode {
     #[default]
     Session,
 }
@@ -2780,10 +2763,10 @@ pub struct AffinityCfg {
     /// Affinity mode. `session` (the default and only supported mode) pins a session to a lane
     /// using the header named by `header_name`.
     #[serde(default)]
-    pub(crate) mode: AffinityMode,
+    pub mode: AffinityMode,
     /// Request header carrying the session id (defaults to `x-session-id` when unset).
     #[serde(default)]
-    pub(crate) header_name: Option<String>,
+    pub header_name: Option<String>,
 }
 
 /// Default listen address for the inbound HTTP server.
@@ -2798,7 +2781,7 @@ fn default_listen() -> String {
 /// default. The default binds LOOPBACK so a zero-config deployment boots (an exposed default would
 /// trip the mTLS boot-guard); to manage Busbar off-host, set an exposed `admin_listen` with
 /// `admin_tls.client_ca_file` (mTLS) or an explicit `admin_require_mtls: false` waiver.
-pub(crate) const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
+pub const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
 
 fn default_admin_listen() -> String {
     DEFAULT_ADMIN_LISTEN_ADDR.into()
@@ -3514,7 +3497,7 @@ fn default_governance_store() -> String {
 /// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SecretModuleCfg {
+pub struct SecretModuleCfg {
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
@@ -3696,13 +3679,13 @@ fn default_per_request_fee() -> i64 {
 #[serde(deny_unknown_fields)]
 pub struct RateEntryCfg {
     #[serde(default)]
-    pub(crate) input_utok: f64,
+    pub input_utok: f64,
     #[serde(default)]
-    pub(crate) output_utok: f64,
+    pub output_utok: f64,
     #[serde(default)]
-    pub(crate) cache_read_utok: f64,
+    pub cache_read_utok: f64,
     #[serde(default)]
-    pub(crate) cache_write_utok: f64,
+    pub cache_write_utok: f64,
 }
 
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the
@@ -4210,7 +4193,7 @@ fn default_probe_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)] // a typo'd limits key must fail boot, not be silently ignored.
 pub(crate) struct LimitsCfg {
     #[serde(default = "default_upstream_request_timeout_secs")]
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     /// Max accepted inbound body (bytes). COUPLED: also drives the egress translate-body cap
     /// (`crate::limits::translate_body_max_bytes`) — one knob feeds both so an accepted request is
     /// always buffer-translatable on egress.
@@ -4385,7 +4368,7 @@ impl Default for RoutingCfg {
 /// struct rather than re-walking optional config sections.
 #[derive(Debug, Clone)]
 pub struct LimitsResolved {
-    pub(crate) upstream_request_timeout_secs: u64,
+    pub upstream_request_timeout_secs: u64,
     pub request_body_max_bytes: usize,
     pub(crate) pool_max_idle_per_host: usize,
     pub(crate) pool_idle_timeout_secs: u64,
@@ -4492,6 +4475,18 @@ impl LimitsResolved {
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
+        }
+    }
+
+    /// TEST-SUPPORT constructor: the default resolved limits with ONLY `request_body_max_bytes`
+    /// overridden — the shape the relocated ingress body-cap tests need (they name no other private
+    /// field). Gated to the test-support surface so the private-field FRU stays in-crate; the plane's
+    /// tests reach it through this public seam instead of a cross-crate struct literal.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_request_body_max_bytes(request_body_max_bytes: usize) -> Self {
+        Self {
+            request_body_max_bytes,
+            ..Self::default()
         }
     }
 }

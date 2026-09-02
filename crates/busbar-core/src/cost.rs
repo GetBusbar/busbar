@@ -245,7 +245,7 @@ impl<'a> Chain<'a> {
 
 /// The resolved cost model: the effective integer rate table + the group limit topology + the
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
-pub(crate) struct CostModel {
+pub struct CostModel {
     /// `None` = `rate_card` absent = token pricing 0 for every model. `Some` = the AUTHORITATIVE
     /// effective table, straight from the top-level `rate_card:` (the ONLY cost source).
     rates: Option<HashMap<String, RateNanos>>,
@@ -263,7 +263,7 @@ impl CostModel {
     /// Resolve from config. Assumes `config_validate` has already passed (completeness, acyclic
     /// groups, valid limit shapes); this is a pure projection and is defensive, never panicking,
     /// on anything validation should have caught.
-    pub(crate) fn resolve_parts(
+    pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,

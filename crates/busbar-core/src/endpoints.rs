@@ -45,17 +45,17 @@ pub(crate) async fn stats(
     // `app.pools` is a HashMap whose iteration order is randomized per process, which otherwise
     // makes `/stats` output non-reproducible across restarts. Lane order is already deterministic
     // (index order, and lane indices are now built sorted-by-model — see main.rs).
-    let pools: std::collections::BTreeMap<&String, Vec<&str>> = app
-        .engine_tables()
+    let view = app.engine_tables_view();
+    let pools: std::collections::BTreeMap<&str, Vec<&str>> = view
         .pools()
-        .iter()
+        .into_iter()
         .filter(|(n, _)| visible_pool(n))
-        .map(|(n, weighted_lanes)| {
+        .map(|(n, members)| {
             (
                 n,
-                weighted_lanes
+                members
                     .iter()
-                    .map(|wl| app.engine_tables().lanes()[wl.idx].model.as_str())
+                    .map(|&idx| view.lane_view(idx).map(|l| l.model).unwrap_or(""))
                     .collect(),
             )
         })
@@ -70,14 +70,13 @@ pub(crate) async fn stats(
         if !restricted {
             return true;
         }
-        app.engine_tables()
-            .pools()
+        view.pools()
             .iter()
             .filter(|(n, _)| visible_pool(n))
-            .any(|(_, weighted_lanes)| weighted_lanes.iter().any(|wl| wl.idx == i))
+            .any(|(_, members)| members.contains(&i))
     };
 
-    let lanes: Vec<Value> = (0..app.engine_tables().lanes().len())
+    let lanes: Vec<Value> = (0..view.lane_count())
         .filter(|&i| lane_visible(i))
         .map(|i| {
             let snap = app.store.snapshot(i, t);
@@ -277,7 +276,7 @@ pub(crate) async fn healthz(crate::state::CurrentApp(app): crate::state::Current
     // default cell AND every per-pool cell: production routes through NAMED pools whose per-pool cells
     // trip independently, so reading only the default `""` cell would report 200 while every pool lane
     // is circuit-broken (the default cell never moves for pool-routed traffic).
-    if (0..app.engine_tables().lanes().len()).any(|i| app.store.is_ready_any_cell(i, t)) {
+    if (0..app.engine_tables_view().lane_count()).any(|i| app.store.is_ready_any_cell(i, t)) {
         (StatusCode::OK, "ok").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "no usable lanes").into_response()

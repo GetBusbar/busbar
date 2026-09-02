@@ -98,21 +98,15 @@ pub(crate) fn swrr_shard_index(pool: &str) -> usize {
 /// FNV-1a 64-bit offset-basis and prime (the canonical constants). Module-level so both the string
 /// hash (`fnv1a_u64`) and the cooldown-jitter seed mixer (which folds 128-bit inputs with the same
 /// FNV step) share one named definition instead of repeating the bare magic literals.
-pub(crate) const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-pub(crate) const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+// The FNV-1a hash + its two algorithm-fixed constants now live in the neutral
+// `busbar_substrate::store` so a plane crate hashes without reaching into `busbar-core`. Re-exported
+// here (the breaker seed-mixer in `breaker.rs` names the constants directly, and core's `crate::store`
+// re-exports `fnv1a_u64` for `hooks`/`governance`).
+pub(crate) use busbar_substrate::store::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
 
-/// Deterministic FNV-1a 64-bit hash of a string's bytes. Stable across processes/restarts (unlike
-/// the std `DefaultHasher`, whose seed is randomized), so callers that need a process-independent
-/// hash (SWRR shard selection, session affinity) get identical results everywhere. Distribution,
-/// not cryptographic strength, is all that matters.
-pub(crate) fn fnv1a_u64(s: &str) -> u64 {
-    let mut hash = FNV1A_OFFSET_BASIS;
-    for &byte in s.as_bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
-}
+// `fnv1a_u64` moved to `busbar_substrate::store` (re-exported just above); core's `crate::store`
+// re-export chain (`pub use in_memory::*`) keeps `crate::store::fnv1a_u64` resolving unchanged.
+pub use busbar_substrate::store::fnv1a_u64;
 
 /// Number of SWRR lock shards. The SWRR weight read-modify-write only needs to be serialized
 /// PER POOL (the `Σ current_weight == 0` invariant is pool-local — two disjoint pools share no
@@ -123,7 +117,7 @@ pub(crate) fn fnv1a_u64(s: &str) -> u64 {
 pub(crate) const SWRR_SHARDS: usize = 64;
 
 /// Wraps the per-lane atomics/semaphores with per-(pool, lane) FSM breaker logic, populated lazily.
-pub(crate) struct HealthState {
+pub struct HealthState {
     pub(crate) lanes: Vec<Arc<LaneState>>,
     /// Per-(pool, lane) breaker cells, created lazily on first access. The lane-global fields
     /// (sem/budget/dead/ok) always live on `lanes[lane]`; only the breaker FSM is isolated per pool.
@@ -216,7 +210,8 @@ pub(crate) const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
 impl HealthState {
     /// Read a (pool, lane) cell's cumulative error counter — for concurrency/isolation tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn cell_err_for_test(&self, pool: &str, lane: usize) -> u64 {
         self.cell(pool, lane).err().load(Ordering::Relaxed)
     }
@@ -224,7 +219,7 @@ impl HealthState {
     /// Construct with the historical hardcoded operational limits. Used by tests and any caller that
     /// does not thread operator config; production goes through [`new_with_limits`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn new(lanes: Vec<LaneData>) -> Self {
+    pub fn new(lanes: Vec<LaneData>) -> Self {
         Self::new_with_limits(
             lanes,
             crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
@@ -433,7 +428,8 @@ impl HealthState {
     // only to give the unit tests a concrete, lane-indexed handle — hence `#[cfg(test)]`.
 
     /// Attempt to acquire the single probe in HalfOpen state. True if this request wins the probe.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn try_acquire_probe(&self, lane: usize) -> bool {
         self.get_lane(lane)
             .probe_in_flight
@@ -442,7 +438,8 @@ impl HealthState {
     }
 
     /// Clear the probe flag (called after probe completes).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn clear_probe(&self, lane: usize) {
         self.get_lane(lane)
             .probe_in_flight
@@ -450,7 +447,8 @@ impl HealthState {
     }
 
     /// Transition to Open state with escalated cooldown.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn open_state(&self, lane: usize, now_time: u64, cfg: &BreakerCfg) {
         Self::cell_open(
             self.get_lane(lane).as_ref(),
@@ -462,7 +460,8 @@ impl HealthState {
     }
 
     /// Transition to Open state with escalated cooldown and optional Retry-After floor.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn open_state_with_retry_after(
         &self,
         lane: usize,
@@ -481,7 +480,8 @@ impl HealthState {
 
     /// Transition to Closed state (probe success). Mirrors the production recovery path: close the
     /// cell, then reset its SWRR accumulator (the lock-free generational bump).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(dead_code)]
     pub(crate) fn closed_state(&self, lane: usize, _now_time: u64) {
         let cell = self.get_lane(lane);
         Self::cell_closed(cell.as_ref());
@@ -490,7 +490,7 @@ impl HealthState {
 }
 
 #[derive(Clone)]
-pub(crate) struct LaneData {
+pub struct LaneData {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) max: usize,
@@ -515,8 +515,38 @@ pub(crate) struct LaneData {
     pub(crate) prompt_caching: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl LaneData {
+    /// TEST-SUPPORT constructor: a minimal live lane (alive, unlimited budget, zero counters) with
+    /// the given model/provider/permit count — the shape the relocated probe-guard tests need. Gated
+    /// to the test-support surface so the plane's tests reach a `LaneData` through this public seam
+    /// instead of a cross-crate struct literal over its private fields.
+    pub fn for_test(model: &str, provider: &str, max: usize) -> Self {
+        LaneData {
+            reasoning: false,
+            prompt_caching: false,
+            model: model.into(),
+            provider: provider.into(),
+            max,
+            sem: Arc::new(Semaphore::new(max)),
+            limited: false,
+            budget: -1,
+            cooldown_until: 0,
+            streak: 0,
+            dead: false,
+            dead_reason: String::new(),
+            ok: 0,
+            err: 0,
+            client_fault: 0,
+            upstream_model: None,
+            attempt_timeout_ms: None,
+        }
+    }
+}
+
 /// Helper for weighted selection tests - creates a lane with specific weight.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (LaneData, u32) {
     let lane = LaneData {
         model: format!("model-{}", id),
@@ -540,51 +570,22 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
     (lane, (id as u32) + 1) // weight = id + 1 (so lane 0 has weight 1, lane 1 has weight 2, etc.)
 }
 
-/// Breaker configuration per pool.
-#[derive(Debug, Clone)]
-pub(crate) struct BreakerCfg {
-    pub(crate) base_cooldown_secs: u64,
-    pub(crate) max_cooldown_secs: u64,
-    pub(crate) honor_retry_after: bool,
-    pub(crate) trip: TripConfig,
-    /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
-    /// for a cooldown.
-    ///
-    /// ADR-0002 states the sub-threshold rule as one sentence with two halves: on
-    /// `TransientUpstream`, "drive trip evaluation ... and re-arm an exponential cooldown; **fail
-    /// over** to the next candidate". The cooldown is the DEPRIORITISATION half of a selection walk
-    /// — "prefer a sibling for a while" — and the failover half is what keeps the caller served
-    /// while it lasts. On a pool with siblings that is right, and this stays `true` there.
-    ///
-    /// A DEGENERATE SINGLE-MEMBER CELL HAS NO SIBLING, and on the MCP client leg and the A2A relay
-    /// there is no walk at all (`docs/circuit-breaker.md`: "on a live tool call or task submission
-    /// no second candidate is tried today — a tripped target is refused, never rerouted"). There,
-    /// the identical store means "refuse every caller of this server for the next 15-120s", handed
-    /// out after ONE blip and announced as "open after repeated failures" — a sentence the cell's
-    /// own `should_trip` had just refused to make true. So those cells set this `false` and refuse
-    /// only on a real trip, on the thresholds ADR-0002 and `docs/circuit-breaker.md` publish.
-    pub(crate) bench_below_trip_threshold: bool,
-}
+// The RESOLVED runtime breaker cfg (`BreakerCfg`/`TripConfig`/`TripMode`) is neutral DATA and now
+// lives in `busbar_substrate::store` (re-exported below via `pub use in_memory::*` from the parent
+// `store` module) so the LLM plane names it without reaching into `busbar-core`. Its `Default`,
+// `to_llm`, and `from_llm` move WITH it; only the config->runtime lowering stays here (core owns the
+// `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
+// is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
+// `on_exhausted`/`OnExhausted` lowering already uses.
+pub use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
 
-impl Default for BreakerCfg {
-    fn default() -> Self {
-        Self {
-            base_cooldown_secs: 15,
-            max_cooldown_secs: 120,
-            honor_retry_after: true, // default to honoring Retry-After header
-            trip: TripConfig::default(),
-            // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
-            bench_below_trip_threshold: true,
-        }
-    }
-}
-
-impl From<&crate::config::BreakerCfg> for BreakerCfg {
-    /// Resolve the parsed config into the runtime breaker config the FSM evaluates.
-    /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block
-    /// falls back to the ADR-0002 defaults.
-    fn from(c: &crate::config::BreakerCfg) -> Self {
-        let trip = c
+impl crate::config::BreakerCfg {
+    /// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
+    /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls
+    /// back to the ADR-0002 defaults. Was `From<&config::BreakerCfg> for store::BreakerCfg`; an
+    /// inherent method now that the runtime type is foreign (substrate-owned).
+    pub fn to_runtime(&self) -> BreakerCfg {
+        let trip = self
             .trip
             .as_ref()
             .map(|t| TripConfig {
@@ -598,9 +599,9 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
                 consecutive_n: t.consecutive_n,
             })
             .unwrap_or_default();
-        Self {
-            base_cooldown_secs: c.base_cooldown_secs,
-            max_cooldown_secs: c.max_cooldown_secs,
+        BreakerCfg {
+            base_cooldown_secs: self.base_cooldown_secs,
+            max_cooldown_secs: self.max_cooldown_secs,
             honor_retry_after: true,
             trip,
             // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
@@ -610,39 +611,13 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
     }
 }
 
-/// Trip configuration mode.
-#[derive(Debug, Clone)]
-pub(crate) enum TripMode {
-    ErrorRate,
-    Consecutive,
-}
-
-/// Trip configuration parameters (ADR-0002 defaults).
-#[derive(Debug, Clone)]
-pub(crate) struct TripConfig {
-    pub(crate) mode: TripMode,
-    pub(crate) window_s: u64,
-    pub(crate) threshold: f64,
-    pub(crate) min_requests: usize,
-    pub(crate) consecutive_n: u32, // For consecutive mode
-}
+// `TripMode` / `TripConfig` (+ its `Default`) moved to `busbar_substrate::store` with `BreakerCfg`
+// (re-exported above); only the signal-catalog window const stays here.
 
 /// The window (seconds) the `Signal::CandidateErrorRate` catalog entry reads the
-/// breaker's existing outcome window over — matches [`TripConfig::default`]'s own `window_s` so
+/// breaker's existing outcome window over — matches `TripConfig::default`'s own `window_s` so
 /// the projected error rate reads over the same horizon the default breaker trip mode does.
 pub(crate) const DEFAULT_ERROR_RATE_WINDOW_S: u64 = 30;
-
-impl Default for TripConfig {
-    fn default() -> Self {
-        Self {
-            mode: TripMode::ErrorRate,
-            window_s: 30,
-            threshold: 0.5,
-            min_requests: 5,
-            consecutive_n: 3, // 3 consecutive errors
-        }
-    }
-}
 
 // Pool-aware breaker operations, shared by the lane-default trait methods (pool "") and the
 // `_in(pool, …)` trait methods. The lane-global checks (dead / budget) always read `lanes[lane]`;
@@ -974,8 +949,12 @@ impl HealthState {
 }
 
 // Test-only helpers: release code records outcomes via the cell-core fns; these give the unit
-// tests a lane-indexed handle to seed the default cell's outcome window directly.
-#[cfg(test)]
+// tests a lane-indexed handle to seed the default cell's outcome window directly. `allow(dead_code)`:
+// this is a test-support surface whose money-path callers relocated to the `busbar-llm` plugin's
+// test binary (1.6.0 money-path Phase 3-4 C) — the helpers stay for core's own store tests + any
+// test-support consumer, so the whole test-only impl is exempt from the dead-code lint.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 impl HealthState {
     /// Record an error outcome in the sliding window with explicit time.
     pub(crate) fn record_outcome_error_with_time(&self, lane: usize, now_time: u64) {

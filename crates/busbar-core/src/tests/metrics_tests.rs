@@ -560,44 +560,6 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     );
 }
 
-/// `busbar_pool_queued` renders the LIVE `queued_depth` source. Park a request
-/// (via the same RAII `QueuedDepth::park` guard `handle_queue` holds while waiting) and the gauge
-/// must read the real depth, not a literal 0.
-#[test]
-fn test_scrape_gauges_pool_queued_reads_live_depth() {
-    init();
-    // Unique pool/model labels: the `metrics` recorder is process-global, so sharing a label with
-    // another test would cross-contaminate this gauge across tests.
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "q-live-model",
-            crate::proto::PROTO_OPENAI,
-            "http://q",
-        ))
-        .pool("q-live-pool", &[(0, 1)])
-        .build();
-
-    // Hold a park guard, as a real queued request would for the duration of its wait.
-    let guard = app.engine_tables().queued_depth().park("q-live-pool");
-    refresh_scrape_gauges(&app);
-    let out = render();
-    assert_eq!(
-        gauge_value(&out, POOL_QUEUED, "q-live-pool"),
-        Some(1.0),
-        "busbar_pool_queued must reflect the live park depth (1 while parked); got:\n{out}"
-    );
-
-    // Dropping the guard (request left the queue) returns the depth to 0.
-    drop(guard);
-    refresh_scrape_gauges(&app);
-    let out = render();
-    assert_eq!(
-        gauge_value(&out, POOL_QUEUED, "q-live-pool"),
-        Some(0.0),
-        "busbar_pool_queued must return to 0 once the parked request leaves; got:\n{out}"
-    );
-}
-
 /// A `Store` whose `list_keys` fails on every call AFTER the first — the first call succeeds so
 /// `GovState::new` (which loads the key cache via `list_keys` at construction time) can still
 /// build successfully, and every call from then on (i.e. from `refresh_scrape_gauges`'s
