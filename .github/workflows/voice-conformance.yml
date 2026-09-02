@@ -1,0 +1,214 @@
+name: Voice conformance
+
+# THE 4th-PLANE (VOICE) CONFORMANCE BATTERY — at structural parity with the MCP and A2A workflows,
+# but in an HONEST SCAFFOLD state. The voice runtime does not exist yet, so no leg can assert real
+# conformance. What lands today is the SHAPE and its enforcement, green, so that filling a leg later
+# is a drop-in and the accounting cannot silently rot in the meantime.
+#
+# WHY A SCAFFOLD IS A LEGITIMATE GREEN HERE, AND NOT IN THE SIBLING WORKFLOWS.
+#
+#   The MCP and A2A workflows make `NOT ARMED, SO NOT RUN` a RED state, because for those planes the
+#   runtime EXISTS and a disarmed subject leg renders as the identical green tick a leg that judged
+#   busbar would produce. That false green is the whole disease they treat.
+#
+#   Voice has no runtime to arm against yet, so the honest report is PENDING — stated per leg and
+#   never dressed as a conformance pass. Following the MCP workflow's own guidance, the transition
+#   from PENDING to a real armed-or-red leg is EXERCISED by `voice-conformance.sh --selftest` rather
+#   than asserted by a real run that cannot happen. The self-test proves that the moment a leg claims
+#   to be READY it is held to the anti-vacuity discipline the other batteries use: a ready leg that
+#   executed nothing is RED.
+#
+# THE LEGS (each a job; the matrix `spec-per-dialect` job is one job to the coverage linter):
+#   gate-selftest      the scaffold's own accounting, and the verdict-coverage lint, each made to bite
+#   spec-per-dialect   the voice spec battery, per dialect. MATRIX: openai, gemini. PENDING today.
+#   replay             captured-transcript replay. PENDING today.
+#   cross-parity       the 4 ordered OpenAI<->Gemini pairs. PENDING today.
+#   governance-probe   the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). NOT A
+#                      CONFORMANCE RESULT — separated in the runner, exactly as a2a-governance is.
+#
+# AND `verdict` IS NOT OPTIONAL. Ten green ticks mean nothing if one is green because it never ran.
+# The last job asserts, per leg BY NAME, that the leg reached `success`; skipped or cancelled is RED
+# there. Its `needs:` list is held to SET EQUALITY with the workflow's job set by
+# `testing/verdict-covers-every-leg.py`, run in gate-selftest below.
+#
+# THE INPUTS LATER LEGS CONSUME (authored by another agent; referenced, not created, here):
+#   testing/voice-conformance/fixtures/{openai,gemini}/   captured transcripts + spec fixtures
+#   docs/design/voice-cross-dialect-mapping.*             the OpenAI<->Gemini equivalence mapping
+#
+# busbar is PUBLIC, so per the org rule every job runs on `ubuntu-latest` at no cost, and there is no
+# secret anywhere in this file.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: voice-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-selftest:
+    name: gate self-test (the scaffold's accounting cannot be lied to)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # FIRST, and separately from any verdict: never trust a gate's verdict before proving the gate
+      # still works. The self-test plants runs that MUST be refused (a ready leg that executed
+      # nothing; a dropped leg; a gutted tree) and runs that must be accepted (the all-pending
+      # scaffold), and it drives the PENDING->READY transition, so a green below cannot be produced
+      # by accounting that refuses everything or accepts everything.
+      - name: Prove the scaffold's accounting and pending/ready transition bite
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --selftest | tee voice-selftest.log
+
+      - name: Prove the verdict-coverage lint bites
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 testing/verdict-covers-every-leg.py --selftest
+
+      # The aggregator's `needs:` list is a hand-maintained enumeration, and the last enumeration in
+      # this tree that stopped covering what came after it did so silently. Held to SET EQUALITY with
+      # the workflow's job set, in both directions, and every leg it depends on must be read by its
+      # script.
+      - name: The verdict must depend on, and judge, every leg
+        run: python3 testing/verdict-covers-every-leg.py
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-gate-selftest
+          path: voice-selftest.log
+          if-no-files-found: warn
+
+  spec-per-dialect:
+    name: spec battery · ${{ matrix.dialect }} (PENDING — scaffold)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dialect: [openai, gemini]
+    steps:
+      - uses: actions/checkout@v7
+      # The spec leg is scaffolded: it reports PENDING per dialect and exits 0. When the voice
+      # runtime and testing/voice-conformance/fixtures/${{ matrix.dialect }}/ land, flip the leg to
+      # READY in its scaffold and this job asserts real per-dialect conformance with nothing else
+      # changed here.
+      - name: Run the ${{ matrix.dialect }} spec leg
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh \
+            --leg spec-per-dialect --slice ${{ matrix.dialect }} \
+            | tee voice-spec-${{ matrix.dialect }}.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-spec-${{ matrix.dialect }}
+          path: voice-spec-${{ matrix.dialect }}.log
+          if-no-files-found: warn
+
+  replay:
+    name: captured-transcript replay (PENDING — scaffold)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the replay leg
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --leg replay | tee voice-replay.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-replay
+          path: voice-replay.log
+          if-no-files-found: warn
+
+  cross-parity:
+    name: cross-parity · 4 ordered OpenAI<->Gemini pairs (PENDING — scaffold)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the cross-parity leg
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --leg cross-parity | tee voice-cross-parity.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-cross-parity
+          path: voice-cross-parity.log
+          if-no-files-found: warn
+
+  governance-probe:
+    name: governance probe · 5 vision checkpoints (NOT a conformance result)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # SEPARATE FROM THE CONFORMANCE VERDICT BY CONSTRUCTION. The runner records governance findings
+      # as observations and refuses to let them move the conformance verdict; --selftest proves that
+      # separation bites. A green here is not a governance PASS, and it is never a conformance one.
+      - name: Observe the governance checkpoints
+        run: |
+          set -euo pipefail
+          bash testing/voice-conformance/voice-conformance.sh --leg governance | tee voice-governance.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-governance-probe
+          path: voice-governance.log
+          if-no-files-found: warn
+
+  verdict:
+    name: Voice conformance verdict
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - gate-selftest
+      - spec-per-dialect
+      - replay
+      - cross-parity
+      - governance-probe
+    steps:
+      # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. Every leg above is required to have reached
+      # `success` — `skipped` and `cancelled` are failures here, because the failure mode this whole
+      # workflow exists to prevent is a tick over a job that executed nothing. In the scaffold state
+      # every leg reaches `success` by honestly reporting PENDING, so this verdict is green today and
+      # tightens automatically as legs light up.
+      - name: Every leg must have EXECUTED
+        env:
+          GATE_SELFTEST: ${{ needs.gate-selftest.result }}
+          SPEC_PER_DIALECT: ${{ needs.spec-per-dialect.result }}
+          REPLAY: ${{ needs.replay.result }}
+          CROSS_PARITY: ${{ needs.cross-parity.result }}
+          GOVERNANCE_PROBE: ${{ needs.governance-probe.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          strict () {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2). A leg that did not EXECUTE is red, not skipped."
+              fail=1
+            else
+              echo "  ok    $1"
+            fi
+          }
+          strict gate-selftest     "$GATE_SELFTEST"
+          strict spec-per-dialect  "$SPEC_PER_DIALECT"
+          strict replay            "$REPLAY"
+          strict cross-parity      "$CROSS_PARITY"
+          strict governance-probe  "$GOVERNANCE_PROBE"
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo
+          echo "Voice conformance verdict: every leg executed. SCAFFOLD state — legs are PENDING, not"
+          echo "yet a conformance pass; the shape is enforced and every declared leg is accounted for."
