@@ -3,12 +3,12 @@
   "release": {
     "version": "dev",
     "tag": "dev",
-    "qa_sha": "dd6d0828af707982f7e45c95e7ad49dbfbaf0757",
+    "qa_sha": "0249772fa74a667e1c1c333579f364b29e2a5ea0",
     "staging_tag": null,
     "digest": null,
-    "run_id": "33585341067",
-    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33585341067",
-    "recorded_at": "2026-09-02T03:14:22Z"
+    "run_id": "33624377539",
+    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33624377539",
+    "recorded_at": "2026-09-02T11:39:49Z"
   },
   "verdicts": [
     {
@@ -313,7 +313,7 @@
           "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
-            "path": "crates/busbar-core/src/proxy/tests/egress_differential_tests.rs"
+            "path": "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs"
           }
         },
         {
@@ -323,7 +323,7 @@
           "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
-            "path": "crates/busbar-core/src/proxy/engine/tests/crossproto_delivery_billing_tests.rs"
+            "path": "crates/busbar-llm/src/engine/tests/crossproto_delivery_billing_tests.rs"
           }
         },
         {
@@ -333,7 +333,7 @@
           "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
-            "path": "crates/busbar-core/src/proxy/tests/on_exhausted_tests.rs"
+            "path": "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs"
           }
         },
         {
@@ -343,7 +343,7 @@
           "note": "captured from the sibling ci.yml job result",
           "drilldown": {
             "type": "test",
-            "path": "crates/busbar-core/src/proxy/tests/pool_upstream_creds_tests.rs"
+            "path": "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs"
           }
         },
         {
@@ -361,7 +361,7 @@
     {
       "class": "plane-neutrality",
       "title": "The core cannot know any plane",
-      "status": "fail",
+      "status": "pass",
       "evidence_count": 0,
       "unit": "side channels (0 = property holds)",
       "meter": "zero-debt",
@@ -399,15 +399,15 @@
           "id": "plane-grep-gate",
           "kind": "gate",
           "status": "report-only",
-          "count": 69,
+          "count": 40,
           "breakdown": {
-            "openai": 20,
-            "gemini": 17,
-            "anthropic": 0,
-            "bedrock": 5,
+            "openai": 6,
+            "gemini": 2,
+            "anthropic": 1,
+            "bedrock": 2,
             "cohere": 0,
             "responses": 0,
-            "mcp": 18,
+            "mcp": 20,
             "a2a": 9
           },
           "selftest": "pass",
@@ -419,8 +419,8 @@
         {
           "id": "plane-abi-neutrality",
           "kind": "gate",
-          "status": "fail",
-          "count": 6
+          "status": "pass",
+          "count": 0
         }
       ]
     },
@@ -582,7 +582,7 @@
     }
   ],
   "provenance": {
-    "content_digest": "sha256:e2c96533f4add78dd7dc83645f155aa248a8502712f575ac7336d3f74152796e",
+    "content_digest": "sha256:7c1deb530f3c1c1019c2812c7a2e99e84eea51b7e2efa16ed99d7df51c8aa81a",
     "collator": "scripts/proof-manifest.py"
   }
 }

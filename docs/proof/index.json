@@ -4,8 +4,8 @@
     {
       "version": "dev",
       "tag": "dev",
-      "qa_sha": "dd6d0828af707982f7e45c95e7ad49dbfbaf0757",
-      "recorded_at": "2026-09-02T03:14:22Z",
+      "qa_sha": "0249772fa74a667e1c1c333579f364b29e2a5ea0",
+      "recorded_at": "2026-09-02T11:39:49Z",
       "file": "dev.json",
       "verdicts": [
         {
@@ -14,7 +14,7 @@
         },
         {
           "class": "plane-neutrality",
-          "status": "fail"
+          "status": "pass"
         },
         {
           "class": "composability",
