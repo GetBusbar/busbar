@@ -280,7 +280,7 @@ pub(crate) async fn handle_queue(
             // The semaphore was closed (shutdown) — no permit is coming; shed.
             Err(_) => return handle_status_503(app, cands, now(), pool, ingress_protocol),
         };
-        let permit = busbar_core::store::Permit::Bounded(owned);
+        let permit = busbar_substrate::store::Permit::Bounded(owned);
 
         // We hold capacity but have NOT passed the breaker. Run ONLY the breaker admission step on the
         // won lane — the dispatched request owns the probe it wins (`forward_once` releases it

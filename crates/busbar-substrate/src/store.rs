@@ -155,3 +155,41 @@ pub fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+// ── The FNV-1a 64-bit string hash, relocated DOWN from `busbar-core`'s `store` so a plane crate
+//    (SWRR shard selection, session affinity) hashes without reaching into `busbar-core`; core's
+//    `store` re-exports the fn AND the two constants (its breaker seed-mixer names them directly).
+/// FNV-1a offset basis (64-bit). Algorithm-fixed constant.
+pub const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a prime (64-bit). Algorithm-fixed constant.
+pub const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Deterministic FNV-1a 64-bit hash of a string's bytes. Stable across processes/restarts (unlike
+/// the std `DefaultHasher`, whose seed is randomized), so callers that need a process-independent
+/// hash (SWRR shard selection, session affinity) get identical results everywhere. Distribution,
+/// not cryptographic strength, is all that matters.
+pub fn fnv1a_u64(s: &str) -> u64 {
+    let mut hash = FNV1A_OFFSET_BASIS;
+    for &byte in s.as_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV1A_PRIME);
+    }
+    hash
+}
+
+/// RAII concurrency permit, held for the request's lifetime and released on drop.
+///
+/// A lane with `max_concurrent` SET holds a real slot on its semaphore (`Bounded`) — the cap is
+/// enforced exactly, at any configured value. A lane with `max_concurrent` OMITTED is unbounded:
+/// there is nothing to enforce, so nothing is counted — `Unbounded` touches no shared state at all.
+///
+/// Neutral (pure `tokio::sync` + no config/serde coupling), so it lives HERE in the substrate: the
+/// LLM plane's `walk` mints `Permit::Bounded(owned)` and core's `LaneRuntime::try_admit` returns it,
+/// both naming the ONE type without the plane reaching into `busbar-core`. Core's `store` re-exports
+/// it at its historical `crate::store::Permit` path.
+#[must_use]
+pub enum Permit {
+    // The permit is never READ — it exists to be HELD (its Drop returns the slot).
+    Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
+    Unbounded,
+}

@@ -809,7 +809,7 @@ fn agnostic_stream_error_frame(message: &str) -> Vec<u8> {
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the
 /// std `DefaultHasher`, whose seed is randomized), so session affinity pins consistently.
 pub(crate) fn stable_hash(s: &str) -> u64 {
-    busbar_core::store::fnv1a_u64(s)
+    busbar_substrate::store::fnv1a_u64(s)
 }
 
 #[cfg(test)]

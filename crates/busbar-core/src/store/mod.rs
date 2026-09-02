@@ -157,20 +157,12 @@ pub struct Admit {
     pub probe_epoch: Option<u64>,
 }
 
-/// RAII concurrency permit, held for the request's lifetime and released on drop.
-///
-/// A lane with `max_concurrent` SET holds a real slot on its semaphore (`Bounded`) — the cap is
-/// enforced exactly, at any configured value. A lane with `max_concurrent` OMITTED is unbounded:
-/// there is nothing to enforce, so nothing is counted — `Unbounded` touches no shared state at
-/// all. (The old realization acquired a permit from a `MAX_PERMITS` semaphore even for unbounded
-/// lanes: two shared-atomic writes per request on a cache line every worker fights over, paying
-/// full contention for a limit that could never bind.)
-#[must_use]
-pub enum Permit {
-    // The permit is never READ — it exists to be HELD (its Drop returns the slot).
-    Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
-    Unbounded,
-}
+// `Permit` (the RAII concurrency token) is neutral (pure `tokio::sync`, no config/serde coupling), so
+// it now lives in the neutral `busbar_substrate::store` — the LLM plane's `walk` mints it and
+// `LaneRuntime::try_admit` returns it, both naming the ONE type without the plane reaching into
+// `busbar-core`. Re-exported here for core's own `crate::store::Permit` call sites (`Admit`, the
+// `LaneRuntime` trait signatures, the FSM).
+pub use busbar_substrate::store::Permit;
 
 /// Snapshot of lane stats for /stats endpoint.
 #[derive(Debug, Clone)]

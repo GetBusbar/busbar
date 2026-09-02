@@ -98,21 +98,15 @@ pub(crate) fn swrr_shard_index(pool: &str) -> usize {
 /// FNV-1a 64-bit offset-basis and prime (the canonical constants). Module-level so both the string
 /// hash (`fnv1a_u64`) and the cooldown-jitter seed mixer (which folds 128-bit inputs with the same
 /// FNV step) share one named definition instead of repeating the bare magic literals.
-pub(crate) const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-pub(crate) const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+// The FNV-1a hash + its two algorithm-fixed constants now live in the neutral
+// `busbar_substrate::store` so a plane crate hashes without reaching into `busbar-core`. Re-exported
+// here (the breaker seed-mixer in `breaker.rs` names the constants directly, and core's `crate::store`
+// re-exports `fnv1a_u64` for `hooks`/`governance`).
+pub(crate) use busbar_substrate::store::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
 
-/// Deterministic FNV-1a 64-bit hash of a string's bytes. Stable across processes/restarts (unlike
-/// the std `DefaultHasher`, whose seed is randomized), so callers that need a process-independent
-/// hash (SWRR shard selection, session affinity) get identical results everywhere. Distribution,
-/// not cryptographic strength, is all that matters.
-pub fn fnv1a_u64(s: &str) -> u64 {
-    let mut hash = FNV1A_OFFSET_BASIS;
-    for &byte in s.as_bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
-}
+// `fnv1a_u64` moved to `busbar_substrate::store` (re-exported just above); core's `crate::store`
+// re-export chain (`pub use in_memory::*`) keeps `crate::store::fnv1a_u64` resolving unchanged.
+pub use busbar_substrate::store::fnv1a_u64;
 
 /// Number of SWRR lock shards. The SWRR weight read-modify-write only needs to be serialized
 /// PER POOL (the `Σ current_weight == 0` invariant is pool-local — two disjoint pools share no
