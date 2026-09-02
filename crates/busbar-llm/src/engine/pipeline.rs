@@ -331,7 +331,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
 /// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
 /// supplementing them (calling both would double-refund).
 pub(crate) struct BudgetSpendGuard<'a> {
-    pub(crate) store: &'a dyn busbar_core::store::LaneRuntime,
+    pub(crate) store: &'a dyn busbar_substrate::store::LaneRuntime,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
 }

@@ -220,7 +220,7 @@ impl RequestCtx {
 /// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
 /// internally, with no await between winning the probe and returning.)
 pub(crate) struct ProbeGuard<'a> {
-    pub(crate) store: &'a dyn busbar_core::store::LaneRuntime,
+    pub(crate) store: &'a dyn busbar_substrate::store::LaneRuntime,
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
