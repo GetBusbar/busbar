@@ -13,7 +13,7 @@ const BUDGET_ASSERT_EPSILON: std::time::Duration = std::time::Duration::from_sec
 #[derive(Debug, Clone)]
 pub(crate) struct RestrictConstraint {
     pub(crate) tags_any: Vec<String>,
-    pub(crate) on_empty: busbar_core::config::PolicyOnError,
+    pub(crate) on_empty: busbar_substrate::config::PolicyOnError,
     pub(crate) name: &'static str,
 }
 
@@ -123,7 +123,7 @@ impl RequestCtx {
                 .cloned()
                 .collect();
             if restricted.is_empty() {
-                if matches!(r.on_empty, busbar_core::config::PolicyOnError::Weighted) {
+                if matches!(r.on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
                     continue; // advisory escape — skip this restrict on this hop
                 }
                 return Err(r.name); // fail closed — no eligible lane satisfies a required restrict

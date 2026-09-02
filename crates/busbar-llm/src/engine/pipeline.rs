@@ -1296,7 +1296,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     .cloned()
                     .collect();
                 if restricted.is_empty() {
-                    if matches!(on_empty, busbar_core::config::PolicyOnError::Weighted) {
+                    if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
                         diag_debug!(
                             DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
                             policy = name,
@@ -1524,7 +1524,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // Empty intersection → the gate's `on_empty`. `Weighted` is the advisory escape
                             // (leave `cands` as the full pool → SWRR); default (and `First`, which has no
                             // eligible "first") is fail-closed reject.
-                            if matches!(on_empty, busbar_core::config::PolicyOnError::Weighted) {
+                            if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
                                 diag_debug!(
                                 ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
                                 policy = name,

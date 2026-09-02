@@ -38,7 +38,7 @@ pub(crate) enum PolicyOutcome {
         /// Behavior when the intersection is empty: `Reject` (default, fail-closed 503) or `Weighted`
         /// (advisory escape — SWRR over the FULL pool). `First` is treated as `Reject` (a restrict
         /// with no eligible member has no "first" to fall to).
-        on_empty: busbar_core::config::PolicyOnError,
+        on_empty: busbar_substrate::config::PolicyOnError,
     },
 }
 
@@ -809,7 +809,7 @@ pub(crate) async fn decide_policy_order(
 /// case — `on_error: weighted` etc. — has an EMPTY chain and goes straight to the terminal.
 pub(crate) async fn run_on_error_chain(
     chain: &[busbar_substrate::hooks::FallbackHook],
-    terminal: &busbar_core::config::PolicyOnError,
+    terminal: &busbar_substrate::config::PolicyOnError,
     req: &busbar_api::RoutingRequest<'_>,
     candidates: &[busbar_api::Candidate<'_>],
     ctx: &busbar_api::RoutingContext<'_>,
@@ -906,7 +906,7 @@ pub(crate) fn map_decision(
     decision: busbar_api::RoutingDecision,
     policy_name: &'static str,
     candidates: &[busbar_api::Candidate<'_>],
-    on_empty: &busbar_core::config::PolicyOnError,
+    on_empty: &busbar_substrate::config::PolicyOnError,
 ) -> PolicyOutcome {
     use busbar_api::RoutingDecision;
 
@@ -960,11 +960,11 @@ pub(crate) fn map_decision(
 /// `weighted` ⇒ SWRR, `first` ⇒ the config member order (a deterministic degraded pick), `reject`
 /// ⇒ a 503. `first` advertises the policy name so the degraded pick is still observable.
 pub(crate) fn coerce_on_error(
-    on_error: &busbar_core::config::PolicyOnError,
+    on_error: &busbar_substrate::config::PolicyOnError,
     candidates: &[busbar_api::Candidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
-    use busbar_core::config::PolicyOnError;
+    use busbar_substrate::config::PolicyOnError;
     match on_error {
         PolicyOnError::Weighted => PolicyOutcome::Weighted,
         PolicyOnError::Reject => PolicyOutcome::Reject,
