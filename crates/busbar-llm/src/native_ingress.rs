@@ -275,7 +275,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                     proto,
                     StatusCode::NOT_FOUND,
                     crate::engine::KIND_NOT_FOUND,
-                    &busbar_core::ingress::not_found_message(model, model_not_found_message),
+                    &busbar_substrate::ingress::not_found_message(model, model_not_found_message),
                 );
                 return busbar_core::ingress::finish_admitted(
                     app,

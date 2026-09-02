@@ -87,6 +87,19 @@ pub mod ingress {
     // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,
     // `metadata_handler`) stays in core and re-exports these.
     pub mod protocol;
+
+    /// The NEUTRAL model-not-found copy shaper: the human string a router returns when a request
+    /// names a model the deployment has no lane for. Pure text — the operator-shaped
+    /// `model_not_found_message` override when present, else the historical default phrasing — with no
+    /// `App` and no dialect. Relocated here (1.6.0 KEYSTONE) so the relocated engine names it without
+    /// reaching into `busbar-core`; core re-exports it so its own call sites resolve unchanged.
+    #[must_use]
+    pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
+        match model_not_found_message {
+            Some(shaped) => shaped.to_string(),
+            None => format!("The model '{model}' does not exist or you do not have access to it."),
+        }
+    }
 }
 pub mod billing;
 pub mod breaker;

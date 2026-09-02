@@ -750,12 +750,10 @@ pub use path_ingress::PathIngress;
 /// neutral copy and a dialect that wants otherwise supplies its own shaped body.
 // `pub` (was module-private): the relocated LLM `NativePlane::drive` shapes its model-miss 404 body
 // through this neutral helper — the allowed plane→core edge (names only `&str`).
-pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
-    match model_not_found_message {
-        Some(shaped) => shaped.to_string(),
-        None => format!("The model '{model}' does not exist or you do not have access to it."),
-    }
-}
+// RELOCATED (1.6.0 KEYSTONE) to `busbar_substrate::ingress::not_found_message` — a pure `&str`→`String`
+// shaper with no `App`/dialect — so the plane names it there; re-exported here byte-identically so
+// every core `crate::ingress::not_found_message` call site resolves unchanged.
+pub use busbar_substrate::ingress::not_found_message;
 
 /// Minimal percent-decoding for a single path segment (no external dependency). Decodes `%XX`
 /// escapes as UTF-8; on any malformed escape it leaves the bytes as-is.
