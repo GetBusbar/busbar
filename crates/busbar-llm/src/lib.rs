@@ -266,7 +266,15 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
         // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
         build: |_| None,
+        // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
+        // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
+        // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing
+        // unless `BUSBAR_LLM_WEBHOOK_SECRET` is configured). Gated so the money-path default build is
+        // untouched; see `openai_responses/webhook.rs` for the deferred secret-config seam.
+        #[cfg(not(feature = "webhook-receiver"))]
         routes: None,
+        #[cfg(feature = "webhook-receiver")]
+        routes: Some(crate::openai_responses::webhook::webhook_routes),
         admin_routes: None,
         openapi: None,
         hydrate: None,

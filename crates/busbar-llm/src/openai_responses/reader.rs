@@ -109,6 +109,42 @@ impl ProtocolReader for ResponsesReader {
             });
         }
 
+        // STATEFUL RESPONSES (T3) — server-side conversation-state knobs. `previous_response_id`
+        // (thread this turn onto an upstream-STORED prior response) and `store` (whether the upstream
+        // PERSISTS this response for a later `previous_response_id`) are the affordances a proxy must
+        // carry losslessly so a client using server-side conversation state keeps its linkage. They
+        // are provider-specific with NO cross-protocol target — busbar is a translator, the UPSTREAM
+        // owns the conversation state — so they ride `extra` verbatim (see `responses_modeled_keys`,
+        // which deliberately excludes them) and re-emit unchanged on a same-protocol hop.
+        //
+        // But the plane's leniency contract is "tolerate absent/unknown, reject present-but-wrong-
+        // TYPED" (the house 400 policy). The `extra` pass-through forwards a value blindly, so a
+        // `previous_response_id: 5` or `store: "yes"` would be relayed to the backend (which 400s)
+        // rather than caught at the edge. Edge-validate the TYPE here — `previous_response_id` is a
+        // string, `store` is a bool — mirroring the `input`/`content`/`tools` type-checks below.
+        // Absent or `null` stays lenient (an omitted knob is not a violation); a present value of the
+        // correct type still flows through `extra` untouched.
+        if obj
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null() && !v.is_string())
+        {
+            return Err(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            });
+        }
+        if obj
+            .get("store")
+            .is_some_and(|v| !v.is_null() && !v.is_boolean())
+        {
+            return Err(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(busbar_substrate::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            });
+        }
+
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
 
@@ -1573,6 +1609,30 @@ impl ProtocolReader for ResponsesReader {
             tracing::warn!(
                 "dropping response `metadata` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side metadata is carried on the request hop"
+            );
+        }
+        // STATEFUL RESPONSES (T3): a native Responses response ALSO echoes the request's
+        // `previous_response_id` (the prior turn this response threaded onto) and `store` flag. The
+        // stateful LINKAGE a client needs — feed THIS response's `id` as the NEXT request's
+        // `previous_response_id` — is preserved by the `response.id` correlation (`IrResponse.id`,
+        // captured above and re-emitted by the writer). The redundant request-echo of
+        // `previous_response_id`/`store` is not reconstructed (IrResponse models generated output,
+        // not a request echo, exactly like `instructions`/`metadata` above), so it is dropped — but
+        // drop-with-warn per this file's convention, never silently. Gated on presence.
+        if obj
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
+        {
+            tracing::warn!(
+                "dropping response `previous_response_id` echo on Responses ir parse: IrResponse \
+                 models no request-echo slot; the stateful linkage rides `response.id` (carried) \
+                 and the request-side `previous_response_id` is carried on the request hop"
+            );
+        }
+        if obj.get("store").is_some_and(|v| !v.is_null()) {
+            tracing::warn!(
+                "dropping response `store` echo on Responses ir parse: IrResponse models no \
+                 request-echo slot; the request-side `store` flag is carried on the request hop"
             );
         }
 

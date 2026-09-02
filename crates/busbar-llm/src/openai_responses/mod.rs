@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod handler;
 mod reader;
+pub mod webhook;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
