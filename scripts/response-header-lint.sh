@@ -9,7 +9,7 @@
 #       (`main.rs::server_timing`) unconditionally paid an `Arc<AtomicU64>` allocation, an
 #       `Instant::now()`, and a task-local `.scope()` on EVERY request even with the flag off — the
 #       guard was inside the function, after the cost was already paid.
-#     - `x-busbar-route-policy` / `x-busbar-route-target` (`proxy/wire.rs::maybe_attach_route_policy`)
+#     - `x-busbar-route-policy` / `x-busbar-route-target` (`busbar-llm/src/engine/wire.rs::maybe_attach_route_policy`)
 #       had NO config gate at all: they fired unconditionally whenever a non-default routing policy
 #       chose the lane.
 #   Both are now unified under `advanced.response_headers` (`config/mod.rs::ResponseHeadersCfg`),
@@ -109,9 +109,18 @@ scan_rule() {
 # Core/bin split roots (step 3.7): CORE is the engine library root, BIN the thin binary root.
 CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
+# The LLM plane's front door: the 1.6.0 money-path relocation moved the engine (and with it the
+# route-policy header EMISSION site `maybe_attach_route_policy`) out of `busbar-core/src/proxy/` into
+# the `busbar-llm` plane crate. `busbar-llm` has no self-named `llm/` subdir (its code is `engine/`,
+# `arrival.rs`, …), so it is added by explicit path here rather than through `plane-roots.sh` (which
+# resolves a plane to the ONE directory named after it, the shape mcp/a2a keep).
+LLM="crates/busbar-llm/src"
 SRC_DIR="$CORE"
-HDR_ROUTE_POLICY_FILE="${SRC_DIR}/proxy/mod.rs"
-HDR_ROUTE_WIRE_FILE="${SRC_DIR}/proxy/wire.rs"
+# The route-policy header machinery relocated in 1.6.0: the `x-busbar-route-*` NAME literals + their
+# `HDR_ROUTE_*` consts to the neutral `busbar-substrate::proxy`, and the ONE emission call
+# (`maybe_attach_route_policy`) into the LLM plane's `engine/wire.rs`. `server-timing` stayed in core.
+HDR_ROUTE_POLICY_FILE="crates/busbar-substrate/src/proxy/mod.rs"
+HDR_ROUTE_WIRE_FILE="${LLM}/engine/wire.rs"
 HDR_SERVER_TIMING_FILE="${SRC_DIR}/router.rs"
 
 # Candidate set: every busbar .rs file except integration-test-only trees (`*/tests/*`, name-navigated
@@ -130,7 +139,7 @@ if ! plane_roots_resolve mcp a2a; then
   printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
   exit 1
 fi
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — every rule below is "for each candidate file, assert the header has ONE gated
 # site", which is VACUOUSLY TRUE over zero candidates: `scan_rule` with no file arguments does not
@@ -176,8 +185,8 @@ check_rule() {
 }
 
 run_checks() {
-  # Rule 1: the `x-busbar-route-policy` literal — only its `const` definition (proxy/mod.rs) may spell
-  # it out; every emission site must go through the const (proxy/wire.rs owns the one emission call).
+  # Rule 1: the `x-busbar-route-policy` literal — only its `const` definition (busbar-substrate proxy/mod.rs) may spell
+  # it out; every emission site must go through the const (busbar-llm engine/wire.rs owns the one emission call).
   check_rule "x-busbar-route-policy literal" \
     '"x-busbar-route-policy"' \
     'raw x-busbar-route-policy string literal outside its HDR_ROUTE_POLICY const definition' \
@@ -190,7 +199,7 @@ run_checks() {
     "$HDR_ROUTE_POLICY_FILE"
 
   # Rule 3: the route-policy headers may be WRITTEN (`.header(HDR_ROUTE_*, ...)`) from exactly one
-  # function (`maybe_attach_route_policy` / its pure core, both in proxy/wire.rs) — the function that
+  # function (`maybe_attach_route_policy` / its pure core, both in busbar-llm engine/wire.rs) — the function that
   # gates them on `advanced.response_headers.route_policy`. A second write site would bypass that gate.
   check_rule "x-busbar-route-* emission site" \
     '\.header\(HDR_ROUTE_' \

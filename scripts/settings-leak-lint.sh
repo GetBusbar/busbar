@@ -206,6 +206,7 @@ CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
 CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
+LLM="crates/busbar-llm/src"
 # ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED (see scripts/plane-roots.sh for the whole argument).
 # 1.6.0's R-E makes the MCP and A2A planes plugin CRATES. They are 71 of the 238 files below and the
 # scan floor is 100, so if they leave `$CORE` the count falls to 167, CLEARS THE FLOOR, and this
@@ -220,7 +221,7 @@ if ! plane_roots_resolve mcp a2a; then
   printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
   exit 1
 fi
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
 # Rename `crates/busbar`, move the engine, or mistype the root and this lint reports `ok` forever

@@ -139,10 +139,10 @@ def verdict_byte_identity(root, run_cargo):
     ]
     # The five money-path oracle tests (byte-identity of the delivery/billing/egress path).
     oracles = [
-        ("egress-differential", "crates/busbar-core/src/proxy/tests/egress_differential_tests.rs"),
-        ("crossproto-billing", "crates/busbar-core/src/proxy/engine/tests/crossproto_delivery_billing_tests.rs"),
-        ("on-exhausted", "crates/busbar-core/src/proxy/tests/on_exhausted_tests.rs"),
-        ("pool-upstream-creds", "crates/busbar-core/src/proxy/tests/pool_upstream_creds_tests.rs"),
+        ("egress-differential", "crates/busbar-llm/src/engine/tests/egress_differential_tests.rs"),
+        ("crossproto-billing", "crates/busbar-llm/src/engine/tests/crossproto_delivery_billing_tests.rs"),
+        ("on-exhausted", "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs"),
+        ("pool-upstream-creds", "crates/busbar-llm/src/engine/tests/pool_upstream_creds_tests.rs"),
         ("usage-decode-tap", "crates/busbar-core/src/ingress/tests/tests.rs"),
     ]
     for oid, opath in oracles:

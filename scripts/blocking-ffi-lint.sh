@@ -314,6 +314,7 @@ CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
 CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
+LLM="crates/busbar-llm/src"
 
 # ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED ───────────────────────────────────────────────────
 # 1.6.0's owner ruling R-E makes the MCP and A2A planes PLUGIN CRATES. That matters HERE more than
@@ -339,7 +340,7 @@ if ! plane_roots_resolve mcp a2a; then
 fi
 PLANE_ROOTS=("$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a")
 
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "${PLANE_ROOTS[@]}" -name '*.rs' -not -path '*/tests/*' | sort -u)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$LLM" "${PLANE_ROOTS[@]}" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — the loop below is "for each file, assert no inline FFI", which is VACUOUSLY TRUE
 # over zero files. Rename `crates/busbar` (a normal refactor), move the engine, or mistype the root,
