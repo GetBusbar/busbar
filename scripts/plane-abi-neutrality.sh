@@ -27,10 +27,13 @@ crate_src="$repo/crates/busbar-plugin/src/hot"
 
 # The banned protocol/role nouns (DESIGN-v5 §neutrality-witness). Matched case-insensitively as
 # substrings of IDENTIFIERS on declaration lines (see the grep below).
-banned=(llm mcp a2a tool agent sampling task server card round prompt)
+# `voice`/`realtime`/`audio` are the Plane-4 (busbar-voice) nouns: the duplex/live-voice plane owns
+# them 100% (docs/design/plane4-duplex-session.md §7.2), so a leak of any of them into the neutral
+# plane ABI is exactly the regression this witness must catch BEFORE the plane lands.
+banned=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
 
 # ── self-check: every mandated token must appear in the ban list above ──────────────────────────
-mandated=(llm mcp a2a tool agent sampling task server card round prompt)
+mandated=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
 missing_tokens=()
 for t in "${mandated[@]}"; do
   found=0

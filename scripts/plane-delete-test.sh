@@ -73,7 +73,7 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
-PLANES="llm mcp a2a"
+PLANES="llm mcp a2a voice"
 
 command -v tar   >/dev/null 2>&1 || { echo "plane-delete-test: tar not found"   >&2; exit 2; }
 command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" >&2; exit 2; }
@@ -83,12 +83,17 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; esac; }
+# `voice` (busbar-voice, Plane 4) is a SKELETON crate NOT yet wired into the bin: it has no
+# `dep:busbar-voice` optional dependency and no bin feature. Its bin_feature is the forward-looking
+# `plane-voice` (matches nothing in the bin today, so neutralise_bin is a no-op for it); its
+# neutral_keep is the full default plane set (removing voice touches neither mcp nor a2a).
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
     mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
+    voice) echo "plane-mcp,plane-a2a" ;;
   esac
 }
 valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -362,7 +367,7 @@ case "${1:-}" in
     ;;
   --with-witness) export WITH_WITNESS=1; shift; exec "$0" "${1:---baseline}" ;;
   -h | --help) sed -n '2,60p' "$0" ;;
-  "" ) echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a>] [--with-witness]" >&2; exit 2 ;;
+  "" ) echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness]" >&2; exit 2 ;;
   *)
     if valid_plane "$1"; then
       hdr "STRONG-FORM deletion test — plane: $1"
@@ -373,6 +378,6 @@ case "${1:-}" in
       red "plane-delete gate ($1): FAIL — a neutral crate or the bin still needs busbar-$1 to compile"
       exit 1
     fi
-    echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a>] [--with-witness]" >&2; exit 2
+    echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness]" >&2; exit 2
     ;;
 esac

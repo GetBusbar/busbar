@@ -1,0 +1,58 @@
+# busbar-voice — THE DUPLEX / LIVE-VOICE PLANE CRATE (Plane 4). SKELETON.
+#
+# The fourth plane KIND — long-lived, bidirectional, per-frame-governed — added as a NEW crate that
+# owns 100% of its protocol vocabulary (see docs/design/plane4-duplex-session.md §7). Core / substrate
+# / api never learn the word "audio": this crate declares its own `PlaneDecl` and a `ProtocolDecl`
+# with `codec: None` (one dialect, OpenAI Realtime) exactly as `busbar-mcp` does, and the neutral
+# registry unions whatever it declares without naming it.
+#
+# STATUS: SKELETON ONLY. The four-layer duplex/session IR (§2) is present as TYPE STUBS with no pump,
+# no reader/writer bodies, no session store. It compiles, registers, and is strong-form deletable.
+#
+# DEPENDENCY POSTURE mirrors `busbar-mcp`: `busbar-substrate` is the neutral shared surface the plugin
+# names instead of `busbar-core`; `busbar-core` is an OPTIONAL dep pulled ONLY by `test-support` (the
+# dual-compile / `&App`-typed test surface), never in a shipped build.
+[package]
+name = "busbar-voice"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The duplex / live-voice plane for busbar (Plane 4): the OpenAI Realtime dialect and the four-layer session IR, as one removable plugin. Skeleton — no audio/pump logic yet."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_voice"
+path = "src/lib.rs"
+
+[dependencies]
+# THE SEAL (mirrors busbar-mcp): busbar-core is NOT a production dependency of this plugin. The default
+# build compiles with NO busbar-core in its closure — the neutral surface the plane names is
+# `busbar-substrate` (+ `busbar-api`). busbar-core stays an OPTIONAL dep, pulled ONLY by the
+# `test-support` feature, for the plane's future `&App`-typed test helpers / dual-compile into core's
+# own test binary. (Optional rather than a dev-dependency because a feature cannot reference a
+# dev-dep-only crate.)
+busbar-core = { path = "../busbar-core", default-features = false, optional = true }
+# The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the plane
+# and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
+# proxy/egress constants the `ProtocolDecl` fields carry.
+busbar-substrate = { path = "../busbar-substrate" }
+# The plugin contracts crate, named ahead of use (the `ProtocolDecl::verbs` field is a
+# `busbar_api::operation::Operation` slice), exactly as busbar-mcp names it.
+busbar-api = { path = "../api" }
+# `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
+axum = { workspace = true }
+# The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (§2.4 identity IR).
+bytes = { workspace = true }
+
+[features]
+# THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
+# substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
+# `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The skeleton
+# contributes no schemas (the field is `None`), so no `schemars` dep is pulled.
+openapi-schema = ["busbar-substrate/openapi-schema"]
+# Pulls busbar-core (the optional dep). The plane's future `&App`-typed test helpers / dual-compile
+# plane tests name `busbar_core::…`, so this feature is the one edge that puts busbar-core in the
+# closure — the default/prod build has none.
+test-support = ["dep:busbar-core"]

@@ -774,6 +774,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-voice"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "busbar-api",
+ "busbar-core",
+ "busbar-substrate",
+ "bytes",
+]
+
+[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
