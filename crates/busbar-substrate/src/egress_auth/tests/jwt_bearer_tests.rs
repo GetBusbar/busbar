@@ -242,17 +242,16 @@ fn test_signer(token_uri: String) -> Signer {
 /// silently buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
 #[tokio::test]
 async fn mint_rejects_a_response_body_over_the_cap() {
-    let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+    // Serve a single oversized token response on a real loopback socket through substrate's own
+    // egress fixture (the App-saturated busbar-core `MockServer` is not reachable from here). A
+    // 300 KiB body overruns the 256 KiB default cap, so the shared capped read must trip.
     let oversized_token = "a".repeat(300 * 1024);
-    state.push(crate::test_support::MockResponse::Ok {
-        status: axum::http::StatusCode::OK,
-        body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
-    });
-    let server = crate::test_support::MockServer::new(state).await;
+    let body =
+        serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }).to_string();
+    let server = crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
 
-    let signer = test_signer(server.base_url());
+    let signer = test_signer(format!("http://{}", server.addr));
     let result = signer.mint().await;
-    server.shutdown().await;
 
     let err = match result {
         Ok(_) => {

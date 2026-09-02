@@ -12,6 +12,17 @@
 use crate::egress_auth::{prebuild_auth, resolve};
 use crate::proto::{convert_headers, SigningContext};
 
+/// Seed the core-test built-in `ProtocolDecl`s into the shared substrate registry the relocated
+/// `resolve` reads. `resolve` now lives in `busbar_substrate::egress_auth` and calls substrate's
+/// `proto::decl_for` DIRECTLY, bypassing core's `#[cfg(test)]` self-seeding `registry()` veneer;
+/// without this seed the LLM dialect decls are absent and EVERY scheme collapses to `NoCredential`
+/// (a silent weakening — the bedrock arm below would then wrongly report lane-constant, and the
+/// lane-constant arm would compare NoCredential against itself). A `decl_for` call through core's
+/// veneer seeds the singleton, which is exactly what the request path did before the module moved.
+fn seed_dialect_decls() {
+    let _ = crate::proto::decl_for("bedrock");
+}
+
 fn ctx<'a>(body: &'a [u8], ts: u64, canonical: &'a str) -> SigningContext<'a> {
     SigningContext {
         host: "h.example.com",
@@ -25,6 +36,7 @@ fn ctx<'a>(body: &'a [u8], ts: u64, canonical: &'a str) -> SigningContext<'a> {
 /// Every lane-constant scheme: prebuilt == live under two maximally different contexts.
 #[test]
 fn prebuilt_equals_live_for_every_lane_constant_scheme() {
+    seed_dialect_decls();
     for (proto, auth) in [
         ("openai", None),
         ("anthropic", None),
@@ -62,6 +74,7 @@ fn prebuilt_equals_live_for_every_lane_constant_scheme() {
 /// its credential must never prebuild.
 #[test]
 fn bedrock_sigv4_never_prebuilds() {
+    seed_dialect_decls();
     let cred = resolve("bedrock", None);
     assert!(
         !cred.is_lane_constant(),

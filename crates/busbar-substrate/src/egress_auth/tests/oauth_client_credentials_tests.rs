@@ -130,26 +130,24 @@ fn token_response_tolerates_expires_in_as_number_string_or_absent() {
 /// buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
 #[tokio::test]
 async fn mint_rejects_a_response_body_over_the_cap() {
-    let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
     // A single oversized field pushes the serialized body past the 256 KiB default cap; the
-    // fixture only needs to be a legal JSON document once truncated is irrelevant, since the
-    // cap must trip and short-circuit BEFORE any JSON parsing happens.
+    // fixture only needs to be a legal JSON document once — truncated is irrelevant, since the
+    // cap must trip and short-circuit BEFORE any JSON parsing happens. Served on a real loopback
+    // socket through substrate's own egress fixture (busbar-core's `MockServer` is unreachable
+    // from here).
     let oversized_token = "a".repeat(300 * 1024);
-    state.push(crate::test_support::MockResponse::Ok {
-        status: axum::http::StatusCode::OK,
-        body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
-    });
-    let server = crate::test_support::MockServer::new(state).await;
+    let body =
+        serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }).to_string();
+    let server = crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
 
     let creds = ClientCreds {
         client_id: "id".to_string(),
         client_secret: busbar_api::Redacted::new("secret".to_string()),
-        token_url: server.base_url(),
+        token_url: format!("http://{}", server.addr),
         scope: "s".to_string(),
         http: super::super::minter_client().unwrap(),
     };
     let result = creds.mint().await;
-    server.shutdown().await;
 
     let err = match result {
         Ok(_) => {

@@ -23,7 +23,7 @@ struct ClientCreds {
     client_secret: busbar_api::Redacted<String>,
     token_url: String,
     scope: String,
-    http: crate::proxy::EgressClient,
+    http: crate::egress::engine::EngineClient,
 }
 
 /// Build an `oauth-client-credentials` credential. SYNCHRONOUS (runs on the shared
@@ -70,7 +70,10 @@ fn split_credential(credential: &str) -> Result<(&str, &str), String> {
 /// Validate an `oauth-client-credentials` credential WITHOUT constructing the provider — the config
 /// `--validate` dry-run entry point (mirrors `jwt_bearer::validate_credential`, so a malformed
 /// credential is caught at validate time for BOTH OAuth mechanisms, not only jwt-bearer).
-pub(crate) fn validate_credential(credential: &str) -> Result<(), String> {
+// `pub` (not `pub(crate)`): core's `config_validate` reaches this through the
+// `busbar_core::egress_auth::oauth_client_credentials` re-export shim after the module relocated
+// DOWN here, so it must be visible cross-crate. Visibility only — no behaviour change.
+pub fn validate_credential(credential: &str) -> Result<(), String> {
     split_credential(credential).map(|_| ())
 }
 
@@ -84,7 +87,7 @@ pub(crate) fn validate_credential(credential: &str) -> Result<(), String> {
 /// matches config_validate's validate-time check EXACTLY — else a token_url an operator legitimately
 /// allow-listed passes `--validate` but dies here at boot.
 fn validate_token_url(token_url: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
-    use crate::config_validate::{
+    use crate::net_guard::{
         extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
     };
     let host_private = extract_normalized_host(token_url)
@@ -133,14 +136,14 @@ impl ClientCreds {
             http::header::CONTENT_TYPE,
             http::HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
-        let request = busbar_substrate::egress::engine::request(
+        let request = crate::egress::engine::request(
             http::Method::POST,
             uri,
             headers,
             bytes::Bytes::from(form),
         );
         let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
-        let resp = busbar_substrate::egress::engine::send_bounded(&self.http, request, deadline)
+        let resp = crate::egress::engine::send_bounded(&self.http, request, deadline)
             .await
             .map_err(|e| format!("token endpoint request failed: {}", e.into_cause()))?;
         let status = resp.status();

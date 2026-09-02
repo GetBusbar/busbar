@@ -7,14 +7,14 @@
 /// deadline the read helper consumes.
 async fn fetch(url: &str) -> (http::Response<hyper::body::Incoming>, tokio::time::Instant) {
     let client = super::minter_client().unwrap();
-    let request = busbar_substrate::egress::engine::request(
+    let request = crate::egress::engine::request(
         http::Method::GET,
         url.parse().expect("mock url"),
         http::HeaderMap::new(),
         bytes::Bytes::new(),
     );
     let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
-    let resp = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
+    let resp = crate::egress::engine::send_bounded(&client, request, deadline)
         .await
         .expect("the mock answers");
     (resp, deadline)
@@ -24,19 +24,17 @@ async fn fetch(url: &str) -> (http::Response<hyper::body::Incoming>, tokio::time
 /// silently buffered or partially parsed.
 #[tokio::test]
 async fn over_cap_response_is_reported_as_truncated() {
-    let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+    // A 300 KiB body overruns the 256 KiB default cap, served on a real loopback socket through
+    // substrate's own egress fixture (busbar-core's `MockServer` is unreachable from here).
     let oversized_token = "a".repeat(300 * 1024);
-    state.push(crate::test_support::MockResponse::Ok {
-        status: axum::http::StatusCode::OK,
-        body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
-    });
-    let server = crate::test_support::MockServer::new(state).await;
+    let body =
+        serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }).to_string();
+    let server = crate::egress::fixtures::spawn_http(crate::egress::fixtures::CannedResponse::ok(&body), 1);
 
-    let (resp, deadline) = fetch(&server.base_url()).await;
+    let (resp, deadline) = fetch(&format!("http://{}", server.addr)).await;
     let err = super::read_capped_token_response(resp, deadline)
         .await
         .expect_err("an over-cap response must be a clear error, not a buffered success");
-    server.shutdown().await;
 
     assert!(
         err.contains("cap"),
@@ -50,17 +48,16 @@ async fn over_cap_response_is_reported_as_truncated() {
 /// `ReadEnd::Truncated` and `ReadEnd::TransportError` into one ambiguous message).
 #[tokio::test]
 async fn transport_error_during_read_is_reported_distinctly_from_truncation() {
-    let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
-    // Emits zero real frames, pauses, then yields a stream `Err` — a genuine mid-body connection drop,
-    // not our own size cap tripping.
-    state.push(crate::test_support::MockResponse::SseTransportError { ok_events: vec![] });
-    let server = crate::test_support::MockServer::new(state).await;
+    // The premature-close fixture answers the response HEAD (advertising a content-length) then
+    // CLOSES the socket without the body — a genuine mid-body connection drop, not our own size cap
+    // tripping. hyper surfaces the premature EOF as a transport error (`ReadEnd::TransportError`).
+    // Real-socket substrate twin of busbar-core's old `MockResponse::SseTransportError`.
+    let server = crate::egress::fixtures::spawn_http_premature_close(1024);
 
-    let (resp, deadline) = fetch(&server.base_url()).await;
+    let (resp, deadline) = fetch(&format!("http://{}", server.addr)).await;
     let err = super::read_capped_token_response(resp, deadline)
         .await
         .expect_err("a connection that drops mid-read must be a clear error");
-    server.shutdown().await;
 
     assert!(
         !err.contains("cap") && !err.contains("truncat"),

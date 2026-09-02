@@ -36,7 +36,7 @@ struct Signer {
     /// defaulted (e.g. to `iss`) or every plain SA (the shipped Vertex AI setup) starts failing
     /// `unauthorized_client`/`invalid_grant`. Mirrors `google-auth-python`'s own opt-in `subject=`.
     subject: Option<String>,
-    http: crate::proxy::EgressClient,
+    http: crate::egress::engine::EngineClient,
 }
 
 /// Build a `jwt-bearer` credential. SYNCHRONOUS by design — it runs on the shared
@@ -102,7 +102,10 @@ fn parse_service_account(
 /// dry-run entry point (which does not build the app, so it otherwise never reaches [`build`], leaving
 /// malformed SA JSON / non-PKCS#8 keys to surface only at boot/apply). Runs the exact same checks as
 /// [`build`].
-pub(crate) fn validate_credential(
+// `pub` (not `pub(crate)`): core's `config_validate` reaches this through the
+// `busbar_core::egress_auth::jwt_bearer` re-export shim after the module relocated DOWN here, so it
+// must be visible cross-crate. Visibility only — no behaviour change.
+pub fn validate_credential(
     credential: &str,
     ssrf: &super::MetadataSsrfPolicy,
 ) -> Result<(), String> {
@@ -118,7 +121,7 @@ pub(crate) fn validate_credential(
 /// asymmetric: jwt ignored the global posture). Reuses `config_validate`'s SSRF primitives so this can
 /// never diverge from the config path (`config_validate` passes the identical `ssrf` at validate time).
 fn validate_token_uri(token_uri: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
-    use crate::config_validate::{
+    use crate::net_guard::{
         extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
     };
     let host_private = extract_normalized_host(token_uri)
@@ -190,14 +193,14 @@ impl Signer {
             http::header::CONTENT_TYPE,
             http::HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
-        let request = busbar_substrate::egress::engine::request(
+        let request = crate::egress::engine::request(
             http::Method::POST,
             uri,
             headers,
             bytes::Bytes::from(form),
         );
         let deadline = tokio::time::Instant::now() + super::MINT_DEADLINE;
-        let resp = busbar_substrate::egress::engine::send_bounded(&self.http, request, deadline)
+        let resp = crate::egress::engine::send_bounded(&self.http, request, deadline)
             .await
             .map_err(|e| format!("token endpoint request failed: {}", e.into_cause()))?;
         let status = resp.status();

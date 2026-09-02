@@ -145,9 +145,15 @@ pub mod proxy;
 pub mod tls;
 pub mod transport;
 pub mod trust;
-pub mod egress_auth {
-    pub mod gate;
-}
+// THE EGRESS-AUTH SEAM: the outbound credential dispatch (`resolve`/`prebuild_auth`/
+// `CredentialProvider`/`MetadataSsrfPolicy`), the two self-minting OAuth mechanisms (`jwt_bearer` /
+// `oauth_client_credentials`, RFC 7523 / RFC 6749 §4.4) with their shared cached-token machinery,
+// and the egress `gate` submodule. Relocated DOWN from `busbar_core::egress_auth` (the LLM plane
+// named it as its last backwards reach); core re-exports every item at its historical
+// `busbar_core::egress_auth::*` path so every in-core caller is unchanged. Secret material stays
+// `busbar_api::Redacted` and the mint wire form is byte-identical — proven by the migrated mint
+// suite (`jwt_bearer` / `oauth_client_credentials` / `helper` / `bearer_token` tests).
+pub mod egress_auth;
 pub mod catalogue;
 pub mod failover;
 pub mod store;

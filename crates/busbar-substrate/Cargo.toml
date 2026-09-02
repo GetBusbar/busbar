@@ -67,6 +67,12 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+# The relocated egress-auth OAuth minters (`egress_auth::{jwt_bearer,oauth_client_credentials}`):
+# `ring` signs the RFC 7523 JWT-bearer assertion (RS256) and parses the PKCS#8 SA key;
+# `serde_urlencoded` form-encodes the token-endpoint POST body (the exact call reqwest's `.form()`
+# was, so the wire bytes are byte-identical). Both moved DOWN with the module from busbar-core.
+ring = { workspace = true }
+serde_urlencoded = { workspace = true }
 # `digest_arguments` hex-encodes the salient-parameter SHA-256 digest beside the seal.
 hex = { workspace = true }
 serde = { workspace = true }

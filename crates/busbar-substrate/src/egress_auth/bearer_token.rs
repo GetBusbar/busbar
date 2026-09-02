@@ -13,8 +13,12 @@
 //! so a config reload that drops the lane also stops its refresher (no task leak).
 
 use super::CredentialProvider;
+// `diag_warn!` is `#[macro_export]`ed at the substrate crate root (there is no
+// `crate::diagnostics::diag_warn` re-export here, unlike busbar-core's local macro), so it is
+// imported from the root; the diagnostic CONSTS still live under `crate::diagnostics`.
+use crate::diag_warn;
 use crate::diagnostics::{
-    diag_warn, EGRESS_OAUTH_EMPTY_TOKEN, EGRESS_OAUTH_MINT_FAILED, EGRESS_OAUTH_TOKEN_INVALID_BYTES,
+    EGRESS_OAUTH_EMPTY_TOKEN, EGRESS_OAUTH_MINT_FAILED, EGRESS_OAUTH_TOKEN_INVALID_BYTES,
 };
 use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
