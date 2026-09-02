@@ -299,7 +299,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
             fire_stage_taps(
                 &app.tap_hooks_response,
                 &shape,
-                busbar_core::hooks::wire::HookStageProjection {
+                busbar_substrate::hooks::wire::HookStageProjection {
                     at: "response",
                     model: None,
                     attempt_number: None,
@@ -1177,12 +1177,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // when no gate is configured (both sources empty ⇒ the pass is skipped).
     // The pool's resolved decision gates, read through the core-side pool-hook facade (see the rewrite
     // chain above for why these live core-side rather than on the plane's `PoolRuntime`).
-    let pool_gates: &[(u16, busbar_core::hooks::ResolvedPolicy)] = app.pool_gates(pool_name);
+    let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = app.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
     if !app.global_gates.is_empty() || !pool_gates.is_empty() {
         // The chain: globals (pre-sorted ascending by priority) then pool gates (config order),
         // stable-sorted by priority — ties keep globals-first, then config order.
-        let mut chain: Vec<&(u16, busbar_core::hooks::ResolvedPolicy)> =
+        let mut chain: Vec<&(u16, busbar_substrate::hooks::ResolvedPolicy)> =
             app.global_gates.iter().chain(pool_gates.iter()).collect();
         chain.sort_by_key(|(p, _)| *p);
         // Every concurrently-firing gate borrows the same parsed body; the shared Null stands in
@@ -1606,7 +1606,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         fire_stage_taps(
             &app.tap_hooks_candidate,
             shape,
-            busbar_core::hooks::wire::HookStageProjection {
+            busbar_substrate::hooks::wire::HookStageProjection {
                 at: "candidate",
                 model: None,
                 attempt_number: None,
@@ -1742,7 +1742,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             fire_stage_taps(
                 &app.tap_hooks_routing,
                 shape,
-                busbar_core::hooks::wire::HookStageProjection {
+                busbar_substrate::hooks::wire::HookStageProjection {
                     at: "routing",
                     model: Some(&app.engine_tables().lanes()[i].model),
                     attempt_number: Some(
@@ -3014,8 +3014,8 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_substrate::json::to_vec(&busbar_core::hooks::wire::build(
-            busbar_core::hooks::wire::OP_NOTIFY,
+        busbar_substrate::json::to_vec(&busbar_substrate::hooks::wire::build(
+            busbar_substrate::hooks::wire::OP_NOTIFY,
             &req,
             &[],
             &ctx,

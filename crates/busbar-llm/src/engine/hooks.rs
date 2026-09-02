@@ -488,7 +488,7 @@ fn policy_fault_clear(key: &str) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn decide_policy_order(
     app: &Arc<App>,
-    resolved: &busbar_core::hooks::ResolvedPolicy,
+    resolved: &busbar_substrate::hooks::ResolvedPolicy,
     cands: &[WeightedLane],
     request_ctx: &RequestCtx,
     v: &Value,
@@ -501,9 +501,11 @@ pub(crate) async fn decide_policy_order(
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
 ) -> PolicyOutcome {
-    use busbar_core::hooks::{
-        Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest,
-    };
+    // The hook CONTRACT projection types are api-owned; the resolved-policy carrier is neutral
+    // substrate. Named at their canonical homes (the reverse-edge rule) rather than through the
+    // `busbar_core::hooks` re-export.
+    use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+    use busbar_substrate::hooks::ResolvedPolicy;
 
     // A weighted/default pool resolves to `None` at config load (no policy object is constructed), so
     // the only `ResolvedPolicy` that can reach this seam is a constructed `Policy`.
@@ -806,7 +808,7 @@ pub(crate) async fn decide_policy_order(
 /// Every link failing lands on the chain's reserved TERMINAL (weighted/reject/first). The common
 /// case — `on_error: weighted` etc. — has an EMPTY chain and goes straight to the terminal.
 pub(crate) async fn run_on_error_chain(
-    chain: &[busbar_core::hooks::FallbackHook],
+    chain: &[busbar_substrate::hooks::FallbackHook],
     terminal: &busbar_core::config::PolicyOnError,
     req: &busbar_api::RoutingRequest<'_>,
     candidates: &[busbar_api::Candidate<'_>],
@@ -938,8 +940,8 @@ pub(crate) fn map_decision(
         // defense in depth: no policy, present or future, can mint a success/redirect/5xx or a
         // log/client-injecting message through this path.
         RoutingDecision::Reject { status, message } => PolicyOutcome::RejectRequest {
-            status: busbar_core::hooks::wire::clamp_reject_status(status),
-            message: busbar_core::hooks::wire::sanitize_reject_message(&message),
+            status: busbar_substrate::hooks::wire::clamp_reject_status(status),
+            message: busbar_substrate::hooks::wire::sanitize_reject_message(&message),
             name: policy_name,
         },
         // The hook's RESTRICT verb: keep only candidates carrying one of `tags_any` (a compliance
