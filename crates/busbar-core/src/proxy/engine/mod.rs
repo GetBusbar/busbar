@@ -109,6 +109,9 @@ pub(crate) async fn forward_with_pool(
         ingress_protocol,
         op,
         usage_sink,
+        // Bytes-only test entry: no inbound `HeaderMap`, so nothing to forward. The
+        // production ingress handlers collect the allowlist from the real client headers.
+        Vec::new(),
     )
     .await
 }
@@ -137,6 +140,10 @@ pub(crate) fn forward_with_pool_keyed<'a>(
     ingress_protocol: &'a str,
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
+    // The allowlisted client beta/version headers the caller ACTUALLY SENT (collected at ingress by
+    // `crate::proxy::collect_forwarded_client_headers`), threaded to the egress assembly sites where
+    // they are forwarded scoped to the matching egress dialect. Empty ⇒ byte-identical egress.
+    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
     // eager parse — `LazyBody::parse` goes through the identical `crate::json` guard + parser).
@@ -167,6 +174,7 @@ pub(crate) fn forward_with_pool_keyed<'a>(
         ingress_protocol,
         op,
         usage_sink,
+        client_fwd,
     ))
 }
 
@@ -212,6 +220,8 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     ingress_protocol: &'a str,
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
+    // Allowlisted client beta/version headers to forward (see `forward_with_pool_keyed`).
+    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
     let span = tracing::span!(
@@ -284,6 +294,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
             op,
             usage_sink,
             request_id,
+            client_fwd,
         )
         .await;
         if let Some(shape) = completion_shape {
@@ -828,6 +839,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `RequestCtx::request_id` below, and threaded into every hook projection built in here) rather
     // than re-derived per hop.
     request_id: u64,
+    // The allowlisted client beta/version headers the caller sent (empty ⇒ nothing forwarded). Stored
+    // on `RequestCtx` below so BOTH the hot path here and the degraded `walk::forward_once` path read
+    // the same set for the whole failover walk.
+    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
@@ -1119,6 +1134,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> = resolve_breaker_cfg(app, pool_name);
 
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
+    // Carry the ingress-collected client beta/version allowlist across the whole failover walk so the
+    // degraded `walk::forward_once` path forwards the same set the hot path does.
+    request_ctx.forwarded_client_headers = client_fwd;
 
     // Apply configured failover exclusions: members named here are excluded from this pool's
     // candidate set (never selected, primary or failover) — a per-pool member blocklist.
@@ -2077,6 +2095,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         egress_headers.insert(
             ACCEPT,
             axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
+        );
+        // T4 HEADER FIDELITY: forward the allowlisted client beta/version headers the caller actually
+        // sent, SCOPED to this egress dialect (no cross-dialect leak). A no-op when the caller sent
+        // none, so the money-path oracles (which send no beta headers) stay byte-identical.
+        apply_forwarded_client_headers(
+            &mut egress_headers,
+            &request_ctx.forwarded_client_headers,
+            egress_name,
         );
         let hreq = crate::proxy::egress_request(target.uri.clone(), egress_headers, payload);
         drop(_cb_reqwest);

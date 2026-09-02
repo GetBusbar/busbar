@@ -58,6 +58,17 @@ pub(crate) struct RequestCtx {
     /// the default path). Deliberately internal-only — never surfaced as a response header (busbar
     /// stays invisible-by-default).
     pub(crate) request_id: u64,
+    /// The allowlisted client request headers (`anthropic-beta` / `OpenAI-Beta` / `anthropic-version`)
+    /// the caller ACTUALLY SENT, collected once at ingress by
+    /// [`crate::proxy::collect_forwarded_client_headers`] and threaded through the whole failover walk
+    /// so BOTH the hot forward path and the degraded [`crate::proxy::engine::walk::forward_once`] path
+    /// forward the same set. EMPTY on a request that sent none (the common case) — the egress map is
+    /// then byte-identical to the non-forwarding build. Dialect scoping (the no-cross-dialect-leak
+    /// guard) is applied at the egress assembly site by
+    /// [`crate::proxy::apply_forwarded_client_headers`], NOT here — a request may fail over to a
+    /// different dialect's lane after this is captured.
+    pub(crate) forwarded_client_headers:
+        Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 }
 
 impl RequestCtx {
@@ -87,6 +98,10 @@ impl RequestCtx {
             active_restricts: Vec::new(),
             excluded_reasons: Vec::new(),
             request_id,
+            // Empty by default: `forward_with_pool_parsed_inner` OVERWRITES this with the ingress-
+            // collected allowlist before the failover walk. A request that sent no allowlisted header
+            // (and every test that constructs `RequestCtx` directly) forwards nothing.
+            forwarded_client_headers: Vec::new(),
         }
     }
 

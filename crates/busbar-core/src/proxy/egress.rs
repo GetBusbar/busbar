@@ -234,6 +234,82 @@ pub(crate) fn lane_auth_headers(
     lane.credential.headers_for(key, ctx)
 }
 
+// ─── CLIENT-HEADER FORWARDING (T4 header fidelity) — AUDIT SURFACE ─────────────────────────────────
+//
+// busbar rebuilds the egress header map FRESH from lane creds + CT/UA/Accept and, historically,
+// DROPPED every client-supplied request header. That silently discarded the caller's GA/beta/version
+// selectors (`anthropic-beta`, `OpenAI-Beta`, `anthropic-version`), a fidelity defect: the caller's
+// opt-in never reached the upstream. This seam FORWARDS a NARROW, EXPLICIT allowlist of those
+// headers — and ONLY when the caller ACTUALLY SENT them (opt-in; nothing is ever synthesized) — so a
+// request that carries none produces a BYTE-IDENTICAL egress map (the money-path oracles do not send
+// beta headers and so are unaffected).
+//
+// The allowlist is a SINGLE named const so it is auditable and extensible in one place. Each entry
+// pairs a lowercase header name with the egress DIALECT(s) it is meaningful for. That dialect scoping
+// is the no-cross-dialect-leak guard: a beta header the caller sent for one upstream dialect is NOT
+// forwarded when the request is routed (or failed over) to a DIFFERENT dialect's lane — an
+// `anthropic-beta` never rides to an OpenAI upstream, and vice versa. `anthropic-version` is scoped to
+// the native `anthropic` dialect only (Bedrock carries its version as a BODY field, not a header, so
+// it is deliberately absent here). The allowlist NEVER contains hop-by-hop, `host`, or auth/credential
+// headers — forwarding is strictly opt-in on this list.
+pub(crate) const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
+    ("anthropic-beta", &["anthropic"]),
+    ("anthropic-version", &["anthropic"]),
+    ("openai-beta", &["openai", "responses"]),
+];
+
+/// Collect the allowlisted client headers the caller ACTUALLY SENT on the inbound request, preserving
+/// their exact bytes (and multiplicity — a header sent more than once is captured once per value).
+/// OPT-IN: a header absent from the request contributes nothing, so a request carrying no allowlisted
+/// header yields an EMPTY vec and no egress change. The dialect scoping is applied later, at the egress
+/// assembly site, by [`apply_forwarded_client_headers`] (which is the only place the egress dialect is
+/// known — routing/failover may pick a cross-protocol lane after collection).
+pub(crate) fn collect_forwarded_client_headers(
+    headers: &axum::http::HeaderMap,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    let mut out = Vec::new();
+    for (name, _dialects) in FORWARDED_CLIENT_HEADERS {
+        for value in headers.get_all(*name) {
+            // `name` is a static lowercase token from the allowlist — `from_static` is infallible.
+            out.push((axum::http::HeaderName::from_static(name), value.clone()));
+        }
+    }
+    out
+}
+
+/// Fold the collected client headers (from [`collect_forwarded_client_headers`]) into the freshly
+/// built egress header map, SCOPED to `egress_protocol` — the no-cross-dialect-leak guard. Only a
+/// header whose allowlist entry names `egress_protocol` among its dialects is forwarded; anything else
+/// (a mismatched dialect, or a name not on the allowlist) is dropped. The FIRST forwarded value for a
+/// given name REPLACES any busbar default (e.g. the pinned `anthropic-version` in the auth map — the
+/// caller's explicit version wins); a caller that sent the same header more than once has the
+/// subsequent values APPENDED, preserving multiplicity. A no-op on an empty `client_fwd`, so the
+/// non-forwarding path stays byte-identical.
+pub(crate) fn apply_forwarded_client_headers(
+    egress_headers: &mut axum::http::HeaderMap,
+    client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
+    egress_protocol: &str,
+) {
+    let mut replaced: Vec<&axum::http::HeaderName> = Vec::new();
+    for (name, value) in client_fwd {
+        // Cross-dialect gate: forward ONLY when this header is allowlisted for THIS egress dialect.
+        let allowed = FORWARDED_CLIENT_HEADERS
+            .iter()
+            .find(|(hn, _)| name.as_str() == *hn)
+            .is_some_and(|(_, dialects)| dialects.contains(&egress_protocol));
+        if !allowed {
+            continue;
+        }
+        if replaced.iter().any(|seen| *seen == name) {
+            egress_headers.append(name.clone(), value.clone());
+        } else {
+            // Replaces any busbar-default value for this name (`insert` clears prior values).
+            egress_headers.insert(name.clone(), value.clone());
+            replaced.push(name);
+        }
+    }
+}
+
 // ─── EGRESS User-Agent strings — RELEASE-CHECKLIST AUDIT SURFACE ──────────────────────────────────
 //
 // These mirror the `User-Agent` a real first-party SDK emits for each provider's API. They embed

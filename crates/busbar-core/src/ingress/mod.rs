@@ -1043,6 +1043,8 @@ pub(crate) async fn named(
             proto,
             crate::handlers::chat(proto, crate::transport::Transport::Http),
             usage_sink(&app, &gov, &name, charged_at, admit),
+            // T4 header fidelity: forward the allowlisted client beta/version headers (opt-in).
+            crate::proxy::collect_forwarded_client_headers(&headers),
         )
         .await;
         return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
@@ -1066,6 +1068,8 @@ pub(crate) async fn named(
             proto,
             crate::handlers::chat(proto, crate::transport::Transport::Http),
             usage_sink(&app, &gov, "", charged_at, admit),
+            // T4 header fidelity: forward the allowlisted client beta/version headers (opt-in).
+            crate::proxy::collect_forwarded_client_headers(&headers),
         )
         .await;
         return finish_admitted(&app, &gov, proto, &name, started, charged_at, resp, charged);
@@ -1102,6 +1106,9 @@ pub(crate) async fn adhoc(
     Path((provider, model)): Path<(String, String)>,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
+    // Non-consuming extractor — MUST precede the body-consuming `Bytes`. Read only to collect the
+    // allowlisted client beta/version headers to forward (T4 header fidelity).
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
@@ -1157,6 +1164,8 @@ pub(crate) async fn adhoc(
                 proto,
                 crate::handlers::chat(proto, crate::transport::Transport::Http),
                 usage_sink(&app, &gov, "", charged_at, admit),
+                // T4 header fidelity: forward the allowlisted client beta/version headers (opt-in).
+                crate::proxy::collect_forwarded_client_headers(&headers),
             )
             .await;
             finish_admitted(

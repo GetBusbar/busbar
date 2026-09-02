@@ -335,6 +335,9 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
             // and gRPC arrivals get their own entry points and frame the same codecs.
             crate::handlers::frame(crate::transport::Transport::Http, operation, op_handler),
             usage_sink(app, req.gov, pool_name, req.charged_at, admit),
+            // T4 header fidelity: forward the allowlisted client beta/version headers (opt-in — empty
+            // unless the caller actually sent one), scoped to the matching egress dialect downstream.
+            crate::proxy::collect_forwarded_client_headers(headers),
         )
         .await;
 
