@@ -108,7 +108,12 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # The neutral crates (the ABI side) and the plane crates (the plugin side). Derived once; a plane or
 # neutral crate that appears/disappears is a one-line edit here, never N stale paths scattered below.
 NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
-PLANE_ROOTS="crates/busbar-llm/src crates/busbar-mcp/src crates/busbar-a2a/src crates/busbar-voice/src"
+# The plane src roots are single-sourced (scripts/plane-keys.sh) so a plane added there is scanned
+# here without a human remembering to append its path — a plane this lint never lists is a plane it
+# scans zero files of, and zero is the passing answer to every ban.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
+PLANE_ROOTS="$(plane_src_roots)"
 
 neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' 2>/dev/null | sort; }
 plane_files()   { find $PLANE_ROOTS   -name '*.rs' 2>/dev/null | sort; }

@@ -92,14 +92,20 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 #   a2a      : may name `a2a`; bans the dialects + the OTHER plane keys `mcp` / `voice`.
 #   voice    : may name `voice`; bans the dialects + the OTHER plane keys `mcp` / `a2a`.
 #   (busbar-llm owns the dialect names and is not scanned.)
+# The plane keys are single-sourced (scripts/plane-keys.sh): the neutral crate bans EVERY protocol
+# plane key, and each plane crate bans the OTHER protocol plane keys. `llm` never appears as a
+# needle — busbar-llm owns the dialect names above, so it is scanned via $DIALECTS, not as a key.
+# A plane added to plane-keys.sh flows into every needle set here with no edit below.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
 NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/api/src"
-NEUTRAL_NEEDLES="$DIALECTS mcp a2a voice"
+NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 MCP_ROOT="crates/busbar-mcp/src"
-MCP_NEEDLES="$DIALECTS a2a voice"
+MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 A2A_ROOT="crates/busbar-a2a/src"
-A2A_NEEDLES="$DIALECTS mcp voice"
+A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
 VOICE_ROOT="crates/busbar-voice/src"
-VOICE_NEEDLES="$DIALECTS mcp a2a"
+VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
 OPERATION_EXCLUDE="crates/api/src/operation.rs"

@@ -46,6 +46,26 @@ if [ "${#missing_tokens[@]}" -ne 0 ]; then
   exit 1
 fi
 
+# ── totality self-check: EVERY canonical plane key must be in the ban list ───────────────────────
+# The ban list above is a curated superset (plane keys + role/media nouns); the plane KEYS it must
+# never omit are single-sourced in scripts/plane-keys.sh. A plane added there whose name is not yet
+# banned here is a plane whose noun this witness would wave through — fail loudly so the day a plane
+# lands, this row lands with it.
+# shellcheck source=scripts/plane-keys.sh
+. "$here/plane-keys.sh"
+missing_keys=()
+for k in $PLANE_KEYS; do
+  found=0
+  for b in "${banned[@]}"; do [ "$b" = "$k" ] && found=1 && break; done
+  [ "$found" -eq 0 ] && missing_keys+=("$k")
+done
+if [ "${#missing_keys[@]}" -ne 0 ]; then
+  echo "FAIL plane-abi-neutrality: canonical plane key(s) not in the ban list: ${missing_keys[*]}" >&2
+  echo "  scripts/plane-keys.sh names these planes; the witness cannot catch a leak of a plane" >&2
+  echo "  noun it does not list. Add them to \`banned\`." >&2
+  exit 1
+fi
+
 if [ ! -d "$crate_src" ]; then
   echo "FAIL plane-abi-neutrality: crate source not found at $crate_src" >&2
   exit 1

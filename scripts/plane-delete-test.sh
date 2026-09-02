@@ -73,7 +73,11 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
-PLANES="llm mcp a2a voice"
+# The plane key set is single-sourced (scripts/plane-keys.sh) so this test cannot silently no-op on
+# a plane it was never told about — adding a plane there arms this harness for it automatically.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
+PLANES="$PLANE_KEYS"
 
 command -v tar   >/dev/null 2>&1 || { echo "plane-delete-test: tar not found"   >&2; exit 2; }
 command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" >&2; exit 2; }
