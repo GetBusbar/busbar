@@ -25,15 +25,17 @@
 //! `todo!()` or minimal. The shapes mirror §2.2–2.6.
 
 pub mod codec;
+pub mod config;
 pub mod control;
 pub mod event;
 pub mod media;
 pub mod tool;
 pub mod usage;
 
-pub use codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
-pub use control::{IrDuplexControl, IrVad};
+pub use codec::{DecodeState, DuplexReader, DuplexWriter, OpenAiRealtimeCodec, WireEvent};
+pub use config::{MaxOutputTokens, SessionConfig};
+pub use control::{Eagerness, IrDuplexControl, IrVad};
 pub use event::{IrClientEvent, IrServerEvent};
-pub use media::{IrAudioFrame, UpDown};
+pub use media::{truncate_point_ms, AudioFormat, IrAudioFrame, UpDown};
 pub use tool::{CallRef, IrDuplexTool};
 pub use usage::IrDuplexUsage;

@@ -782,6 +782,8 @@ dependencies = [
  "busbar-core",
  "busbar-substrate",
  "bytes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

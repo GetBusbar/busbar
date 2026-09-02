@@ -45,6 +45,14 @@ busbar-api = { path = "../api" }
 axum = { workspace = true }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (§2.4 identity IR).
 bytes = { workspace = true }
+# THE DIALECT CODEC's (de)serialization surface. The plane's IR is busbar-owned, but the OpenAI
+# Realtime wire is JSON: the `DuplexReader`/`DuplexWriter` pair parses/produces JSON event frames, so
+# the codec derives serde on its OWN wire structs and hand-maps them to/from the neutral IR. Opaque
+# JSON payloads (tool arguments, tool definitions, tool_choice) ride as `serde_json::Value` — the
+# plane never reshapes them, it carries them verbatim (the §2.2 tool moat normalizes correlation, not
+# the argument bytes).
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [features]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
