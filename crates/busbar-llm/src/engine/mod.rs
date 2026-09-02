@@ -164,7 +164,7 @@ mod ingress_integration_tests;
 #[path = "proxy_tests/ingress_reject_response_tests.rs"]
 mod ingress_reject_response_tests;
 #[cfg(test)]
-#[path = "proxy_tests/lane_availability_proptest.rs"]
+#[path = "proxy_tests/lane_availability_proptest_tests.rs"]
 mod lane_availability_proptest;
 #[cfg(test)]
 #[path = "proxy_tests/mid_stream_error_tests.rs"]
