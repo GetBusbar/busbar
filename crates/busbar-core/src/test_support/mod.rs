@@ -1516,7 +1516,7 @@ impl TestApp {
         // neutral source names no MCP token nor a plane symbol.
         #[cfg(test)]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-            crate::config::named_map::NamedMapSection::Tools.key(),
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
         ) {
             plane_slots
                 .entry(crate::state::runtime_slot_key(decl.key))
@@ -1702,12 +1702,10 @@ impl TestApp {
         let plane_gates_map: crate::state::PlaneGateMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
-                crate::config::named_map::NamedMapSection::Tools,
-                crate::config::named_map::NamedMapSection::Agents,
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) =
-                    crate::plane::registry::plane_decl_for_config_section(section.key())
-                {
+                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1736,7 +1734,7 @@ impl TestApp {
             // exactly as `plane_pools`/`plane_gates` below. Absent that, a neutral empty placeholder no
             // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
             agent_defs: crate::plane::registry::plane_decl_for_config_section(
-                crate::config::named_map::NamedMapSection::Agents.key(),
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             )
             .and_then(|decl| self.plane_defs_any.remove(decl.key))
             .unwrap_or_else(|| std::sync::Arc::new(())),
@@ -1757,7 +1755,7 @@ impl TestApp {
                 // read treats an absent key identically to the former empty-value entry).
                 let mut m = std::collections::BTreeMap::new();
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                    crate::config::named_map::NamedMapSection::Agents.key(),
+                    busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
                 ) {
                     m.insert(decl.key, self.agent_pools);
                 }

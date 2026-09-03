@@ -78,8 +78,6 @@
 
 use serde::Deserialize;
 
-use crate::config::named_map::NamedMapSection;
-
 // Phase-C config-seam: the NEUTRAL config-seam contracts moved to `busbar_substrate::plane::config`
 // (they name only `busbar_api::SecretRef` + `serde_json`/`std`). Core re-exports them so its own call
 // sites — and every `crate::plane::config::{PlaneCfg, PlaneEndpointCfg, ContainerGateInputs,
@@ -273,7 +271,9 @@ pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
 impl Default for ToolsSection {
     fn default() -> Self {
-        ToolsSection(default_plane_section(NamedMapSection::Tools.key()))
+        ToolsSection(default_plane_section(
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+        ))
     }
 }
 impl<'de> serde::Deserialize<'de> for ToolsSection {
@@ -281,7 +281,11 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(NamedMapSection::Tools.key(), deserializer).map(ToolsSection)
+        deserialize_plane_section(
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+            deserializer,
+        )
+        .map(ToolsSection)
     }
 }
 
@@ -292,7 +296,9 @@ pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
 impl Default for AgentsSection {
     fn default() -> Self {
-        AgentsSection(default_plane_section(NamedMapSection::Agents.key()))
+        AgentsSection(default_plane_section(
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+        ))
     }
 }
 impl<'de> serde::Deserialize<'de> for AgentsSection {
@@ -300,7 +306,11 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(NamedMapSection::Agents.key(), deserializer).map(AgentsSection)
+        deserialize_plane_section(
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+            deserializer,
+        )
+        .map(AgentsSection)
     }
 }
 
@@ -318,8 +328,11 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     {
         // The endpoint door is owned by the `tools:` plane, so it is keyed by that CONFIG SECTION —
         // no plane key is named here.
-        deserialize_plane_endpoint(NamedMapSection::Tools.key(), deserializer)
-            .map(McpEndpointSection) // plane-purity: frozen-wire the snapshot-recorded mcp: field type
+        deserialize_plane_endpoint(
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+            deserializer,
+        )
+        .map(McpEndpointSection) // plane-purity: frozen-wire the snapshot-recorded mcp: field type
     }
 }
 
@@ -353,7 +366,7 @@ pub(crate) fn config_sections_from(
     for section in decls
         .iter()
         .map(|decl| decl.config_section)
-        .chain(NamedMapSection::ALL.iter().map(|s| s.key()))
+        .chain(busbar_substrate::plane::config::NAMED_MAP_SECTIONS)
     {
         if !out.contains(&section) {
             out.push(section);

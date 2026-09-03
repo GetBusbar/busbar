@@ -398,7 +398,10 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
             file_rejects.push(name);
         }
         // THE ADMIN WRITE PATH: the typed parse the generic handler runs before it persists.
-        if NamedMapSection::Tools.validate_def(name, def).is_err() {
+        if NamedMapSection::Plane(crate::mcp::PLANE_DECL.config_section)
+            .validate_def(name, def)
+            .is_err()
+        {
             api_rejects.push(name);
         }
     }
@@ -630,8 +633,10 @@ fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does(
         "pin": { "mechanism": "unpinned" },
         "tools_allow": { "greet": { "publish_as": "  " } },
     });
-    let err = busbar_core::config::named_map::NamedMapSection::Tools
-        .validate_def("gh", &def)
-        .expect_err("the API must reject exactly what the file rejects");
+    let err = busbar_core::config::named_map::NamedMapSection::Plane(
+        crate::mcp::PLANE_DECL.config_section,
+    )
+    .validate_def("gh", &def)
+    .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("publish_as"), "{err}");
 }

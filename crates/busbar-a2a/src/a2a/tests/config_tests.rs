@@ -502,17 +502,18 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
                                "hooks": ["pools.fast"]}),
         ),
     ];
+    // The `agents:` section, carried as its plane's declared config section — the shape core folds
+    // into the named-map chassis from the registry.
+    let agents = NamedMapSection::Plane(crate::a2a::PLANE_DECL.config_section);
     for (what, def) in cases {
         assert!(
-            NamedMapSection::Agents
-                .validate_def("planner", &def)
-                .is_err(),
+            agents.validate_def("planner", &def).is_err(),
             "the admin path must refuse {what}, as the file does"
         );
     }
     // And the legal one is legal on both.
     let good = serde_json::json!({"url": "https://x/", "pin": {"mechanism": "unpinned"}});
-    NamedMapSection::Agents
+    agents
         .validate_def("planner", &good)
         .expect("a legal definition must be legal on both paths");
 }
@@ -520,22 +521,20 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 /// The section is a real member of the named-map chassis, not a special case bolted beside it.
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
+    let agents = NamedMapSection::Plane(crate::a2a::PLANE_DECL.config_section);
     assert!(
-        NamedMapSection::ALL.contains(&NamedMapSection::Agents),
-        "a section missing from ALL is a section the router, the OpenAPI generator and the overlay \
-         applier all silently skip"
+        NamedMapSection::sections().contains(&agents),
+        "a section missing from sections() is a section the router, the OpenAPI generator and the \
+         overlay applier all silently skip"
     );
-    assert_eq!(NamedMapSection::Agents.key(), "agents");
-    assert_eq!(
-        NamedMapSection::Agents.path_root(),
-        format!("/{}", NamedMapSection::Agents.key())
-    );
+    assert_eq!(agents.key(), "agents");
+    assert_eq!(agents.path_root().as_ref(), format!("/{}", agents.key()));
     assert!(
-        !NamedMapSection::Agents.requires_module(),
+        !agents.requires_module(),
         "an agent is a remote endpoint somebody else runs; there is no plugin behind it to name"
     );
     assert!(
-        !NamedMapSection::Agents.has_trust_ceiling(),
+        !agents.has_trust_ceiling(),
         "the trust ceiling is an identity-provider concern; an agent's trust is its pin"
     );
 }
