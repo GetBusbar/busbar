@@ -4,8 +4,8 @@
     {
       "version": "dev",
       "tag": "dev",
-      "qa_sha": "dab5be48a19c2b63977f87ed312f60906838541b",
-      "recorded_at": "2026-09-03T14:35:54Z",
+      "qa_sha": "2672714afbd374c949ba081323a45a0f205835fa",
+      "recorded_at": "2026-09-03T15:19:39Z",
       "file": "dev.json",
       "verdicts": [
         {
