@@ -73,6 +73,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
+    owned_config_sections: &[],
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -199,6 +200,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -539,6 +541,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -590,6 +593,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
@@ -644,6 +648,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
     let ctx = crate::plane::registry::BootCtx::stub();
 
@@ -690,6 +695,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
     crate::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
         .expect("an Ok start and a None-start plane do not refuse boot");
@@ -734,6 +740,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
     let ctx = crate::plane::registry::BootCtx::stub();
 
@@ -896,6 +903,81 @@ fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
             count > 0,
             "plane `{}` contributes admin verbs but documents zero OpenAPI paths — a mounted verb \
              would ship undocumented, and the drift guard passes vacuously over an empty fragment",
+            decl.key
+        );
+    }
+}
+
+// ── PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1) ─────────────────────────────────
+//
+// The guard is the whole point of stage 1: it must refuse a boot where two planes claim the same
+// top-level config section, or where a plane claims a section core still owns concretely. These prove
+// both refusals fire and that the SHIPPED set (every plane claiming `&[]`) passes cleanly.
+
+/// A plane busbar does not have that CLAIMS one owned config section — built by functional update off
+/// [`WIDGET_PLANE`] (every field of which is `Copy`), so only the two fields under test are named.
+static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    key: "alpha",
+    owned_config_sections: &["foo"],
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane that claims the SAME section — the dup-claim collision.
+static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    key: "beta",
+    owned_config_sections: &["foo"],
+    ..WIDGET_PLANE
+};
+
+/// A plane that claims a section core STILL owns concretely (`rate_card` is in
+/// `CORE_OWNED_CONCRETE_SECTIONS` in stage 1 — nothing has moved yet).
+static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
+    key: "gamma",
+    owned_config_sections: &["rate_card"],
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
+    let decls: Vec<&'static PlaneDecl> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
+    let err = crate::plane::registry::check_owned_config_claims(
+        &decls,
+        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("foo") && err.contains("alpha") && err.contains("beta"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
+    let decls: Vec<&'static PlaneDecl> = vec![&GAMMA_CLAIMS_RATE_CARD];
+    let err = crate::plane::registry::check_owned_config_claims(
+        &decls,
+        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
+    assert!(
+        err.contains("rate_card") && err.contains("gamma"),
+        "the refusal must name the core-owned section and the claimant, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
+    // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.
+    let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
+    crate::plane::registry::check_owned_config_claims(
+        &decls,
+        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
+    for decl in &decls {
+        assert!(
+            decl.owned_config_sections.is_empty(),
+            "stage 1 is infra-only: plane `{}` must claim NO owned config sections (registry starts empty)",
             decl.key
         );
     }

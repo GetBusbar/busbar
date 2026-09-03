@@ -126,6 +126,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
+        owned_config_sections: &[],
     };
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None` and ONE dialect

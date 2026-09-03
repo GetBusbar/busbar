@@ -63,6 +63,7 @@ static LLM_POOLS_STANDIN: busbar_substrate::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
+        owned_config_sections: &[],
     };
 
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
