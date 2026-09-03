@@ -1,0 +1,10 @@
+per_request_fee = 5
+limits.default_max_tokens = 4096
+limits.reasoning_effort_budgets = minimal=1024 low=4096 medium=8192 high=16384
+rate_card:
+  claude-sonnet: input=3 output=15 cache_read=0.3 cache_write=3.75
+  gpt-4o: input=2.5 output=10 cache_read=0 cache_write=0
+models:
+  claude-sonnet: default_max_tokens=8192 max_requests=-1 max_concurrent=-
+  gpt-4o: default_max_tokens=4096 max_requests=-1 max_concurrent=-
+groups:
