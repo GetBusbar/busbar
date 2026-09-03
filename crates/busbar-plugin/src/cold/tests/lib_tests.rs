@@ -149,6 +149,7 @@ fn request_response_json_roundtrip() {
                         cache_read: 1,
                         cache_write: 0,
                     },
+                    ..Default::default()
                 }],
             },
         },
@@ -166,6 +167,7 @@ fn request_response_json_roundtrip() {
                         cache_read: 0,
                         cache_write: 0,
                     },
+                    ..Default::default()
                 }],
             },
         },

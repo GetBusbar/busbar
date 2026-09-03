@@ -142,6 +142,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                         cache_read: 0,
                         cache_write: 0,
                     },
+                    ..Default::default()
                 }],
             },
         )
@@ -921,6 +922,7 @@ fn test_key_gauge_limit_truncation() {
                             cache_read: 0,
                             cache_write: 0,
                         },
+                        ..Default::default()
                     }],
                 },
             )
@@ -995,6 +997,7 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
                             cache_read: 0,
                             cache_write: 0,
                         },
+                        ..Default::default()
                     }],
                 },
             )

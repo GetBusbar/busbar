@@ -76,7 +76,9 @@ fn compute_layout() -> String {
             model_ptr,
             model_len,
             provider_ptr,
-            provider_len
+            provider_len,
+            units_ptr,
+            units_len
         ]
     );
     record!(

@@ -2117,6 +2117,10 @@ impl GovState {
                         (!d.is_zero()).then(|| busbar_api::ModelTokensDelta {
                             model: m.model.to_string(),
                             tokens: d,
+                            // The in-memory enforcement cell carries no OPEN keyed units in 1.6.0 M1
+                            // (a designed later-milestone residual); the reserved-four flush is
+                            // unchanged, so this stays empty and serializes byte-identically.
+                            usage_units: Default::default(),
                         })
                     })
                     .collect();

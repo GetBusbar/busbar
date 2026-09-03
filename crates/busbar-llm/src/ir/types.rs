@@ -897,12 +897,19 @@ pub struct IrUsage {
     pub detail: IrUsageDetail,
 }
 
-/// Sub-bucket attribution for [`IrUsage`]. Every field is a SLICE OF a total in `IrUsage`, never an
-/// addition to one — [`IrUsage::billable_tokens`] deliberately ignores this struct, so carrying a
-/// bucket can never change what busbar bills.
+/// Sub-bucket attribution for [`IrUsage`]. Most fields are a SLICE OF a total in `IrUsage`, never an
+/// addition to one — [`IrUsage::billable_tokens`] deliberately ignores this struct, so carrying such
+/// a bucket can never change what busbar bills.
 ///
 /// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
 /// what a customer reconciles a bill against.
+///
+/// THE ONE EXCEPTION (1.6.0 M1, §8 of `billing-unified.md`): the Cohere `billed_*` trio
+/// (`billed_input_tokens`/`billed_output_tokens`/`billed_classifications`) is NOT a slice of the raw
+/// totals — it is Cohere's SEPARATELY-METERED billed bucket, the counts an operator is actually
+/// invoiced on. [`IrUsage::to_token_usage`] lets `billed_input`/`billed_output` WIN over the raw
+/// totals for the ledgered reserved tiers (a deliberate, tested per-dialect change). `billable_tokens`
+/// (the normalization test surface) still ignores the whole struct.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IrUsageDetail {
     /// Reasoning / thinking tokens, a SUB-BUCKET of `output_tokens` (never added to it — that would
@@ -1008,14 +1015,27 @@ impl IrUsage {
     /// Project the four normalized token totals into the neutral, core-resident
     /// [`busbar_substrate::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
     /// need not name this concrete IR type (G6 inversion). The per-modality/attribution buckets are
-    /// deliberately not carried: the ledger and metering sinks read only these four totals, so the
-    /// projection is billing-lossless (byte-identical to the previous `&IrUsage` consumers). Lives
+    /// deliberately not carried: the ledger and metering sinks read only these four totals. Lives
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
     /// `impl From<&IrUsage> for busbar_substrate::billing::TokenUsage`.
+    ///
+    /// COHERE `billed_units` (1.6.0 M1, §8 of `billing-unified.md`): Cohere reports usage TWICE — a
+    /// raw `tokens` bucket and a separately-metered `billed_units` bucket, and it is the BILLED
+    /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
+    /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,
+    /// tested per-dialect ledgered-count change (no other dialect populates these, so every other
+    /// provider projects byte-identically to before). The Cohere OPEN buckets
+    /// (`billed_classifications` → `classifications`, `search_units` → `search`) are attribution
+    /// that will ride `usage_units` once the ledger population lands (a designed later-milestone
+    /// residual); today they remain on `IrUsageDetail` and are re-emitted by the Cohere writer.
     pub fn to_token_usage(&self) -> busbar_substrate::billing::TokenUsage {
         busbar_substrate::billing::TokenUsage {
-            input: self.input_tokens,
-            output: self.output_tokens,
+            // Billed wins over raw when the provider reported it (Cohere); else the raw total.
+            input: self.detail.billed_input_tokens.unwrap_or(self.input_tokens),
+            output: self
+                .detail
+                .billed_output_tokens
+                .unwrap_or(self.output_tokens),
             cache_read: self.cache_read_input_tokens,
             cache_creation: self.cache_creation_input_tokens,
             ..Default::default()

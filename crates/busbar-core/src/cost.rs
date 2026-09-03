@@ -39,6 +39,20 @@ const NANOS_PER_CENT: u128 = 10_000_000;
 /// Nano-units per micro-unit, for the hook seam's `spend_micros` projection.
 const NANOS_PER_MICRO: u128 = 1_000;
 
+/// The service-tier multiplier basis points for the neutral `standard` tier: ×1.0000. A tier's
+/// config multiplier resolves to integer basis points (×10_000) at load; the one pricer applies it
+/// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const STANDARD_TIER_BP: u32 = 10_000;
+
+/// The OPEN-key nano-rate table for one model: `open key → nano-units per unit`. Rides a separate
+/// `Arc<BTreeMap>` on the rate card (never inside the `Copy` [`RateNanos`]), looked up ONLY when a
+/// `usage_units` map carries an open key — so `RateNanos` stays `Copy` and the no-extras request
+/// allocates nothing (§9.1). In 1.6.0 M1 the pricer accepts this table; config population of the
+/// per-model open rates is a designed later-milestone residual (today callers pass an empty table).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) type ExtraRates = std::collections::BTreeMap<String, u64>;
+
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
 /// are `group:<name>@<window>` - one ledger row per (group, window granularity), so a group with
@@ -120,6 +134,103 @@ impl RateNanos {
             + (t.cache_read as u128) * (self.cache_read as u128)
             + (t.cache_write as u128) * (self.cache_write as u128)
     }
+}
+
+/// THE ONE PRICER every plane's neutral [`busbar_substrate::billing::Usage`] reaches (§4.1 of
+/// `billing-unified.md`). It prices the reserved four via the unchanged `Copy`
+/// [`RateNanos::cost_nanos`] decomposition and every OPEN key via an OPAQUE `extras.get(k)` lookup —
+/// core never compares a key to a literal, so no reserved-key string lives in this neutral crate
+/// (the reserved four arrive as `TierTokens` STRUCT FIELDS on `usage.tokens`, the opens as opaque
+/// map DATA). Each priced key becomes at most one DISJOINT top-level [`CostComponent`], so `Σ
+/// top_level == total` holds by [`CostBreakdown::new`] construction — no post-hoc scalar ever
+/// touches `total`.
+///
+/// `tier_bp` is the resolved service-tier multiplier in basis points ([`STANDARD_TIER_BP`] = ×1):
+/// a surcharge (`> 10_000`) adds one top-level `service_tier` line (`base × (mult − 1)`), a discount
+/// (`< 10_000`) folds into every per-key effective amount — both keep exact-sum (§7.1).
+///
+/// Present-but-unpriced open key ⇒ NEVER a silent $0 (§9.2): a `BUSBAR-3021` WARN, and the key is
+/// omitted (fail-closed to VISIBLE, not to hidden free usage), never a zero component.
+///
+/// 1.6.0 M1 lands this as the ADDITIVE spine exercised by its own oracle (`cost_tests`); threading
+/// it into the live LLM/FFI/voice settle paths is the subsequent noun-eviction milestone.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn price(
+    rate: &RateNanos,
+    extras: &ExtraRates,
+    tier_bp: u32,
+    usage: &busbar_substrate::billing::Usage,
+) -> Result<crate::plane::cost::CostBreakdown, crate::plane::cost::CostError> {
+    use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
+
+    let discount = tier_bp < STANDARD_TIER_BP;
+    let scale = |n: u128| -> u128 {
+        if tier_bp == STANDARD_TIER_BP {
+            n
+        } else {
+            n.saturating_mul(u128::from(tier_bp)) / u128::from(STANDARD_TIER_BP)
+        }
+    };
+
+    let mut components: Vec<CostComponent> = Vec::new();
+    let mut base_total: u128 = 0;
+
+    // Reserved four → one disjoint top-level component each (nonzero only; a zero tier is omitted,
+    // preserving the no-zero-component invariant). `t.input`…`t.cache_write` are TierTokens STRUCT
+    // FIELDS, not map keys — the neutrality the design proves (§2.2). A discount tier folds into the
+    // per-tier amount here.
+    let t = &usage.tokens;
+    for (label, count, r) in [
+        ("Prompt", t.input, rate.input),
+        ("Output", t.output, rate.output),
+        ("Cache read", t.cache_read, rate.cache_read),
+        ("Cache write", t.cache_write, rate.cache_write),
+    ] {
+        let mut amt = u128::from(count).saturating_mul(u128::from(r));
+        if discount {
+            amt = scale(amt);
+        }
+        if amt != 0 {
+            components.push(CostComponent::top(label, CostAmount(amt)));
+            base_total = base_total.saturating_add(amt);
+        }
+    }
+
+    // Open keys → priced by OPAQUE lookup. `BTreeMap` iteration is sorted/stable (determinism, §10).
+    for (k, n) in &usage.usage_units {
+        match extras.get(k) {
+            Some(&r) => {
+                let mut amt = u128::from(*n).saturating_mul(u128::from(r));
+                if discount {
+                    amt = scale(amt);
+                }
+                if amt != 0 {
+                    components.push(CostComponent::top(k.clone(), CostAmount(amt)));
+                    base_total = base_total.saturating_add(amt);
+                }
+            }
+            None => {
+                tracing::warn!(
+                    code = "BUSBAR-3021",
+                    usage_key = %k,
+                    "present-but-unpriced usage key; omitted (never a silent $0)"
+                );
+            }
+        }
+    }
+
+    // Surcharge tier (mult > 1): one top-level line so `Σ = base + surcharge = base × mult = total`.
+    let mut total = base_total;
+    if tier_bp > STANDARD_TIER_BP {
+        let surcharge = base_total.saturating_mul(u128::from(tier_bp - STANDARD_TIER_BP))
+            / u128::from(STANDARD_TIER_BP);
+        if surcharge != 0 {
+            components.push(CostComponent::top("service_tier", CostAmount(surcharge)));
+            total = total.saturating_add(surcharge);
+        }
+    }
+
+    CostBreakdown::new(CostAmount(total), components)
 }
 
 /// One (group, window, pool?) ENFORCEMENT BUCKET, resolved from the group's windowed limits:

@@ -153,6 +153,8 @@ fn wired_meter_charge_charges_a_usage_pod() {
             model_len: 0,
             provider_ptr: core::ptr::null(),
             provider_len: 0,
+            units_ptr: core::ptr::null(),
+            units_len: 0,
         };
         assert_eq!(
             (vt.meter_charge.unwrap())(host, &usage as *const Usage),

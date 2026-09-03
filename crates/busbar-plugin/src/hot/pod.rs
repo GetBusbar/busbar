@@ -14,7 +14,11 @@ use std::os::raw::c_void;
 
 /// The POD schema version stamped into each struct's `version` field at construction. Distinct from
 /// the airlock [`ABI_MAJOR`](crate::ABI_MAJOR): this bumps additively as fields are appended.
-pub const POD_VERSION: u16 = 2;
+///
+/// 1.6.0 M1: 2→3 for the append-only `Usage` keyed-unit tail (`units_ptr`/`units_len`), paired with
+/// `ABI_MINOR` 19→20. A pre-minor-20 sender advertises the shorter `size`; the sized-struct guard
+/// reads the tail only when `size` proves it was written, so back-compat holds.
+pub const POD_VERSION: u16 = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Handle-id newtypes — opaque host-side references a plane holds. `#[repr(transparent)]` over u64
@@ -692,6 +696,14 @@ pub struct Usage {
     pub provider_ptr: *const u8,
     /// (minor-5) Length of the borrowed provider range (`0` = absent).
     pub provider_len: usize,
+    /// (minor-20) Borrowed pointer to a PACKED keyed-unit record block (NOT owned) — the dlopen
+    /// analogue of the LLM plane's `usage_units`. Each record is a LE `u32` key length, then that
+    /// many key bytes, then a LE `u64` count; records concatenate. A null pointer / zero
+    /// [`units_len`](Self::units_len) means "no keyed units" and the host bills via the frozen
+    /// `amount × unit_cost_micros` path — so a pre-minor-20 plane bills byte-identically to today.
+    pub units_ptr: *const u8,
+    /// (minor-20) Length in BYTES of the borrowed packed keyed-unit block (`0` = absent).
+    pub units_len: usize,
 }
 
 impl Usage {
@@ -721,6 +733,8 @@ impl Usage {
                 model_len: 0,
                 provider_ptr: core::ptr::null(),
                 provider_len: 0,
+                units_ptr: core::ptr::null(),
+                units_len: 0,
             },
             _borrow: core::marker::PhantomData,
         }
@@ -755,10 +769,119 @@ impl Usage {
                 model_len: model.len(),
                 provider_ptr: provider.as_ptr(),
                 provider_len: provider.len(),
+                units_ptr: core::ptr::null(),
+                units_len: 0,
             },
             _borrow: core::marker::PhantomData,
         }
     }
+
+    /// Build a `Usage` carrying the resolved attribution AND a borrowed PACKED keyed-unit block
+    /// (minor-20). `units` is a concatenation of records, each a LE `u32` key length + key bytes +
+    /// LE `u64` count (build it with [`pack_usage_units`]). The block's lifetime — like the
+    /// attribution words — is tied to the returned [`UsageGuard`]. The host decodes it and prices the
+    /// keys through the rate card (the dlopen analogue of the LLM plane's `usage_units`); when empty
+    /// the host bills via the frozen `amount × unit_cost_micros` path.
+    #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_units<'a>(
+        component: UsageComponent,
+        amount: u64,
+        unit_cost_micros: u64,
+        admission: AdmissionId,
+        key_id: &'a [u8],
+        model: &'a [u8],
+        provider: &'a [u8],
+        units: &'a [u8],
+    ) -> UsageGuard<'a> {
+        UsageGuard {
+            usage: Usage {
+                size: core::mem::size_of::<Usage>() as u32,
+                version: POD_VERSION,
+                component,
+                _reserved: 0,
+                amount,
+                unit_cost_micros,
+                admission,
+                key_id_ptr: key_id.as_ptr(),
+                key_id_len: key_id.len(),
+                model_ptr: model.as_ptr(),
+                model_len: model.len(),
+                provider_ptr: provider.as_ptr(),
+                provider_len: provider.len(),
+                units_ptr: units.as_ptr(),
+                units_len: units.len(),
+            },
+            _borrow: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Pack an open keyed-unit map into the borrowed wire block a minor-20 [`Usage`] carries: for each
+/// `(key, count)`, a LE `u32` key length, the key bytes, then a LE `u64` count. `BTreeMap` iteration
+/// is sorted, so the encoding is deterministic. The inverse decode lives host-side (it dereferences
+/// the borrowed pointer under the sized-struct guard).
+#[must_use]
+pub fn pack_usage_units(units: &std::collections::BTreeMap<String, u64>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (key, count) in units {
+        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        out.extend_from_slice(key.as_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+    }
+    out
+}
+
+/// Decode a [`Usage`]'s minor-20 keyed-unit tail into an open `key → count` map — the inverse of
+/// [`pack_usage_units`]. Returns an empty map when the tail is ABSENT: either the sender predates
+/// minor-20 (the sized-struct guard hides the field) or it carries no units (`units_len == 0`). A
+/// malformed/truncated record STOPS decoding and returns what parsed (fail-safe, matching the
+/// egress packed-record decoders) — it never over-reads the borrowed block.
+///
+/// # Safety
+/// When the guard reports the tail present, `units_ptr`/`units_len` MUST describe a live, initialized
+/// byte range (the `with_units` borrow discipline guarantees this for a `&Usage` under its guard).
+#[must_use]
+pub fn decode_usage_units(usage: &Usage) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    // Read the (ptr, len) ONLY when the sender's advertised `size` proves they were written.
+    let (ptr, len) = match (
+        crate::read_sized_field!(usage, Usage, units_ptr),
+        crate::read_sized_field!(usage, Usage, units_len),
+    ) {
+        (Some(p), Some(l)) if !p.is_null() && l != 0 => (p, l),
+        _ => return out,
+    };
+    // SAFETY: the guard proved the field written and the caller's `with_units` borrow keeps the
+    // block live for the `&Usage` we hold.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        let klen =
+            u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        i += 4;
+        let Some(key_end) = i.checked_add(klen) else {
+            break;
+        };
+        if key_end > bytes.len() || key_end + 8 > bytes.len() {
+            break; // truncated record — fail-safe stop.
+        }
+        let key = String::from_utf8_lossy(&bytes[i..key_end]).into_owned();
+        i = key_end;
+        let count = u64::from_le_bytes([
+            bytes[i],
+            bytes[i + 1],
+            bytes[i + 2],
+            bytes[i + 3],
+            bytes[i + 4],
+            bytes[i + 5],
+            bytes[i + 6],
+            bytes[i + 7],
+        ]);
+        i += 8;
+        out.insert(key, count);
+    }
+    out
 }
 
 /// A [`Usage`] tied to the lifetime of its borrowed attribution words so the borrows can't dangle.

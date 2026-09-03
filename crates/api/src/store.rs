@@ -584,10 +584,17 @@ impl TierTokens {
 }
 
 /// One model's accumulated tier-token counts inside a [`UsageLedger`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
     pub tokens: TierTokens,
+    /// (1.6.0 M1) OPEN, non-reserved keyed billable counts that ride BESIDE the reserved-four
+    /// [`TierTokens`] — the durable half of the neutral usage_units spine. Opaque `key → count`
+    /// DATA the store never interprets; the reserved four stay in `tokens` (`TierTokens` is
+    /// unchanged and still `Copy`). `#[serde(default, skip_serializing_if)]` so an old persisted row
+    /// deserializes with an empty map and a no-opens row serializes BYTE-IDENTICALLY to today.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
 /// The TOKEN LEDGER for one (bucket, window): the request count plus per-(model, tier) token
@@ -667,7 +674,7 @@ impl UsageLedger {
             None => {
                 self.models.push(ModelTokens {
                     model: delta.model.clone(),
-                    tokens: TierTokens::default(),
+                    ..Default::default()
                 });
                 self.models.last_mut().expect("just pushed")
             }
@@ -679,6 +686,12 @@ impl UsageLedger {
         t.cache_write = t
             .cache_write
             .saturating_add_signed(delta.tokens.cache_write);
+        // Fold the open keyed units the same way — flooring each counter at 0 (a refund can never
+        // drive a durable counter negative), allocating a key only on first sight.
+        for (key, d) in &delta.usage_units {
+            let cur = entry.usage_units.entry(key.clone()).or_insert(0);
+            *cur = cur.saturating_add_signed(*d);
+        }
     }
 
     /// Apply a whole [`UsageDelta`] (admission requests + billable requests + every model row),
@@ -711,10 +724,15 @@ impl TierTokensDelta {
 }
 
 /// One model's signed tier delta inside a [`UsageDelta`].
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokensDelta {
     pub model: String,
     pub tokens: TierTokensDelta,
+    /// (1.6.0 M1) The signed twin of [`ModelTokens::usage_units`] — the fleet-additive flush
+    /// primitive's open-key payload. `#[serde(default, skip_serializing_if)]` so an old delta
+    /// deserializes with an empty map and a no-opens delta serializes byte-identically.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usage_units: std::collections::BTreeMap<String, i64>,
 }
 
 /// The additive cross-node reconciliation payload for one (bucket, window): a signed requests

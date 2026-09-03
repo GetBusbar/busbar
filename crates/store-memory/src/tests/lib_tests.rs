@@ -55,6 +55,7 @@ fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
                 cache_read: 0,
                 cache_write: 0,
             },
+            ..Default::default()
         }],
     }
 }
@@ -96,6 +97,7 @@ fn add_usage_accumulates_per_model() {
                 cache_read: 1,
                 cache_write: 0,
             },
+            ..Default::default()
         }],
     };
     s.add_usage("bucket", 100, &d).unwrap();

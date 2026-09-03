@@ -600,3 +600,108 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
         "a non-finite (but positive) rate must clamp to 0, not saturate to u64::MAX"
     );
 }
+
+// ── The neutral usage_units one-pricer (1.6.0 M1) ───────────────────────────────────────────────
+//
+// `cost::price` is the ADDITIVE spine every plane's `Usage` will reach. These oracles pin its
+// contract: the reserved four price byte-identically to the unchanged `cost_nanos`; opens price by
+// opaque lookup; a present-but-unpriced open is omitted (never a silent $0); and the service-tier
+// modifier keeps `CostBreakdown`'s exact-sum invariant (surcharge = a line, discount = folded rate).
+
+use crate::cost::{price, ExtraRates, STANDARD_TIER_BP};
+use crate::plane::cost::CostAmount;
+use busbar_substrate::billing::Usage as NeutralUsage;
+
+fn rate_2_5() -> crate::cost::RateNanos {
+    // input 2 µ/tok → 2000 nano, output 5 µ/tok → 5000 nano.
+    crate::cost::RateNanos::from_cfg(&RateEntryCfg {
+        input_utok: 2.0,
+        output_utok: 5.0,
+        cache_read_utok: 0.0,
+        cache_write_utok: 0.0,
+    })
+}
+
+#[test]
+fn price_reserved_four_is_byte_identical_to_cost_nanos() {
+    let rate = rate_2_5();
+    let tt = toks(3, 4); // 3*2000 + 4*5000 = 26_000 nano
+    let usage = NeutralUsage {
+        tokens: tt,
+        ..Default::default()
+    };
+    let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid breakdown");
+    assert_eq!(
+        bd.total(),
+        CostAmount(rate.cost_nanos(&tt)),
+        "reserved-four pricing must equal the unchanged Copy cost_nanos"
+    );
+    // Two disjoint top-level lines (Prompt, Output); a zero tier is omitted.
+    assert_eq!(
+        bd.components().len(),
+        2,
+        "one line per nonzero reserved tier"
+    );
+}
+
+#[test]
+fn price_open_key_priced_via_opaque_extras_lookup() {
+    let rate = rate_2_5();
+    let mut extras = ExtraRates::new();
+    extras.insert("audio".to_string(), 100); // 100 nano per audio unit
+    let mut usage = NeutralUsage {
+        tokens: toks(3, 0), // base 6000
+        ..Default::default()
+    };
+    usage.usage_units.insert("audio".to_string(), 7); // 700 nano
+    let bd = price(&rate, &extras, STANDARD_TIER_BP, &usage).expect("valid");
+    assert_eq!(bd.total(), CostAmount(6000 + 700));
+}
+
+#[test]
+fn price_present_but_unpriced_open_key_is_omitted_never_silent_zero() {
+    let rate = rate_2_5();
+    let mut usage = NeutralUsage {
+        tokens: toks(3, 0), // base 6000
+        ..Default::default()
+    };
+    usage.usage_units.insert("web_search".to_string(), 3); // no extras entry
+    let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid");
+    // The unpriced key adds NO component and NO amount (fail-closed to visible, not to $0).
+    assert_eq!(bd.total(), CostAmount(6000));
+    assert_eq!(bd.components().len(), 1, "only the priced Prompt line");
+}
+
+#[test]
+fn price_surcharge_tier_is_a_top_level_line_preserving_exact_sum() {
+    let rate = rate_2_5();
+    let usage = NeutralUsage {
+        tokens: toks(3, 4), // base 26_000
+        ..Default::default()
+    };
+    let bd = price(&rate, &ExtraRates::new(), 12_000, &usage).expect("exact-sum holds");
+    // surcharge = 26_000 * (12_000 - 10_000) / 10_000 = 5_200; total = 31_200.
+    assert_eq!(bd.total(), CostAmount(31_200));
+    assert!(
+        bd.components()
+            .iter()
+            .any(|c| c.label == "service_tier" && c.amount == CostAmount(5_200)),
+        "a surcharge tier adds a named top-level service_tier line"
+    );
+}
+
+#[test]
+fn price_discount_tier_folds_into_rate_with_no_named_line() {
+    let rate = rate_2_5();
+    let usage = NeutralUsage {
+        tokens: toks(3, 4), // base 26_000
+        ..Default::default()
+    };
+    let bd = price(&rate, &ExtraRates::new(), 8_000, &usage).expect("exact-sum holds");
+    // each per-tier amount scaled ×0.8: Prompt 6000→4800, Output 20000→16000; total 20_800.
+    assert_eq!(bd.total(), CostAmount(20_800));
+    assert!(
+        !bd.components().iter().any(|c| c.label == "service_tier"),
+        "a discount folds into effective rate, never a named line"
+    );
+}

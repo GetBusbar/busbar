@@ -424,6 +424,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
                 cache_read: 10,
                 cache_write: 5,
             },
+            ..Default::default()
         }],
     });
     assert_eq!(l.requests, 2);
@@ -446,6 +447,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
                 cache_read: 0,
                 cache_write: 0,
             },
+            ..Default::default()
         }],
     });
     assert_eq!(l.models.len(), 2);
@@ -463,6 +465,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
                 cache_read: 0,
                 cache_write: 0,
             },
+            ..Default::default()
         }],
     });
     assert_eq!(l.requests, 0);
@@ -523,6 +526,7 @@ fn default_add_usage_accumulates_via_get_put() {
                 cache_read: 0,
                 cache_write: 0,
             },
+            ..Default::default()
         }],
     };
     s.add_usage("bucket", 0, &d).unwrap();
@@ -624,6 +628,7 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
                 input: 1,
                 ..Default::default()
             },
+            ..Default::default()
         }],
         ..Default::default()
     }
@@ -837,4 +842,65 @@ fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
             "`{field}` must be on the wire: {json}"
         );
     }
+}
+
+// ── The durable usage_units spine (1.6.0 M1): additive, back-compatible ─────────────────────────
+
+/// A no-opens `ModelTokens` serializes BYTE-IDENTICALLY to a pre-1.6 row (skip-if-empty), and an old
+/// row with no `usage_units` field deserializes into an empty map (serde default) — the additive
+/// back-compat guarantee (§9.5).
+#[test]
+fn model_tokens_usage_units_is_additive_and_byte_identical_when_empty() {
+    let no_opens = ModelTokens {
+        model: "gpt-x".into(),
+        tokens: TierTokens {
+            input: 10,
+            output: 20,
+            cache_read: 0,
+            cache_write: 0,
+        },
+        usage_units: std::collections::BTreeMap::new(),
+    };
+    let json = serde_json::to_string(&no_opens).unwrap();
+    assert!(
+        !json.contains("usage_units"),
+        "an empty usage_units map must NOT appear on the wire (byte-identical to pre-1.6): {json}"
+    );
+    // An old persisted row (no usage_units key) deserializes with an empty map.
+    let old_wire =
+        r#"{"model":"gpt-x","tokens":{"input":10,"output":20,"cache_read":0,"cache_write":0}}"#;
+    let rt: ModelTokens = serde_json::from_str(old_wire).unwrap();
+    assert_eq!(rt, no_opens);
+    // A row WITH opens round-trips losslessly and now shows the map.
+    let mut with_opens = no_opens.clone();
+    with_opens.usage_units.insert("classifications".into(), 3);
+    let json2 = serde_json::to_string(&with_opens).unwrap();
+    assert!(json2.contains("usage_units") && json2.contains("classifications"));
+    let rt2: ModelTokens = serde_json::from_str(&json2).unwrap();
+    assert_eq!(rt2, with_opens);
+}
+
+/// `apply_model_delta` folds the signed open-key delta beside the reserved tiers, flooring each open
+/// counter at 0 (a refund can never drive it negative), allocating a key only on first sight.
+#[test]
+fn apply_model_delta_folds_usage_units_flooring_at_zero() {
+    let mut ledger = UsageLedger::default();
+    let mut d1 = ModelTokensDelta {
+        model: "m".into(),
+        tokens: TierTokensDelta::default(),
+        usage_units: std::collections::BTreeMap::new(),
+    };
+    d1.usage_units.insert("search".into(), 5);
+    ledger.apply_model_delta(&d1);
+    assert_eq!(ledger.models[0].usage_units.get("search"), Some(&5));
+
+    // A refund larger than the balance floors at 0, never negative.
+    let mut d2 = ModelTokensDelta {
+        model: "m".into(),
+        tokens: TierTokensDelta::default(),
+        usage_units: std::collections::BTreeMap::new(),
+    };
+    d2.usage_units.insert("search".into(), -9);
+    ledger.apply_model_delta(&d2);
+    assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }

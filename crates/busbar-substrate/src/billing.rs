@@ -61,3 +61,45 @@ pub enum Billing {
     /// Flat / no meter (moderations).
     Flat,
 }
+
+// ── The neutral usage_units billing spine (1.6.0 M1) ────────────────────────────────────────────
+//
+// `Usage` is the ONE neutral carrier a plane hands core: the reserved-four `Copy` summary PLUS an
+// opaque keyed-unit map of the OPEN (non-reserved) billable counts. It is ADDITIVE — it sits beside
+// the existing usage/ledger types, replacing none, so the hot enforcement path and its `Copy`
+// structs are untouched. Core prices it by OPAQUE map lookup (`extras.get(k)`), never by comparing a
+// key to a literal, exactly as it treats `CostComponent.label` and `Magnitude.unit` — so no reserved
+// key literal lives in a neutral crate: the reserved four ride [`Usage::tokens`] as STRUCT FIELDS,
+// and `usage_units` carries only the opens.
+//
+// The neutral ATTRIBUTION facets (who paid, which pool, which plane, which operation) are a designed
+// later-milestone addition — they arrive when a plane is threaded onto the pricer, and their closed
+// facets need a purity-gate-compatible home. M1 lands only the priced-usage half of the carrier.
+
+/// The service-tier modifier a plane may carry. CLOSED enum (§7.2 of `billing-unified.md`). A tier
+/// is a MODIFIER, not a counted unit, so it never rides `usage_units`; config resolves each variant
+/// to an integer basis-point multiplier the pricer applies (`Standard` = ×1.0000 = 10_000 bp).
+/// Extend additively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ServiceTier {
+    #[default]
+    Standard,
+    Priority,
+    Batch,
+    Flex,
+}
+
+/// The one neutral usage representation every plane hands core (§2 of `billing-unified.md`).
+///
+/// `tokens` is the reserved-four `Copy` enforcement/pricing summary (priced by the unchanged
+/// `RateNanos::cost_nanos`); `usage_units` carries ONLY the OPEN (non-reserved) keyed counts — the
+/// plane projection NEVER emits a reserved name into it (§9.3), so core can iterate it opaquely
+/// without ever naming a reserved key. Both are handed together (§2.3): the reserved four never
+/// touch a non-`Copy` map, and the opens never touch the hot `Copy` path.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Usage {
+    /// The reserved-four pricing/enforcement summary, `Copy`.
+    pub tokens: busbar_api::TierTokens,
+    /// OPAQUE open-key billable counts. Keys are plane/operator DATA, never interpreted by core.
+    pub usage_units: std::collections::BTreeMap<String, u64>,
+}
