@@ -12,24 +12,24 @@ use crate::config::tests::base_deploy;
 /// back to `(section, shape)` without a hand-written path list anywhere.
 #[test]
 fn every_section_round_trips_its_three_route_shapes() {
-    for section in NamedMapSection::ALL {
+    for section in NamedMapSection::sections() {
         assert_eq!(
-            section.path_root(),
+            section.path_root().as_ref(),
             format!("/{}", section.key()),
             "the admin path segment IS the config key"
         );
         let root = section.path_root().to_string();
         assert_eq!(
             NamedMapSection::parse_rel(&root),
-            Some((*section, NamedMapShape::Collection))
+            Some((section, NamedMapShape::Collection))
         );
         assert_eq!(
             NamedMapSection::parse_rel(&format!("{root}/{{name}}")),
-            Some((*section, NamedMapShape::Item))
+            Some((section, NamedMapShape::Item))
         );
         assert_eq!(
             NamedMapSection::parse_rel(&format!("{root}/{{name}}/settings")),
-            Some((*section, NamedMapShape::Settings))
+            Some((section, NamedMapShape::Settings))
         );
         // A path that merely SHARES the prefix is not a named-map route.
         assert_eq!(
@@ -40,6 +40,25 @@ fn every_section_round_trips_its_three_route_shapes() {
     // Sections the generic CRUD deliberately does NOT serve.
     assert_eq!(NamedMapSection::parse_rel("/hooks"), None);
     assert_eq!(NamedMapSection::parse_rel("/groups/{name}"), None);
+}
+
+/// F2 — BYTE-IDENTITY PIN. `sections()` is folded from the plane registry, so its ORDER is what the
+/// router mounts and the OpenAPI generator emits in. Under the default/test/openapi-generating
+/// feature set (mcp + a2a compiled in) it MUST equal the frozen 1.5.3 order
+/// `[identity-providers, export, tools, agents]` — anything else drifts `openapi.json`. `streams:`
+/// is a SINGULAR plane section (no `named_def_list`), so it never joins this named-map list.
+#[test]
+fn sections_holds_the_frozen_named_map_order_under_the_default_feature_set() {
+    let keys: Vec<&'static str> = NamedMapSection::sections()
+        .iter()
+        .map(|s| s.key())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["identity-providers", "export", "tools", "agents"],
+        "sections() must yield the frozen 1.5.3 order so the router/OpenAPI surface stays \
+         byte-identical"
+    );
 }
 
 /// A definition is parsed into its typed, `deny_unknown_fields` config struct at the insert seam —

@@ -826,6 +826,14 @@ mod calllog_dispatch_tests;
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
 
+// THE REWRITE (TAP/TRANSFORM) HALF OF THE HOOK SURFACE ON THIS PLANE, proven the same way the gate is:
+// against the same real fake peer, because the claim is "a `prompt: rw` hook edited the arguments the
+// UPSTREAM received", and the only party that can testify to what went upstream is the party that
+// received it.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/hook_tap_tests.rs"]
+mod hook_tap_tests;
+
 // THIS PLANE'S CLIENT LEG ON `/metrics`. Beside the other upstream-leg batteries for the same
 // reason they are all here: the claim is about a leg that REACHED a peer, and a series emitted with
 // no upstream to reach would prove only that a macro increments.

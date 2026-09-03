@@ -1516,6 +1516,43 @@ pub fn resolve_container_gates<'a>(
     out
 }
 
+/// Resolve the per-CONTAINER REWRITE (`prompt: rw`) chains for one plane's registry — the
+/// tap/transform twin of [`resolve_container_gates`]. For each `(container name, own hook list)`, the
+/// effective attach ([`attach_list`]) resolved through [`resolve_rewrite_hooks`] (which enforces the
+/// EFFECTIVE `rw` grant), keyed by container.
+///
+/// A container whose effective chain is EMPTY gets NO ENTRY, exactly like the gate twin: the tap
+/// firing site's presence lookup then answers `None` on every deployment that attached no rewrite
+/// hook, which is the zero-cost / byte-identical default.
+///
+/// Called ONCE per config generation. Resolution `dlopen`s the plugin; doing it per request would put
+/// a library load on the dispatch path.
+// Resolves the per-container rewrite chains for each installed protocol plane's registry; with none
+// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam names
+// no plane feature.
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub fn resolve_container_rewrites<'a>(
+    containers: impl Iterator<Item = (&'a str, &'a [String])>,
+    section: &[String],
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    env: &HookEnv,
+    settings_version: u64,
+) -> std::collections::HashMap<String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>> {
+    let mut out = std::collections::HashMap::new();
+    for (name, own) in containers {
+        let attached = attach_list(section, own);
+        if attached.is_empty() {
+            continue;
+        }
+        let resolved = resolve_rewrite_hooks(hooks, &attached, env, settings_version);
+        if !resolved.is_empty() {
+            out.insert(name.to_string(), resolved);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;

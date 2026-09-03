@@ -118,9 +118,9 @@ pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
     // one. Derived from the section table rather than listed as literals, so a new section is
     // classified correctly the moment its variant exists (the `docs/admin-api.md` config row and
     // `rate_limit_doc_table_matches_classifier` are the paired ledger).
-    if crate::config::named_map::NamedMapSection::ALL
+    if crate::config::named_map::NamedMapSection::sections()
         .iter()
-        .any(|s| rel.starts_with(s.path_root()))
+        .any(|s| rel.starts_with(s.path_root().as_ref()))
     {
         return MutationClass::Config;
     }

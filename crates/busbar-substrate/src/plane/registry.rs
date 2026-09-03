@@ -515,6 +515,73 @@ pub struct PlaneDecl {
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     pub default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
+
+    /// THE PLANE-OWNED-CONFIG SEAM (1.6.0 config-seam, STAGE 1 — INFRA ONLY). The top-level
+    /// `config.yaml` sections this plane declares it OWNS the grammar for — the keys a LATER stage will
+    /// move OUT of core's concrete [`DeployCfg`] fields and into the plane crate's own typed config,
+    /// so core stops carrying that section's shape concretely.
+    ///
+    /// DISTINCT from [`Self::config_section`]: `config_section` is the ONE section whose mere existence
+    /// DECLARES the plane (`pools:`/`tools:`/`agents:`) and feeds the hook-reference grammar. This is
+    /// the (possibly several) sections whose SCHEMA the plane will own once the move lands — e.g. the
+    /// LLM plane will list `["rate_card", "limits"]` here in a later stage. A plane may own sections it
+    /// does not use to declare itself, and vice-versa.
+    ///
+    /// STAGE 1 CONTRACT: every plane declares `&[]` here — the registry starts EMPTY and NOTHING has
+    /// moved. `providers`/`models`/`pools`/`rate_card`/`limits` remain concrete `DeployCfg` fields;
+    /// config deserialization/validation/rendering is byte-identical. The only live behaviour this
+    /// field feeds in stage 1 is the DUP-CLAIM GUARD ([`check_owned_config_claims`]), which refuses a
+    /// boot where two planes claim the same section OR a plane claims a section core still owns
+    /// concretely — the invariant that makes the later section moves safe.
+    pub owned_config_sections: &'static [&'static str],
+}
+
+/// THE DUP-CLAIM GUARD for the plane-owned-config seam (1.6.0 config-seam, stage 1). Judges the
+/// [`PlaneDecl::owned_config_sections`] claims across the whole plane set against the sections core
+/// still owns CONCRETELY (`core_owned_concrete`, supplied by the caller so this stays neutral — a
+/// plain list of section-key strings, naming no plane vocabulary), returning `Ok(())` when every
+/// claim is disjoint and unique, or the FIRST refusal it finds.
+///
+/// It is a HARD ERROR — the whole point of stage 1 — if:
+/// - two planes claim the SAME section key (`plane` and `other` both own `key`): one plane's grammar
+///   would then answer for another plane's section, exactly the confusion the later moves must not
+///   introduce; or
+/// - a plane claims a key core STILL OWNS concretely (`key` ∈ `core_owned_concrete`): the section has
+///   not been moved out of `DeployCfg` yet, so a plane owning it would double-declare the grammar and
+///   the config would no longer deserialize/render byte-identically.
+///
+/// Pure (no I/O, no globals): a decl list and a reserved-key list in, a verdict out — so a test drives
+/// it directly rather than by booting a binary. Core calls it at boot from the plane fold; in stage 1
+/// every `owned_config_sections` is empty, so it is unconditionally `Ok(())` and adds no behaviour.
+pub fn check_owned_config_claims(
+    decls: &[&'static PlaneDecl],
+    core_owned_concrete: &[&'static str],
+) -> Result<(), String> {
+    // section key → the plane key that first claimed it, so a second claimant names its rival.
+    let mut claimed: std::collections::BTreeMap<&'static str, &'static str> =
+        std::collections::BTreeMap::new();
+    for decl in decls {
+        for &section in decl.owned_config_sections {
+            if core_owned_concrete.contains(&section) {
+                return Err(format!(
+                    "plane `{}` claims config section `{section}`, but core still owns it concretely: \
+                     a section must be evicted from core's `DeployCfg` in the SAME change that a plane \
+                     claims it, never before — else the grammar is declared twice and the config stops \
+                     deserializing byte-identically",
+                    decl.key
+                ));
+            }
+            if let Some(other) = claimed.insert(section, decl.key) {
+                return Err(format!(
+                    "config section `{section}` is claimed by two planes (`{other}` and `{}`): a \
+                     section is owned by exactly one plane, or one plane's grammar answers for \
+                     another's",
+                    decl.key
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────

@@ -1,0 +1,39 @@
+# no-deferral.waivers — the committed allowlist for scripts/no-deferral-gate.sh.
+#
+# FORMAT:  <MATCHER><whitespace><reason>
+#   MATCHER is either an EXACT `path:line`, or a PATH GLOB (any matcher with no trailing `:<digits>`).
+#   A marker (file:line) is WAIVED when an exact row equals it, or a glob row matches its file.
+# The allowlist is a FLOOR CHECKED BOTH WAYS: a marker not waived is RED (over-count); a waiver that
+# matches no marker is RED (stale — the marker was resolved). See scripts/no-deferral-gate.sh header
+# and docs/design/playbook/gate-no-deferral.md.
+#
+# --strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
+# */hot/* row: the hot/* foundation fixtures are the ONE permanent exemption; the voice skeleton rows
+# are TRACKED 1.6.0 debt that MUST be gone before 1.6.0 is done.
+
+# ── PERMANENT: the plane-ABI foundation compile-surface fixtures (out-of-1.6.0-scope) ──────────────
+# ~51 unimplemented!() sites in `mod stub` / PlaneHostVtable::STUB / PlaneDecl::STUB, plus the
+# PlaneDecl::STUB doc-comment reference. These are ADDITIVE and UNUSED — nothing in the engine calls
+# them (hot/mod.rs); a STUB vtable slot panics BY DESIGN. They type-check that every extern "C-unwind"
+# ABI fn-pointer slot has a real, well-typed signature. Their real hosts are the protocols-as-plugins
+# effort (docs/design/1.6.0-protocols-as-plugins.md), not a voice/1.6.0-GA blocker.
+crates/busbar-plugin/src/hot/*   plane-ABI foundation compile-surface fixtures (STUB): additive/unused, never dispatched; out-of-1.6.0-scope (protocols-as-plugins effort)
+
+# ── TRACKED 1.6.0 DEBT: busbar-voice ships today as a declared SKELETON ────────────────────────────
+# Plane 4 (voice) is FULL-scope in 1.6.0 but ships today with handler: None / verbs: &[] and its live
+# runtime behind #[cfg(feature = "runtime")] (OFF by default), not installed in the binary. These 12
+# SKELETON / "dev-only until DoD" marker lines are HARD DEBT: when voice ships they MUST be removed AND
+# the state assertion (real handler, real verbs, runtime compiled in, PLANE_DECL installed) must pass.
+# --strict-done FAILS while any of these rows remain, so "1.6.0 done" mechanically requires them gone.
+crates/busbar-voice/src/lib.rs:4      voice SKELETON label (crate header) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:39     voice "dev-only until DoD" — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:47     voice "dev-only until DoD" — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:80     voice SKELETON label (PLANE_DECL) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:104    voice SKELETON label (mounts nothing yet) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:145    voice SKELETON label (handler: None / verbs: &[]) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:152    voice SKELETON label (no request handler yet) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/lib.rs:154    voice SKELETON label (no verbs declared yet) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/ir/mod.rs:24  voice SKELETON label (IR types are stubs) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/ir/usage.rs:15 voice SKELETON label (CostBreakdown fold is future work) — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/runtime/mod.rs:6  voice "dev-only until DoD" — tracked 1.6.0 DoD debt
+crates/busbar-voice/src/runtime/mod.rs:93 voice "dev-only until DoD" — tracked 1.6.0 DoD debt

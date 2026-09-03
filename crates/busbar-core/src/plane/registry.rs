@@ -64,7 +64,8 @@
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
 pub use busbar_substrate::plane::registry::{
-    BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl, RestoredSummary,
+    check_owned_config_claims, BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl,
+    RestoredSummary,
 };
 
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
@@ -388,8 +389,35 @@ pub(crate) fn merged_boot_plane_decls(
             busbar_api::register_scope_kind(kind);
         }
     }
+    // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
+    // claim the same top-level config section, or if a plane claims a section core STILL owns
+    // concretely (`CORE_OWNED_CONCRETE_SECTIONS`) — the invariant that makes the later section moves
+    // safe. In stage 1 every `owned_config_sections` is empty, so this is unconditionally `Ok(())` and
+    // adds no behaviour; it exists so the FIRST move that mis-claims a section fails at boot, loudly,
+    // rather than silently double-declaring the grammar. A panic (not a `Result`) because a mis-wired
+    // composition root is a build bug, not an operator error to recover from — same disposition as the
+    // `install_planes`-twice / read-before-install asserts above.
+    if let Err(refusal) =
+        crate::plane::registry::check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS)
+    {
+        panic!("plane-owned-config dup-claim guard: {refusal}");
+    }
     decls
 }
+
+/// THE TOP-LEVEL CONFIG SECTIONS CORE STILL OWNS CONCRETELY as fields of
+/// [`crate::config::DeployCfg`] — the reserved set the plane-owned-config dup-claim guard
+/// ([`crate::plane::registry::check_owned_config_claims`]) refuses a plane from claiming until the
+/// section is actually evicted from core in the SAME change.
+///
+/// STAGE 1 lists all five: `providers`/`models`/`pools`/`rate_card`/`limits` are all concrete today.
+/// As the LATER stages move a section into its owning plane crate, that stage DELETES the section's
+/// key from this list in lockstep with adding it to the plane's `owned_config_sections` — the two
+/// edits are one change, so at no instant is a section either owned by nobody or claimed by two. Per
+/// the reconciled-audit scope, `pools` and `providers` stay neutral in core and are NEVER removed
+/// here; only `rate_card`, `limits` and `models`-capabilities are evictable in later stages.
+pub(crate) const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
+    &["providers", "models", "pools", "rate_card", "limits"];
 
 /// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
 /// and a cross-plane refusal names sections in — DERIVED FROM REGISTRATION DATA rather than a

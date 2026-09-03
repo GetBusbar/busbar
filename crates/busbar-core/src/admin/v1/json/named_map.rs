@@ -80,11 +80,11 @@ use crate::state::{App, AppHandle};
 /// no per-section route literal, and nothing to forget.
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
-    for section in NamedMapSection::ALL {
-        let s = *section;
+    for section in NamedMapSection::sections() {
+        let s = section;
         router = router
             .route(
-                s.path_root(),
+                s.path_root().as_ref(),
                 get(move |state: State<Arc<AppHandle>>| list(state, s)),
             )
             .route(
@@ -662,9 +662,9 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
-        // Both plane sections answer membership through the plane's `registry_contains` seam, so this
+        // A plane section answers membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
-        NamedMapSection::Tools | NamedMapSection::Agents => {
+        NamedMapSection::Plane(_) => {
             crate::plane::registry::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains)
                 .is_some_and(|f| f(app, name))
@@ -798,11 +798,11 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
         "name": "name", "in": "path", "required": true, "schema": {"type": "string"}
     });
     let mut out = Vec::new();
-    for section in NamedMapSection::ALL {
+    for section in NamedMapSection::sections() {
         let key = section.key();
         let singular = section.singular();
         out.push((
-            super::ap(section.path_root()),
+            super::ap(section.path_root().as_ref()),
             json!({
                 "get": {
                     "summary": format!(
@@ -815,7 +815,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
             }),
         ));
         out.push((
-            super::ap(&format!("{}/{{name}}", section.path_root())),
+            super::ap(&format!("{}/{{name}}", section.path_root().as_ref())),
             json!({
                 "get": {
                     "summary": format!("One `{key}:` definition"),
@@ -855,7 +855,10 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
             }),
         ));
         out.push((
-            super::ap(&format!("{}/{{name}}/settings", section.path_root())),
+            super::ap(&format!(
+                "{}/{{name}}/settings",
+                section.path_root().as_ref()
+            )),
             json!({
                 "patch": {
                     "summary": format!(

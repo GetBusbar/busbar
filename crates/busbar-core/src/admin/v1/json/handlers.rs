@@ -4537,7 +4537,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .iter()
         .map(|(p, m)| ((*p).to_string(), *m))
         .collect();
-    for section in crate::config::named_map::NamedMapSection::ALL {
+    for section in crate::config::named_map::NamedMapSection::sections() {
         let root = section.path_root();
         if_match_guarded.push((format!("{root}/{{name}}"), "put"));
         if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
@@ -4976,11 +4976,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The GENERIC named-DEFINITION maps: response views, request bodies and the `name` path
     // parameter, all emitted from the SAME `NamedMapSection::ALL` loop the router and the path items
     // come from. A new section is documented in full without touching this block.
-    for section in crate::config::named_map::NamedMapSection::ALL {
+    for section in crate::config::named_map::NamedMapSection::sections() {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
-        typed!(root, "get", "200", Page<NamedDefView>);
+        typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
         typed!(&item, "get", "200", NamedDefView);
         typed!(&item, "put", "200", NamedDefView);
         typed!(&settings, "patch", "200", NamedDefView);

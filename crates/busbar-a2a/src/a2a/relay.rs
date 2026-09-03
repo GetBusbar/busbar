@@ -2360,6 +2360,14 @@ mod wire_headers_tests;
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
 
+// THE REWRITE (TAP/TRANSFORM) HALF OF THE HOOK SURFACE ON THIS PLANE — the `prompt: rw` twin of the
+// gate above, mounted here for the same reason: the claim is that the hook edited the `params` the
+// BACKEND received, and the shared harness's recording seam is the only thing that can see the body
+// that was actually composed for the hop.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/hook_tap_tests.rs"]
+mod hook_tap_tests;
+
 // THE SERVED HALF OF THE COVERAGE MATRIX — one test per `busbar-as-server` cell of
 // `qa/method-inventory.json`, on the binding whose cell it claims. Mounted here for the reason every
 // block above is: it needs `relay_harness`, and a second harness is a second thing that can stop

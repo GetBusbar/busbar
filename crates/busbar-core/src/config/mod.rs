@@ -2482,8 +2482,12 @@ fn default_weight() -> u32 {
 /// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
 /// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
 /// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
+///
+/// Delegates to the NEUTRAL raw-rate view ([`busbar_substrate::billing::RawTierRates::blended_per_mtok`])
+/// so the routing scalar is computed through the same seam the pricing oracle projects through (S2a);
+/// byte-identical to the pre-seam `(r.input_utok + r.output_utok) / 2.0`.
 pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
-    (r.input_utok + r.output_utok) / 2.0
+    r.raw_tier_rates().blended_per_mtok()
 }
 
 /// Trip mode for breaker configuration.
@@ -3090,6 +3094,45 @@ impl DeployCfg {
     pub fn providers_file(&self) -> Option<&str> {
         self.providers_file.as_deref()
     }
+
+    /// This plane-owned named-map section's always-present type-erased carrier, resolved by its
+    /// config-section KEY — the seam the generic named-map machinery reaches a `tools:`/`agents:`
+    /// registry through without naming a plane field. `None` for a key that is not a plane section
+    /// (the two core sections, or an unknown key). The two plane fields exist unconditionally (they
+    /// hold a `RawPlaneSection` when their plane is compiled out), so a present key always answers
+    /// `Some`; the section KEYS are read off the frozen static
+    /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
+    /// plane noun.
+    pub(crate) fn plane_section(
+        &self,
+        section: &str,
+    ) -> Option<&dyn crate::plane::config::PlaneCfg> {
+        let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
+        if section == mirror[2] {
+            Some(&*self.tools.0)
+        } else if section == mirror[3] {
+            Some(&*self.agents.0)
+        } else {
+            None
+        }
+    }
+
+    /// The mutable twin of [`DeployCfg::plane_section`] — the seam the named-map WRITE path installs a
+    /// parsed `tools:`/`agents:` definition through, again resolved by config-section key so core
+    /// names no plane field.
+    pub(crate) fn plane_section_mut(
+        &mut self,
+        section: &str,
+    ) -> Option<&mut dyn crate::plane::config::PlaneCfg> {
+        let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
+        if section == mirror[2] {
+            Some(&mut *self.tools.0)
+        } else if section == mirror[3] {
+            Some(&mut *self.agents.0)
+        } else {
+            None
+        }
+    }
 }
 
 /// Operator-owned security controls (config.yaml `security:` block).
@@ -3686,6 +3729,22 @@ pub struct RateEntryCfg {
     pub cache_read_utok: f64,
     #[serde(default)]
     pub cache_write_utok: f64,
+}
+
+impl RateEntryCfg {
+    /// This entry's NEUTRAL raw-rate view — the four raw micro-float rates in canonical reserved order
+    /// ([`busbar_substrate::billing::RawTierRates`]). The seam (S2a) core's pricing oracle + routing
+    /// scalar read rates through WITHOUT naming this config type's `_utok` grammar: the map values ARE
+    /// the raw micro-floats, so this is a pure field lift, byte-identical. When the `rate_card:`
+    /// grammar relocates to the owning plane (S2b), the plane fills the SAME view and this lift goes.
+    pub fn raw_tier_rates(&self) -> busbar_substrate::billing::RawTierRates {
+        busbar_substrate::billing::RawTierRates {
+            input: self.input_utok,
+            output: self.output_utok,
+            cache_read: self.cache_read_utok,
+            cache_write: self.cache_write_utok,
+        }
+    }
 }
 
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the
@@ -4661,27 +4720,33 @@ pub fn resolve(
     > = std::collections::BTreeMap::new();
     {
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
-        // grammar key (`crate::config::named_map::NamedMapSection::key`), used as OPAQUE DATA. The
-        // router never names a plane: `tools:` routes to the tool-pool projection, `agents:` to the
-        // agent-pool one, and the residual `models:` section stays on the LLM lane. Reading the
-        // discriminant off the section table (rather than a hard-coded plane key) is what lets a
-        // registered plane's pools route with nothing about that plane written here.
-        use crate::config::named_map::NamedMapSection;
-        let tools_section = NamedMapSection::Tools.key();
-        let agents_section = NamedMapSection::Agents.key();
+        // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
+        // tool-pool projection, `agents:` to the agent-pool one, and the residual `models:` section
+        // stays on the LLM lane. Reading the discriminant off the frozen named-map mirror (rather
+        // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
+        // about that plane written here.
+        let tools_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
+        let agents_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3];
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
                 return Some(crate::plane::fallback_key());
             }
-            // The plane registry nouns read through their always-present type-erased seam. With the
-            // owning plane compiled out the seam holds a `RawPlaneSection`, whose `contains_def` is
-            // empty (a present section is refused earlier), so no name resolves there.
-            if deploy.tools.0.contains_def(name) {
+            // The plane registry sections read through the always-present type-erased seam, resolved
+            // by config section. With the owning plane compiled out the seam holds a
+            // `RawPlaneSection`, whose `contains_def` is empty (a present section is refused earlier),
+            // so no name resolves there.
+            if deploy
+                .plane_section(tools_section)
+                .is_some_and(|cfg| cfg.contains_def(name))
+            {
                 return Some(tools_section);
             }
-            if deploy.agents.0.contains_def(name) {
+            if deploy
+                .plane_section(agents_section)
+                .is_some_and(|cfg| cfg.contains_def(name))
+            {
                 return Some(agents_section);
             }
             None
@@ -4938,18 +5003,20 @@ pub fn resolve(
     // plane-declared grammar key) rather than a hard-coded plane. With the plane registered the decl
     // is present and this never fires; with it compiled out the `RawPlaneSection` reports
     // `is_present()` for a section the operator wrote, and there is no decl for it.
-    for section in [
-        crate::config::named_map::NamedMapSection::Tools,
-        crate::config::named_map::NamedMapSection::Agents,
-    ] {
-        let present = match section {
-            crate::config::named_map::NamedMapSection::Tools => deploy.tools.0.is_present(),
-            crate::config::named_map::NamedMapSection::Agents => deploy.agents.0.is_present(),
-            _ => false,
-        };
-        if present && crate::plane::registry::plane_decl_for_config_section(section.key()).is_none()
-        {
-            let section = section.key();
+    //
+    // FAIL-CLOSED: this reads the FROZEN STATIC noun source
+    // `busbar_substrate::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
+    // `NamedMapSection::sections()` — the latter goes EMPTY of a plane's section when the plane is
+    // compiled out, which would let a `tools:`/`agents:` block for an absent plane slip through
+    // silently. The mirror's two core sections (`identity-providers`/`export`) are not plane sections,
+    // so `plane_section` answers `None` for them (never present) and they are skipped; only a plane
+    // section that is present with no decl is refused, byte-identical to the former `[Tools, Agents]`
+    // loop.
+    for section in busbar_substrate::plane::config::NAMED_MAP_SECTIONS {
+        let present = deploy
+            .plane_section(section)
+            .is_some_and(|cfg| cfg.is_present());
+        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
             errors.push(format!(
                 "`{section}:` is configured, but this build was compiled without the plane that \
                  owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
@@ -5018,7 +5085,7 @@ pub fn resolve(
                 // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
                 // deletion-gate refusal below.
                 match crate::plane::registry::plane_decl_for_config_section(
-                    crate::config::named_map::NamedMapSection::Tools.key(),
+                    busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                 )
                 .and_then(|d| d.lower_endpoint)
                 {
@@ -5054,7 +5121,7 @@ pub fn resolve(
     > = std::collections::HashMap::new();
     if let Some(resource) = lowered_endpoint {
         endpoint_resources.insert(
-            crate::config::named_map::NamedMapSection::Tools.key(),
+            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
             resource,
         );
     }

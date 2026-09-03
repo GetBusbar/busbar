@@ -16,7 +16,6 @@
 //!      Merging them would delete a check rather than deduplicate one, so both are exercised on
 //!      inputs the other cannot see.
 
-use crate::config::named_map::NamedMapSection;
 use crate::plane::config::{
     config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
@@ -34,7 +33,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
         .map(|k| crate::plane::plane_decl(k).config_section)
-        .chain(NamedMapSection::ALL.iter().map(|s| s.key()))
+        .chain(busbar_substrate::plane::config::NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {
             expected.push(s);

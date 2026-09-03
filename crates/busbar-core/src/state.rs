@@ -73,6 +73,18 @@ pub(crate) type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::Resol
 /// `mcp_server_gates`/`a2a_agent_gates` fields, so core names no plane vocabulary in its field types.
 pub(crate) type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
 
+/// One plane's per-container resolved REWRITE (`prompt: rw`) chain map: container name → resolved
+/// `(per-hook deadline, transport)` list. The tap/transform twin of [`ContainerGateMap`], the value
+/// half of [`App::plane_rewrites`].
+#[allow(clippy::type_complexity)]
+pub(crate) type ContainerRewriteMap =
+    HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>>;
+
+/// THE GENERIC per-plane rewrite-chain map, keyed by each plane's stable decl key — the tap/transform
+/// twin of [`PlaneGateMap`], so the TAP half of the hook surface reaches MCP/A2A payloads through the
+/// same registry-keyed structure the GATE half already uses.
+pub(crate) type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
+
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
@@ -219,6 +231,17 @@ pub struct App {
     // gate, so the map goes unread in that config alone.
     #[allow(dead_code)]
     pub(crate) plane_gates: PlaneGateMap,
+    /// THE PER-PLANE PER-CONTAINER REWRITE (`prompt: rw`) CHAINS, keyed by the plane's stable decl key —
+    /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
+    /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
+    /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
+    /// through the same [`busbar_substrate::plane_host::ContainerGateSink`] callback the gates use. Empty
+    /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
+    /// path stays byte-identical.
+    // Read on the plane transform/tap paths only; with BOTH planes compiled out nothing fires a tap, so
+    // the map goes unread in that config alone.
+    #[allow(dead_code)]
+    pub(crate) plane_rewrites: PlaneRewriteMap,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
     /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
@@ -619,6 +642,15 @@ impl App {
         self.plane_gates.get(plane_key)
     }
 
+    /// The per-container REWRITE-chain map for the plane identified by the opaque registry `plane_key`,
+    /// or `None` when the plane attached no rewrite hook this generation — the tap/transform twin of
+    /// [`App::plane_gates`](Self::plane_gates). The transform firing site reads it; `None` and an empty
+    /// inner map are both "no rewrite attached" (the zero-cost / byte-identical no-op).
+    #[allow(dead_code)]
+    pub(crate) fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
+        self.plane_rewrites.get(plane_key)
+    }
+
     // THE POOL-HOOK DOWN-FACADES (money-path Phase 3-4 C). The relocated LLM engine reads each pool's
     // resolved routing policy / decision gates / rewrite chain through these instead of off the plane's
     // `PoolRuntime` (which no longer stores them — the resolved `ResolvedPolicy`/`Arc<dyn RoutingPolicy>`
@@ -680,6 +712,27 @@ impl App {
         section_hooks: &[String],
     ) -> HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>> {
         crate::hooks::resolve_container_gates(
+            containers,
+            section_hooks,
+            &self.hook_registry,
+            &self.hook_env,
+            self.config_version,
+        )
+    }
+
+    /// Resolve a container plane's per-registration REWRITE (`prompt: rw`) chains against THIS
+    /// snapshot's hook registry, env and config version — the tap/transform twin of
+    /// [`App::resolve_container_gates`], the core-side of a container plane's config-swap rewrite
+    /// rebuild. Same inputs, same zero-cost absence, so the plane names no
+    /// `crate::hooks::resolve_container_rewrites`.
+    #[allow(dead_code)]
+    #[allow(clippy::type_complexity)]
+    pub fn resolve_container_rewrites<'a>(
+        &self,
+        containers: impl Iterator<Item = (&'a str, &'a [String])>,
+        section_hooks: &[String],
+    ) -> HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>> {
+        crate::hooks::resolve_container_rewrites(
             containers,
             section_hooks,
             &self.hook_registry,
@@ -774,11 +827,17 @@ impl busbar_substrate::plane_host::ContainerGateSink for App {
         section_hooks: &[String],
     ) {
         let gates = self.resolve_container_gates(containers.iter().copied(), section_hooks);
+        // The TAP twin: resolve this plane's per-container REWRITE chains through the SAME neutral
+        // inputs, so a config swap keeps the transform seam consistent with the gate seam with no
+        // plane-side change (the plane's `reresolve_gates` callback drives both halves through this one
+        // sink call).
+        let rewrites = self.resolve_container_rewrites(containers.iter().copied(), section_hooks);
         // The map key is the plane's stable decl key. `reresolve` is only ever called for an installed
         // plane, whose key is `&'static`; recover that static key from the registry so the map's
         // `&'static str` key type is satisfied without leaking (the `plane_key` argument is a borrow).
         if let Some(static_key) = crate::plane::registry::plane_decl_for(plane_key).map(|d| d.key) {
             self.plane_gates.insert(static_key, gates);
+            self.plane_rewrites.insert(static_key, rewrites);
         }
     }
 }
