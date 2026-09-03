@@ -67,10 +67,11 @@ fn rewrite(raw_transform_reply: serde_json::Value) -> HookCfg {
 /// gate can also stop a call (reject > rewrite), and that the content it screens is the arguments.
 fn screen(reject_if_contains: &str) -> HookCfg {
     HookCfg {
-        settings: serde_json::json!({ "reject_if_contains": reject_if_contains, "reject_status": 451 })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
+        settings:
+            serde_json::json!({ "reject_if_contains": reject_if_contains, "reject_status": 451 })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
         ..rewrite(serde_json::Value::Null)
     }
 }
@@ -136,7 +137,10 @@ async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() 
         .hook_env(env)
         .build();
     let (status, body) = call_as(&gated, &g, "tap-rewritten", "tools/call", params).await;
-    assert_eq!(status, 200, "the rewritten call must still be served: {body}");
+    assert_eq!(
+        status, 200,
+        "the rewritten call must still be served: {body}"
+    );
 
     let seen = peer.last_mcp().json();
     assert_eq!(

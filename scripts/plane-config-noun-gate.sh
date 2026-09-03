@@ -20,13 +20,13 @@
 # fields, …). Stage A evicts the sections onto the seam and drives this meter to ZERO; the day it
 # reaches 0, arming the hard gate is a one-flag flip (GREP_GATE_REPORT_ONLY=0).
 #
-# WHAT COUNTS (a PARSE-STEERING occurrence, not every mention — the §2 curation discipline):
+# WHAT COUNTS (a PARSE-STEERING occurrence, not every mention):
 #   * a `NamedMapSection::Tools` / `::Agents` plane variant (the concrete named-map parse arm);
 #   * a BARE quoted section literal `"tools"|"agents"|"pools"|"streams"` on a line that STEERS parsing
 #     (a `=>` match arm, a `get(...)`/`get_mut(...)`/`.get("...")` positional section lookup, a
 #     `serde(rename=...)`, or a DeployCfg named-field declaration).
 #
-# WHAT IS ALLOWLISTED (the legitimate seam + the homonyms that would drown the signal, §2 + Risk 1):
+# WHAT IS ALLOWLISTED (the legitimate seam + the homonyms that would drown the signal):
 #   * THE SEAM — any line naming `config_section` / `owned_config_sections` / `config_sections_from` /
 #     `plane_decl_for_config_section` / `CORE_OWNED_CONCRETE_SECTIONS`: the allowed path, never counted.
 #   * THE FROZEN LEGACY MIGRATOR — crates/busbar-core/src/config/migrate*.rs operate on PAST on-disk

@@ -1471,7 +1471,9 @@ fn build_invoke_rewrite_request<'a>(
 /// Enforce the hook content ceiling on a built invoke projection, on SERIALIZED bytes and BEFORE the
 /// call — the same rule the LLM seam's `enforce_content_cap` applies: over-cap content is OMITTED
 /// WHOLE (the hook is sent an empty projection), never truncated mid-value.
-fn enforce_invoke_content_cap(p: busbar_api::PromptProjection<'_>) -> busbar_api::PromptProjection<'_> {
+fn enforce_invoke_content_cap(
+    p: busbar_api::PromptProjection<'_>,
+) -> busbar_api::PromptProjection<'_> {
     let cap = busbar_substrate::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly UNLIMITED — the operator turned the ceiling off (`0 = unlimited`), exactly as the
@@ -1508,7 +1510,10 @@ fn enforce_invoke_content_cap(p: busbar_api::PromptProjection<'_>) -> busbar_api
 ///
 /// FAIL-CLOSED end to end: a reply with no usable object (empty messages, plain-text content, a
 /// non-object) leaves `arguments` UNTOUCHED and returns `false` — never a corrupted call.
-fn apply_rewrite_to_invoke_args(args: &mut serde_json::Value, rw: &busbar_api::RewriteReply) -> bool {
+fn apply_rewrite_to_invoke_args(
+    args: &mut serde_json::Value,
+    rw: &busbar_api::RewriteReply,
+) -> bool {
     let mut new_args: Option<serde_json::Value> = None;
     for msg in &rw.messages {
         // Prefer an explicit `content`; fall back to the message value itself only when it carries no

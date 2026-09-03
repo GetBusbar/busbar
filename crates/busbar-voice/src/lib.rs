@@ -91,7 +91,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // noun beside `pools:`/`tools:`/`agents:`. The registry `key` stays the crate identity
         // (`"voice"`), so key ≠ config_section here exactly as the MCP plane's key is `"mcp"` while its
         // declaring section is `"tools:"`. The plane parses `streams:` through the seam
-        // (`parse_section`) once its config grammar lands (P2); the skeleton declares the noun now so
+        // (`parse_section`) once its config grammar lands; the plane declares the noun now so
         // core names no `streams`/`voice` parse target and voice can register `streams:` and boot.
         config_section: "streams",
         // One session is granted at the whole-session granularity.

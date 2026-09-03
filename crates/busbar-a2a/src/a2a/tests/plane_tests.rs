@@ -336,11 +336,10 @@ fn every_registry_mutation_moves_the_generation() {
 ///      is BYTE-IDENTICAL to the submitted row (no re-encode round-trip) — proving the inner erasure
 ///      also survives with its own preserved `TypeId`.
 ///
-/// The baked NEGATIVE CONTROL at the end proves the witness is not vacuously green: a plane-crate
-/// stand-in monomorphised HERE (what a generic `Engine<Row>` compiled in the plane crate would present
-/// as) erased into the SAME slot FAILS the downcast to the substrate engine. See the commit's
-/// red-before-green note: temporarily boxing that stand-in in step 2/3 turns the load-bearing
-/// `.expect(...)` red, confirming this discriminates on `TypeId` and would catch a divergent engine.
+/// The baked NEGATIVE CONTROL proves the readback is not vacuously green: a plane-crate stand-in
+/// monomorphised HERE (what a generic `Engine<Row>` compiled in the plane crate would present as),
+/// erased into the SAME slot, FAILS the downcast to the substrate engine — so the readback
+/// discriminates on `TypeId` and catches a divergent engine rather than accepting any value.
 #[test]
 fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_slot() {
     use busbar_core::test_support::TestApp;
@@ -445,7 +444,7 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
         "the row is byte-identical across erase -> downcast across the two core instances"
     );
 
-    // NEGATIVE CONTROL (baked red-before-green): a plane-crate-local stand-in — what a generic engine
+    // NEGATIVE CONTROL: a plane-crate-local stand-in — what a generic engine
     // monomorphised HERE, in the plane crate, would present as — erased into the SAME core slot must
     // FAIL the downcast to the substrate engine. If this ever downcasts successfully, the witness above
     // is vacuous (the downcast would be discriminating on nothing). This is the exact failure a

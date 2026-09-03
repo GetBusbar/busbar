@@ -18,9 +18,7 @@
 //! the byte-identical-when-unconfigured guarantee is the control: with no rewrite hook the backend
 //! must receive the caller's ORIGINAL `params`, verbatim.
 
-use super::relay_harness::{
-    backend_ok, call, call_agent, envelope, harness_gated, Gates, Outcome,
-};
+use super::relay_harness::{backend_ok, call, call_agent, envelope, harness_gated, Gates, Outcome};
 use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 /// A `prompt: rw` REWRITE gate on the hermetic test cdylib. `raw_transform_reply` drives its
@@ -121,7 +119,10 @@ async fn a_rewrite_hook_edits_the_submission_params_before_the_hop() {
     )
     .await;
     let (status, body) = call(&h).await;
-    assert_eq!(status, 200, "the rewritten submission must still be served: {body}");
+    assert_eq!(
+        status, 200,
+        "the rewritten submission must still be served: {body}"
+    );
 
     let sent = h.sent();
     assert_eq!(sent.len(), 1, "the rewritten submission was relayed once");

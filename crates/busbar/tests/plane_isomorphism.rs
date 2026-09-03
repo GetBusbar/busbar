@@ -49,7 +49,7 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
     ("openapi", |d| d.openapi.is_some()),
     // NOTE: `openapi_schemas` is `#[cfg(feature = "openapi-schema")]`-gated on PlaneDecl, so it is
     // genuinely ABSENT from the default build this test runs in. Reflecting it would make the hook set
-    // feature-conditional (the I1 concern), so it is deliberately not in this set.
+    // feature-conditional, so it is deliberately not in this set.
     ("hydrate", |d| d.hydrate.is_some()),
     ("start", |d| d.start.is_some()),
     ("config_validate", |d| d.config_validate.is_some()),
@@ -92,12 +92,18 @@ fn repo_root() -> PathBuf {
 /// The installed planes' actual `&'static PlaneDecl`s — the same consts the composition root pushes
 /// through `install_planes` (and the content of the test-support plane registry). Referenced directly
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
+// Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
+// is installed, so this yields an empty set and the gate test below is vacuous (returns early).
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
-    vec![
-        ("llm", &busbar_llm::PLANE_DECL),
-        ("mcp", &busbar_mcp::PLANE_DECL),
-        ("a2a", &busbar_a2a::PLANE_DECL),
-    ]
+    #[allow(unused_mut)]
+    let mut v: Vec<(&'static str, &'static PlaneDecl)> = Vec::new();
+    #[cfg(feature = "proto-llm")]
+    v.push(("llm", &busbar_llm::PLANE_DECL));
+    #[cfg(feature = "plane-mcp")]
+    v.push(("mcp", &busbar_mcp::PLANE_DECL));
+    #[cfg(feature = "plane-a2a")]
+    v.push(("a2a", &busbar_a2a::PLANE_DECL));
+    v
 }
 
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
@@ -250,7 +256,7 @@ fn verify(
         }
     }
 
-    // (3) EXACTNESS both ways: every actual asymmetric None must be declared (G1), and every declared
+    // (3) EXACTNESS both ways: every actual asymmetric None must be declared, and every declared
     //     row must be an actual asymmetric None (no stale exemption).
     let undeclared: Vec<String> = asymmetric_nones
         .iter()
@@ -303,8 +309,13 @@ fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
 
 #[test]
 fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
+    let decls = installed_decls();
+    if decls.is_empty() {
+        // No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous.
+        return;
+    }
     let root = repo_root();
-    let matrix = reflect(&installed_decls());
+    let matrix = reflect(&decls);
     let ledger = read_json(&root.join("qa/capability-equality.json"));
     let allow = read_json(&root.join("qa/plane-hook-isomorphism.allow"));
 
@@ -404,7 +415,7 @@ fn selftest_green_fixture_passes_and_counts_the_one_asymmetry() {
 
 #[test]
 fn selftest_undeclared_asymmetric_none_is_red() {
-    // Drop the only allowlist row: the h0/p_b asymmetry is now undeclared → RED (G1).
+    // Drop the only allowlist row: the h0/p_b asymmetry is now undeclared → RED.
     let (m, ledger, mut allow, cols) = fixtures();
     allow["asymmetries"] = serde_json::json!([]);
     let err = verify(&m, &ledger, &allow, &cols, 15, 0)

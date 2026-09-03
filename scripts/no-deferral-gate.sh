@@ -10,10 +10,10 @@
 #   self-labelled "SKELETON / dev-only until DoD" that a shipping feature depends on. It is a witness
 #   in the same family as scripts/plane-purity-lint.sh: it greps a precisely-scoped file set for a
 #   precisely-defined marker set, asserts the set is EXACTLY the committed allowlist floor, and fails
-#   loudly (and by default) on any drift. It cannot be satisfied by renaming a marker (§3 of the spec):
+#   loudly (and by default) on any drift. It cannot be satisfied by renaming a marker:
 #   over- AND under-count are both RED.
 #
-# TWO ORTHOGONAL DETECTORS (spec §1b):
+# TWO ORTHOGONAL DETECTORS:
 #   Class A — deferral MACRO invocations a caller can reach. Matched only as a STATEMENT at line
 #             start (after optional leading whitespace / `pub …`), on COMMENT-STRIPPED code, so a
 #             `// … unimplemented!() …` prose mention (the busbar-core/plane_host anti-markers that
@@ -26,7 +26,7 @@
 #                                  lowercase domain word "skeleton"/"message skeleton" is NOT a marker)
 #               dev-only until     until DoD     HONEST PENDING     PlaneDecl::STUB
 #
-# FILE SCOPE (spec §1a): every workspace member's shipped source —
+# FILE SCOPE: every workspace member's shipped source —
 #   INCLUDE  crates/*/src/**/*.rs
 #   EXCLUDE  **/tests/**  **/*test*.rs  (unit-test-heavy modules)   [+ a #[cfg(test)] mod { … } block]
 #            docs/**  *.md are never under crates/*/src, so they are out of scope structurally.
@@ -37,7 +37,7 @@
 # row is:  <MATCHER><whitespace><reason>.  MATCHER is either an EXACT `path:line`, or a PATH GLOB
 # (any matcher without a trailing `:<digits>` — e.g. `crates/busbar-plugin/src/hot/*`). A marker is
 # WAIVED when an exact row equals its `file:line` OR a glob row matches its file. The allowlist is a
-# FLOOR CHECKED BOTH WAYS (spec §3.2):
+# FLOOR CHECKED BOTH WAYS:
 #   * any marker NOT waived            → RED (a new/undeclared deferral; over-count).
 #   * any waiver matching ZERO markers → RED (a stale exemption whose marker was resolved; under-count).
 # So a deferral cannot be laundered by moving it into a file that already had exemptions, and a

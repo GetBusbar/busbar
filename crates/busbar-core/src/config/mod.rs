@@ -5004,7 +5004,7 @@ pub fn resolve(
     // is present and this never fires; with it compiled out the `RawPlaneSection` reports
     // `is_present()` for a section the operator wrote, and there is no decl for it.
     //
-    // FAIL-CLOSED (F3): this reads the FROZEN STATIC noun source
+    // FAIL-CLOSED: this reads the FROZEN STATIC noun source
     // `busbar_substrate::plane::config::NAMED_MAP_SECTIONS`, NOT the registry-derived
     // `NamedMapSection::sections()` — the latter goes EMPTY of a plane's section when the plane is
     // compiled out, which would let a `tools:`/`agents:` block for an absent plane slip through

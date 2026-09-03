@@ -1618,7 +1618,10 @@ async fn tools_call(
     // no arguments clone, no serialize, no blocking hop, and `arguments` is never touched — so the
     // request that goes upstream is byte-for-byte what it is today. A committed rewrite is the only
     // thing that changes a byte; an abstaining chain returns the original bytes.
-    if ctx.host.tap_attached(crate::PLANE_DECL.key, &selected.server) {
+    if ctx
+        .host
+        .tap_attached(crate::PLANE_DECL.key, &selected.server)
+    {
         // Serialized ONCE for the seam. Byte-safe for the same reason the gate's is: `preserve_order`
         // is OFF, so the round-trip preserves the `Value`.
         let args_json = serde_json::to_vec(&arguments).unwrap_or_default();
