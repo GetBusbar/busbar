@@ -171,6 +171,37 @@ jobs:
           path: voice-cross-parity.log
           if-no-files-found: warn
 
+  boot-validate:
+    name: "boot --features plane-voice parses the owned streams: section"
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      # M5: the composition root LINKS busbar-voice under `plane-voice`, the plane OWNS the `streams:`
+      # section, and its grammar is reached at config validation. This leg proves that end to end, so a
+      # regression that unwires `parse_section`/`owned_config_sections` — or one that lets a second
+      # plane claim `streams` — is RED here rather than discovered at a live boot.
+      - name: Build busbar with the voice plane
+        run: cargo build -p busbar --features plane-voice
+      - name: "The owned streams: grammar parses/refuses; voice reaches config_sections; the dup-claim guard bites"
+        run: |
+          set -euo pipefail
+          # (a) a valid streams: block parses through voice's parse_section, and an unknown key is
+          #     refused by deny_unknown_fields (the section's typed grammar is actually reached).
+          cargo test -p busbar-voice --features runtime config:: -- --nocapture | tee voice-boot-validate.log
+          # (b) "streams" reaches busbar_core::plane::config::config_sections() once voice is
+          #     registered, and (c) the dup-claim guard admits the real voice decl and REFUSES a
+          #     planted second claimant of `streams`.
+          cargo test -p busbar --features plane-voice --test voice_boot -- --nocapture | tee -a voice-boot-validate.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: voice-boot-validate
+          path: voice-boot-validate.log
+          if-no-files-found: warn
+
   governance-probe:
     name: governance probe · 5 vision checkpoints (NOT a conformance result)
     needs: gate-selftest
@@ -206,6 +237,7 @@ jobs:
       - spec-per-dialect
       - replay
       - cross-parity
+      - boot-validate
       - governance-probe
     steps:
       # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. Every leg above is required to have reached
@@ -219,6 +251,7 @@ jobs:
           SPEC_PER_DIALECT: ${{ needs.spec-per-dialect.result }}
           REPLAY: ${{ needs.replay.result }}
           CROSS_PARITY: ${{ needs.cross-parity.result }}
+          BOOT_VALIDATE: ${{ needs.boot-validate.result }}
           GOVERNANCE_PROBE: ${{ needs.governance-probe.result }}
         run: |
           set -euo pipefail
@@ -235,6 +268,7 @@ jobs:
           strict spec-per-dialect  "$SPEC_PER_DIALECT"
           strict replay            "$REPLAY"
           strict cross-parity      "$CROSS_PARITY"
+          strict boot-validate     "$BOOT_VALIDATE"
           strict governance-probe  "$GOVERNANCE_PROBE"
 
           [ "$fail" -eq 0 ] || exit 1

@@ -39,6 +39,10 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
+# THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
+# `plane-voice`, and NOT in `default` — voice is dev-only until DoD, so the shipped binary is
+# byte-unchanged. The `busbar-voice/runtime` edge is carried by the feature (below), not here.
+busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -86,9 +90,18 @@ plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp"]
 # section when off, so `--no-default-features` drops the `busbar-a2a` edge and compiles the whole A2A
 # plane out while core still routes LLM + MCP (the plane-split deletion test).
 plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
+# THE VOICE PLANE, the busbar-voice crate, behind this switch. The analogue of `plane-a2a` — one
+# switch for the crate edge + the core/substrate forwards — EXCEPT it is deliberately absent from
+# `default`. `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
+# runtime (the same feature it would be under `busbar-voice/runtime`, since `dep:busbar-voice` here
+# enables the crate). The `?/` spelling is deliberate: it makes the forward an OPTIONAL-dep feature
+# reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
+# rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
+# runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
+plane-voice = ["dep:busbar-voice", "busbar-voice?/runtime", "busbar-core/plane-voice"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
-openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema"]
+openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
 txn-fence-red = ["busbar-core/txn-fence-red"]
 

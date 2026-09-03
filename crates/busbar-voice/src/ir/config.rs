@@ -9,10 +9,11 @@
 //! LLM-plane precedent: serde-derive is reserved for CONFIG shapes (stable, named, closed field sets),
 //! while streaming EVENTS are hand-mapped. The Realtime `session` object is exactly a config shape.
 //!
-//! While OpenAI Realtime is the sole dialect (`codec: None`, `plane4-duplex-session.md` §1.4) this typed config IS the neutral
-//! IR — there is no cross-dialect superset to normalize into yet. The GA field set is modeled
-//! faithfully so a decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as
-//! `serde_json::Value`; the plane locks and reconciles them but never reshapes them).
+//! This typed config IS the plane's neutral session-config IR — the cross-dialect superset both dialects
+//! (OpenAI Realtime + Gemini Live, `plane4-duplex-session.md` §1.4) read and write, now that the plane
+//! has earned a superset at its second wire format. The GA field set is modeled faithfully so a
+//! decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as `serde_json::Value`;
+//! the plane locks and reconciles them but never reshapes them).
 
 use crate::ir::control::IrVad;
 use crate::ir::media::AudioFormat;

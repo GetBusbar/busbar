@@ -673,6 +673,12 @@ fn register_planes() {
     // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
     #[cfg(feature = "plane-a2a")]
     installed.push(&busbar_a2a::PLANE_DECL);
+    // The VOICE plane (Plane 4), now its own crate (`busbar-voice`). Same slot and reason as the A2A
+    // row: `--validate` reads the plane list, so the axis is installed before any reader. Present
+    // only under `plane-voice` — deliberately NOT in `default` (voice is dev-only until DoD), so a
+    // shipped build pushes nothing and its `streams:` section stays unclaimed.
+    #[cfg(feature = "plane-voice")]
+    installed.push(&busbar_voice::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 }
 
@@ -694,6 +700,8 @@ fn register_diagnostics() {
     installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
     #[cfg(feature = "plane-a2a")]
     installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
+    #[cfg(feature = "plane-voice")]
+    installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
     busbar_substrate::diagnostics::install_diagnostics(installed.leak());
 }
 

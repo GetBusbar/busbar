@@ -19,21 +19,9 @@
 # effort (docs/design/1.6.0-protocols-as-plugins.md), not a voice/1.6.0-GA blocker.
 crates/busbar-plugin/src/hot/*   plane-ABI foundation compile-surface fixtures (STUB): additive/unused, never dispatched; out-of-1.6.0-scope (protocols-as-plugins effort)
 
-# ── TRACKED 1.6.0 DEBT: busbar-voice ships today as a declared SKELETON ────────────────────────────
-# Plane 4 (voice) is FULL-scope in 1.6.0 but ships today with handler: None / verbs: &[] and its live
-# runtime behind #[cfg(feature = "runtime")] (OFF by default), not installed in the binary. These 12
-# SKELETON / "dev-only until DoD" marker lines are HARD DEBT: when voice ships they MUST be removed AND
-# the state assertion (real handler, real verbs, runtime compiled in, PLANE_DECL installed) must pass.
-# --strict-done FAILS while any of these rows remain, so "1.6.0 done" mechanically requires them gone.
-crates/busbar-voice/src/lib.rs:4      voice SKELETON label (crate header) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:39     voice "dev-only until DoD" — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:47     voice "dev-only until DoD" — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:80     voice SKELETON label (PLANE_DECL) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:104    voice SKELETON label (mounts nothing yet) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:145    voice SKELETON label (handler: None / verbs: &[]) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:152    voice SKELETON label (no request handler yet) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/lib.rs:154    voice SKELETON label (no verbs declared yet) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/ir/mod.rs:24  voice SKELETON label (IR types are stubs) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/ir/usage.rs:15 voice SKELETON label (CostBreakdown fold is future work) — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/runtime/mod.rs:6  voice "dev-only until DoD" — tracked 1.6.0 DoD debt
-crates/busbar-voice/src/runtime/mod.rs:93 voice "dev-only until DoD" — tracked 1.6.0 DoD debt
+# ── busbar-voice: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
+# The voice plane's IR + both dialect codecs + T2 runtime + both topologies are implemented (behind the
+# "runtime" feature) and the plane is installed at boot behind `plane-voice`; the stale SKELETON /
+# "dev-only until DoD" marker prose in busbar-voice src has been reworded to truthful current-state, so
+# no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
+# the config-schema tracking note or the composition-root feature comment — is separate work.)

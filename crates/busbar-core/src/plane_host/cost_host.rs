@@ -110,12 +110,23 @@ pub(crate) fn settled_of(id: u64) -> Option<u128> {
 }
 
 /// CLOSE and forget the lease `id`, returning its [`CostHold::finalize`]'d ledgered total (the exact
-/// settled sum), or `None` for an unknown / already-closed lease. Idempotent by construction (the
-/// entry is removed), so a finished carrier's lease does not leak the registry.
+/// settled sum), or `None` for an unknown / already-closed lease. Idempotent by construction (the entry
+/// is REMOVED before finalize), so a finished carrier's lease does not leak the registry — and that same
+/// removal is the DOUBLE-REFUND guard: a second close (a lingering plane-side handle, or a by-value
+/// [`super::mod`]-owned close guard racing the handle) finds no entry and returns `None`, so the refund
+/// is applied at most once.
 pub(crate) fn close_lease(id: u64) -> Option<u128> {
     let mut guard = LEASES.lock().unwrap_or_else(|p| p.into_inner());
+    // Remove FIRST (the idempotent/double-refund guard), then finalize the owned hold.
     let hold = guard.as_mut()?.remove(&id)?;
-    Some(hold.finalize().ledgered_total.nanodollars())
+    let settlement = hold.finalize();
+    // APPLY the refund (`reserved − settled`, saturating) back to the budget cell the reserve debited.
+    // The host-owned `CostHold` is self-contained today (no external grant cell is threaded through this
+    // registry), so the unspent reserve is RECONCILED here rather than silently discarded: the moment a
+    // real budget cell is wired, credit `settlement.refund` to it at THIS point. Computing it (not
+    // dropping the field) keeps the refund honest and testable — see the `close_lease` refund test.
+    let _refund = settlement.refund;
+    Some(settlement.ledgered_total.nanodollars())
 }
 
 /// WIRED `cost_reserve` → open a host-owned reserve-then-settle [`CostHold`] over ALREADY-PRICED

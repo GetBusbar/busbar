@@ -21,7 +21,7 @@ use crate::ir::media::AudioFormat;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, UplinkForwarder, VoiceSession};
-use crate::runtime::VoiceRuntime;
+use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
 use crate::topology::{begin_session, SessionBudget, StartError};
 use busbar_substrate::ingress::byte_duplex::serve_messages;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
@@ -48,6 +48,9 @@ pub struct TelephonyProxy<C> {
     pub core: Arc<SessionCore<C>>,
     /// The durable session binding to close at teardown.
     pub handle: SessionHandle,
+    /// The by-value D2 lease close guard — moved into [`TelephonyProxy::run`]'s frame so the reserve is
+    /// closed deterministically on any exit, even when a parked handler pins `Arc<SessionCore>`.
+    guard: LeaseCloseGuard,
     /// The downlink-facing plane — serve it over the PROVIDER socket.
     downlink_plane: Arc<VoiceSession<C>>,
     /// The uplink-facing plane — serve it over the CLIENT socket.
@@ -79,7 +82,7 @@ where
     let (downlink_tx, downlink_rx) = unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(downlink_tx);
 
-    let (core, handle) = begin_session(
+    let (core, handle, guard) = begin_session(
         rt,
         codec,
         owner,
@@ -98,6 +101,7 @@ where
     Ok(TelephonyProxy {
         core,
         handle,
+        guard,
         downlink_plane,
         uplink_plane,
         upstream_rx,
@@ -143,12 +147,19 @@ where
         let TelephonyProxy {
             core,
             handle: _handle,
+            guard,
             downlink_plane,
             uplink_plane,
             upstream_rx,
             upstream_tx,
             downlink_rx,
         } = self;
+
+        // OWN the close guard in this frame: it drops when `run()` returns on ANY path — EOF, the
+        // hard-close `select!` race below, or a panic unwinding through here — closing the D2 lease's
+        // reserve deterministically, even if a parked-at-await handler still pins `Arc<SessionCore>`
+        // (which would refcount-gate the settle handle's own `Drop` close and leak the reserve).
+        let _lease_guard = guard;
 
         let carrier = core.carrier().clone();
 

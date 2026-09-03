@@ -965,6 +965,42 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     );
 }
 
+/// The VOICE plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
+/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is what
+/// `busbar_voice::PLANE_DECL` does at M5).
+static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    key: "one",
+    owned_config_sections: &["streams"],
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane also claiming `streams` — the collision the guard must refuse by construction.
+static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    key: "two",
+    owned_config_sections: &["streams"],
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
+    // M5: `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so voice's lone claim is ADMITTED.
+    crate::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS],
+        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("`streams` is not core-owned and has one claimant — the voice claim must be admitted");
+    // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
+    let err = crate::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
+        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("streams") && err.contains("one") && err.contains("two"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
 #[test]
 fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
     // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.

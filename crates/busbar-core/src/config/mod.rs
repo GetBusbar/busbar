@@ -29,7 +29,7 @@ pub(crate) use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -3060,6 +3060,17 @@ pub struct DeployCfg {
     // `resolve`.
     #[serde(default)]
     pub(crate) agents: AgentsSection,
+    /// The top-level `streams:` section (1.6.0) — THE VOICE PLANE's owned config: the locked session
+    /// defaults (media/VAD/`SessionConfig`) plus the three session ceilings (wall-clock, context
+    /// window, per-response output tokens). SINGULAR typed section (one live-voice posture per
+    /// deployment), NOT a named-definition map, so it carries no reserved section words and no
+    /// registrations.
+    // Type-erased through the neutral `StreamsSection` seam: `streams:` deserializes into the voice
+    // plane's own `StreamsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `busbar_voice` type. The
+    // plane compiled out (voice off-default) captures it RAW and refuses a present section at
+    // `resolve`, exactly as `tools:`/`agents:` do — so no `#[cfg]` guards the field itself.
+    #[serde(default)]
+    pub(crate) streams: StreamsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
     // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -5023,6 +5034,23 @@ pub fn resolve(
                  remove the `{section}:` block."
             ));
         }
+    }
+    // The VOICE plane's `streams:` section is SINGULAR (one live-voice posture per deployment), so it
+    // is NOT a `NamedMapSection` and not in the mirror above — it is checked the same way in its own
+    // right: a present `streams:` block with no registered voice plane (the default, voice-off build)
+    // names a section this build cannot serve and is refused at resolve, byte-identical to a present
+    // `tools:`/`agents:` naming a compiled-out plane. With voice registered the decl is present and
+    // this never fires; with it compiled out the `RawPlaneSection` reports `is_present()` for a
+    // section the operator wrote, and there is no decl for it.
+    if deploy.streams.0.is_present()
+        && crate::plane::registry::plane_decl_for_config_section("streams").is_none()
+    {
+        errors.push(
+            "`streams:` is configured, but this build was compiled without the plane that owns it, \
+             so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove the \
+             `streams:` block."
+                .to_string(),
+        );
     }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
