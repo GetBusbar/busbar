@@ -86,7 +86,14 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         key: "voice",
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
-        config_section: "voice",
+        // THE DUPLEX / LIVE-VOICE PLANE'S DECLARING SECTION is `streams:` (1.6.0 config-seam KEYSTONE
+        // stage C) — the top-level noun whose mere existence declares this plane, the fourth plane
+        // noun beside `pools:`/`tools:`/`agents:`. The registry `key` stays the crate identity
+        // (`"voice"`), so key ≠ config_section here exactly as the MCP plane's key is `"mcp"` while its
+        // declaring section is `"tools:"`. The plane parses `streams:` through the seam
+        // (`parse_section`) once its config grammar lands (P2); the skeleton declares the noun now so
+        // core names no `streams`/`voice` parse target and voice can register `streams:` and boot.
+        config_section: "streams",
         // One session is granted at the whole-session granularity.
         scope_kinds: &["session"],
         subject_noun: "voice session",
