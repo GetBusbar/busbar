@@ -8,9 +8,9 @@
 //! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS (mcp/a2a/llm/voice)
 //! and the LLM dialects; the Plane-4 (busbar-voice) duplex/live-voice plane drags in a SECOND
 //! vocabulary that plane-purity does not name — the transport/media nouns
-//! `rtc / sdp / webrtc / twilio / dtmf / rtp / sideband / realtime / audio / mulaw / g711 / barge`
-//! (docs/design/plane4-duplex-session.md §7.2). A leak of any of them into a neutral crate is the
-//! forward-edge regression the plane ABI exists to prevent.
+//! `rtc / sdp / webrtc / twilio / dtmf / rtp / sideband / realtime / audio / mulaw / g711 / barge`.
+//! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to
+//! prevent.
 //!
 //! This is the belt-and-suspenders twin of the shell gate: the shell gate is the BLOCKING CI gate;
 //! this runs in every `cargo test`, so a neutral-crate transport-noun leak reddens the workspace test
@@ -28,8 +28,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The banned voice-transport/media nouns, lowercase (Plane-4, docs/design/plane4-duplex-session.md
-/// §7.2). Every one has ZERO code hits in the neutral crates today; this witness keeps it that way.
+/// The banned voice-transport/media nouns, lowercase (the Plane-4 duplex/live-voice transport
+/// vocabulary). Every one has ZERO code hits in the neutral crates today; this witness keeps it so.
 const NOUNS: &[&str] = &[
     "rtc", "sdp", "webrtc", "twilio", "dtmf", "rtp", "sideband", "realtime", "audio", "mulaw",
     "g711", "barge",
