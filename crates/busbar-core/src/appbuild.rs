@@ -1200,6 +1200,33 @@ pub fn build_app_from_config(
             app_config_version,
         )
     };
+    // THE TAP/TRANSFORM twins of the two gate maps above: each plane's per-container `prompt: rw`
+    // rewrite chains, resolved once per generation exactly like the gates. Empty on every deployment
+    // that attaches no rewrite hook, so the transform firing sites stay zero-cost / byte-identical.
+    let mcp_server_rewrites = {
+        let g = cfg.tool_defs.container_gates();
+        hooks::resolve_container_rewrites(
+            g.containers
+                .iter()
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
+            &g.section_hooks,
+            &cfg.hooks,
+            &hook_env,
+            app_config_version,
+        )
+    };
+    let a2a_agent_rewrites = {
+        let g = cfg.agent_defs.container_gates();
+        hooks::resolve_container_rewrites(
+            g.containers
+                .iter()
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
+            &g.section_hooks,
+            &cfg.hooks,
+            &hook_env,
+            app_config_version,
+        )
+    };
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
@@ -1575,6 +1602,22 @@ pub fn build_app_from_config(
                 busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, a2a_agent_gates);
+            }
+            m
+        },
+        // THE TAP twin of `plane_gates`, built identically: each plane's rewrite-chain map under its
+        // decl key, empty (hence not inserted) for a compiled-out plane.
+        plane_rewrites: {
+            let mut m = std::collections::BTreeMap::new();
+            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+            ) {
+                m.insert(decl.key, mcp_server_rewrites);
+            }
+            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+            ) {
+                m.insert(decl.key, a2a_agent_rewrites);
             }
             m
         },

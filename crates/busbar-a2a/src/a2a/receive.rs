@@ -965,7 +965,10 @@ async fn admitted(
     principal: busbar_api::AuthPrincipal,
     target: Target,
     a2a_version: &'static str,
-    envelope: serde_json::Value,
+    // `mut` because a `prompt: rw` rewrite hook may edit the submission `params` in place (see the
+    // TRANSFORM pass after the gate); absent an attached rewrite hook it is never mutated, so the
+    // relayed body stays the verbatim caller bytes and the path is byte-identical.
+    mut envelope: serde_json::Value,
     rpc_id: serde_json::Value,
     // THE BYTES AS THEY ARRIVED. Carried alongside the parsed envelope, never re-derived from it:
     // this plane relays a submission VERBATIM when `idmap` has nothing to rewrite, and
@@ -1138,6 +1141,98 @@ async fn admitted(
                 )),
             )
                 .into_response();
+        }
+    }
+
+    // ── THE OPERATOR'S REWRITE (TAP/TRANSFORM) PASS — the `prompt: rw` half of `agents.hooks:` and
+    //    `agents.<agent>.hooks:`. ──────────────────────────────────────────────────────────────────
+    //
+    // The twin of the MCP plane's rewrite pass, through the SAME `transform_over` host seam and the
+    // SAME `InvokeReq` projection (method + `params`). Fired right after the gate and BEFORE the
+    // meter/egress gate/callback guard/task row, so a redaction/guardrail hook edits the submission
+    // `params` that go upstream before any credential is leased or durable row minted — the same
+    // ordering the gate makes about itself, one step later.
+    //
+    // BYTE-IDENTICAL when nothing is attached: `tap_attached` misses, nothing is serialized or hopped,
+    // `envelope` is never mutated, and the relay forwards the caller's VERBATIM bytes exactly as today.
+    // A committed rewrite is the ONLY thing that flips `params_rewritten` and re-serializes the body.
+    let mut params_rewritten = false;
+    // The rewritten `params`, captured here and written back into `envelope` at the relay-body site —
+    // deferred past the last immutable borrow of `envelope` (the `context_id` `&str`), so the mutation
+    // is legal without owning `context_id`. The rest of `admitted` reads the ORIGINAL `params` (the
+    // gate already screened them); only the RELAYED body carries the rewrite, which is the payload the
+    // upstream tool receives.
+    let mut rewritten_params: Option<serde_json::Value> = None;
+    if engine_host.tap_attached(crate::PLANE_DECL.key, &admitted.dispatch.agent_id) {
+        let params = envelope
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let args_json = serde_json::to_vec(&params).unwrap_or_default();
+        let tool = super::local::method_of(&envelope).to_string();
+        let request_id = engine_host.next_request_id();
+        let agent = admitted.dispatch.agent_id.clone();
+        let key_pair = (key.id.clone(), key.name.clone());
+        let sid = context_id.to_string();
+        let host2 = Arc::clone(&engine_host);
+        let verdict = tokio::task::spawn_blocking(move || {
+            host2.transform_over(
+                crate::PLANE_DECL.key,
+                &agent,
+                request_id,
+                &tool,
+                &args_json,
+                Some((key_pair.0.as_str(), key_pair.1.as_str())),
+                (!sid.is_empty()).then_some(sid.as_str()),
+            )
+        })
+        .await
+        // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed with
+        // the original `params`, unchanged.
+        .unwrap_or(busbar_substrate::plane_host::TransformVerdict::Proceed {
+            applied: false,
+            args_json: Vec::new(),
+        });
+        match verdict {
+            busbar_substrate::plane_host::TransformVerdict::Reject {
+                status,
+                message,
+                hook,
+            } => {
+                engine_host.audit_emit(
+                    AUDIT_ACTION,
+                    &resource,
+                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                    &actor,
+                );
+                tracing::info!(
+                    agent = %admitted.dispatch.agent_id,
+                    hook = %hook,
+                    status,
+                    "a2a submission refused by a rewrite (prompt: rw) hook"
+                );
+                return (
+                    axum::http::StatusCode::from_u16(status)
+                        .unwrap_or(axum::http::StatusCode::FORBIDDEN),
+                    axum::Json(super::rpcerror::body(
+                        &rpc_id,
+                        super::rpcerror::A2aError::UnsupportedOperation,
+                        &message,
+                    )),
+                )
+                    .into_response();
+            }
+            busbar_substrate::plane_host::TransformVerdict::Proceed { applied, args_json } => {
+                if applied {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
+                        // Stash the rewritten params; the write-back into `envelope` happens at the
+                        // relay-body site (deferred past `context_id`'s borrow). The relay re-serializes
+                        // the envelope ONLY when this landed, so the passthrough stays byte-identical
+                        // absent a committed rewrite.
+                        rewritten_params = Some(v);
+                    }
+                }
+            }
         }
     }
 
@@ -1915,8 +2010,27 @@ async fn admitted(
     // backend answered about it, and the answer came back wearing busbar's id. `GetTask` and
     // `CancelTask` crossed the boundary `ListTasks` held. Now an id this caller does not own is left
     // exactly as an id that never existed is left, and the two answers are the same answer.
+    // Write the stashed rewrite back into `envelope` NOW — past every immutable borrow of it above
+    // (the `context_id` `&str`) — so `translate_request` below and the verbatim fallback both carry it.
+    if let Some(p) = rewritten_params.take() {
+        if let Some(obj) = envelope.as_object_mut() {
+            obj.insert("params".to_string(), p);
+            params_rewritten = true;
+        }
+    }
+    // `translate_request` reads the (possibly rewritten) `envelope`, so a task-id substitution already
+    // carries any committed rewrite. Its `None` fallback normally forwards the caller's VERBATIM bytes
+    // — but when a `prompt: rw` hook actually rewrote `params`, those bytes no longer describe the
+    // submission, so the rewritten envelope is re-serialized instead. Absent a rewrite this is exactly
+    // `body.to_vec()`, byte-for-byte the passthrough it always was.
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
-        .unwrap_or_else(|| body.to_vec());
+        .unwrap_or_else(|| {
+            if params_rewritten {
+                serde_json::to_vec(&envelope).unwrap_or_else(|_| body.to_vec())
+            } else {
+                body.to_vec()
+            }
+        });
 
     // `hop_scope` (the ONE bare shared scope, created before `select_member` and now holding the walk's
     // probe) is MOVED onto the blocking relay thread with the hop: its arena reclaims when the hop's

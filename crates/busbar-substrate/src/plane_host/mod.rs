@@ -90,6 +90,39 @@ pub enum GateOutcome {
     },
 }
 
+/// The verdict of a request-admission TRANSFORM (`prompt: rw` rewrite) chain fired over the host
+/// `transform_over` seam — the TAP/observe-transform half of the hook surface, the twin of
+/// [`GateOutcome`] for the rewrite pass. When no rewrite hook is attached the plane never calls the
+/// seam (it guards on [`AdmissionHost::tap_attached`]), so the request/response path is BYTE-IDENTICAL
+/// to a deployment with the seam absent: the tap is a no-op absent hooks.
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+pub enum TransformVerdict {
+    /// The transform chain ran. `args_json` is the (possibly rewritten) payload the plane should send
+    /// upstream; `applied` is `true` IFF a hook actually committed a rewrite (so the plane can keep
+    /// its original bytes untouched — and therefore byte-identical — when no rewrite landed, even
+    /// though a chain of purely-abstaining hooks fired). Reconstructed byte-for-byte from the same
+    /// serde_json round-trip the gate seam uses (`preserve_order` OFF ⇒ a `Value` object is a
+    /// sorted-stable `BTreeMap`).
+    Proceed {
+        /// Whether ANY hook in the chain committed a rewrite to the payload.
+        applied: bool,
+        /// The payload bytes to send upstream — the rewritten `arguments`/`params` when `applied`, or
+        /// a faithful re-serialization of the original otherwise (the plane uses its own bytes then).
+        args_json: Vec<u8>,
+    },
+    /// A `prompt: rw` gate REJECTED the request on the transform path (reject > rewrite > abstain).
+    /// Same clamped/sanitized semantics as a decide-path reject, reconstructed identically to
+    /// [`GateOutcome::Reject`].
+    Reject {
+        /// The hook's refusal status, already clamped to the 4xx band.
+        status: u16,
+        /// The hook's own refusal message (empty on a fail-closed refusal).
+        message: String,
+        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
+        hook: String,
+    },
+}
+
 /// What could be established about a presented bearer's RFC 8707 audience binding — the outcome of
 /// the host `identity_audience_binding` pre-filter, for credentials busbar did not mint.
 ///
@@ -876,6 +909,38 @@ pub trait AdmissionHost: Send + Sync {
     /// skip the blocking `gate_decide` hop when nothing is attached. Identical to
     /// `App::plane_gates(plane_key).contains_key(container)`.
     fn gate_attached(&self, plane_key: &str, container: &str) -> bool;
+
+    /// Cheap presence pre-filter for the TAP/TRANSFORM half: is any `prompt: rw` rewrite hook attached
+    /// to `container` on the plane identified by the opaque registry `plane_key`? Lets a plane skip the
+    /// blocking `transform_over` hop — and stay BYTE-IDENTICAL to a build without the seam — when
+    /// nothing is attached. Identical to `App::plane_rewrites(plane_key).get(container).is_some()`.
+    ///
+    /// The presence check is the whole zero-cost guarantee: absent a rewrite hook a plane never
+    /// serializes the payload, never spawns the blocking hop, and never touches its own bytes.
+    fn tap_attached(&self, plane_key: &str, container: &str) -> bool;
+
+    /// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
+    /// host `transform_over` seam and reconstruct the [`TransformVerdict`] — the TAP/observe-transform
+    /// twin of [`gate_decide`](Self::gate_decide). The host re-selects the rewrite chain by
+    /// `(plane_key, container)` (the Seam-B inversion: the plane body names no core hook symbol), builds
+    /// the SAME `InvokeReq` projection the gate builds from `(tool, args_json)`, runs each hook's
+    /// `transform` in priority order (each seeing the prior's output — a true transform chain), and
+    /// returns the rewritten payload or a reject. Drives the ASYNC hooks on a fresh runtime, so it MUST
+    /// be called from a BLOCKING thread (`spawn_blocking`), exactly like `gate_decide`.
+    ///
+    /// `plane_key`/`container`/`request_id`/`tool`/`args_json`/`key`/`session_id` carry the identical
+    /// meaning they do on [`gate_decide`](Self::gate_decide).
+    #[allow(clippy::too_many_arguments)]
+    fn transform_over(
+        &self,
+        plane_key: &str,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        key: Option<(&str, &str)>,
+        session_id: Option<&str>,
+    ) -> TransformVerdict;
 
     /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
     /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.

@@ -977,6 +977,28 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
             .is_some_and(|g| g.contains_key(container))
     }
 
+    fn tap_attached(&self, plane_key: &str, container: &str) -> bool {
+        // Pure snapshot read of the generic per-plane REWRITE map — the tap twin of `gate_attached`.
+        // `resolve_container_rewrites` never files an empty chain, so presence == a real rewrite hook.
+        self.app
+            .plane_rewrites(plane_key)
+            .and_then(|m| m.get(container))
+            .is_some_and(|c| !c.is_empty())
+    }
+
+    fn transform_over(
+        &self,
+        plane_key: &str,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        _key: Option<(&str, &str)>,
+        _session_id: Option<&str>,
+    ) -> busbar_substrate::plane_host::TransformVerdict {
+        transform_over_over(&self.app, plane_key, container, request_id, tool, args_json)
+    }
+
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
@@ -1283,6 +1305,237 @@ pub fn gate_decide_over(
         status: v.status,
         message: String::from_utf8_lossy(&msg_buf[..m]).into_owned(),
         hook: String::from_utf8_lossy(&hook_buf[..h]).into_owned(),
+    }
+}
+
+/// Fire the operator's REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain over the
+/// container's resolved rewrite hooks and reconstruct the [`TransformVerdict`] — the TAP/observe-
+/// transform twin of [`gate_decide_over`]. The host owns and re-selects the chain by `(plane_key,
+/// container)`, so an MCP/A2A plane body admits a rewrite pass over its payload without ever naming
+/// `crate::hooks` or holding the resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion), exactly
+/// as it fires the gate.
+///
+/// The projection is the SAME `InvokeReq` the gate builds from `(tool, arguments)` — rebuilt from the
+/// CURRENT arguments on every iteration so a later hook sees the earlier rewrite (a true transform
+/// chain, mirroring the LLM `apply_global_rewrites` seam). Precedence on the transform path is the
+/// canonical **reject > rewrite > abstain**.
+///
+/// FAIL-SAFE, not fail-closed: a rewrite is an OBSERVE/transform pass (the admission GATE already ran
+/// and screened the request), so a hook that errors, times out or abstains — or a runtime that will
+/// not start — proceeds with the ORIGINAL payload, byte-for-byte. Only an explicit `reject` stops the
+/// request, and only a committed `rewrite` changes a byte.
+///
+/// Drives the ASYNC hooks on a fresh current-thread runtime, so it MUST be called from a BLOCKING
+/// thread (`spawn_blocking`) — `block_on` on a runtime worker would panic — exactly like
+/// [`gate_decide_over`].
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn transform_over_over(
+    app: &App,
+    plane_key: &str,
+    container: &str,
+    request_id: u64,
+    tool: &str,
+    args_json: &[u8],
+) -> busbar_substrate::plane_host::TransformVerdict {
+    use busbar_substrate::plane_host::TransformVerdict;
+    // Resolve THIS container's rewrite chain. Empty ⇒ nothing attached ⇒ byte-identical no-op. The
+    // caller already guards on `tap_attached`; the re-check keeps the fn correct if invoked directly.
+    let chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)] = app
+        .plane_rewrites(plane_key)
+        .and_then(|m| m.get(container))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if chain.is_empty() {
+        return TransformVerdict::Proceed {
+            applied: false,
+            args_json: args_json.to_vec(),
+        };
+    }
+    // Rebuild the caller's arguments `Value`. Byte-safe because `serde_json`'s `preserve_order` is OFF
+    // (a `Value` object is a sorted-stable `BTreeMap`), so `to_vec`→`from_slice` round-trips to the
+    // identical `Value` — the same guarantee the gate seam relies on.
+    let mut arguments: serde_json::Value =
+        serde_json::from_slice(args_json).unwrap_or(serde_json::Value::Null);
+    // The `ingress_protocol` label IS the plane's stable decl key (the gate seam's convention).
+    let ingress = plane_key;
+    // Drive the async chain on a fresh current-thread runtime (the gate precedent). A runtime that will
+    // not start is FAIL-SAFE here (proceed with the original body) because the admission gate already
+    // ran — a transform is not an admission point.
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(_) => {
+            return TransformVerdict::Proceed {
+                applied: false,
+                args_json: args_json.to_vec(),
+            }
+        }
+    };
+    let mut applied = false;
+    for (timeout, hook) in chain {
+        // Re-read the InvokeReq facts from the CURRENT arguments so a later hook sees the earlier
+        // rewrite — a true transform chain.
+        let facts = crate::ir::invoke::InvokeReq {
+            tool: tool.to_string(),
+            arguments: arguments.clone(),
+            extra: Default::default(),
+        };
+        let req = build_invoke_rewrite_request(&facts, ingress, request_id);
+        let outcome = rt.block_on(hook.transform(&req, *timeout));
+        drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
+        match outcome {
+            busbar_api::TransformOutcome::Rewrite(rw) => {
+                applied |= apply_rewrite_to_invoke_args(&mut arguments, &rw);
+            }
+            busbar_api::TransformOutcome::Reject { status, message } => {
+                // Already status-clamped + message-sanitized at the wire seam.
+                return TransformVerdict::Reject {
+                    status,
+                    message,
+                    hook: hook.name().to_string(),
+                };
+            }
+            busbar_api::TransformOutcome::Abstain => {}
+        }
+    }
+    // Re-serialize ONLY when a rewrite actually landed; otherwise hand back the caller's ORIGINAL bytes
+    // untouched, so a chain of purely-abstaining hooks is byte-identical to no chain at all.
+    let out = if applied {
+        serde_json::to_vec(&arguments).unwrap_or_else(|_| args_json.to_vec())
+    } else {
+        args_json.to_vec()
+    };
+    TransformVerdict::Proceed {
+        applied,
+        args_json: out,
+    }
+}
+
+/// Build the rewrite (`prompt: rw`) request projection over the NEUTRAL [`IrFacts`] content walk — the
+/// core-side, chat-type-free twin of the LLM plane's `build_rewrite_request`. A rewrite hook is a
+/// content hook, so the prompt is ALWAYS sent (a `prompt: rw` grant is the resolution ticket); identity
+/// is omitted (rewrite operates on content, not caller identity). For the invoke family this projects
+/// ONE `("user", <arguments json>)` message — the arguments are the untrusted content a screening
+/// rewrite hook acts on. The content ceiling is enforced on serialized bytes exactly as the LLM seam
+/// enforces it.
+///
+/// [`IrFacts`]: busbar_substrate::ir::facts::IrFacts
+fn build_invoke_rewrite_request<'a>(
+    facts: &'a dyn busbar_substrate::ir::facts::IrFacts,
+    ingress_protocol: &'a str,
+    request_id: u64,
+) -> busbar_api::RoutingRequest<'a> {
+    use busbar_substrate::ir::facts::Slot;
+    use std::borrow::Cow;
+    let shape = facts.shape();
+    let mut system_pieces: Vec<String> = Vec::new();
+    let mut messages: Vec<(Cow<'a, str>, Cow<'a, str>)> = Vec::new();
+    for item in facts.content() {
+        let text = item.screenable_text().into_owned();
+        if matches!(item.slot(), Slot::System) {
+            system_pieces.push(text);
+        } else {
+            messages.push((Cow::Borrowed(item.author()), Cow::Owned(text)));
+        }
+    }
+    let system = if system_pieces.is_empty() {
+        None
+    } else {
+        Some(Cow::Owned(system_pieces.join("\n")))
+    };
+    let prompt = enforce_invoke_content_cap(busbar_api::PromptProjection { system, messages });
+    busbar_api::RoutingRequest {
+        request_id,
+        // A rewrite over a plane payload has no LLM routing pool; the wire omits it for the rewrite
+        // projection (RESERVED field, no reader), so the empty label is neutral.
+        pool: "",
+        ingress_protocol,
+        requested_model: None,
+        message_count: shape.turn_count,
+        tool_count: shape.tool_count,
+        has_tools: shape.has_tools,
+        total_chars: shape.text_chars,
+        system_chars: shape.system_chars,
+        max_tokens: shape.max_tokens,
+        stream: facts.wants_stream(),
+        prompt: Some(prompt),
+        identity: None,
+        signals: Default::default(),
+    }
+}
+
+/// Enforce the hook content ceiling on a built invoke projection, on SERIALIZED bytes and BEFORE the
+/// call — the same rule the LLM seam's `enforce_content_cap` applies: over-cap content is OMITTED
+/// WHOLE (the hook is sent an empty projection), never truncated mid-value.
+fn enforce_invoke_content_cap(p: busbar_api::PromptProjection<'_>) -> busbar_api::PromptProjection<'_> {
+    let cap = busbar_substrate::proxy::hook_content_max_bytes();
+    if cap == 0 {
+        // Explicitly UNLIMITED — the operator turned the ceiling off (`0 = unlimited`), exactly as the
+        // LLM seam's `enforce_content_cap` reads it. Without this a `0` ceiling would zero EVERY
+        // projection (`bytes <= 0` is false for any content), blinding a screening rewrite hook.
+        return p;
+    }
+    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
+        + p.messages
+            .iter()
+            .map(|(role, text)| role.len() + text.len())
+            .sum::<usize>();
+    if bytes <= cap {
+        return p;
+    }
+    metrics::counter!(busbar_substrate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    busbar_api::PromptProjection {
+        system: None,
+        messages: Vec::new(),
+    }
+}
+
+/// Apply a hook's `rewrite` reply to an INVOKE payload's `arguments` — the invoke-family twin of the
+/// LLM plane's `apply_rewrite_to_body`. This seam names no dialect: an invocation has no conversation
+/// container to reframe, it has one untrusted content member (the `arguments` object), and the rewrite
+/// REPLACES it.
+///
+/// # The invoke rewrite contract
+///
+/// A `prompt: rw` hook rewrites a tool call by returning a replacement arguments OBJECT, carried as a
+/// rewrite `messages` entry — either the message's `content` (an object verbatim, or a JSON string
+/// that parses to an object) or, for a bare message with no `role`, the message value itself. The LAST
+/// message that yields a usable object wins (a true chain: a later hook overrides an earlier one).
+///
+/// FAIL-CLOSED end to end: a reply with no usable object (empty messages, plain-text content, a
+/// non-object) leaves `arguments` UNTOUCHED and returns `false` — never a corrupted call.
+fn apply_rewrite_to_invoke_args(args: &mut serde_json::Value, rw: &busbar_api::RewriteReply) -> bool {
+    let mut new_args: Option<serde_json::Value> = None;
+    for msg in &rw.messages {
+        // Prefer an explicit `content`; fall back to the message value itself only when it carries no
+        // `role` (a bare args object), so a `{role, content:"text"}` message never leaks its role key
+        // into the arguments.
+        let candidate = match msg.get("content") {
+            Some(c) => c,
+            None if msg.get("role").is_none() => msg,
+            None => continue,
+        };
+        let resolved = match candidate {
+            serde_json::Value::Object(_) => Some(candidate.clone()),
+            serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+                .ok()
+                .filter(serde_json::Value::is_object),
+            _ => None,
+        };
+        if resolved.is_some() {
+            new_args = resolved;
+        }
+    }
+    match new_args {
+        Some(v) => {
+            *args = v;
+            true
+        }
+        None => false,
     }
 }
 
