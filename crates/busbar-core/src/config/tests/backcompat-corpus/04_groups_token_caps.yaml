@@ -1,0 +1,34 @@
+# The `groups:` limit tree — the per-tenant cap surface. Exercises every tokens_* metric (mirroring
+# the four cost tiers), the plain `tokens`/`requests`/`budget`/`concurrent` metrics, each accounting
+# window, a pool-scoped limit, a `budget`+`downgrade` on-exhaust rule with its downgrade_to target, a
+# parent/child chain, a frozen (enabled:false) group, and a `child_default` template. Groups are
+# carried through `resolve` VERBATIM, so this pins exactly what governance enforces.
+listen: "0.0.0.0:8080"
+providers:
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+models:
+  gpt-4o:
+    provider: openai
+groups:
+  org:
+    limits:
+      - { requests: 100000, per: day }
+      - { budget: 5000000, per: month }
+    child_default:
+      limits:
+        - { tokens: 1000000, per: day }
+  team-alpha:
+    parent: org
+    limits:
+      - { tokens_input: 2000000, per: hour }
+      - { tokens_output: 500000, per: hour }
+      - { tokens_cache_read: 4000000, per: day }
+      - { tokens_cache_write: 250000, per: day }
+      - { concurrent: 16 }
+      - { budget: 100000, per: month, pool: cheap, on_exhaust: downgrade, downgrade_to: budget-pool }
+  team-frozen:
+    parent: org
+    enabled: false
+    limits:
+      - { tokens: 10000, per: minute }

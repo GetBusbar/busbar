@@ -27,6 +27,9 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
+// The host side of the metering-lease seam (minor-19): the real `cost_reserve`/`cost_settle` shims
+// backed by a host-owned `CostHold` lease registry. The vtable's two cost slots forward into it.
+pub mod cost_host;
 mod creds;
 pub mod dispatch;
 pub mod egress;
@@ -413,59 +416,10 @@ impl EngineHostImpl {
     }
 }
 
-#[async_trait::async_trait]
-impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
-    fn clock_now_secs(&self) -> u64 {
-        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `clock_now` slot driven
-        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call.
-        clock_now_secs_over(&self.app)
-    }
-
-    fn clock_now_ms(&self) -> u64 {
-        clock_now_ms_over(&self.app)
-    }
-
-    fn gate_decide(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        key: Option<(&str, &str)>,
-        session_id: Option<&str>,
-    ) -> busbar_substrate::plane_host::GateOutcome {
-        gate_decide_over(
-            &self.app, plane_key, container, request_id, tool, args_json, key, session_id,
-        )
-    }
-
-    fn govern_admit_reason(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
-    ) -> busbar_substrate::plane_host::GovAdmit {
-        govern_admit_reason_over(&self.app, scope, pool, identity_id, group)
-    }
-
-    fn quarantine_settle(&self, subject: &str, state: crate::trust::TrustState) -> bool {
-        trust::quarantine_settle_over(&self.app, subject, state)
-    }
-
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage) {
-        // SAME dispatch as the in-place `with_borrowed_host` meter the plane's round-charge drove: mint
-        // the transient `HostCtx` over the caller's arena, fire the `meter_charge` slot, and drop the
-        // host pointer without letting it escape. Fire-and-forget, exactly as the direct call was.
-        with_borrowed_host(&self.app, scope, |host, vt| {
-            let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
-                host,
-                usage as *const busbar_plugin::hot::Usage,
-            );
-        });
-    }
-
+// AUDIT-D BRAKE: the BREAKER family, split off `EngineHost` into its `BreakerHost` supertrait. The
+// bodies are relocated byte-for-byte — same-dispatch reaches, same arenas — so the split is purely
+// structural. `EngineHost: BreakerHost` (in substrate) makes these visible on every `dyn EngineHost`.
+impl busbar_substrate::plane_host::BreakerHost for EngineHostImpl {
     fn breaker_admit(
         &self,
         scope: &DispatchScope,
@@ -509,33 +463,108 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
         self.app.plane_breakers.retry_after_secs(pool, lane)
     }
+}
 
-    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
-        // A fresh per-call arena backs the borrow; the redemption registers no host handle, so which
-        // arena reclaims is immaterial. The `ApprovalQuery` is built HERE so the plane passes only the
-        // nonce/expiry/now — it never names the `#[repr(C)]` POD or the `SpentTokenLedger`.
-        let scope = DispatchScope::new();
-        with_borrowed_host(&self.app, &scope, |host, _vt| {
-            let query = busbar_plugin::hot::ApprovalQuery {
-                size: core::mem::size_of::<busbar_plugin::hot::ApprovalQuery>() as u32,
-                version: busbar_plugin::hot::POD_VERSION,
-                _reserved: 0,
-                scope: 0,
-                _reserved2: 0,
-                expires_at,
-                now,
-                key_ptr: nonce.as_ptr(),
-                key_len: nonce.len(),
-            };
-            trust::approval_redeem_q(host, &query as *const busbar_plugin::hot::ApprovalQuery)
-                == busbar_plugin::hot::StatusClass::Ok
-        })
+// AUDIT-D BRAKE: the LANE/POOL family, split off `EngineHost` into its `LanePoolHost` supertrait.
+// Relocated byte-for-byte from the flat impl; `EngineHost: LanePoolHost` keeps every call site working.
+impl busbar_substrate::plane_host::LanePoolHost for EngineHostImpl {
+    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
+        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
+        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
+        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
+        &*self.app.store
     }
 
-    fn next_request_id(&self) -> u64 {
-        self.app.next_request_id()
+    fn default_probe_interval_secs(&self) -> u64 {
+        crate::limits::default_probe_interval_secs()
     }
 
+    fn default_probe_timeout_secs(&self) -> u64 {
+        crate::limits::default_probe_timeout_secs()
+    }
+
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
+        self.app
+            .tool_pools
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
+    }
+
+    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
+        // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
+        // members (the walk derives lanes from member position). A pure snapshot read over the generic
+        // per-plane pool map, keyed by the opaque registry key.
+        self.app
+            .plane_pools(plane_key)?
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
+    }
+}
+
+// AUDIT-D BRAKE (minor-19): the METERING-LEASE family, split off `EngineHost` into its `MeteringHost`
+// supertrait. Each method forwards into the host-owned `CostHold` registry in [`cost_host`] — the SAME
+// registry the FFI `cost_reserve`/`cost_settle` slots fill, so a statically-linked plane's reserve/settle
+// and a dlopen plane's are one ledger. This is the REAL money hop the neutral seam previously lacked: the
+// lease's cap is the caller's live grant ceiling (the plane priced it), and exhaustion (`settled ≥ cap`)
+// is judged host-side against it — not against a plane-private counter. `EngineHost: MeteringHost` makes
+// these visible on every `dyn EngineHost`.
+impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
+    fn cost_reserve(
+        &self,
+        estimate_nanos: u128,
+        fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<busbar_substrate::plane_host::CostLeaseId> {
+        // The host-owned `CostHold` registry is process-global (a lease outlives any one host call — a
+        // live carrier settles many increments against it), so the reserve needs no `HostCtx`; the cap is
+        // the caller's TRUE grant ceiling in nanodollars. A refuse-all cap returns `None` (the plane fails
+        // closed and never opens the session).
+        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos)
+            .map(busbar_substrate::plane_host::CostLeaseId)
+    }
+
+    fn cost_settle(
+        &self,
+        lease: busbar_substrate::plane_host::CostLeaseId,
+        exact_nanos: u128,
+    ) -> Option<busbar_substrate::plane_host::SettleOutcome> {
+        // Accrue the exact already-priced increment against the SAME `CostHold` the reserve opened and
+        // read exhaustion off the real cap. `None` (unknown / closed lease) surfaces so the plane fails
+        // closed, exactly as an exhaustion would.
+        cost_host::settle_lease(lease.0, exact_nanos)
+            .map(|exhausted| busbar_substrate::plane_host::SettleOutcome { exhausted })
+    }
+
+    fn cost_settled(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        cost_host::settled_of(lease.0)
+    }
+
+    fn cost_close(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        cost_host::close_lease(lease.0)
+    }
+}
+
+// M4 (god-trait split): the single `EngineHostImpl` implements each capability slice `EngineHost` now
+// sums. Every method body is byte-identical to the pre-split flat `impl EngineHost` — only the impl
+// block it lives in changed. `EngineHost` itself declares no method of its own (beyond the provided
+// `run_gauntlet`), so the blanket `impl EngineHost for EngineHostImpl` below is empty: the sum is
+// satisfied entirely through the slice impls.
+
+impl busbar_substrate::plane_host::ClockHost for EngineHostImpl {
+    fn clock_now_secs(&self) -> u64 {
+        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `clock_now` slot driven
+        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call.
+        clock_now_secs_over(&self.app)
+    }
+
+    fn clock_now_ms(&self) -> u64 {
+        clock_now_ms_over(&self.app)
+    }
+}
+
+impl busbar_substrate::plane_host::TelemetryHost for EngineHostImpl {
     fn request_finished(
         &self,
         plane: &str,
@@ -579,79 +608,105 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn pool_label<'a>(&self, model: &'a str) -> &'a str {
         crate::ingress::pool_label(&self.app, model)
     }
+}
 
-    fn destination_guard(
-        &self,
-        gov: &busbar_api::PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(), Box<axum::response::Response>> {
-        crate::ingress::destination_guard(&self.app, gov, proto, pool, started, charged_at)
+impl busbar_substrate::plane_host::JournalHost for EngineHostImpl {
+    fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
+        // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
+        // A plain forward to the UNCHANGED core engine.
+        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
-    fn finish_admitted(
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        // The in-process admin ring `record_by` seals into the retained ring AND cascades the SAME
+        // sealed record onto the durable hostless journal — the superset of `audit_emit`'s durable-only
+        // path. The egress audit-and-allow trail reads this ring, so a dropped cross-dialect control
+        // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
+        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
+    }
+
+    fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
+        // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
+        // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
+        // request arena vs open a fresh one) was a no-op distinction for THIS write: a chain append
+        // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
+        // in-place `with_dispatch_scope` leg.
+        with_dispatch_scope(&self.app, |host, _| {
+            crate::calllog::emit(host, principal, input)
+        });
+    }
+
+    fn call_log_emit_hostless(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-        charged: bool,
+        principal: &str,
+        input: busbar_substrate::plane::calllog::CallInput,
+    ) {
+        crate::calllog::emit_hostless(principal, input);
+    }
+}
+
+impl busbar_substrate::plane_host::MountHost for EngineHostImpl {
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `envelope_dialect(app.planes.ingress_of(path))`.
+        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
+    }
+
+    fn arrival_fallback_error(
+        &self,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
     ) -> axum::response::Response {
-        crate::ingress::finish_admitted(
-            &self.app,
-            gov,
-            ingress_protocol,
-            pool,
-            started,
-            charged_at,
-            resp,
-            charged,
-        )
+        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
+        // reach `fallback_error_response(&app.planes, …)`.
+        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
+    }
+}
+
+impl busbar_substrate::plane_host::RegistryHost for EngineHostImpl {
+    fn next_request_id(&self) -> u64 {
+        self.app.next_request_id()
     }
 
-    fn finish_rejected(
-        &self,
-        gov: &busbar_api::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response {
-        crate::ingress::finish_rejected(
-            &self.app,
-            gov,
-            ingress_protocol,
-            pool,
-            started,
-            charged_at,
-            resp,
-        )
+    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
+        self.app.plane_slot(key).cloned()
     }
 
-    fn governance_enabled(&self) -> bool {
-        self.app.governance.is_some()
+    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        match &self.handle {
+            // Re-read the CURRENT snapshot so a swap after mint is seen.
+            Some(h) => h.load().plane_slot(key).cloned(),
+            // Snapshot-only mint: the bound snapshot is the only snapshot this host was handed.
+            None => self.app.plane_slot(key).cloned(),
+        }
     }
 
-    fn lane_store(&self) -> &dyn busbar_substrate::store::LaneRuntime {
-        // A pure borrow of the bound snapshot's store: `App::store` is `Arc<dyn LaneRuntime>` where
-        // `LaneRuntime` is re-exported from `busbar_substrate::store` (wedge 1), so the returned
-        // trait object IS the substrate one — byte-identical to the engine's `&*app.store`.
-        &*self.app.store
+    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
+        // Pure snapshot read: hand the plane the live `Arc<SecretResolver>` behind the neutral
+        // `busbar_api::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
+        // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
+        // `kind: secret` plugin), fail-closed exactly as core resolution.
+        self.app.secret_resolver.clone()
     }
 
-    fn default_probe_interval_secs(&self) -> u64 {
-        crate::limits::default_probe_interval_secs()
+    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
+        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
+        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
+        // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
+        card_sign_over(&self.app, signing_input)
     }
 
-    fn default_probe_timeout_secs(&self) -> u64 {
-        crate::limits::default_probe_timeout_secs()
+    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
+        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
+        self.app.agent_defs.clone()
     }
+}
 
+impl busbar_substrate::plane_host::HookConfigHost for EngineHostImpl {
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
         // Fold the `&App::groups_registry` argument host-side; the walk itself is byte-identical.
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
@@ -706,6 +761,24 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn requested_signals(&self) -> &busbar_substrate::hooks::RequestedSignals {
         &self.app.requested_signals
     }
+}
+
+impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
+    fn governance_enabled(&self) -> bool {
+        self.app.governance.is_some()
+    }
+
+    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage) {
+        // SAME dispatch as the in-place `with_borrowed_host` meter the plane's round-charge drove: mint
+        // the transient `HostCtx` over the caller's arena, fire the `meter_charge` slot, and drop the
+        // host pointer without letting it escape. Fire-and-forget, exactly as the direct call was.
+        with_borrowed_host(&self.app, scope, |host, vt| {
+            let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
+                host,
+                usage as *const busbar_plugin::hot::Usage,
+            );
+        });
+    }
 
     fn rate_headroom(
         &self,
@@ -744,14 +817,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         g.budget_state(&c, key, now)
     }
 
-    fn default_max_tokens(&self) -> u32 {
-        self.app.default_max_tokens
-    }
-
-    fn reasoning_effort_budgets(&self) -> &[u32; 4] {
-        &self.app.reasoning_effort_budgets
-    }
-
     fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
         // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
         self.app.governance.clone().map(|g| {
@@ -772,18 +837,19 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         key: &busbar_api::VirtualKey,
         pool: &str,
         model: &str,
-        tokens: &busbar_api::TierTokens,
+        usage: &busbar_substrate::billing::Usage,
         now: u64,
     ) {
         // Recover the concrete gov/cost the plane's sink minted these handles from and drive the SAME
-        // accrual `sink.gov.record_usage(&sink.cost, …)` did — byte-identical, no re-read of the host
-        // snapshot. A downcast miss (never in practice — the handles are minted here) is a silent no-op,
-        // matching `record_usage`'s own fail-soft posture.
+        // accrual `sink.gov.record_usage(&sink.cost, …)` did. The neutral `Usage` carries the one
+        // name-keyed unit map (reserved four + opens); accrual folds it straight into the cell. A
+        // downcast miss (never in practice — the handles are minted here) is a silent no-op, matching
+        // `record_usage`'s own fail-soft posture.
         if let (Ok(g), Ok(c)) = (
             gov.0.clone().downcast::<crate::governance::GovState>(),
             cost.0.clone().downcast::<crate::cost::CostModel>(),
         ) {
-            g.record_usage(&c, key, pool, model, tokens, now);
+            g.record_usage(&c, key, pool, model, &usage.usage_units, now);
         }
     }
 
@@ -800,113 +866,34 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             g.record_metering(key_id, model, provider, usage, now);
         }
     }
+}
 
-    fn admission_door(
-        &self,
-        gov: &busbar_api::PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<
-        (
-            Option<busbar_substrate::plane_host::AdmitHandle>,
-            Option<String>,
-        ),
-        Box<axum::response::Response>,
-    > {
-        // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
-        // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
-        // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
-        crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
-            |(admit, downgraded)| {
-                (
-                    admit.map(|a| {
-                        busbar_substrate::plane_host::AdmitHandle(
-                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
-                        )
-                    }),
-                    downgraded,
-                )
-            },
-        )
+#[async_trait::async_trait]
+impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
+    fn quarantine_settle(&self, subject: &str, state: crate::trust::TrustState) -> bool {
+        trust::quarantine_settle_over(&self.app, subject, state)
     }
 
-    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
-        self.app.plane_slot(key).cloned()
-    }
-
-    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        match &self.handle {
-            // Re-read the CURRENT snapshot so a swap after mint is seen.
-            Some(h) => h.load().plane_slot(key).cloned(),
-            // Snapshot-only mint: the bound snapshot is the only snapshot this host was handed.
-            None => self.app.plane_slot(key).cloned(),
-        }
-    }
-
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        self.app
-            .tool_pools
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
-    }
-
-    fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
-        // Pure snapshot read of the generic per-plane gate map, keyed by the opaque registry key.
-        self.app
-            .plane_gates(plane_key)
-            .is_some_and(|g| g.contains_key(container))
-    }
-
-    fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)> {
-        // Scan the plane's failover pool map for the pool `member` belongs to and return its name +
-        // members (the walk derives lanes from member position). A pure snapshot read over the generic
-        // per-plane pool map, keyed by the opaque registry key.
-        self.app
-            .plane_pools(plane_key)?
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
-    }
-
-    fn plane_audience_bound(&self, plane_key: &str) -> bool {
-        // Pure snapshot read: is the plane identified by the opaque registry key mounted under an
-        // audience-bound door?
-        self.app
-            .planes
-            .mount_of(plane_key)
-            .and_then(|m| self.app.planes.admission_for(m))
-            .is_some()
-    }
-
-    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
-        // Pure snapshot read: hand the plane the live `Arc<SecretResolver>` behind the neutral
-        // `busbar_api::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
-        // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
-        // `kind: secret` plugin), fail-closed exactly as core resolution.
-        self.app.secret_resolver.clone()
-    }
-
-    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
-        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
-        // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
-        card_sign_over(&self.app, signing_input)
-    }
-
-    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
-        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
-        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
-        self.app.agent_defs.clone()
-    }
-
-    fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
-        // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
-        // A plain forward to the UNCHANGED core engine.
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
+        // A fresh per-call arena backs the borrow; the redemption registers no host handle, so which
+        // arena reclaims is immaterial. The `ApprovalQuery` is built HERE so the plane passes only the
+        // nonce/expiry/now — it never names the `#[repr(C)]` POD or the `SpentTokenLedger`.
+        let scope = DispatchScope::new();
+        with_borrowed_host(&self.app, &scope, |host, _vt| {
+            let query = busbar_plugin::hot::ApprovalQuery {
+                size: core::mem::size_of::<busbar_plugin::hot::ApprovalQuery>() as u32,
+                version: busbar_plugin::hot::POD_VERSION,
+                _reserved: 0,
+                scope: 0,
+                _reserved2: 0,
+                expires_at,
+                now,
+                key_ptr: nonce.as_ptr(),
+                key_len: nonce.len(),
+            };
+            trust::approval_redeem_q(host, &query as *const busbar_plugin::hot::ApprovalQuery)
+                == busbar_plugin::hot::StatusClass::Ok
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -915,33 +902,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .governance
             .as_ref()
             .and_then(|g| g.verify_token(token, crate::store::now(), None))
-    }
-
-    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
-        // The in-process admin ring `record_by` seals into the retained ring AND cascades the SAME
-        // sealed record onto the durable hostless journal — the superset of `audit_emit`'s durable-only
-        // path. The egress audit-and-allow trail reads this ring, so a dropped cross-dialect control
-        // lands here byte-identically to the pre-flip `AUDIT.record_by(...)` reach.
-        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
-    }
-
-    fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
-        // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
-        // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
-        // request arena vs open a fresh one) was a no-op distinction for THIS write: a chain append
-        // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
-        // in-place `with_dispatch_scope` leg.
-        with_dispatch_scope(&self.app, |host, _| {
-            crate::calllog::emit(host, principal, input)
-        });
-    }
-
-    fn call_log_emit_hostless(
-        &self,
-        principal: &str,
-        input: busbar_substrate::plane::calllog::CallInput,
-    ) {
-        crate::calllog::emit_hostless(principal, input);
     }
 
     fn identity_audience_binding(
@@ -992,25 +952,138 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .as_ref()
             .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
     }
+}
 
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `envelope_dialect(app.planes.ingress_of(path))`.
-        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
-    }
-
-    fn arrival_fallback_error(
+impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
+    fn gate_decide(
         &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `fallback_error_response(&app.planes, …)`.
-        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
+        plane_key: &str,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        key: Option<(&str, &str)>,
+        session_id: Option<&str>,
+    ) -> busbar_substrate::plane_host::GateOutcome {
+        gate_decide_over(
+            &self.app, plane_key, container, request_id, tool, args_json, key, session_id,
+        )
     }
 
+    fn gate_attached(&self, plane_key: &str, container: &str) -> bool {
+        // Pure snapshot read of the generic per-plane gate map, keyed by the opaque registry key.
+        self.app
+            .plane_gates(plane_key)
+            .is_some_and(|g| g.contains_key(container))
+    }
+
+    fn govern_admit_reason(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        identity_id: &[u8],
+        group: Option<&[u8]>,
+    ) -> busbar_substrate::plane_host::GovAdmit {
+        govern_admit_reason_over(&self.app, scope, pool, identity_id, group)
+    }
+
+    fn destination_guard(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>> {
+        crate::ingress::destination_guard(&self.app, gov, proto, pool, started, charged_at)
+    }
+
+    fn admission_door(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<
+        (
+            Option<busbar_substrate::plane_host::AdmitHandle>,
+            Option<String>,
+        ),
+        Box<axum::response::Response>,
+    > {
+        // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
+        // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
+        // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
+        crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
+            |(admit, downgraded)| {
+                (
+                    admit.map(|a| {
+                        busbar_substrate::plane_host::AdmitHandle(
+                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
+                        )
+                    }),
+                    downgraded,
+                )
+            },
+        )
+    }
+
+    fn finish_admitted(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response {
+        crate::ingress::finish_admitted(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+            charged,
+        )
+    }
+
+    fn finish_rejected(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response {
+        crate::ingress::finish_rejected(
+            &self.app,
+            gov,
+            ingress_protocol,
+            pool,
+            started,
+            charged_at,
+            resp,
+        )
+    }
+
+    fn plane_audience_bound(&self, plane_key: &str) -> bool {
+        // Pure snapshot read: is the plane identified by the opaque registry key mounted under an
+        // audience-bound door?
+        self.app
+            .planes
+            .mount_of(plane_key)
+            .and_then(|m| self.app.planes.admission_for(m))
+            .is_some()
+    }
+}
+
+#[async_trait::async_trait]
+impl busbar_substrate::plane_host::CompletionHost for EngineHostImpl {
     async fn synthesize_completion(
         &self,
         gov: &busbar_api::PlaneRequestCtx,
@@ -1024,6 +1097,12 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         synthesize_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
     }
 }
+
+// `EngineHost` declares no method of its own beyond the provided `run_gauntlet`; it is purely the SUM
+// of the capability slices above. This blanket impl is therefore empty — the sum is satisfied through
+// the slice impls, and the substrate-side compile-time witness enforces that equality.
+#[async_trait::async_trait]
+impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {}
 
 /// Mint an `Arc<dyn EngineHost>` over the live `app` — the constructor core hands a plane so the
 /// plane calls the neutral seam instead of naming `plane_host::*_over(&App, …)`. Cheap: one `Arc`

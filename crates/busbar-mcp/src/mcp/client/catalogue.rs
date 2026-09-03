@@ -162,11 +162,14 @@ impl TransportPin {
     /// to when an upstream offers no signature of its own, which for MCP is the common case: there
     /// is no MCP-native manifest signature to verify. Still a real network-layer authenticity root,
     /// and still not trust-on-first-use, because the operator supplies the value out of band.
-    // STILL UNWIRED, and narrowly so: the shared HTTP client does not surface the peer's
-    // certificate to this layer, so no code path observes an SPKI to construct one from. See
-    // `crate::mcp::connect`'s stated gap. `declared` — the operator's out-of-band value — IS wired
-    // and is what the registration builds.
-    #[allow(dead_code)]
+    ///
+    /// WIRED: `crate::mcp::connect::refresh` builds one of these from the SPKI
+    /// `super::wire::TransportResponse::peer_spki` observed on the live HTTP hop, and hands it to
+    /// `ServerCatalogue::observe` as the sighting's `pin` — the value `Approval::drift`'s
+    /// `pin_changed` then compares against the operator's `declared()` pin. A `cert_spki`-pinned
+    /// registration whose live peer stops matching now DEMOTES to `Quarantined` and stops serving,
+    /// where it previously never could because the "observation" fed in was the declared pin
+    /// comparing against itself.
     pub(crate) fn cert_spki(value: &str) -> Self {
         Self {
             mechanism: "cert_spki",
@@ -174,9 +177,12 @@ impl TransportPin {
         }
     }
 
-    /// A pin on a client-certificate-authenticated (mTLS) binding.
-    // Unwired for the same reason as `cert_spki`: nothing observes a peer identity yet.
-    #[allow(dead_code)]
+    /// A pin on a client-certificate-authenticated (mTLS) binding, pinned on the peer's certificate
+    /// SPKI hash exactly as `cert_spki` above. WIRED the same way and for the same reason: MCP has
+    /// no separate client-identity presentation to check on this leg (`mcp/config.rs` has no
+    /// `client_identity:` grammar), so the mutual half A2A's `mtls` checks is not yet expressible
+    /// here — this mechanism is the peer-half check, and the operator's declared word for it stays
+    /// `mtls` because the machine never interprets `mechanism()` regardless.
     pub(crate) fn mtls(value: &str) -> Self {
         Self {
             mechanism: "mtls",

@@ -28,6 +28,7 @@ mod redacted;
 mod secret;
 mod signal;
 mod store;
+pub mod usage_migration;
 
 pub use auth::{
     constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, IdentityRefusal,
@@ -54,6 +55,6 @@ pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,
-    ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens, TierTokensDelta, UsageDelta,
-    UsageLedger, VirtualKey,
+    ScopeRef, SecretForm, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
+    RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };

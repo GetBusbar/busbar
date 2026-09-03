@@ -1,0 +1,71 @@
+# A representative whole-deployment 1.5.x config touching EVERY billing/limits noun at once:
+# multi-provider rate_card with all tiers, per-model default_max_tokens + concurrency/request caps,
+# an overridden limits block with a custom effort ladder, a flat per_request_fee, and a two-level
+# group tree with pool-scoped budgets and a downgrade rule. This is the "everything together" corpus
+# member — the closest to a real operator file, and the broadest single tripwire for M3's eviction.
+listen: "0.0.0.0:8080"
+per_request_fee: 2
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_API_KEY }
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+  gemini:
+    api_key: { env: GEMINI_API_KEY }
+models:
+  claude-sonnet:
+    provider: anthropic
+    default_max_tokens: 8192
+    max_concurrent: 32
+    reasoning: true
+  claude-haiku:
+    provider: anthropic
+    default_max_tokens: 4096
+    max_requests: 500
+  gpt-4o:
+    provider: openai
+    default_max_tokens: 4096
+  gemini-flash:
+    provider: gemini
+limits:
+  default_max_tokens: 4096
+  reasoning_effort_budgets:
+    minimal: 1024
+    low: 4096
+    medium: 12000
+    high: 32000
+rate_card:
+  claude-haiku:
+    input_utok: 0.8
+    output_utok: 4.0
+    cache_read_utok: 0.08
+    cache_write_utok: 1.0
+  claude-sonnet:
+    input_utok: 3.0
+    output_utok: 15.0
+    cache_read_utok: 0.3
+    cache_write_utok: 3.75
+  gemini-flash:
+    input_utok: 0.075
+    output_utok: 0.3
+  gpt-4o:
+    input_utok: 2.5
+    output_utok: 10.0
+    cache_read_utok: 1.25
+groups:
+  org:
+    limits:
+      - { budget: 10000000, per: month }
+      - { requests: 200000, per: day }
+    child_default:
+      limits:
+        - { tokens: 2000000, per: day }
+        - { concurrent: 8 }
+  team-research:
+    parent: org
+    limits:
+      - { tokens_input: 5000000, per: hour }
+      - { tokens_output: 1000000, per: hour }
+      - { tokens_cache_read: 8000000, per: day }
+      - { tokens_cache_write: 500000, per: day }
+      - { budget: 250000, per: month, pool: premium, on_exhaust: downgrade, downgrade_to: economy }

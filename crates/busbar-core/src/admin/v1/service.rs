@@ -99,14 +99,21 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
 /// `upstream_model` alias resolution.
 fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
-    let tier = busbar_api::TierTokens {
-        input: b.tokens_input,
-        output: b.tokens_output,
-        cache_read: b.tokens_cache_read,
-        cache_write: b.tokens_cache_creation, // UsageBreakdown's OWN field name (public admin-API JSON contract, unchanged)
-    };
+    // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
+    // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
+    // it maps onto the canonical `cache_write` unit key.
+    let units: std::collections::BTreeMap<String, u64> = [
+        (busbar_api::UNIT_INPUT, b.tokens_input),
+        (busbar_api::UNIT_OUTPUT, b.tokens_output),
+        (busbar_api::UNIT_CACHE_READ, b.tokens_cache_read),
+        (busbar_api::UNIT_CACHE_WRITE, b.tokens_cache_creation),
+    ]
+    .into_iter()
+    .filter(|(_, v)| *v != 0)
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
     let resolved = cost.resolve_model_alias(model);
-    cost.derive_spend_micros([(resolved, &tier)].into_iter(), b.requests, true)
+    cost.derive_spend_micros([(resolved, &units)].into_iter(), b.requests, true)
 }
 
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.

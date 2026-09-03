@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::config::RootCfg;
 use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
+    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
@@ -1370,18 +1370,38 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
         for (model, r) in card {
-            for (tier, v) in [
+            let tiers = [
                 ("input_utok", r.input_utok),
                 ("output_utok", r.output_utok),
                 ("cache_read_utok", r.cache_read_utok),
                 ("cache_write_utok", r.cache_write_utok),
-            ] {
+            ];
+            for (tier, v) in tiers {
                 if !v.is_finite() || v < 0.0 {
                     errors.push(format!(
                         "rate_card['{model}'].{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
                     ));
                 }
+            }
+            // G2 fail-open-to-underbill guard: a rate_card entry that is PRESENT but prices EVERY
+            // tier at zero meters the model as free — its token usage costs $0, so a group `budget:`
+            // limit never accrues against it and it runs uncapped on spend. The completeness check
+            // below only enforces PRESENCE (and even hands operators an all-zero stub), and the
+            // well-formedness check above accepts 0 as a valid non-negative rate, so an accidental
+            // all-zero entry (a stub pasted but never filled in) sails through SILENTLY. A
+            // deliberately free model is legal, so this is a WARN (naming the model), not a hard
+            // error — the operator keeps the choice, but an unintended free model is no longer
+            // silent. Only fires when the entry is well-formed (all tiers finite) so it does not
+            // pile onto a NaN/negative that already errored above.
+            if tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0) {
+                diag_warn!(
+                    CONFIG_RATE_CARD_ALL_ZERO,
+                    model = %model,
+                    "rate_card entry for model '{model}' prices every tier at zero: its token usage \
+                     meters as FREE and is uncapped by any budget: limit. If intentional, ignore; \
+                     otherwise fill in the model's rate_card rates."
+                );
             }
         }
         // COMPLETENESS (all-or-nothing): rate_card present => EVERY configured model (by CONFIG

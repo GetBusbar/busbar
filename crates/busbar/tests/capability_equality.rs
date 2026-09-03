@@ -53,6 +53,30 @@ const PLANES: [&str; 5] = [
     "a2a-server",
 ];
 
+/// M0 TOTALITY CROSS-CHECK — a SEPARATE axis from the pinned directional `PLANES` above.
+///
+/// `PLANES` is the owner's doctrine, pinned verbatim in
+/// [`the_gates_own_constants_are_the_doctrines`]; it is deliberately NOT derived from the workspace
+/// (the two bidirectional protocols are counted in both directions, so the axis is 5 wide over 3
+/// protocols). This map runs the OTHER direction: it names, per workspace PLANE CRATE, the ledger
+/// columns that crate answers to. The cross-check below fails loudly if any plane crate the tree
+/// carries maps to ZERO columns — a plane that reaches the workspace and then answers to nothing is
+/// tracked by no cell, the silent hole the whole file exists to refuse.
+///
+/// `voice` (busbar-voice, Plane 4) is a skeleton crate not yet split into client/server directions;
+/// it is pinned here to its own pending [`VOICE_PENDING_COLUMN`] so the ledger already names it the
+/// day it lands. Every OTHER mapped column must be a real declared ledger plane.
+const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
+    ("llm", &["llm"]),
+    ("mcp", &["mcp-client", "mcp-server"]),
+    ("a2a", &["a2a-client", "a2a-server"]),
+    ("voice", &[VOICE_PENDING_COLUMN]),
+];
+
+/// Voice's column does not yet exist in the directional ledger (the crate is a skeleton); it is
+/// pinned as a pending identity so the totality check has a non-empty answer for voice today.
+const VOICE_PENDING_COLUMN: &str = "voice";
+
 /// Floor on the capability axis. Sized below today's real number (13) so an ordinary addition does
 /// not trip it, and well above zero so a file that quietly lost its rows cannot report equality of
 /// nothing.
@@ -302,6 +326,87 @@ fn the_gates_own_constants_are_the_doctrines() {
     const {
         assert!(MIN_CAPABILITIES >= 12 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
     }
+}
+
+/// Read the ONE list of plane keys (`scripts/plane-keys.sh`, the same source the shell gates read)
+/// so this test enumerates the workspace plane crates from the tree's single source, not a second
+/// hand-kept copy. A plane added there is enumerated here with no edit.
+fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
+    let p = root.join("scripts/plane-keys.sh");
+    let src = std::fs::read_to_string(&p).unwrap_or_else(|e| {
+        panic!(
+            "cannot read the single source of plane keys {}: {e}",
+            p.display()
+        )
+    });
+    for line in src.lines() {
+        if let Some(rest) = line.trim().strip_prefix("PLANE_KEYS=") {
+            return rest
+                .trim()
+                .trim_matches('"')
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    panic!("scripts/plane-keys.sh declares no `PLANE_KEYS=...` line");
+}
+
+/// M0 TOTALITY CROSS-CHECK. Enumerate the workspace PLANE CRATES from the single source and assert
+/// each maps to >= 1 ledger column. This is the reverse of the pinned matrix: the matrix proves no
+/// declared cell is a lie; this proves no plane crate the tree carries is tracked by NOTHING. Voice
+/// arriving as a skeleton with no directional column is exactly the hole it catches — pinned here to
+/// its pending column so the check is honest-green today and RED the moment a plane crate joins the
+/// workspace with no row in `PLANE_CRATE_LEDGER_COLUMNS`.
+#[test]
+fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
+    let root = repo_root();
+    let ledger_columns: BTreeSet<String> = real_doc()["planes"]
+        .as_object()
+        .expect("`planes` is an object")
+        .keys()
+        .cloned()
+        .collect();
+    let map: BTreeMap<&str, &[&str]> = PLANE_CRATE_LEDGER_COLUMNS.iter().copied().collect();
+
+    let mut unmapped: Vec<String> = Vec::new();
+    for key in plane_keys_from_single_source(&root) {
+        // The single source names this plane; the crate must exist, or source and tree disagree.
+        let crate_dir = root.join(format!("crates/busbar-{key}"));
+        assert!(
+            crate_dir.is_dir(),
+            "scripts/plane-keys.sh names plane `{key}` but crates/busbar-{key} does not exist; the \
+             single source and the tree disagree — fix one."
+        );
+        match map.get(key.as_str()) {
+            Some(cols) if !cols.is_empty() => {
+                // Every mapped column must be a real ledger plane, EXCEPT voice's pending column
+                // (the crate is a skeleton; its directional identity is not yet in the ledger).
+                for &col in *cols {
+                    if col == VOICE_PENDING_COLUMN {
+                        continue;
+                    }
+                    assert!(
+                        ledger_columns.contains(col),
+                        "plane crate busbar-{key} maps to column `{col}`, which is not a declared \
+                         ledger plane {ledger_columns:?}. Fix the map or the ledger."
+                    );
+                }
+            }
+            _ => unmapped.push(key),
+        }
+    }
+    assert!(
+        unmapped.is_empty(),
+        "workspace plane crate(s) {unmapped:?} map to ZERO ledger columns. A plane crate that \
+         reaches the workspace and answers to no column is tracked by nothing — add its columns to \
+         PLANE_CRATE_LEDGER_COLUMNS (voice is pinned to its own pending column as the pattern)."
+    );
+
+    println!(
+        "TOTALITY: {} workspace plane crate(s) all map to >= 1 ledger column",
+        PLANE_CRATE_LEDGER_COLUMNS.len()
+    );
 }
 
 // ---------------------------------------------------------------------------

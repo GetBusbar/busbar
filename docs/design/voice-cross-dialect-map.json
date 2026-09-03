@@ -1,0 +1,127 @@
+{
+  "$schema_note": "Machine-readable companion to voice-cross-dialect-mapping.md. Consumed by the voice cross-parity conformance leg and the #14-B Gemini codec. Fixture paths are relative to testing/voice-conformance/fixtures/.",
+  "dialects": {
+    "openai": {
+      "name": "OpenAI Realtime API",
+      "transport": "WebSocket",
+      "envelope": "flat: top-level { type, event_id?, ... }",
+      "fixtures_dir": "openai/",
+      "shape_note": "Primary fixtures use the gpt-4o-realtime-preview flat session shape (the field set enumerated by the task). openai/session.update.ga_nested.json captures the newer gpt-realtime GA shape where these nest under session.audio.{input,output} and audio events are renamed response.output_audio.*."
+    },
+    "gemini": {
+      "name": "Gemini Live API (BidiGenerateContent)",
+      "transport": "WebSocket",
+      "envelope": "tagged-union: top-level single key names the message type",
+      "fixtures_dir": "gemini/"
+    }
+  },
+  "audio_bridge": {
+    "openai_pcm16": "raw 16-bit LE PCM, 24000 Hz for model output / 24000 Hz input default (rate implied by session, not tagged per-frame)",
+    "openai_g711_ulaw": "8-bit mu-law, 8000 Hz (telephony); g711_alaw also supported",
+    "gemini_input": "audio/pcm;rate=16000 (raw 16-bit LE PCM, 16 kHz), rate tagged in mimeType",
+    "gemini_output": "audio/pcm;rate=24000 (raw 16-bit LE PCM, 24 kHz), rate tagged in mimeType",
+    "transform": "Both carry base64 raw PCM. Bridge must (a) resample 24kHz(OpenAI out)/model-rate to Gemini's tagged rates, (b) synthesize/parse the mimeType rate parameter Gemini requires but OpenAI omits, (c) transcode g711_ulaw/alaw <-> linear pcm16 since Gemini has no g711 mode (see asymmetry: openai_g711)."
+  },
+  "concepts": [
+    {
+      "concept": "session / setup configuration",
+      "openai": { "fixtures": ["session.update.json", "session.update.semantic_vad.json", "session.update.ga_nested.json"], "fields": ["session.modalities|output_modalities", "session.instructions", "session.voice|audio.output.voice", "session.input_audio_format|audio.input.format", "session.output_audio_format|audio.output.format", "session.turn_detection", "session.tools", "session.tool_choice", "session.max_response_output_tokens|max_output_tokens", "session.temperature"] },
+      "gemini": { "fixtures": ["setup.json"], "fields": ["setup.model", "setup.generationConfig.responseModalities", "setup.systemInstruction.parts[].text", "setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName", "setup.tools[].functionDeclarations", "setup.realtimeInputConfig.automaticActivityDetection", "setup.generationConfig.maxOutputTokens", "setup.generationConfig.temperature"] },
+      "transform": "instructions<->systemInstruction.parts[].text; voice<->prebuiltVoiceConfig.voiceName (name maps differ: alloy/verse/marin vs Puck/Charon/Kore); modalities array (OpenAI allows [audio,text]) -> responseModalities (Gemini permits exactly ONE of AUDIO|TEXT -> drop text, warn); tools[].{name,description,parameters} <-> functionDeclarations[] with JSON-Schema type casing lowercased<->UPPERCASED."
+    },
+    {
+      "concept": "session acknowledgement / handshake",
+      "openai": { "fixtures": ["session.created.json"], "fields": ["type=session.created", "session"] },
+      "gemini": { "fixtures": ["setupComplete.json"], "fields": ["setupComplete={}"] },
+      "transform": "OpenAI echoes the fully-resolved session; Gemini sends an empty setupComplete ack. Bridge fabricates the missing side (synthesize a resolved-session view for Gemini, or an empty ack for OpenAI)."
+    },
+    {
+      "concept": "user text message",
+      "openai": { "fixtures": ["conversation.item.create.message.json"], "fields": ["item.type=message", "item.role", "item.content[].type=input_text", "item.content[].text"] },
+      "gemini": { "fixtures": ["clientContent.json"], "fields": ["clientContent.turns[].role", "clientContent.turns[].parts[].text", "clientContent.turnComplete"] },
+      "transform": "content[].input_text.text <-> turns[].parts[].text; role user<->user. OpenAI item is standalone (no turn flag); Gemini needs turnComplete to close the turn."
+    },
+    {
+      "concept": "input audio frame",
+      "openai": { "fixtures": ["input_audio_buffer.append.json"], "fields": ["type=input_audio_buffer.append", "audio (base64)"] },
+      "gemini": { "fixtures": ["realtimeInput.json"], "fields": ["realtimeInput.audio.mimeType", "realtimeInput.audio.data (base64)"] },
+      "transform": "audio(base64) <-> realtimeInput.audio.data; OpenAI carries no per-frame format (session-wide) so bridge must inject/strip audio.mimeType with the rate parameter. See audio_bridge."
+    },
+    {
+      "concept": "input turn commit / end-of-audio",
+      "openai": { "fixtures": ["input_audio_buffer.commit.json"], "fields": ["type=input_audio_buffer.commit"] },
+      "gemini": { "fixtures": ["realtimeInput.audioStreamEnd.json"], "fields": ["realtimeInput.audioStreamEnd=true"] },
+      "transform": "Explicit commit <-> audioStreamEnd. Under server/automatic VAD both are usually implicit; the bridge emits the counterpart only when the peer works in manual mode."
+    },
+    {
+      "concept": "output audio frame",
+      "openai": { "fixtures": ["response.audio.delta.json"], "fields": ["type=response.audio.delta (GA: response.output_audio.delta)", "delta (base64)", "response_id", "item_id", "output_index", "content_index"] },
+      "gemini": { "fixtures": ["serverContent.modelTurn.json"], "fields": ["serverContent.modelTurn.parts[].inlineData.mimeType", "serverContent.modelTurn.parts[].inlineData.data (base64)"] },
+      "transform": "delta(base64) <-> modelTurn.parts[].inlineData.data. OpenAI streams flat deltas keyed by response_id/item_id; Gemini wraps each chunk in a modelTurn Content. Bridge must group/ungroup and inject/strip the mimeType rate."
+    },
+    {
+      "concept": "output turn completion",
+      "openai": { "fixtures": ["response.audio.done.json", "response.done.json"], "fields": ["type=response.audio.done", "type=response.done", "response.status"] },
+      "gemini": { "fixtures": ["serverContent.turnComplete.json"], "fields": ["serverContent.turnComplete", "serverContent.generationComplete"] },
+      "transform": "response.audio.done -> per-modality end; response.done(status=completed) -> turnComplete. Gemini splits generationComplete (model finished generating) from turnComplete (turn yielded); OpenAI has no generationComplete equivalent -> collapse, warn."
+    },
+    {
+      "concept": "server-side VAD speech boundary",
+      "openai": { "fixtures": ["input_audio_buffer.speech_started.json", "input_audio_buffer.speech_stopped.json"], "fields": ["audio_start_ms", "audio_end_ms", "item_id"] },
+      "gemini": { "fixtures": [], "fields": ["(no explicit per-event server signal; automaticActivityDetection handles internally; interrupted implies barge-in)"] },
+      "transform": "OpenAI emits explicit speech_started/stopped with ms offsets; Gemini's automatic activity detection is internal and surfaces only serverContent.interrupted on barge-in. speech_started/stopped -> DROP toward Gemini (warn); Gemini has no ms offsets to reconstruct them. See asymmetry: openai_speech_boundary."
+    },
+    {
+      "concept": "tool call (model -> host)",
+      "openai": { "fixtures": ["response.function_call_arguments.delta.json", "response.function_call_arguments.done.json"], "fields": ["call_id", "name", "arguments (JSON string, streamed)"] },
+      "gemini": { "fixtures": ["toolCall.json"], "fields": ["toolCall.functionCalls[].id", "toolCall.functionCalls[].name", "toolCall.functionCalls[].args (JSON object, whole)"] },
+      "transform": "correlation id: OpenAI call_id <-> Gemini functionCalls[].id. arguments: OpenAI streams a JSON STRING via .delta then .done -> Gemini delivers a parsed args OBJECT in one message. Bridge must accumulate deltas + JSON.parse toward Gemini, and stringify + optionally chunk toward OpenAI."
+    },
+    {
+      "concept": "tool result (host -> model)",
+      "openai": { "fixtures": ["conversation.item.create.function_call_output.json"], "fields": ["item.type=function_call_output", "item.call_id", "item.output (JSON string)"] },
+      "gemini": { "fixtures": ["toolResponse.json"], "fields": ["toolResponse.functionResponses[].id", "toolResponse.functionResponses[].name", "toolResponse.functionResponses[].response (JSON object)"] },
+      "transform": "call_id <-> functionResponses[].id (same value as the originating call). output STRING <-> response OBJECT (parse/stringify). Gemini requires name on the response; OpenAI does not carry it -> bridge must remember name from the originating call."
+    },
+    {
+      "concept": "barge-in / truncate / cancel",
+      "openai": { "fixtures": ["conversation.item.truncate.json", "response.cancel.json"], "fields": ["truncate.item_id", "truncate.content_index", "truncate.audio_end_ms", "response.cancel"] },
+      "gemini": { "fixtures": ["serverContent.interrupted.json"], "fields": ["serverContent.interrupted=true"] },
+      "transform": "OpenAI barge-in is TWO client actions (truncate the played item at an exact audio_end_ms + cancel the response) plus can be server-driven; Gemini surfaces a single server-side interrupted=true with NO ms offset. Bridge: interrupted -> synthesize response.cancel (and a best-effort truncate without precise ms, warn on lost precision); truncate.audio_end_ms -> DROP toward Gemini (no field). See asymmetry: openai_truncate_precision."
+    },
+    {
+      "concept": "input transcription",
+      "openai": { "fixtures": ["transcript.jsonl"], "fields": ["conversation.item.input_audio_transcription.completed.transcript"] },
+      "gemini": { "fixtures": ["serverContent.inputTranscription.json"], "fields": ["serverContent.inputTranscription.text"] },
+      "transform": "transcript <-> inputTranscription.text. Enabled via session.input_audio_transcription <-> setup.inputAudioTranscription. (OpenAI standalone fixture is in the transcript golden; the concept is exercised there.)"
+    },
+    {
+      "concept": "output transcription",
+      "openai": { "fixtures": ["response.done.json"], "fields": ["response.output[].content[].transcript"] },
+      "gemini": { "fixtures": ["serverContent.outputTranscription.json"], "fields": ["serverContent.outputTranscription.text"] },
+      "transform": "OpenAI carries the assistant transcript inside the audio content item (response.done / response.audio_transcript.*); Gemini streams a dedicated outputTranscription.text. Bridge relocates the text between the content item and the standalone message."
+    },
+    {
+      "concept": "usage / token accounting",
+      "openai": { "fixtures": ["response.done.json"], "fields": ["response.usage.total_tokens", "response.usage.input_tokens", "response.usage.output_tokens", "response.usage.*_token_details.{text,audio}_tokens"] },
+      "gemini": { "fixtures": ["usageMetadata.json"], "fields": ["usageMetadata.promptTokenCount", "usageMetadata.responseTokenCount", "usageMetadata.totalTokenCount", "usageMetadata.{prompt,response}TokensDetails[].{modality,tokenCount}"] },
+      "transform": "input_tokens<->promptTokenCount; output_tokens<->responseTokenCount; total_tokens<->totalTokenCount. Modality split: OpenAI *_token_details.{text,audio}_tokens <-> Gemini *TokensDetails[] array of {modality,tokenCount}. OpenAI attaches usage to response.done; Gemini sends a separate usageMetadata message."
+    }
+  ],
+  "asymmetry": [
+    { "id": "openai_g711", "dialect": "openai", "concept": "g711 mu-law/a-law telephony codecs", "fixture": "openai/session.update.semantic_vad.json", "handling": "drop+warn: Gemini has no g711 mode; bridge must transcode g711<->pcm16 or refuse the telephony leg." },
+    { "id": "openai_semantic_vad", "dialect": "openai", "concept": "semantic_vad turn detection (eagerness-driven)", "fixture": "openai/session.update.semantic_vad.json", "handling": "drop+warn: Gemini only has automaticActivityDetection sensitivity levels; eagerness has no direct equivalent -> map to nearest sensitivity, warn." },
+    { "id": "openai_truncate_precision", "dialect": "openai", "concept": "sample-accurate truncate (audio_end_ms)", "fixture": "openai/conversation.item.truncate.json", "handling": "drop+warn: Gemini interrupted carries no offset; ms precision is lost bridging toward Gemini." },
+    { "id": "openai_speech_boundary", "dialect": "openai", "concept": "explicit server VAD speech_started/speech_stopped events with ms", "fixture": "openai/input_audio_buffer.speech_started.json", "handling": "drop+warn: Gemini keeps activity detection internal; no per-event boundary to map." },
+    { "id": "openai_buffer_clear", "dialect": "openai", "concept": "input_audio_buffer.clear (discard uncommitted audio)", "fixture": "openai/input_audio_buffer.clear.json", "handling": "drop: Gemini has no explicit clear; uncommitted audio handled by activity detection." },
+    { "id": "openai_response_overrides", "dialect": "openai", "concept": "per-response overrides via response.create.response{}", "fixture": "openai/response.create.json", "handling": "drop+warn: Gemini has no per-turn config override; only setup-time config. Non-default overrides are dropped." },
+    { "id": "openai_noise_reduction", "dialect": "openai", "concept": "input noise_reduction (GA audio.input.noise_reduction)", "fixture": "openai/session.update.ga_nested.json", "handling": "drop: no Gemini equivalent." },
+    { "id": "openai_structured_error", "dialect": "openai", "concept": "structured in-band error event", "fixture": "openai/error.json", "handling": "drop+warn: Gemini reports errors via WebSocket close codes, not a structured in-band error message; bridge maps close-reason<->error best-effort." },
+    { "id": "openai_event_id", "dialect": "openai", "concept": "client-settable event_id echoed in errors", "fixture": "openai/session.update.json", "handling": "drop: Gemini messages carry no client correlation id." },
+    { "id": "gemini_setup_complete", "dialect": "gemini", "concept": "explicit setupComplete handshake gate", "fixture": "gemini/setupComplete.json", "handling": "synthesize: OpenAI has no gate; bridge must hold client sends until an equivalent ready state or emit an implicit ack." },
+    { "id": "gemini_tool_call_cancellation", "dialect": "gemini", "concept": "toolCallCancellation (model retracts a pending tool call)", "fixture": "gemini/toolCallCancellation.json", "handling": "drop+warn: OpenAI has no server-driven tool-call cancellation; host must be told to abandon the call out of band." },
+    { "id": "gemini_generation_complete", "dialect": "gemini", "concept": "generationComplete distinct from turnComplete", "fixture": "gemini/serverContent.turnComplete.json", "handling": "collapse: OpenAI has a single response.done; the generationComplete/turnComplete distinction is flattened." },
+    { "id": "gemini_go_away", "dialect": "gemini", "concept": "goAway session-lifecycle warning (timeLeft)", "fixture": "gemini/goAway.json", "handling": "drop+warn: OpenAI has no advance-disconnect warning; surface as a host-side event only." },
+    { "id": "gemini_audio_stream_end", "dialect": "gemini", "concept": "realtimeInput.audioStreamEnd manual end-of-stream", "fixture": "gemini/realtimeInput.audioStreamEnd.json", "handling": "map-to-commit: bridges to input_audio_buffer.commit only under manual VAD." }
+  ]
+}

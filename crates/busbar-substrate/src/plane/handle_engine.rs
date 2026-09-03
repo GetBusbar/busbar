@@ -26,38 +26,37 @@
 //!   idiom [`crate::plane_host::scope`] uses to hold reclaim/settle resources without naming a plane
 //!   type. No plane noun appears in this module.
 //!
-//! ## Lock discipline — the deliberate submit-vs-mutate asymmetry (and why it is not yet sharded)
+//! ## Lock discipline — the per-handle shard (outer map lock + per-handle inner lock)
 //!
-//! The engine holds ONE process-wide `Mutex` over the working-set map (`handles`). Two operations take
-//! it with DIFFERENT durable-I/O disciplines, and the difference is deliberate, not an oversight:
+//! The correctness need is per-HANDLE serialization: a [`mutate`](DurableHandleEngine::mutate) advances
+//! an EXISTING per-handle chain — the plane's seal reads `pos.tail_hash` and produces the next link — so
+//! two concurrent mutations of the SAME handle MUST be serialized or they fork the chain against one
+//! `tail_hash`. The engine pays exactly that, and no more, through a two-level lock:
 //!
-//! - [`submit`](DurableHandleEngine::submit) does its durable writes (`upsert_record` +
-//!   `append_record`) BEFORE it takes the working-set lock. It can, because a submit is a FRESH id at
-//!   the genesis chain position — there is no existing per-handle chain another writer could fork, so
-//!   the durable write needs no cross-writer serialization.
-//! - [`mutate`](DurableHandleEngine::mutate) / [`scoped_mutate`](DurableHandleEngine::scoped_mutate),
-//!   the sweep's abandon in [`sweep_locked`](DurableHandleEngine::sweep_locked), and
-//!   [`rehydrate`](DurableHandleEngine::rehydrate) instead hold the lock ACROSS their durable I/O. For
-//!   `mutate` this is REQUIRED, not incidental: it advances an EXISTING per-handle chain — the plane's
-//!   seal reads `pos.tail_hash` and produces the next link — so two concurrent mutations of the SAME
-//!   handle MUST be serialized or they fork the chain against one `tail_hash`. The lock-across-I/O is
-//!   what provides that per-handle serialization today.
+//! - The OUTER lock (`handles: Mutex<HashMap<String, Arc<Mutex<HandleSlot>>>>`) guards only the MAP
+//!   STRUCTURE — insert / remove / enumerate. It is taken briefly to look up (or install) a handle's
+//!   `Arc<Mutex<HandleSlot>>` and then RELEASED; it is never held across a store round-trip on the hot
+//!   mutate path.
+//! - The per-handle INNER lock (`Mutex<HandleSlot>`) serializes that ONE handle's chain and IS held
+//!   across its durable I/O (upsert + append). Because it is per-handle, two DIFFERENT handles mutate
+//!   fully concurrently — neither the outer lock nor each other's inner lock stands between them.
 //!
-//! The cost: the correctness need is per-HANDLE serialization, but the current implementation pays it
-//! per-ENGINE — every handle's write serializes behind one global lock held across a store round-trip.
-//! A2A (the sole consumer today) is human-paced and tolerates it. A high-concurrency SECOND consumer
-//! (voice-session frames, Responses-stateful streaming) would hit a process-wide bottleneck.
+//! So [`mutate`](DurableHandleEngine::mutate) / [`scoped_mutate`](DurableHandleEngine::scoped_mutate)
+//! take the outer lock, clone out the target's `Arc<Mutex<HandleSlot>>`, DROP the outer lock, then take
+//! the inner lock across the plan + persist. This preserves same-handle chain serialization (the naive
+//! "drop the lock during seal/append" minimization would reopen exactly the concurrent-same-handle fork
+//! the inner lock prevents) while lifting the per-ENGINE bottleneck the earlier single-global-lock shape
+//! imposed on a high-concurrency SECOND consumer (voice-session frames, Responses-stateful streaming).
 //!
-//! Note deliberately NOT taken: the naive "move the durable I/O out of the critical section, like
-//! `submit`" minimization is UNSOUND for `mutate` — dropping the lock during the seal/append would
-//! reopen exactly the concurrent-same-handle chain fork the lock exists to prevent, so it would trade a
-//! throughput cost for a correctness regression. The clean fix is a per-handle SHARD
-//! (`HashMap<String, Arc<Mutex<HandleSlot>>>`: the outer lock guards only map structure — insert /
-//! remove / enumerate — while a per-handle inner lock serializes that one handle's chain AND lets the
-//! global lock be released during I/O). That shard is deferred here: it is invasive (it touches every
-//! access path and the sweep's iterate-then-mutate ordering) and must not perturb A2A's frozen
-//! byte-behavior while A2A is the only consumer. It is the right move to make BEFORE a concurrent
-//! second consumer's throughput depends on the current per-engine semantics.
+//! - [`submit`](DurableHandleEngine::submit) still does its durable writes (`upsert_record` +
+//!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain
+//!   position, with no existing per-handle chain another writer could fork, so its durable write needs
+//!   no cross-writer serialization. It takes the outer lock only to run the retention sweep and insert.
+//! - The sweep's abandon in [`sweep_locked`](DurableHandleEngine::sweep_locked) and the boot
+//!   [`rehydrate`](DurableHandleEngine::rehydrate) run under the outer lock and take inner locks beneath
+//!   it. The ordering is always outer-THEN-inner (no path ever takes the outer lock while holding an
+//!   inner one), so the two levels cannot deadlock. Abandon's durable I/O under the outer lock is
+//!   confined to the submit-driven sweep — the hot mutate path never holds the outer lock across I/O.
 
 // PARTLY UNMOUNTED: a bare substrate build that never constructs the engine reads some accessors as
 // unused; the plane crates and the engine's own unit tests exercise the whole surface.
@@ -288,7 +287,7 @@ struct HandleSlot {
 /// THE DURABLE-HANDLE ENGINE. Non-generic; holds opaque rows behind `Arc<dyn Any>`. No `Debug`: it
 /// holds a `dyn PlaneStore`.
 pub struct DurableHandleEngine {
-    handles: Mutex<HashMap<String, HandleSlot>>,
+    handles: Mutex<HashMap<String, Arc<Mutex<HandleSlot>>>>,
     /// The durable sink for row upserts AND event appends. `None` is the RAM-cache posture (a plane's
     /// `store: memory`): the persistence methods no-op and nothing survives a restart.
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
@@ -310,10 +309,18 @@ impl DurableHandleEngine {
         Self::default()
     }
 
-    /// Poison-recovering lock. The critical sections only mutate a map, so the data behind the lock is
-    /// always consistent after a panic and cascading a poison would wedge the whole capability.
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, HandleSlot>> {
+    /// Poison-recovering OUTER lock over the map structure. The critical sections only mutate a map, so
+    /// the data behind the lock is always consistent after a panic and cascading a poison would wedge the
+    /// whole capability. Held briefly to look up / install a handle's `Arc<Mutex<HandleSlot>>`; the hot
+    /// mutate path drops it before taking the per-handle inner lock.
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Arc<Mutex<HandleSlot>>>> {
         self.handles.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poison-recovering INNER lock over one handle's slot. Same rationale as [`lock`](Self::lock): a
+    /// panic leaves the slot fields consistent, and a poison must not wedge the handle forever.
+    fn lock_slot(slot: &Arc<Mutex<HandleSlot>>) -> MutexGuard<'_, HandleSlot> {
+        slot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The durable sink, cloned. `None` is the RAM-cache posture.
@@ -353,24 +360,18 @@ impl DurableHandleEngine {
         Ok(())
     }
 
-    /// Apply one [`Mutation`] to the slot `id` in `handles`: durable row upsert FIRST, then event
-    /// append, then — only after both persist — the in-memory row/meta/position. A durable failure
-    /// leaves the slot untouched (the caller retries). Returns quietly if the slot vanished.
-    fn apply_mutation_locked(
-        &self,
-        handles: &mut HashMap<String, HandleSlot>,
-        id: &str,
-        m: Mutation,
-    ) -> StoreResult<()> {
+    /// Apply one [`Mutation`] to an already-locked `slot`: durable row upsert FIRST, then event append,
+    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns via
+    /// `?` BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
+    /// The slot is held under its per-handle inner lock across the whole call, serializing that one
+    /// handle's chain against a concurrent same-handle mutation.
+    fn apply_mutation_to_slot(&self, slot: &mut HandleSlot, m: Mutation) -> StoreResult<()> {
         if let Some(rec) = &m.row_record {
             self.upsert_record(rec)?;
         }
         if let Some(ev) = &m.event {
             self.append_record(&ev.record)?;
         }
-        let Some(slot) = handles.get_mut(id) else {
-            return Ok(());
-        };
         if let Some(ev) = m.event {
             slot.pos.tail_hash = ev.tail_hash;
             slot.pos.next_seq = slot.pos.next_seq.saturating_add(1);
@@ -424,11 +425,11 @@ impl DurableHandleEngine {
         let row = sr.row.clone();
         handles.insert(
             sr.id,
-            HandleSlot {
+            Arc::new(Mutex::new(HandleSlot {
                 row: sr.row,
                 meta: sr.meta,
                 pos,
-            },
+            })),
         );
         Ok(row)
     }
@@ -454,29 +455,26 @@ impl DurableHandleEngine {
             &ChainPosition,
         ) -> Result<Option<Mutation>, MutateError>,
     {
-        let mut handles = self.lock();
-        let plan_out = {
-            let slot = handles
-                .get(id)
-                .ok_or_else(|| HandleEngineError::NoSuchHandle(id.to_string()))?;
-            plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
-                MutateError::Rejected(s) => HandleEngineError::Rejected(s),
-                MutateError::Store(e) => HandleEngineError::Store(e),
-            })?
-        };
+        // Take the outer lock only long enough to clone out the handle's shard, then release it so a
+        // mutation of a DIFFERENT handle never blocks behind this one's store round-trip.
+        let slot_arc = self
+            .lock()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| HandleEngineError::NoSuchHandle(id.to_string()))?;
+        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
+        let mut slot = Self::lock_slot(&slot_arc);
+        let plan_out = plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
+            MutateError::Rejected(s) => HandleEngineError::Rejected(s),
+            MutateError::Store(e) => HandleEngineError::Store(e),
+        })?;
         let Some(m) = plan_out else {
             // No-op: return the current row unchanged.
-            return Ok(handles
-                .get(id)
-                .map(|s| s.row.clone())
-                .expect("slot present: it was read one statement earlier under the same lock"));
+            return Ok(slot.row.clone());
         };
-        self.apply_mutation_locked(&mut handles, id, m)
+        self.apply_mutation_to_slot(&mut slot, m)
             .map_err(HandleEngineError::Store)?;
-        Ok(handles
-            .get(id)
-            .map(|s| s.row.clone())
-            .expect("slot present: apply_mutation_locked only skips on a vanished slot, impossible under this lock"))
+        Ok(slot.row.clone())
     }
 
     /// SCOPED MUTATE — the authorization gate on the WRITE/RESUME path, mirroring
@@ -505,31 +503,29 @@ impl DurableHandleEngine {
         if owner.is_empty() {
             return Err(ScopedMutateError::NotYours);
         }
-        let mut handles = self.lock();
-        let plan_out = {
-            // Owner gate BEFORE plan: a foreign, missing, or empty-owner target is one refusal.
-            let slot = match handles.get(id) {
-                Some(s) if s.meta.owner == owner => s,
-                _ => return Err(ScopedMutateError::NotYours),
-            };
-            plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
-                MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
-                MutateError::Store(e) => ScopedMutateError::Store(e),
-            })?
+        // Take the outer lock only to clone out the shard; a missing id collapses to the same refusal as
+        // a foreign owner, so nothing before the ownership check leaks whether the id exists.
+        let Some(slot_arc) = self.lock().get(id).cloned() else {
+            return Err(ScopedMutateError::NotYours);
         };
+        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
+        let mut slot = Self::lock_slot(&slot_arc);
+        // Owner gate BEFORE plan: a foreign, missing, or empty-owner target is one refusal, so `plan`'s
+        // side effects and timing never leak whether the id exists.
+        if slot.meta.owner != owner {
+            return Err(ScopedMutateError::NotYours);
+        }
+        let plan_out = plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
+            MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
+            MutateError::Store(e) => ScopedMutateError::Store(e),
+        })?;
         let Some(m) = plan_out else {
             // No-op: return the current row unchanged.
-            return Ok(handles
-                .get(id)
-                .map(|s| s.row.clone())
-                .expect("slot present: it was read one statement earlier under the same lock"));
+            return Ok(slot.row.clone());
         };
-        self.apply_mutation_locked(&mut handles, id, m)
+        self.apply_mutation_to_slot(&mut slot, m)
             .map_err(ScopedMutateError::Store)?;
-        Ok(handles
-            .get(id)
-            .map(|s| s.row.clone())
-            .expect("slot present: apply_mutation_locked only skips on a vanished slot, impossible under this lock"))
+        Ok(slot.row.clone())
     }
 
     /// THE RETENTION SWEEP under a held working-set lock. Three rules: (0) transition an ACTIVE handle
@@ -540,7 +536,7 @@ impl DurableHandleEngine {
     /// module-level "Lock discipline" note on the per-engine-vs-per-handle asymmetry.
     fn sweep_locked<A, R>(
         &self,
-        handles: &mut HashMap<String, HandleSlot>,
+        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
         now: u64,
         bounds: SweepBounds,
         abandon: &A,
@@ -552,27 +548,27 @@ impl DurableHandleEngine {
         let abandoned: Vec<String> = handles
             .iter()
             .filter(|(_, s)| {
+                let s = Self::lock_slot(s);
                 !s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.abandon_secs
             })
             .map(|(id, _)| id.clone())
             .collect();
         for id in &abandoned {
-            let m = {
-                let Some(slot) = handles.get(id) else {
-                    continue;
-                };
-                abandon(id, slot.row.as_ref(), &slot.pos, now)
-            };
-            let Some(m) = m else {
+            let Some(slot_arc) = handles.get(id).cloned() else {
                 continue;
             };
-            if let Err(e) = self.apply_mutation_locked(handles, id, m) {
+            let mut slot = Self::lock_slot(&slot_arc);
+            let Some(m) = abandon(id, slot.row.as_ref(), &slot.pos, now) else {
+                continue;
+            };
+            if let Err(e) = self.apply_mutation_to_slot(&mut slot, m) {
                 report_fail(id, &e);
             }
         }
         let expired: Vec<String> = handles
             .iter()
             .filter(|(_, s)| {
+                let s = Self::lock_slot(s);
                 s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.terminal_ttl_secs
             })
             .map(|(id, _)| id.clone())
@@ -585,8 +581,10 @@ impl DurableHandleEngine {
         }
         let mut terminal: Vec<(u64, String)> = handles
             .iter()
-            .filter(|(_, s)| s.meta.terminal)
-            .map(|(id, s)| (s.meta.updated_at, id.clone()))
+            .filter_map(|(id, s)| {
+                let s = Self::lock_slot(s);
+                s.meta.terminal.then(|| (s.meta.updated_at, id.clone()))
+            })
             .collect();
         terminal.sort_unstable();
         for (_, id) in terminal
@@ -628,7 +626,7 @@ impl DurableHandleEngine {
                     event_unreadable,
                 } => {
                     out.unreadable += event_unreadable;
-                    handles.insert(id, HandleSlot { row, meta, pos });
+                    handles.insert(id, Arc::new(Mutex::new(HandleSlot { row, meta, pos })));
                     out.active += 1;
                 }
             }
@@ -646,9 +644,14 @@ impl DurableHandleEngine {
         if owner.is_empty() {
             return Err(HandleDenied::NotYours);
         }
-        match self.lock().get(id) {
-            Some(s) if s.meta.owner == owner => Ok(s.row.clone()),
-            _ => Err(HandleDenied::NotYours),
+        let Some(slot_arc) = self.lock().get(id).cloned() else {
+            return Err(HandleDenied::NotYours);
+        };
+        let slot = Self::lock_slot(&slot_arc);
+        if slot.meta.owner == owner {
+            Ok(slot.row.clone())
+        } else {
+            Err(HandleDenied::NotYours)
         }
     }
 
@@ -661,8 +664,10 @@ impl DurableHandleEngine {
         let mut out: Vec<(String, Arc<dyn Any + Send + Sync>)> = self
             .lock()
             .iter()
-            .filter(|(_, s)| s.meta.owner == owner)
-            .map(|(id, s)| (id.clone(), s.row.clone()))
+            .filter_map(|(id, s)| {
+                let s = Self::lock_slot(s);
+                (s.meta.owner == owner).then(|| (id.clone(), s.row.clone()))
+            })
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out.into_iter().map(|(_, r)| r).collect()
@@ -670,12 +675,12 @@ impl DurableHandleEngine {
 
     /// UNSCOPED read — for the operator surface and the sweep, never for a caller.
     pub fn get_unscoped(&self, id: &str) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.lock().get(id).map(|s| s.row.clone())
+        self.lock().get(id).map(|s| Self::lock_slot(s).row.clone())
     }
 
     /// The neutral projection of a live handle, or `None`.
     pub fn meta(&self, id: &str) -> Option<HandleMeta> {
-        self.lock().get(id).map(|s| s.meta.clone())
+        self.lock().get(id).map(|s| Self::lock_slot(s).meta.clone())
     }
 
     /// How many handles are in the working set.
@@ -694,12 +699,12 @@ impl DurableHandleEngine {
     /// Refuses to evict an ACTIVE handle.
     pub fn evict_if_terminal(&self, id: &str) -> bool {
         let mut handles = self.lock();
-        match handles.get(id) {
-            Some(s) if s.meta.terminal => {
-                handles.remove(id);
-                true
-            }
-            _ => false,
+        let terminal = handles.get(id).map(|s| Self::lock_slot(s).meta.terminal);
+        if terminal == Some(true) {
+            handles.remove(id);
+            true
+        } else {
+            false
         }
     }
 
@@ -713,8 +718,10 @@ impl DurableHandleEngine {
         let mut handles = self.lock();
         let dropped: Vec<String> = handles
             .iter()
-            .filter(|(_, s)| s.meta.terminal && s.meta.updated_at < before)
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, s)| {
+                let s = Self::lock_slot(s);
+                (s.meta.terminal && s.meta.updated_at < before).then(|| id.clone())
+            })
             .collect();
         for id in &dropped {
             handles.remove(id);

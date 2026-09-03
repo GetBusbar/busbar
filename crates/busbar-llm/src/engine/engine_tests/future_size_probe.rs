@@ -48,6 +48,8 @@ fn forward_future_size_is_pinned() {
         "openai",
         crate::test_support::CHAT,
         None,
+        // No client beta/version headers under this size probe.
+        Vec::new(),
     );
     let size = std::mem::size_of_val(&fut);
     eprintln!("[future-size] forward_with_pool = {size} bytes");

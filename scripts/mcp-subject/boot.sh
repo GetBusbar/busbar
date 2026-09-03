@@ -80,6 +80,25 @@ subject_free_ports() {
 # operator has not approved a digest for is catalogued and refuses to dispatch, so an approval had
 # to be written for each one, exactly as an operator would.
 #
+# THE AUTHENTICITY ROOT IS `pinned_pubkey`, NOT `cert_spki`, AND THAT IS DELIBERATE — the same class
+# of fix as the digest one below, applied to the identity axis. The fixtures are reached over
+# PLAINTEXT loopback `http://` (they are internal node servers; `allow_private: true` says so out
+# loud), so there is no TLS hop and therefore no peer certificate to walk. busbar 1.6.0 now ENFORCES
+# `cert_spki`/`mtls` by re-hashing the SPKI the live hop actually presented and comparing it against
+# the operator's pin — the fix for a real bug where the declared pin was fed back as its own
+# "observed" value and `pin_changed` could never be true. On a plaintext hop that enforced
+# observation is `None`, which is a demotion (`connect.rs`: "we could not look" and "it matched" are
+# the two answers a pin exists to keep apart), so a `cert_spki` registration here QUARANTINES on its
+# first boot connect — busbar's defence working exactly as built, against a rig that declared a
+# transport-cert pin on a transport that carries no cert. `pinned_pubkey` is the honest root for this
+# hop: it names an MCP-native manifest signature busbar does not independently attest, so it has no
+# observation source of its own and correctly degrades to the declared value (`observed_pin`'s `_`
+# arm). The first honest connect therefore lands `approved`, while the security property this rig
+# actually exercises — the per-tool digest rug-pull on the CAPABILITY axis — still quarantines a
+# changed tool set exactly as before (see the `probe` registration's note). The `cert_spki`/`mtls`
+# enforcement itself is unchanged and stays under test in `crates/busbar-mcp` (`transport_pin_tests`,
+# which drive a REAL TLS handshake against the throw-away `test_ca`).
+#
 # The server id is `test` and the tools are named without that prefix, because busbar's routing key
 # is `{server}_{tool}`: `test` + `simple_text` is the `test_simple_text` the suite asks for, produced
 # by the real namespacing rather than around it. See `diagnostic-upstream.mjs` for why the spec
@@ -172,7 +191,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/json"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
         # `json-schema-2020-12`. THE SCHEMA IS THE POINT: the scenario reads `inputSchema` off
@@ -223,7 +244,9 @@ tools:
     # refuses a private address by default and this registration genuinely is an internal one.
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     # A DESCRIPTION PER TOOL, because busbar publishes the OPERATOR's description rather than the
     # upstream's: what an approval means is that this operator vouched for this tool, and echoing
@@ -648,7 +671,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/slow"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       # \`optional\`, NOT \`required\`, and the difference is asserted directly:
@@ -678,7 +703,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/failing"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       # \`required\` HERE, and it is what tasks-required-task-error reads. That scenario calls this
@@ -703,7 +730,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/protocol"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       # The OTHER half of the error-semantics pair: this upstream answers a JSON-RPC error, so
@@ -722,7 +751,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/confirm"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       # \`task_ask_caller:\` RATHER THAN \`ask_caller:\`, and the two are not interchangeable.
@@ -763,7 +794,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/multi"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       # TWO KEYS IN ONE ROUND, which is what makes partial fulfilment testable at all: the scenario
@@ -827,7 +860,9 @@ tools:
     url: "http://127.0.0.1:$upstream_port/mcp/greeter"
     allow_private: true
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       greet:
@@ -876,7 +911,9 @@ YAML
     allow_private: true
     timeout: 10s
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       echo:
@@ -917,7 +954,9 @@ YAML
     allow_private: true
     timeout: 10s
     pin:
-      mechanism: cert_spki
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
       echo:

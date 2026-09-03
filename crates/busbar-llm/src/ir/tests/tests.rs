@@ -318,3 +318,49 @@ fn readable_blocks_are_not_opaque() {
         );
     }
 }
+
+/// COHERE `billed_units` (1.6.0 M1, `billing-unified.md` §8): when Cohere reports a separately-metered billed bucket,
+/// `to_token_usage` must ledger the BILLED input/output, NOT the raw `tokens` totals — the reserved
+/// tiers (via `engine::usage::tier_tokens`) follow. This is the deliberate per-dialect ledgered-count
+/// change; every dialect that leaves `billed_*` as `None` still projects the raw totals unchanged.
+#[test]
+fn cohere_billed_units_win_over_raw_in_to_token_usage() {
+    let raw_wins_when_absent = IrUsage {
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
+    };
+    let tu = raw_wins_when_absent.to_token_usage();
+    assert_eq!(
+        (tu.input, tu.output),
+        (100, 40),
+        "no billed_* → raw totals unchanged"
+    );
+
+    let billed = IrUsage {
+        input_tokens: 100, // raw
+        output_tokens: 40, // raw
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail {
+            billed_input_tokens: Some(90),
+            billed_output_tokens: Some(35),
+            ..Default::default()
+        },
+    };
+    let tu = billed.to_token_usage();
+    assert_eq!(
+        (tu.input, tu.output),
+        (90, 35),
+        "billed_units present → the ledger bills the BILLED counts, not the raw tokens bucket"
+    );
+    // The reserved-tier projection the ledger actually accrues follows the billed counts.
+    let tier = crate::engine::usage::tier_usage(&tu);
+    let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
+    assert_eq!(
+        (u(busbar_api::UNIT_INPUT), u(busbar_api::UNIT_OUTPUT)),
+        (90, 35)
+    );
+}

@@ -692,7 +692,7 @@ pub fn build_app_from_config(
             health: provider_cfg.health.as_ref().map(health_input_of),
             allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
             context_max: model_context_max.get(&ld.model).copied().flatten(),
-            default_max_tokens: model_default_max_tokens.get(&ld.model).copied().flatten(),
+            lane_default_max_tokens: model_default_max_tokens.get(&ld.model).copied().flatten(),
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
@@ -1360,6 +1360,14 @@ pub fn build_app_from_config(
         allow_all_metadata: cfg.allow_all_metadata,
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
         client_settings: llm_client_settings,
+        // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
+        // table — LLM-plane vocabulary, carried through the neutral carrier so the plane's
+        // `build_runtime` stamps them onto its own `NativeRuntime` (they no longer live on `App`).
+        global_default_max_tokens: cfg.limits.default_max_tokens,
+        reasoning_budgets: {
+            let b = cfg.limits.reasoning_effort_budgets;
+            [b.minimal, b.low, b.medium, b.high]
+        },
         // The FIXED global-default failover (production has no operator knob for it) — carried so the
         // plane's `build_runtime` sets `NativeRuntime.failover_cfg` identically to the pre-pivot inline
         // lowering, and so the test fixture can override the whole-App deadline.
@@ -1695,11 +1703,6 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
-        default_max_tokens: cfg.limits.default_max_tokens,
-        reasoning_effort_budgets: {
-            let b = cfg.limits.reasoning_effort_budgets;
-            [b.minimal, b.low, b.medium, b.high]
-        },
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg

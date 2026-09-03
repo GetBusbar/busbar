@@ -61,3 +61,41 @@ pub enum Billing {
     /// Flat / no meter (moderations).
     Flat,
 }
+
+// ── The neutral usage_units billing spine (1.6.0 M1b) ───────────────────────────────────────────
+//
+// `Usage` is the ONE neutral carrier a plane hands core: a SINGLE opaque name-keyed unit map. The
+// reserved four (input/output/cache_read/cache_write) are now ORDINARY KEYS in that one map beside
+// every open (operator/plane) unit — `TierTokens` is dissolved (M1b). This crate stays PURE: it
+// names no reserved key literal at all; it is just a `BTreeMap<String, u64>` here. Core prices it by
+// looking each key up against the rate card (the reserved four via the tier rates, opens via the
+// per-model extras table), exactly as it treats `CostComponent.label` and `Magnitude.unit`.
+//
+// The neutral ATTRIBUTION facets (who paid, which pool, which plane, which operation) are a designed
+// later-milestone addition — they arrive when a plane is threaded onto the pricer, and their closed
+// facets need a purity-gate-compatible home. M1b lands only the priced-usage half of the carrier.
+
+/// The service-tier modifier a plane may carry. CLOSED enum (§7.2 of `billing-unified.md`). A tier
+/// is a MODIFIER, not a counted unit, so it never rides `usage_units`; config resolves each variant
+/// to an integer basis-point multiplier the pricer applies (`Standard` = ×1.0000 = 10_000 bp).
+/// Extend additively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ServiceTier {
+    #[default]
+    Standard,
+    Priority,
+    Batch,
+    Flex,
+}
+
+/// The one neutral usage representation every plane hands core (§2 of `billing-unified.md`).
+///
+/// (1.6.0 M1b) `usage_units` is the SOLE representation: the reserved four
+/// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside every open (non-reserved)
+/// keyed count. Core iterates it opaquely and prices each key against the rate card. This crate
+/// names no reserved literal — the map is pure DATA here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Usage {
+    /// OPAQUE billable counts, reserved four AND opens. Keys are plane/operator DATA.
+    pub usage_units: std::collections::BTreeMap<String, u64>,
+}

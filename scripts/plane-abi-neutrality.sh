@@ -27,10 +27,13 @@ crate_src="$repo/crates/busbar-plugin/src/hot"
 
 # The banned protocol/role nouns (DESIGN-v5 §neutrality-witness). Matched case-insensitively as
 # substrings of IDENTIFIERS on declaration lines (see the grep below).
-banned=(llm mcp a2a tool agent sampling task server card round prompt)
+# `voice`/`realtime`/`audio` are the Plane-4 (busbar-voice) nouns: the duplex/live-voice plane owns
+# them 100% (docs/design/plane4-duplex-session.md §7.2), so a leak of any of them into the neutral
+# plane ABI is exactly the regression this witness must catch BEFORE the plane lands.
+banned=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
 
 # ── self-check: every mandated token must appear in the ban list above ──────────────────────────
-mandated=(llm mcp a2a tool agent sampling task server card round prompt)
+mandated=(llm mcp a2a tool agent sampling task server card round prompt voice realtime audio)
 missing_tokens=()
 for t in "${mandated[@]}"; do
   found=0
@@ -40,6 +43,26 @@ done
 if [ "${#missing_tokens[@]}" -ne 0 ]; then
   echo "FAIL plane-abi-neutrality: the ban list is missing mandated tokens: ${missing_tokens[*]}" >&2
   echo "  The witness cannot catch a leak of a token it does not list. Add them to \`banned\`." >&2
+  exit 1
+fi
+
+# ── totality self-check: EVERY canonical plane key must be in the ban list ───────────────────────
+# The ban list above is a curated superset (plane keys + role/media nouns); the plane KEYS it must
+# never omit are single-sourced in scripts/plane-keys.sh. A plane added there whose name is not yet
+# banned here is a plane whose noun this witness would wave through — fail loudly so the day a plane
+# lands, this row lands with it.
+# shellcheck source=scripts/plane-keys.sh
+. "$here/plane-keys.sh"
+missing_keys=()
+for k in $PLANE_KEYS; do
+  found=0
+  for b in "${banned[@]}"; do [ "$b" = "$k" ] && found=1 && break; done
+  [ "$found" -eq 0 ] && missing_keys+=("$k")
+done
+if [ "${#missing_keys[@]}" -ne 0 ]; then
+  echo "FAIL plane-abi-neutrality: canonical plane key(s) not in the ban list: ${missing_keys[*]}" >&2
+  echo "  scripts/plane-keys.sh names these planes; the witness cannot catch a leak of a plane" >&2
+  echo "  noun it does not list. Add them to \`banned\`." >&2
   exit 1
 fi
 

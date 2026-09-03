@@ -705,7 +705,7 @@ impl LaneSpec {
                 }),
             allow_metadata_hosts: Vec::new(),
             context_max: self.context_max,
-            default_max_tokens: self.default_max_tokens,
+            lane_default_max_tokens: self.default_max_tokens,
             attempt_timeout_ms: None,
             reasoning: false,
             prompt_caching: false,
@@ -1659,6 +1659,10 @@ impl TestApp {
                     http1_only: false,
                     h2_prior_knowledge: false,
                 },
+                // Byte-identical to the prior `TestApp` stamp of `App::default_max_tokens` /
+                // `App::reasoning_effort_budgets` (the LLM plane now carries these in its runtime).
+                global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
+                reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
             };
             if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
@@ -1852,8 +1856,6 @@ impl TestApp {
                 .plugins_dir
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
-            default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
-            reasoning_effort_budgets: [1024, 4096, 8192, 16384],
             self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(

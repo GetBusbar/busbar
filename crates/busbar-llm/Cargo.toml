@@ -51,6 +51,16 @@ auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 # of its own (the LLM plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]`
 # to agree with substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
 openapi-schema = ["busbar-core/openapi-schema"]
+# T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
+# The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
+# UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
+# (a) it needs the `busbar-plugin` route-enum vocabulary and (b) it flips the fallback plane's
+# `PLANE_DECL.routes` from `None` to `Some(..)`. Gating keeps the money-path fallback plane's default
+# boot byte-identical. The signing secret is read from `BUSBAR_LLM_WEBHOOK_SECRET`; with it unset the
+# feature mounts NOTHING (never an unauthenticated endpoint). The operator-facing secret-config seam
+# (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
+# remainder — see `openai_responses/webhook.rs`.
+webhook-receiver = ["dep:busbar-plugin"]
 
 [dependencies]
 # The engine's public surface. `default-features = false` for the same reason the binary does it: the
@@ -96,6 +106,17 @@ async-trait = { workspace = true }
 # bytes, hex-encoded.
 getrandom = { workspace = true }
 hex = { workspace = true }
+# T3 inbound webhook signature verification (Standard Webhooks / OpenAI Responses async webhooks):
+# HMAC-SHA256 over the signed content, base64 for the `whsec_` secret decode + signature encode. The
+# generic HMAC-SHA256 helper in `busbar_substrate::sigv4` is PRIVATE (SigV4-only, no public
+# re-export), so this plane computes its own HMAC exactly as sigv4 does; the constant-time compare is
+# the neutral `busbar_api::constant_time_eq` (no `subtle` dep introduced).
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+# The route-mount enums (`RouteMethod`/`RouteAuth`) for the OFF-by-default live webhook HTTP route.
+# Optional so the default dependency graph is unchanged; enabled only by `webhook-receiver`.
+busbar-plugin = { path = "../busbar-plugin", optional = true }
 
 [dev-dependencies]
 # The dialects' own tests drive the codecs through core vocabulary (breaker signals, IR types) and

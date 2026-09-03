@@ -71,7 +71,7 @@ struct Client {
     serve: tokio::task::JoinHandle<()>,
     /// The live session — held so the seam-level instruments (the task watcher) can attach to it
     /// exactly as `deliver` does.
-    session: Arc<super::Session<tokio::io::DuplexStream>>,
+    session: Arc<super::Session>,
 }
 
 impl Client {
@@ -93,8 +93,12 @@ impl Client {
             gov,
         };
         let factory = busbar_core::plane_host::live_host_factory(handle);
-        let session = super::new_session(factory, identity, stdout_server);
-        let serve = tokio::spawn(super::run_session(session.clone(), stdin_server));
+        let session = super::new_session(factory, identity);
+        let serve = tokio::spawn(super::run_session(
+            session.clone(),
+            stdin_server,
+            stdout_server,
+        ));
         Client {
             stdin: stdin_client,
             stdout: tokio::io::BufReader::new(stdout_client),
@@ -125,6 +129,22 @@ impl Client {
         serde_json::from_str(line.trim_end()).unwrap_or_else(|e| {
             panic!("every line on stdout must be one JSON-RPC message ({e}): {line:?}")
         })
+    }
+
+    /// PRIME the session's channel handle. The neutral pump hands `Session::out` its `DuplexHandle`
+    /// with the FIRST frame it dispatches, and the seam-level instruments a few tests drive directly
+    /// (`deliver`, `watch_task_result`) emit through that cached handle — so a test bypassing the
+    /// inbound frame path must pump one real frame (a `ping`) first to make the handle exist. In a
+    /// live session the client's own `initialize`/request is that first frame; these tests would
+    /// otherwise start a background emitter before any frame set the handle.
+    async fn prime(&mut self) {
+        self.send(&frame("prime", "ping", serde_json::json!({})))
+            .await;
+        let pong = self.recv().await;
+        assert_eq!(
+            pong["id"], "prime",
+            "the priming ping must be answered: {pong}"
+        );
     }
 
     /// Assert NOTHING arrives for `ms` — the instrument for "a notification is not answered" and
@@ -1027,6 +1047,9 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     // verb. The tasks METHODS' behaviour is `tasks_tests.rs`' subject, not re-proven here.
     let (_peer, app) = plain_deployment().await;
     let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    // The seam instrument below pushes through the session's cached channel handle; pump one frame
+    // so the pump has handed the session that handle.
+    client.prime().await;
     // The session's actor is `anonymous` (ungoverned fixture); create its task in the registry.
     let task = crate::mcp::tasks::TASKS.create("anonymous", busbar_substrate::store::now_ms());
     // Attach the watcher exactly as `deliver` does when it hands the caller a task result.
@@ -1060,6 +1083,9 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
 async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
     let (_peer, app) = plain_deployment().await;
     let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    // `deliver` below is driven directly at the seam; pump one frame so the session holds its
+    // channel handle before the stream unwinds through it.
+    client.prime().await;
     let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"_meta\":{}}}\n\n: keepalive\n\n";
     let response = axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)
@@ -1116,6 +1142,9 @@ async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
 async fn a_buffered_body_that_cannot_be_read_answers_an_error_frame_not_silence() {
     let (_peer, app) = plain_deployment().await;
     let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    // `deliver` is driven directly at the seam; pump one frame so the session holds its channel
+    // handle before it must answer through it.
+    client.prime().await;
     let body = axum::body::Body::from_stream(futures::stream::once(async {
         Err::<axum::body::Bytes, std::io::Error>(std::io::Error::other("stream broke"))
     }));

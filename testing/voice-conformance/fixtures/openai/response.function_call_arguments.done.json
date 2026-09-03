@@ -1,0 +1,11 @@
+{
+  "event_id": "evt_server_0009",
+  "type": "response.function_call_arguments.done",
+  "response_id": "resp_000",
+  "item_id": "item_fncall_001",
+  "output_index": 0,
+  "call_id": "call_weather_abc",
+  "name": "get_weather",
+  "arguments": "{\"city\":\"Paris\"}",
+  "sequence_number": 5
+}

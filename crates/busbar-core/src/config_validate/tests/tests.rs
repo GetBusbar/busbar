@@ -3988,6 +3988,60 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     );
 }
 
+/// G2 fail-open-to-underbill guard: a rate_card entry PRESENT but priced at ALL ZERO meters the
+/// model as free (its token usage costs $0, so a group `budget:` limit never accrues against it —
+/// effectively uncapped). The completeness check only enforces presence (and hands out an all-zero
+/// stub), and the well-formedness check accepts 0 as a valid non-negative rate, so an accidental
+/// all-zero entry sails through. A deliberately free model is legal, so this must be a WARN (naming
+/// the model), NOT a hard error — validation still succeeds. A priced entry must NOT warn.
+#[test]
+fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // Two models: one priced normally, one left at the all-zero default (the unfilled-stub case).
+    let mut cfg = cost_cfg(&["priced-model", "free-by-accident"]);
+    let mut card = std::collections::BTreeMap::new();
+    card.insert(
+        "priced-model".to_string(),
+        config::RateEntryCfg {
+            input_utok: 3.0,
+            output_utok: 15.0,
+            cache_read_utok: 0.3,
+            cache_write_utok: 3.75,
+        },
+    );
+    // All-zero: every tier 0.0 (RateEntryCfg::default()), the exact shape the completeness stub
+    // pastes and an operator might leave unfilled.
+    card.insert(
+        "free-by-accident".to_string(),
+        config::RateEntryCfg::default(),
+    );
+    cfg.rate_card = Some(card);
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+
+    // WARN, not a hard error: a deliberately free model stays legal.
+    assert!(
+        result.is_ok(),
+        "an all-zero rate_card entry is a WARNING, not a hard error (a free model is legal); got: {result:?}"
+    );
+
+    let msgs = cap.messages();
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("free-by-accident") && m.contains("every tier at zero")),
+        "an all-zero-priced model must WARN, naming the model: {msgs:?}"
+    );
+    // The genuinely priced model must NOT trip the warning — otherwise every normal config is spammed.
+    assert!(
+        !msgs.iter().any(|m| m.contains("priced-model")),
+        "a model with non-zero rates must NOT warn: {msgs:?}"
+    );
+}
+
 /// A negative `per_request_fee` would CREDIT every request - rejected; 0 (default) and positive
 /// values pass.
 #[test]

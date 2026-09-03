@@ -485,6 +485,16 @@ jobs:
             exit 1
           fi
 
+      # THE VOICE RUNTIME SUITE — the 4th plane's live duplex/session tests
+      # (crates/busbar-voice/src/runtime/tests.rs + topology/tests.rs) live under
+      # `#[cfg(feature = "runtime")]`, which is OFF by default. The workspace `cargo test` above runs
+      # with default features, so those tests NEVER execute there, and the voice-conformance workflow
+      # only `cargo build`s the conform bin — nothing ran the tests until this step. Voice is dev-only
+      # until DoD, so this is a plain `-p busbar-voice --features runtime` run: no service containers,
+      # no floor accounting, just the previously-dark plane suite made to actually run and go green.
+      - name: Voice runtime tests (the `runtime`-gated plane suite `cargo test --workspace` never runs)
+        run: cargo test -p busbar-voice --features runtime --locked --verbose
+
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
       # which put four generated artifacts in the working tree, two of them carrying the absolute

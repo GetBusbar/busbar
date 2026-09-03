@@ -132,3 +132,61 @@ fn top_level_tools_wrong_typed_rejects() {
         .read_request(&serde_json::json!({"model": "x", "input": "hi", "tools": []}))
         .expect("empty-array tools must parse");
 }
+
+// ── T3 stateful Responses: `previous_response_id` / `store` type discipline ───
+// The server-side conversation-state knobs ride `extra` verbatim (busbar is a translator; the
+// upstream owns the state), but a PRESENT value of the wrong TYPE is a house-policy 400: the extra
+// pass-through would otherwise relay a malformed field to the backend. `previous_response_id` is a
+// string; `store` is a bool. Absent/null stays lenient.
+#[test]
+fn stateful_previous_response_id_wrong_typed_rejects() {
+    for bad in [
+        serde_json::json!({"model": "x", "input": "hi", "previous_response_id": 5}),
+        serde_json::json!({"model": "x", "input": "hi", "previous_response_id": true}),
+        serde_json::json!({"model": "x", "input": "hi", "previous_response_id": {"id": "resp_1"}}),
+        serde_json::json!({"model": "x", "input": "hi", "previous_response_id": ["resp_1"]}),
+    ] {
+        assert_ir_parse_reject(
+            ResponsesReader.read_request(&bad),
+            "a present non-string previous_response_id must reject",
+        );
+    }
+}
+
+#[test]
+fn stateful_store_wrong_typed_rejects() {
+    for bad in [
+        serde_json::json!({"model": "x", "input": "hi", "store": "yes"}),
+        serde_json::json!({"model": "x", "input": "hi", "store": 1}),
+        serde_json::json!({"model": "x", "input": "hi", "store": {"enabled": true}}),
+    ] {
+        assert_ir_parse_reject(
+            ResponsesReader.read_request(&bad),
+            "a present non-bool store must reject",
+        );
+    }
+}
+
+#[test]
+fn stateful_knobs_stay_lenient_when_absent_null_or_correctly_typed() {
+    // Absent — lenient.
+    ResponsesReader
+        .read_request(&serde_json::json!({"model": "x", "input": "hi"}))
+        .expect("absent stateful knobs must parse");
+    // Null — treated as absent, lenient.
+    ResponsesReader
+        .read_request(&serde_json::json!({
+            "model": "x", "input": "hi",
+            "previous_response_id": serde_json::Value::Null,
+            "store": serde_json::Value::Null
+        }))
+        .expect("null stateful knobs must parse");
+    // Correctly typed — parse (and, per the round-trip test, ride extra).
+    ResponsesReader
+        .read_request(&serde_json::json!({
+            "model": "x", "input": "hi",
+            "previous_response_id": "resp_abc123",
+            "store": false
+        }))
+        .expect("correctly-typed stateful knobs must parse");
+}

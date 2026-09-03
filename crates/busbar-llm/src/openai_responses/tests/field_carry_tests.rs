@@ -1053,3 +1053,72 @@ fn responses_drops_penalties_seed_n_observably() {
         );
     }
 }
+
+// ─────────────────────── T3 stateful Responses: previous_response_id / store ───────────────────────
+
+/// responses/request/{previous_response_id,store} — the server-side conversation-state knobs a proxy
+/// must carry LOSSLESSLY. Both ride `extra` (busbar is a translator; the upstream owns the state), so a
+/// same-protocol Responses→Responses hop re-emits them byte-for-byte. `previous_response_id` threads
+/// this turn onto an upstream-stored prior response; `store: true` asks the upstream to persist this
+/// response for a later `previous_response_id`.
+#[test]
+fn responses_stateful_previous_response_id_and_store_survive_same_protocol() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "input": [{ "type": "input_text", "text": "continue" }],
+        "previous_response_id": "resp_prev_9f8e7d",
+        "store": true,
+    });
+    let out = roundtrip_req(&body);
+    assert_eq!(
+        out["previous_response_id"], "resp_prev_9f8e7d",
+        "previous_response_id must round-trip verbatim: {out}"
+    );
+    assert_eq!(out["store"], true, "store:true must round-trip: {out}");
+
+    // `store: false` is a DISTINCT intent (do not persist) and must not collapse to absent/true.
+    let body_false = serde_json::json!({
+        "model": "gpt-4o",
+        "input": "x",
+        "store": false,
+    });
+    let out_false = roundtrip_req(&body_false);
+    assert_eq!(
+        out_false["store"], false,
+        "store:false must round-trip as false: {out_false}"
+    );
+}
+
+/// responses/response/id — the STORED-RESPONSE id echo / `response.id` correlation. When a client uses
+/// server-side conversation state, THIS response's `id` becomes the NEXT request's
+/// `previous_response_id`, so the id must survive a read→IR→write hop unchanged. A native upstream id is
+/// carried verbatim (never re-synthesized) so the client's stored linkage is not broken.
+#[test]
+fn responses_stateful_response_id_correlation_round_trips() {
+    let upstream = serde_json::json!({
+        "id": "resp_stored_abc123",
+        "object": "response",
+        "created_at": 1_700_000_500u64,
+        "model": "gpt-4o",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "ok" }],
+        }],
+        "usage": { "input_tokens": 3, "output_tokens": 1 },
+    });
+    let ir = ResponsesReader
+        .read_response(&upstream)
+        .expect("read_response ok");
+    assert_eq!(
+        ir.id.as_deref(),
+        Some("resp_stored_abc123"),
+        "the upstream stored-response id must be captured into IR for correlation"
+    );
+    let out = write_response(&ir);
+    assert_eq!(
+        out["id"], "resp_stored_abc123",
+        "the stored-response id must be echoed verbatim so the client's linkage survives: {out}"
+    );
+}

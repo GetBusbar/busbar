@@ -81,12 +81,9 @@ pub(crate) fn configure(cfg: &ExportCfg) {
         // idle per host, 90s idle timeout — sinks are operator-configured hosts, exactly the shape
         // the LLM lanes pool for); the per-DELIVERY total timeout is each target's own
         // `delivery_timeout_secs` (applied per request below), so no client-level total is needed.
-        let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::llm_lane(
-            usize::MAX,
-            90,
-            false,
-            false,
-        ));
+        let client = crate::proxy::build_egress_client(
+            &crate::proxy::EgressClientSpec::pooled_webpki(usize::MAX, 90, false, false),
+        );
         let _ = TARGETS.set(targets);
         let _ = CLIENT.set(client);
     }

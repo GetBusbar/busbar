@@ -36,6 +36,15 @@ use std::time::Duration;
 pub(crate) struct TransportResponse {
     pub(crate) status: u16,
     pub(crate) body: Vec<u8>,
+    /// THE TRANSPORT-LAYER IDENTITY OF THE PEER THAT ANSWERED THIS LEG: the `sha256/…` SPKI pin
+    /// [`busbar_substrate::egress::seam::Buffered::peer_spki`] observed on the TLS hop, verbatim.
+    ///
+    /// `None` on stdio (no TLS hop exists to observe) and on an HTTP leg that ran over plaintext or
+    /// whose certificate could not be walked. `super::super::connect::refresh` is this field's
+    /// consumer: a `cert_spki`/`mtls`-pinned registration's declared pin is compared against THIS
+    /// value, never against itself, which is what makes the pin an observed fact rather than an
+    /// operator's assertion echoed back as its own proof.
+    pub(crate) peer_spki: Option<String>,
 }
 
 /// Why a transport-level send failed. Kept distinct from a JSON-RPC error: an upstream that answered
@@ -156,6 +165,11 @@ pub(crate) fn wire_for(transport: busbar_substrate::transport::Transport) -> &'s
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
         Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
+        Some(UpstreamWireKind::Duplex) => unreachable!(
+            "transport `{}` is a full-duplex framed wire, not an MCP client leg in this build; \
+             mcp/config.rs refuses any `transport:` that is not `streamable_http` or `stdio` at boot",
+            transport.name()
+        ),
         None => unreachable!(
             "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
              mcp/config.rs refuses any other `transport:` value at boot",

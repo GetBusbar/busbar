@@ -114,8 +114,10 @@ pub struct LaneInput {
     pub allow_metadata_hosts: Vec<String>,
     /// The resolved single-valued context window for this model, if any.
     pub context_max: Option<usize>,
-    /// The resolved default max output tokens, if any.
-    pub default_max_tokens: Option<u32>,
+    /// The resolved per-lane default max output tokens, if any. Named neutrally (prefixed) to match the
+    /// established neutral carrier vocabulary (`EgressPrep::lane_default_max_tokens`) rather than the
+    /// bare LLM-request-param spelling — this neutral carrier owns only the primitive, not the noun.
+    pub lane_default_max_tokens: Option<u32>,
     /// Model-level per-attempt time-to-headers cap (ms).
     pub attempt_timeout_ms: Option<u64>,
     /// Operator-declared reasoning-carry capability (model level).
@@ -292,6 +294,13 @@ pub struct PlaneBuildInput {
     pub blocked_metadata_hosts: Vec<String>,
     /// The client-affecting resolved limits (warm-pool reuse key + client build inputs).
     pub client_settings: ClientSettingsInput,
+    /// The cross-protocol translation seam's GLOBAL fallback max-output-tokens (`limits.default_max_tokens`),
+    /// injected when a lane carries no per-lane default. A resolved `u32` primitive the plane stamps onto
+    /// its own runtime — this carrier names it neutrally (prefixed) rather than as bare LLM vocabulary.
+    pub global_default_max_tokens: u32,
+    /// The resolved effort-word → thinking-budget table (`limits.reasoning_effort_budgets`, low→high),
+    /// carried as a plain `[u32; 4]` primitive for the plane to stamp onto its own runtime.
+    pub reasoning_budgets: [u32; 4],
     /// The GLOBAL-DEFAULT failover config — the fallback for pools that set no `failover:` of their
     /// own. Production `appbuild` always fills this with the fixed `DEFAULT_FAILOVER_*` constants (there
     /// is no operator knob for a custom global), so carrying it changes nothing there; it exists so the

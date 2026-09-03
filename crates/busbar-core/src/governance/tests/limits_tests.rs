@@ -82,13 +82,8 @@ fn key(id: &str, group: Option<&str>) -> VirtualKey {
     }
 }
 
-fn toks(input: u64, output: u64) -> TierTokens {
-    TierTokens {
-        input,
-        output,
-        cache_read: 0,
-        cache_write: 0,
-    }
+fn toks(input: u64, output: u64) -> std::collections::BTreeMap<String, u64> {
+    toks_tiers(input, output, 0, 0)
 }
 
 /// The exact blocking bucket must be NAMED: group + metric + window (+ retry for rolling windows).
@@ -238,14 +233,25 @@ fn tokens_cap_blocks_after_ledger_crosses() {
     g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
 }
 
-/// A four-tier `TierTokens` builder for the per-tier cap tests.
-fn toks_tiers(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TierTokens {
-    TierTokens {
-        input,
-        output,
-        cache_read,
-        cache_write,
+/// A four-tier name-keyed unit-map builder for the per-tier cap tests (zero tiers omitted).
+fn toks_tiers(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in [
+        (busbar_api::UNIT_INPUT, input),
+        (busbar_api::UNIT_OUTPUT, output),
+        (busbar_api::UNIT_CACHE_READ, cache_read),
+        (busbar_api::UNIT_CACHE_WRITE, cache_write),
+    ] {
+        if v != 0 {
+            m.insert(k.to_string(), v);
+        }
     }
+    m
 }
 
 /// `tokens_input` per window is best-effort post-paid on the UNCACHED-INPUT tier ONLY: admission

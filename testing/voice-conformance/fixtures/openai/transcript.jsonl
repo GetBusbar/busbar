@@ -1,0 +1,26 @@
+{"dir":"meta","t_ms":0,"note":"WebSocket connect wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"}
+{"dir":"client","t_ms":10,"event":{"event_id":"evt_c_01","type":"session.update","session":{"modalities":["audio","text"],"instructions":"You are a concise, friendly voice assistant.","voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad","threshold":0.5,"prefix_padding_ms":300,"silence_duration_ms":500,"create_response":true,"interrupt_response":true},"tools":[{"type":"function","name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],"tool_choice":"auto"}}}
+{"dir":"server","t_ms":40,"event":{"event_id":"evt_s_01","type":"session.created","session":{"id":"sess_ABC123","object":"realtime.session","model":"gpt-4o-realtime-preview-2024-12-17","modalities":["audio","text"],"voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad","threshold":0.5,"prefix_padding_ms":300,"silence_duration_ms":500}}}}
+{"dir":"server","t_ms":45,"event":{"event_id":"evt_s_02","type":"session.updated","session":{"id":"sess_ABC123","object":"realtime.session","tool_choice":"auto"}}}
+{"dir":"client","t_ms":300,"event":{"event_id":"evt_c_02","type":"input_audio_buffer.append","audio":"UklGRhwAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="}}
+{"dir":"server","t_ms":360,"event":{"event_id":"evt_s_03","type":"input_audio_buffer.speech_started","audio_start_ms":210,"item_id":"item_user_002"}}
+{"dir":"client","t_ms":1000,"event":{"event_id":"evt_c_03","type":"input_audio_buffer.append","audio":"UklGRhwAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="}}
+{"dir":"server","t_ms":1080,"event":{"event_id":"evt_s_04","type":"input_audio_buffer.speech_stopped","audio_end_ms":980,"item_id":"item_user_002"}}
+{"dir":"server","t_ms":1090,"event":{"event_id":"evt_s_05","type":"input_audio_buffer.committed","previous_item_id":null,"item_id":"item_user_002"}}
+{"dir":"server","t_ms":1200,"event":{"event_id":"evt_s_06","type":"conversation.item.input_audio_transcription.completed","item_id":"item_user_002","content_index":0,"transcript":"What's the weather in Paris?"}}
+{"dir":"server","t_ms":1210,"event":{"event_id":"evt_s_07","type":"response.created","response":{"id":"resp_000","object":"realtime.response","status":"in_progress"}}}
+{"dir":"server","t_ms":1400,"event":{"event_id":"evt_s_08","type":"response.function_call_arguments.delta","response_id":"resp_000","item_id":"item_fncall_001","output_index":0,"call_id":"call_weather_abc","delta":"{\"city\":\"Pa"}}
+{"dir":"server","t_ms":1450,"event":{"event_id":"evt_s_09","type":"response.function_call_arguments.done","response_id":"resp_000","item_id":"item_fncall_001","output_index":0,"call_id":"call_weather_abc","name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}
+{"dir":"server","t_ms":1460,"event":{"event_id":"evt_s_10","type":"response.done","response":{"id":"resp_000","status":"completed","output":[{"id":"item_fncall_001","type":"function_call","name":"get_weather","call_id":"call_weather_abc","arguments":"{\"city\":\"Paris\"}"}]}}}
+{"dir":"client","t_ms":1600,"event":{"event_id":"evt_c_04","type":"conversation.item.create","item":{"id":"item_fnout_001","type":"function_call_output","call_id":"call_weather_abc","output":"{\"temp_c\":18,\"condition\":\"partly cloudy\"}"}}}
+{"dir":"client","t_ms":1610,"event":{"event_id":"evt_c_05","type":"response.create","response":{"modalities":["audio","text"],"instructions":"Answer using the tool result."}}}
+{"dir":"server","t_ms":1650,"event":{"event_id":"evt_s_11","type":"response.created","response":{"id":"resp_001","status":"in_progress"}}}
+{"dir":"server","t_ms":1800,"event":{"event_id":"evt_s_12","type":"response.audio.delta","response_id":"resp_001","item_id":"item_asst_002","output_index":0,"content_index":0,"delta":"UklGRhwAAABXQVZFZm10IBAAAAABAAEA"}}
+{"dir":"server","t_ms":1850,"event":{"event_id":"evt_s_13","type":"response.audio.delta","response_id":"resp_001","item_id":"item_asst_002","output_index":0,"content_index":0,"delta":"gD4AAAB9AAACABAAZGF0YQAAAAA="}}
+{"dir":"client","t_ms":1900,"event":{"event_id":"evt_c_06","type":"input_audio_buffer.append","audio":"UklGRhwAAABXQVZF"}}
+{"dir":"server","t_ms":1940,"event":{"event_id":"evt_s_14","type":"input_audio_buffer.speech_started","audio_start_ms":1900,"item_id":"item_user_003"}}
+{"dir":"client","t_ms":1950,"event":{"event_id":"evt_c_07","type":"conversation.item.truncate","item_id":"item_asst_002","content_index":0,"audio_end_ms":150}}
+{"dir":"client","t_ms":1955,"event":{"event_id":"evt_c_08","type":"response.cancel"}}
+{"dir":"server","t_ms":1970,"event":{"event_id":"evt_s_15","type":"conversation.item.truncated","item_id":"item_asst_002","content_index":0,"audio_end_ms":150}}
+{"dir":"server","t_ms":1975,"event":{"event_id":"evt_s_16","type":"response.done","response":{"id":"resp_001","status":"cancelled"}}}
+{"dir":"meta","t_ms":3000,"note":"WebSocket close (client-initiated, code 1000)"}

@@ -11,11 +11,12 @@ use super::*;
 /// fully-flushed entry is DROPPED; a re-appearing model is simply re-interned by `accrue`.
 #[test]
 fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
-    let tok = |n: u64| busbar_api::TierTokens {
-        input: n,
-        output: 0,
-        cache_read: 0,
-        cache_write: 0,
+    let tok = |n: u64| -> std::collections::BTreeMap<String, u64> {
+        let mut m = std::collections::BTreeMap::new();
+        if n != 0 {
+            m.insert(busbar_api::UNIT_INPUT.to_string(), n);
+        }
+        m
     };
     let mut cell = BudgetCell::fresh(0); // the all-time cell that the sweep never ages out
     cell.accrue("live-model", &tok(10)); // real tokens → must be KEPT
@@ -28,7 +29,7 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
         .iter_mut()
         .find(|m| &*m.model == "flushed-model")
     {
-        m.flushed = m.cur;
+        m.flushed = m.cur.clone();
     }
     assert_eq!(cell.models.len(), 3, "all three interned before the prune");
 

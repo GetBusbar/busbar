@@ -127,7 +127,7 @@ pub struct App {
     #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_substrate::plane_host::EngineHost::plane_pool_members`]), keyed by the plane's stable
+    /// ([`busbar_substrate::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// `agent_pools` field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its `<section>.pools:` set (member selection derives lanes from member position). Read
@@ -465,15 +465,11 @@ pub struct App {
     /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
     /// survives swaps.
     pub(crate) plugins_cfg: crate::config::PluginsCfg,
-    /// Global fallback for the translation-injected `max_tokens` (`limits.default_max_tokens`), used
-    /// at the cross-protocol seam when a lane has no per-lane `default_max_tokens`. Defaults to
-    /// `proto::DEFAULT_MAX_TOKENS` (4096). Read by `IrReq::prepare_for_egress` at the cross-protocol seam.
-    pub default_max_tokens: u32,
-    /// Resolved effort-word → thinking-budget table for the cross-protocol reasoning carry
-    /// (`limits.reasoning_effort_budgets`, defaults 1024/4096/8192/16384), ordered
-    /// [minimal, low, medium, high]. Stamped onto the IR at the egress seam so writers project
-    /// effort words and numeric budgets with the operator's numbers.
-    pub reasoning_effort_budgets: [u32; 4],
+    // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
+    // no longer live on `App`: they are LLM-plane vocabulary and now ride the LLM plane's own
+    // per-generation runtime (`busbar-llm`'s `NativeRuntime`, populated from the neutral
+    // `PlaneBuildInput` carrier `appbuild` fills). The engine reads them off `rt`, not off a neutral
+    // `App`/`PlaneHost` method — see busbar-llm `engine/wire.rs`.
     /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
     /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with

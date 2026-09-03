@@ -70,3 +70,65 @@ fn write_out_publishes_on_ok_and_tolerates_null() {
     // SAFETY: null is explicitly tolerated by the contract.
     unsafe { write_out(core::ptr::null_mut::<MaybeUninit<u64>>(), 99_u64) };
 }
+
+// ── The minor-20 Usage keyed-unit tail (1.6.0 M1): pack/decode + sized-guard back-compat ────────
+
+#[test]
+fn usage_units_pack_decode_round_trips() {
+    use crate::hot::pod::{decode_usage_units, pack_usage_units};
+    use crate::hot::{AdmissionId, Usage, UsageComponent};
+
+    let mut units = std::collections::BTreeMap::new();
+    units.insert("classifications".to_string(), 3u64);
+    units.insert("search".to_string(), 42u64);
+    let packed = pack_usage_units(&units);
+
+    let key = b"vk_1";
+    let model = b"cmd-r";
+    let provider = b"cohere";
+    let guard = Usage::with_units(
+        UsageComponent::Queries,
+        1,
+        0,
+        AdmissionId(7),
+        key,
+        model,
+        provider,
+        &packed,
+    );
+    // A full minor-20 Usage decodes the exact map back.
+    assert_eq!(decode_usage_units(&guard), units);
+}
+
+#[test]
+fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
+    use crate::hot::pod::{decode_usage_units, pack_usage_units};
+    use crate::hot::{AdmissionId, Usage, UsageComponent};
+
+    let mut units = std::collections::BTreeMap::new();
+    units.insert("search".to_string(), 9u64);
+    let packed = pack_usage_units(&units);
+    let guard = Usage::with_units(
+        UsageComponent::Queries,
+        1,
+        0,
+        AdmissionId(1),
+        b"k",
+        b"m",
+        b"p",
+        &packed,
+    );
+
+    // Simulate an older peer that advertised only the minor-5 size (pre-units __size = 80): the
+    // sized-struct guard must hide `units_ptr`/`units_len`, so the host bills via the legacy scalar.
+    let mut old = *guard;
+    old.size = 80;
+    assert_eq!(read_sized_field!(&old, Usage, units_ptr), None);
+    assert!(
+        decode_usage_units(&old).is_empty(),
+        "a pre-minor-20 sender must expose NO keyed units (append-only back-compat)"
+    );
+
+    // The current sender (full size) still exposes them.
+    assert_eq!(decode_usage_units(&guard), units);
+}

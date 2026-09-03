@@ -162,6 +162,14 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "egress-auth-gate", "busbar-subst
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
 plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "egress-auth-gate", "busbar-substrate/plane-a2a"]
+# THE VOICE PLANE (Plane 4), a fully separate crate (`busbar-voice`) exactly like `busbar-llm`: core
+# holds NO voice source, so this gates nothing in core directly — it FORWARDS to substrate's matching
+# `plane-voice` marker so any relocated substrate seam the voice plane consumes (the full-duplex WS
+# transport) resolves in lock-step, and the deletion gate can switch voice off across every neutral
+# crate with one flip, exactly as `plane-llm` does. NOT default-on: voice is dev-only until DoD, so
+# the shipped/default build is byte-unchanged; the binary's `plane-voice` (which also carries the
+# `dep:busbar-voice` + `busbar-voice/runtime` edges) forwards to this via `busbar-core/plane-voice`.
+plane-voice = ["busbar-substrate/plane-voice"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that

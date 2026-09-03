@@ -56,9 +56,9 @@ enum Outcome {
 /// Drive ONE hop through stack A — the owned hyper engine on the LLM posture (webpki trust,
 /// system DNS, no pin). `uri` must therefore be dialable as written (an IP-literal host).
 async fn stack_a(uri: &str, body: &str) -> Outcome {
-    let client = crate::engine::build_egress_client(&crate::engine::EgressClientSpec::llm_lane(
-        4, 300, false, false,
-    ));
+    let client = crate::engine::build_egress_client(
+        &crate::engine::EgressClientSpec::pooled_webpki(4, 300, false, false),
+    );
     let req = crate::engine::egress_request(
         uri.parse().expect("fixture uri"),
         http::HeaderMap::new(),

@@ -4,6 +4,8 @@
 //! Tests for `crates/busbar-substrate/src/plane_host/scope.rs`.
 
 use super::*;
+use crate::plane::handle_engine::{HandleMeta, SealedEvent};
+use busbar_api::{PlaneDisposition, PlaneRecord};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -238,4 +240,212 @@ fn handle_ids_are_nonzero_and_monotonic() {
     assert!(!a.is_none());
     assert_eq!(a, EgressId(1));
     assert_eq!(b, EgressId(2));
+}
+
+// ── SessionScope over the durable-handle engine ─────────────────────────────────────────────────
+
+/// A stand-in session row the engine holds opaquely and never names — a local demo type, so these
+/// tests name no plane record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessRow {
+    id: String,
+    owner: String,
+    updated_at: u64,
+    terminal: bool,
+    cursor: u64,
+}
+
+impl SessRow {
+    fn record(&self) -> PlaneRecord {
+        PlaneRecord {
+            kind: "sess".to_string(),
+            id: self.id.clone(),
+            parent: None,
+            seq: 0,
+            ts: self.updated_at,
+            disposition: if self.terminal {
+                PlaneDisposition::Terminal
+            } else {
+                PlaneDisposition::Active
+            },
+            body: Vec::new(),
+        }
+    }
+    fn meta(&self) -> HandleMeta {
+        HandleMeta {
+            owner: self.owner.clone(),
+            updated_at: self.updated_at,
+            terminal: self.terminal,
+            cursor: self.cursor,
+        }
+    }
+    fn arc(self) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::new(self)
+    }
+}
+
+fn sess_bounds() -> SweepBounds {
+    SweepBounds {
+        abandon_secs: 1_000,
+        terminal_ttl_secs: 1_000,
+        max_retained: 64,
+    }
+}
+
+fn sess_abandon(
+    _id: &str,
+    _row: &(dyn std::any::Any + Send + Sync),
+    _pos: &ChainPosition,
+    _now: u64,
+) -> Option<Mutation> {
+    None
+}
+
+fn sess_no_report(_id: &str, _e: &busbar_api::StoreError) {}
+
+/// Open the session's handle at genesis, stamping the `SubmitRecord` with the session's own
+/// `(owner, id)` — the binding contract [`SessionScope::open`] documents.
+fn open_session(session: &SessionScope, cursor: u64, now: u64) {
+    let row = SessRow {
+        id: session.id().to_string(),
+        owner: session.owner().to_string(),
+        updated_at: now,
+        terminal: false,
+        cursor,
+    };
+    session
+        .open(
+            now,
+            sess_bounds(),
+            |_pos| {
+                let record = row.record();
+                let meta = row.meta();
+                Ok(SubmitRecord {
+                    id: row.id.clone(),
+                    row: row.clone().arc(),
+                    meta,
+                    row_record: record.clone(),
+                    event: Some(SealedEvent {
+                        record,
+                        tail_hash: format!("h-{}", row.id),
+                    }),
+                })
+            },
+            sess_abandon,
+            sess_no_report,
+        )
+        .expect("open");
+}
+
+/// A plan mutation that overwrites the row with `next` — the session mutation shape reused below.
+fn set_row(next: SessRow) -> Mutation {
+    let record = next.record();
+    let meta = next.meta();
+    Mutation {
+        row: Some(next.arc()),
+        meta: Some(meta),
+        row_record: Some(record),
+        event: None,
+    }
+}
+
+#[test]
+fn a_session_opens_mutates_and_reads_its_handle() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    let session = SessionScope::new(Arc::clone(&engine), "alice", "s1");
+    assert_eq!(session.owner(), "alice");
+    assert_eq!(session.id(), "s1");
+    open_session(&session, 0, 1);
+
+    // The session reads its own row through the scoped path.
+    let row = session.get().expect("owner sees its handle");
+    assert_eq!(row.downcast_ref::<SessRow>().unwrap().cursor, 0);
+
+    // A mutation goes through scoped_mutate under the session's owner.
+    let out = session
+        .mutate(|row, _pos| {
+            let row = row.downcast_ref::<SessRow>().unwrap();
+            let mut next = row.clone();
+            next.cursor = 7;
+            Ok(Some(set_row(next)))
+        })
+        .expect("owner mutate");
+    assert_eq!(out.downcast_ref::<SessRow>().unwrap().cursor, 7);
+    assert_eq!(
+        session
+            .get()
+            .unwrap()
+            .downcast_ref::<SessRow>()
+            .unwrap()
+            .cursor,
+        7
+    );
+}
+
+#[test]
+fn a_foreign_owner_session_is_refused_read_write_and_close() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    let alice = SessionScope::new(Arc::clone(&engine), "alice", "s1");
+    open_session(&alice, 3, 1);
+
+    // A second session bound to the SAME id under a DIFFERENT owner.
+    let mallory = SessionScope::new(Arc::clone(&engine), "mallory", "s1");
+
+    assert!(
+        matches!(mallory.get(), Err(HandleDenied::NotYours)),
+        "a foreign owner cannot read"
+    );
+    assert!(
+        matches!(
+            mallory.mutate(|row, _pos| {
+                let row = row.downcast_ref::<SessRow>().unwrap();
+                let mut next = row.clone();
+                next.cursor = 99;
+                Ok(Some(set_row(next)))
+            }),
+            Err(ScopedMutateError::NotYours)
+        ),
+        "a foreign owner cannot resume/mutate"
+    );
+    assert!(!mallory.close(), "a foreign owner evicts nothing");
+
+    // The rightful owner's row is untouched and still present.
+    assert_eq!(
+        alice
+            .get()
+            .unwrap()
+            .downcast_ref::<SessRow>()
+            .unwrap()
+            .cursor,
+        3
+    );
+    assert!(engine.get_unscoped("s1").is_some());
+}
+
+#[test]
+fn close_evicts_only_once_the_handle_is_terminal() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    let session = SessionScope::new(Arc::clone(&engine), "alice", "s1");
+    open_session(&session, 0, 1);
+
+    // An ACTIVE handle refuses eviction.
+    assert!(!session.close(), "an active handle is not evicted");
+    assert!(engine.get_unscoped("s1").is_some());
+
+    // Drive it terminal through the session's own scoped mutate.
+    session
+        .mutate(|row, _pos| {
+            let row = row.downcast_ref::<SessRow>().unwrap();
+            let mut next = row.clone();
+            next.terminal = true;
+            Ok(Some(set_row(next)))
+        })
+        .expect("settle");
+
+    // Now close evicts the terminal handle from the working set, leaving durable rows behind.
+    assert!(session.close(), "a terminal handle is evicted");
+    assert!(engine.get_unscoped("s1").is_none());
+    assert!(engine.is_empty());
+    // A second close is a no-op — the handle is gone, so the owner now sees NotYours too.
+    assert!(!session.close());
 }

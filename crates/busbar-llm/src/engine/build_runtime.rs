@@ -150,7 +150,7 @@ pub(crate) fn build_runtime(
             attempt_timeout_ms: li.attempt_timeout_ms,
             reasoning: li.reasoning,
             prompt_caching: li.prompt_caching,
-            default_max_tokens: li.default_max_tokens,
+            default_max_tokens: li.lane_default_max_tokens,
             upstream_model: li.upstream_model.clone(),
             egress_targets,
             prebuilt_auth,
@@ -266,7 +266,7 @@ pub(crate) fn build_runtime(
         let cs = input.client_settings;
         let make_one = || {
             busbar_substrate::proxy::build_egress_client(
-                &crate::engine::EgressClientSpec::llm_lane(
+                &crate::engine::EgressClientSpec::pooled_webpki(
                     idle_per_host_per_shard,
                     cs.pool_idle_timeout_secs,
                     cs.http1_only,
@@ -291,6 +291,8 @@ pub(crate) fn build_runtime(
         any_pool_upstream_creds_override,
         client,
         client_settings: input.client_settings,
+        global_default_max_tokens: input.global_default_max_tokens,
+        reasoning_budgets: input.reasoning_budgets,
     })
 }
 

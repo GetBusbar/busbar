@@ -331,6 +331,14 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
                 op_handler,
             ),
             usage_sink(host, req.gov, pool_name, req.charged_at, admit),
+            // CLIENT-HEADER FIDELITY: capture the allowlisted client beta/version headers the caller
+            // ACTUALLY SENT (opt-in — empty unless one is present), via the neutral collector fed the
+            // plane's forwardable-name set. Dialect scoping to the matching egress lane is applied
+            // later, at the egress assembly site.
+            busbar_substrate::proxy::collect_client_headers(
+                headers,
+                &crate::engine::forwardable_client_header_names(),
+            ),
         )
         .await;
 

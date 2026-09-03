@@ -355,6 +355,79 @@ pub fn ingress_error(
     resp
 }
 
+// ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (dialect-agnostic) ────────────────────────────
+//
+// busbar rebuilds the egress header map FRESH from lane creds + CT/UA/Accept and historically DROPPED
+// every client-supplied request header. Forwarding a caller's opt-in selector headers back onto the
+// upstream request is a two-phase mechanism, provided HERE as neutral primitives that hard-code NO
+// header name and know NOTHING about any dialect: the SET of names to forward is supplied entirely by
+// the caller (a plane), as DATA. The plane owns the policy (which names, and which are meaningful for
+// which egress destination); this crate owns only the "capture these names / fold these names in"
+// mechanics. A neutral build with no plane resident calls neither and forwards nothing.
+//
+//   * [`collect_client_headers`] — capture, at INGRESS, exactly the client headers whose name is in
+//     the caller-supplied `names`, preserving bytes and multiplicity (opt-in: a name the caller did
+//     not send contributes nothing). Nothing is synthesized.
+//   * [`apply_client_headers`] — fold the previously-collected headers into a freshly built EGRESS
+//     header map, forwarding ONLY those whose name is in the caller-supplied `allowed` set (the
+//     per-destination allowlist the plane narrows to at the egress assembly site).
+
+/// Capture from an inbound client header map exactly the headers whose (case-insensitive) name appears
+/// in `names` and that the caller ACTUALLY SENT — preserving the exact bytes and the MULTIPLICITY (a
+/// header sent more than once is captured once per value). OPT-IN and non-synthesizing: a name absent
+/// from `headers` contributes nothing, so a request carrying none of `names` yields an EMPTY vec.
+///
+/// The `names` set is supplied by the caller; this function hard-codes none — it is the neutral "grab
+/// this set of header names off the request" mechanic, with the set itself owned entirely by the
+/// caller (a plane).
+pub fn collect_client_headers(
+    headers: &axum::http::HeaderMap,
+    names: &[&str],
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    let mut out = Vec::new();
+    // Iterate the request's OWN headers (their `HeaderName` is already the canonical lowercase form)
+    // and keep the ones the caller asked for — so the returned name is the real inbound one, never a
+    // token this function fabricated.
+    for (name, value) in headers.iter() {
+        if names.iter().any(|n| name.as_str().eq_ignore_ascii_case(n)) {
+            out.push((name.clone(), value.clone()));
+        }
+    }
+    out
+}
+
+/// Fold previously-[`collect_client_headers`]ed headers into a freshly built egress header map,
+/// forwarding ONLY those whose (case-insensitive) name appears in the caller-supplied `allowed` set —
+/// the per-destination allowlist. Anything whose name is not in `allowed` is dropped. The FIRST
+/// forwarded value for a given name REPLACES any existing value for it (`insert` clears priors — so a
+/// caller's explicit value wins over a busbar default); subsequent same-name values are APPENDED,
+/// preserving multiplicity. A no-op on an empty `collected` or empty `allowed`, so the non-forwarding
+/// path stays byte-identical.
+///
+/// `allowed` is supplied by the caller; this function hard-codes no header name — it forwards exactly
+/// the set it is given and nothing else.
+pub fn apply_client_headers(
+    egress_headers: &mut axum::http::HeaderMap,
+    collected: &[(axum::http::HeaderName, axum::http::HeaderValue)],
+    allowed: &[&str],
+) {
+    let mut replaced: Vec<&axum::http::HeaderName> = Vec::new();
+    for (name, value) in collected {
+        if !allowed
+            .iter()
+            .any(|a| name.as_str().eq_ignore_ascii_case(a))
+        {
+            continue;
+        }
+        if replaced.contains(&name) {
+            egress_headers.append(name.clone(), value.clone());
+        } else {
+            egress_headers.insert(name.clone(), value.clone());
+            replaced.push(name);
+        }
+    }
+}
+
 /// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
 /// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
 /// and neutral so it survives every LLM dialect being dropped from the build.

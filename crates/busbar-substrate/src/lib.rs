@@ -82,6 +82,18 @@ pub mod ingress {
     /// calls to reach the core request pipeline, and the protocol-name-keyed side-table the composition
     /// root registers those arrivals through. Core implements `ArrivalHost` over its live `App`.
     pub mod arrival;
+    /// THE NEUTRAL INBOUND BYTE-DUPLEX TRANSPORT — the byte half of a single full-duplex channel
+    /// (framing, one write lock, a `CallRef`-keyed correlation table, EOF lifecycle), driven by a
+    /// plane's two thin callbacks (`classify` + a frame handler). Names no protocol: frames cross as
+    /// `Vec<u8>` and it parses none of them.
+    pub mod byte_duplex;
+    /// THE NEUTRAL FULL-DUPLEX WS INGRESS ACCEPTOR — accept an HTTP→WS upgrade (axum
+    /// `WebSocketUpgrade`) and present the upgraded socket as the message `Stream`/`Sink<Vec<u8>>` pair
+    /// [`byte_duplex::serve_messages`] consumes, keeping the handshake/routing at the boundary and out
+    /// of the pump. The inbound half of the WS transport `Transport::WebSocket` selects; armed under
+    /// `runtime`.
+    #[cfg(feature = "runtime")]
+    pub mod duplex_ws;
     pub mod jsonrpc;
     // B1: the transport-neutral JSON-RPC ingress SEQUENCE (`serve`), the core-refusal vocabulary and
     // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,

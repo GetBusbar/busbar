@@ -1171,3 +1171,10 @@ mod quarantine_boot_tests;
 #[cfg(test)]
 #[path = "tests/progress_cap_tests.rs"]
 mod progress_cap_tests;
+
+// THE TRANSPORT-OBSERVED IDENTITY AXIS, MADE REAL: `cert_spki`/`mtls` compared against a peer
+// certificate a REAL TLS handshake actually presented, not against the operator's own declared
+// value echoed back as its own proof. See the module header.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/transport_pin_tests.rs"]
+mod transport_pin_tests;

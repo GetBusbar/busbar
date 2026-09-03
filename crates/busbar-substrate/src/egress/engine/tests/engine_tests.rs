@@ -31,7 +31,8 @@ fn egress_request_uses_precomputed_parts_verbatim() {
 #[test]
 fn builder_smoke_all_shapes() {
     for (h1, h2c) in [(false, false), (true, false), (false, true), (true, true)] {
-        build_client(&EngineSpec::llm_lane(4, 300, h1, h2c)).expect("the LLM-lane posture builds");
+        build_client(&EngineSpec::pooled_webpki(4, 300, h1, h2c))
+            .expect("the LLM-lane posture builds");
     }
 }
 
@@ -314,7 +315,7 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     http.enforce_http(false);
     let connector =
         tunnel::TunnelConnector::new(http, Some(config), tunnel::connects_per_shard_for_tests());
-    let tls = super::rustls_client_config(&EngineSpec::llm_lane(4, 300, true, false))
+    let tls = super::rustls_client_config(&EngineSpec::pooled_webpki(4, 300, true, false))
         .expect("the LLM-lane tls posture builds");
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)

@@ -128,7 +128,7 @@ async fn a_pinned_client_performs_zero_engine_lookups_and_refuses_other_names() 
         }),
         dns: Dns::Custom(Arc::clone(&counting) as Arc<dyn ResolveNames>),
         observe_spki: true,
-        ..EngineSpec::llm_lane(4, 300, false, false)
+        ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
     let client = build_client(&spec).expect("a pinned client builds");
 

@@ -3323,6 +3323,26 @@ pub const CONFIG_SETTINGS_READ_TASK_JOIN_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A rate_card entry prices a model at all-zero across every tier: it meters as FREE and uncapped.
+pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
+    code: 3020,
+    class: Class::Config,
+    slug: "config-rate-card-all-zero",
+    title: "rate_card entry prices a model at ALL ZERO (metered as free, uncapped)",
+    severity: Severity::Actionable,
+    summary: "A model has a `rate_card` entry present but every tier (input, output, cache_read, \
+              cache_write) is zero, so its token usage prices to $0: budget-group `budget:` limits \
+              never accrue token cost against it and it is effectively uncapped on spend. This is \
+              LEGAL (a deliberately free model is a valid choice, e.g. a self-hosted lane), so it is \
+              a WARNING, not a boot error — but an accidental all-zero entry (a paste of the \
+              completeness stub left unfilled) silently under-bills every request to that model.",
+    action: "If the model is intentionally free, ignore this. Otherwise fill in the model's \
+             `rate_card` rates (micro-units per token) so its usage prices and counts against any \
+             `budget:` limit.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// The nuclear `allow_all_metadata` is set: the cloud-metadata SSRF guard is OFF. Security posture.
 pub const METADATA_PROTECTION_DISABLED: Diagnostic = Diagnostic {
     code: 5045,
@@ -3505,6 +3525,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
     &CONFIG_FIRSTPARTY_FLOOR_INVALID,
     &CONFIG_POOL_HETEROGENEOUS,
+    &CONFIG_RATE_CARD_ALL_ZERO,
     &CONFIG_AUTH_CHAIN_FULL_SCOPE,
     &CONFIG_OPEN_ADMIN_MINT,
     &CONFIG_PASSTHROUGH_UNUSED_APIKEY,

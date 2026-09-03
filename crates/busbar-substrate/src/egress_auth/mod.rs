@@ -47,7 +47,7 @@ pub mod oauth_client_credentials;
 /// has no failing arm on this posture — the seam stays where a future posture could fail loudly.
 pub(crate) fn minter_client() -> Result<crate::egress::engine::EngineClient, String> {
     Ok(crate::proxy::build_egress_client(
-        &crate::egress::engine::EngineSpec::llm_lane(usize::MAX, 90, false, false),
+        &crate::egress::engine::EngineSpec::pooled_webpki(usize::MAX, 90, false, false),
     ))
 }
 
