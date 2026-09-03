@@ -62,14 +62,14 @@ const NANOS_PER_MICRO: u128 = 1_000;
 
 /// The service-tier multiplier basis points for the neutral `standard` tier: ×1.0000. A tier's
 /// config multiplier resolves to integer basis points (×10_000) at load; the one pricer applies it
-/// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified`).
+/// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified.md`).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const STANDARD_TIER_BP: u32 = 10_000;
 
 /// The OPEN-key nano-rate table for one model: `open key → nano-units per unit`. Rides a separate
 /// `Arc<BTreeMap>` on the rate card (never inside the `Copy` [`RateNanos`]), looked up ONLY when a
 /// `usage_units` map carries an open key — so `RateNanos` stays `Copy` and the no-extras request
-/// allocates nothing (§9.1). In 1.6.0 M1 the pricer accepts this table; config population of the
+/// allocates nothing (`billing-unified.md` §9.1). In 1.6.0 M1 the pricer accepts this table; config population of the
 /// per-model open rates is a designed later-milestone residual (today callers pass an empty table).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) type ExtraRates = std::collections::BTreeMap<String, u64>;
@@ -185,9 +185,9 @@ impl RateNanos {
 /// a surcharge (`> 10_000`) adds one top-level `service_tier` line (`base × (mult − 1)`); a discount
 /// (`< 10_000`) is a SINGLE divide of the summed nanos distributed as per-component marginals
 /// (`Σ == floor(base × bp / 10_000)`, never the sum of per-component floors) — both keep exact-sum
-/// (§7.1, fix 2a).
+/// (`billing-unified.md` §7.1, fix 2a).
 ///
-/// Present-but-unpriced open key ⇒ NEVER a silent $0 (§9.2): a `BUSBAR-3021` WARN, and the key is
+/// Present-but-unpriced open key ⇒ NEVER a silent $0 (`billing-unified.md` §9.2): a `BUSBAR-3021` WARN, and the key is
 /// omitted (fail-closed to VISIBLE, not to hidden free usage), never a zero component. Open-unit
 /// labels are namespaced ([`OPEN_LABEL_PREFIX`]) so an adversarial open name can never collide with a
 /// reserved/surcharge label and fail the whole breakdown (fix 2b).
@@ -205,7 +205,7 @@ pub(crate) fn price(
     // priced by OPAQUE `extras.get(k)` lookup). Every open label is NAMESPACED under
     // `OPEN_LABEL_PREFIX` so it can never collide with a reserved tier's label or the `service_tier`
     // surcharge label — the duplicate-label DoS fix (2b). A present-but-unpriced open is OMITTED with
-    // a WARN, never a silent $0 (§9.2). A zero-nanos component is dropped (no-zero-component
+    // a WARN, never a silent $0 (`billing-unified.md` §9.2). A zero-nanos component is dropped (no-zero-component
     // invariant).
     let mut raw: Vec<(String, u128)> = Vec::with_capacity(usage.usage_units.len() + 1);
     for u in RESERVED_UNITS {

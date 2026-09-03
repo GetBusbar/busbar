@@ -6,7 +6,7 @@
 # with `codec: None` (one dialect, OpenAI Realtime) exactly as `busbar-mcp` does, and the neutral
 # registry unions whatever it declares without naming it.
 #
-# STATUS: SKELETON ONLY. The four-layer duplex/session IR (§2) is present as TYPE STUBS with no pump,
+# STATUS: SKELETON ONLY. The four-layer duplex/session IR (`plane4-duplex-session.md` §2) is present as TYPE STUBS with no pump,
 # no reader/writer bodies, no session store. It compiles, registers, and is strong-form deletable.
 #
 # DEPENDENCY POSTURE mirrors `busbar-mcp`: `busbar-substrate` is the neutral shared surface the plugin
@@ -54,13 +54,13 @@ busbar-substrate = { path = "../busbar-substrate" }
 busbar-api = { path = "../api" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
-# The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (§2.4 identity IR).
+# The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`plane4-duplex-session.md` §2.4 identity IR).
 bytes = { workspace = true }
 # THE DIALECT CODEC's (de)serialization surface. The plane's IR is busbar-owned, but the OpenAI
 # Realtime wire is JSON: the `DuplexReader`/`DuplexWriter` pair parses/produces JSON event frames, so
 # the codec derives serde on its OWN wire structs and hand-maps them to/from the neutral IR. Opaque
 # JSON payloads (tool arguments, tool definitions, tool_choice) ride as `serde_json::Value` — the
-# plane never reshapes them, it carries them verbatim (the §2.2 tool moat normalizes correlation, not
+# plane never reshapes them, it carries them verbatim (the `plane4-duplex-session.md` §2.2 tool moat normalizes correlation, not
 # the argument bytes).
 serde = { workspace = true }
 serde_json = { workspace = true }

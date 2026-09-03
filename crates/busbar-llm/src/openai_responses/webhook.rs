@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! INBOUND WEBHOOK RECEIVER for the OpenAI Responses async / background surface (T3).
+//! INBOUND WEBHOOK RECEIVER for the OpenAI Responses async / background surface.
 //!
 //! When a client creates a Responses turn in `background: true` mode, the upstream does NOT answer
 //! synchronously: it accepts the request, returns a `resp_…` id, and — once the turn finishes —

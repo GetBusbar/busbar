@@ -382,7 +382,7 @@ pub struct SettleOutcome {
 /// exhaustion so the carrier is hard-closed the moment `settled ≥ cap`.
 ///
 /// Money-denominated end to end in `u128` nanodollars (1e-9 USD): core prices nothing, so the PLANE
-/// hands already-priced amounts (see the design's §2.5). `u128` is used directly here — `EngineHost` is
+/// hands already-priced amounts (see the design's `plane4-duplex-session.md` §2.5). `u128` is used directly here — `EngineHost` is
 /// a plain Rust trait, NOT the frozen hot FFI, so it carries rich neutral types without the `u64`
 /// narrowing the C-ABI slot demands; the host widens/narrows at its own boundaries.
 pub trait MeteringHost: Send + Sync {

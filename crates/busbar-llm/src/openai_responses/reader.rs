@@ -109,7 +109,7 @@ impl ProtocolReader for ResponsesReader {
             });
         }
 
-        // STATEFUL RESPONSES (T3) — server-side conversation-state knobs. `previous_response_id`
+        // STATEFUL RESPONSES — server-side conversation-state knobs. `previous_response_id`
         // (thread this turn onto an upstream-STORED prior response) and `store` (whether the upstream
         // PERSISTS this response for a later `previous_response_id`) are the affordances a proxy must
         // carry losslessly so a client using server-side conversation state keeps its linkage. They
@@ -1611,7 +1611,7 @@ impl ProtocolReader for ResponsesReader {
                  request-echo slot; the request-side metadata is carried on the request hop"
             );
         }
-        // STATEFUL RESPONSES (T3): a native Responses response ALSO echoes the request's
+        // STATEFUL RESPONSES: a native Responses response ALSO echoes the request's
         // `previous_response_id` (the prior turn this response threaded onto) and `store` flag. The
         // stateful LINKAGE a client needs — feed THIS response's `id` as the NEXT request's
         // `previous_response_id` — is preserved by the `response.id` correlation (`IrResponse.id`,

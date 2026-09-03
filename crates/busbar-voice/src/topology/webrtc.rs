@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TOPOLOGY A — the BROWSER WebRTC SIDEBAND (design §5).
+//! TOPOLOGY A — the BROWSER WebRTC SIDEBAND (design `plane4-duplex-session.md` §5).
 //!
 //! busbar attaches to the session over a persistent WSS keyed by `call_id`, OWNING tools + instructions
 //! (the locked [`SessionConfig`]). It mints the ephemeral client-secret the browser uses to establish

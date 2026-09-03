@@ -17,7 +17,7 @@
 //! do NOT change to accept it, and the crate is strong-form DELETABLE (`git rm -r crates/busbar-voice`
 //! leaves the neutral crates compiling) — proven by `scripts/plane-delete-test.sh voice`.
 //!
-//! `codec: None` (§1.4): while OpenAI Realtime is the ONLY dialect the plane earns no cross-dialect
+//! `codec: None` (`plane4-duplex-session.md` §1.4): while OpenAI Realtime is the ONLY dialect the plane earns no cross-dialect
 //! superset IR — its IR is its OWN, a busbar-owned mirror. The superset is earned at the SECOND dialect
 //! (Gemini Live), exactly as A2A earns one at its second wire format and not before.
 
@@ -95,7 +95,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // ONE dialect ⇒ no superset IR (see VOICE_WIRE_FORMATS).
         wire_format_names: || VOICE_WIRE_FORMATS,
         // SKELETON: the plane mounts nothing, admits no one, and builds no runtime object yet — the
-        // pump / session-open through `run_gauntlet_session` is the P2 build (§8).
+        // pump / session-open through `run_gauntlet_session` is the P2 build (`plane4-duplex-session.md` §8).
         claims: |_slot| Vec::new(),
         admission: |_slot| None,
         build: |_ctx| None,
@@ -138,7 +138,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
 /// `DECL` shape).
 pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto::ProtocolDecl {
     name: OPENAI_REALTIME,
-    // ITS IR IS ITS OWN (§1.4): no cross-dialect codec while one dialect is spoken.
+    // ITS IR IS ITS OWN (`plane4-duplex-session.md` §1.4): no cross-dialect codec while one dialect is spoken.
     codec: None,
     // SKELETON: no request handler yet — the duplex pump / session entry is P2.
     handler: None,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TWO TOPOLOGIES the voice runtime exposes (design §5-6), behind the `runtime` feature.
+//! THE TWO TOPOLOGIES the voice runtime exposes (design `plane4-duplex-session.md` §5-6), behind the `runtime` feature.
 //!
 //! * [`webrtc`] — the BROWSER WebRTC sideband: busbar mints the ephemeral token and holds a persistent
 //!   sideband control channel owning tools + instructions; the browser's MEDIA path is peer-to-peer, so
@@ -64,7 +64,7 @@ pub async fn dial_provider(
     duplex_ws::dial(url, policy).await
 }
 
-/// THE ALREADY-PRICED SESSION BUDGET handed across the D2 lease at session start (§2.5): the coarse
+/// THE ALREADY-PRICED SESSION BUDGET handed across the D2 lease at session start (`plane4-duplex-session.md` §2.5): the coarse
 /// over-`estimate` debited up front, the once-per-session flat `fee`, and the TRUE budget `cap`
 /// exhaustion is judged against (`None` = uncapped, `Some(0)` = refuse-all). All nanodollars — the
 /// plane priced them; core prices nothing.

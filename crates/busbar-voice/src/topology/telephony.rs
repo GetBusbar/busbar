@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TOPOLOGY B — the THIN TELEPHONY WS PROXY (design §6).
+//! TOPOLOGY B — the THIN TELEPHONY WS PROXY (design `plane4-duplex-session.md` §6).
 //!
 //! busbar sits between the telephony leg (the phone/carrier media stream) and the provider's Realtime
 //! upstream, proxying frames both ways while metering, governing tools, and driving barge-in. It

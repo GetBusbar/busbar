@@ -5,7 +5,7 @@
 //!
 //! These are the nouns that live ONLY in `busbar-voice`
 //! (`docs/design/plane4-duplex-session.md` §7.2): the four-layer duplex/session IR and its
-//! reader/writer pair. Per §2.1 "pass-through is still an IR" — the layers differ in HOW MUCH the IR
+//! reader/writer pair. Per `plane4-duplex-session.md` §2.1 "pass-through is still an IR" — the layers differ in HOW MUCH the IR
 //! reshapes the wire, from full normalization (tool-call) to identity (media):
 //!
 //! | Layer | Concern | Posture | Module |
@@ -19,10 +19,10 @@
 //! OpenAI Realtime is the only dialect (the A2A rule, §1.4: a superset IR is earned at the SECOND wire
 //! format and not before). It is NOT and does not extend `busbar-llm`'s chat IR — the load-bearing
 //! delta is a client→server event vocabulary ([`event::IrClientEvent`]) the LLM `IrStreamEvent`
-//! structurally lacks (§1.2).
+//! structurally lacks (`plane4-duplex-session.md` §1.2).
 //!
 //! SKELETON: every type below is a STUB. No reader/writer body, no pump, no session store — bodies are
-//! `todo!()` or minimal. The shapes mirror §2.2–2.6.
+//! `todo!()` or minimal. The shapes mirror `plane4-duplex-session.md` §2.2–2.6.
 
 pub mod codec;
 pub mod config;

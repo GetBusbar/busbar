@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAYER 1 — TOOL-CALL (full normalization; the moat). Design §2.2.
+//! LAYER 1 — TOOL-CALL (full normalization; the moat). Design `plane4-duplex-session.md` §2.2.
 //!
 //! The one layer where the IR genuinely reshapes the wire, and the whole reason a governed plane
 //! beats a dumb WS pipe: tools execute server-side, under governance, and the browser is never trusted
@@ -11,7 +11,7 @@ use bytes::Bytes;
 
 /// THE CORRELATION ABSTRACTION for one in-flight tool call — NOT the wire `call_id`.
 ///
-/// Modeled on the LLM plane's `IrDelta::InputJsonDelta` id-remap move (§2.2): a
+/// Modeled on the LLM plane's `IrDelta::InputJsonDelta` id-remap move (`plane4-duplex-session.md` §2.2): a
 /// `CallRef → (client_call_id, upstream_call_id)` table held in the session scope lets a client that
 /// speaks OpenAI `call_id` be bridged to a Gemini Live tool-call that correlates by NAME, not id.
 ///

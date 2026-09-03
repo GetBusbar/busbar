@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONTINUOUS-METERING LEASE — the marquee guarantee (design §2.5, §4 "the D2 lease").
+//! THE CONTINUOUS-METERING LEASE — the marquee guarantee (design `plane4-duplex-session.md` §2.5, §4 "the D2 lease").
 //!
 //! A live voice carrier cannot be priced after the fact the way a one-shot request is: the session is
 //! open-ended and the plane must be able to HARD-CLOSE it mid-stream the instant the budget is dry.
@@ -78,7 +78,7 @@ pub trait MeteringPort: Send + Sync {
 }
 
 /// THE PER-TOKEN PRICE BOOK the plane prices a turn's [`IrDuplexUsage`] with BEFORE handing the money
-/// across the D2 lease (core prices nothing — the plane hands already-priced nanodollars, §2.5). Audio
+/// across the D2 lease (core prices nothing — the plane hands already-priced nanodollars, `plane4-duplex-session.md` §2.5). Audio
 /// and text are separate classes (audio dominates); cached input bills at the cache rate.
 #[derive(Debug, Clone, Copy)]
 pub struct Pricing {

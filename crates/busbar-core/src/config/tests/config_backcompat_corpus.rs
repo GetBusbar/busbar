@@ -14,7 +14,7 @@
 //! WHY IT EXISTS NOW. 1.6.0's M3 config-noun eviction moves the PARSING of `rate_card` / `models` /
 //! `limits` out of busbar-core and into busbar-llm. The whole promise of that move is that it changes
 //! WHERE the config is parsed, not WHAT an operator's YAML resolves to. This baseline — blessed from
-//! the CURRENT (M1) behavior — is that promise written down: after the eviction, every golden here
+//! the CURRENT behavior — is that promise written down: after the eviction, every golden here
 //! must still be byte-identical. A refactor that quietly drops a cache tier, reorders a group's
 //! limits, flips a default, or rounds a rate turns this RED before it can ship.
 //!

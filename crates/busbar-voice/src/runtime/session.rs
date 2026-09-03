@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LIVE DUPLEX SESSION RUNTIME (T2) — the pump body the skeleton (`lib.rs` P2) left `todo!()`.
+//! THE LIVE DUPLEX SESSION RUNTIME — the pump body the skeleton in `lib.rs` left `todo!()`.
 //!
 //! Binds the neutral byte-duplex pump (`busbar_substrate::ingress::byte_duplex::serve_messages`), the
 //! codec's `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the D2 metering lease
@@ -43,7 +43,7 @@ pub struct Outbound {
 }
 
 /// ONE IN-FLIGHT SERVER-SIDE TOOL CALL, correlated by [`CallRef`] and accumulated across the
-/// `CallOpen → CallArgs* → CallClose` frames the model streams (§2.2). The raw `call_id` is kept so the
+/// `CallOpen → CallArgs* → CallClose` frames the model streams (`plane4-duplex-session.md` §2.2). The raw `call_id` is kept so the
 /// stateless writer can re-frame the `function_call_output` without consulting the map.
 #[derive(Debug, Default, Clone)]
 struct PendingCall {
@@ -147,7 +147,7 @@ where
                             out.close = true;
                         }
                     }
-                    // ── barge-in: cancel + truncate at the audio the user actually heard (§2.3) ────
+                    // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
                     IrServerEvent::SpeechStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
                         out.upstream.push(
@@ -169,7 +169,7 @@ where
                                 audio_start_ms: 0,
                             }));
                     }
-                    // ── tool moat: correlate + accumulate, execute server-side on close (§2.2) ─────
+                    // ── tool moat: correlate + accumulate, execute server-side on close (`plane4-duplex-session.md` §2.2) ─────
                     IrServerEvent::Tool(t) => {
                         let call_ref = t.call_ref();
                         match t {
@@ -217,7 +217,7 @@ where
                     | IrServerEvent::Error { .. }) => {
                         out.downlink.push(self.codec.write_down(ev));
                     }
-                    // Extraction-only — never client-translated (§2.5).
+                    // Extraction-only — never client-translated (`plane4-duplex-session.md` §2.5).
                     IrServerEvent::RateLimits => {}
                 }
             }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SERVER-SIDE TOOL EXECUTOR PORT (design §2.2 — the tool moat).
+//! THE SERVER-SIDE TOOL EXECUTOR PORT (design `plane4-duplex-session.md` §2.2 — the tool moat).
 //!
 //! The whole reason a governed plane beats a dumb WS pipe: tool calls execute SERVER-SIDE, under
 //! governance, and the browser is never trusted to author them. The runtime correlates a call by its

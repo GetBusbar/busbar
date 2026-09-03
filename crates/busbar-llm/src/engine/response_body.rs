@@ -46,7 +46,7 @@ pub(crate) struct UsageSink {
     pub(crate) admit: Option<busbar_substrate::plane_host::AdmitHandle>,
 }
 
-/// Bytes-per-token divisor for the truncated-tail billing FLOOR (C2). Deliberately conservative
+/// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
 /// (~4 bytes/token is typical for English prose; a JSON response envelope with field names and
 /// escaping runs HIGHER), so the estimate UNDER-counts the true consumption: the retained tail is
 /// already only the LAST `cap` bytes of a strictly larger body, making this a genuine floor that
