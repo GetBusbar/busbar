@@ -48,6 +48,75 @@ async fn spawn_echo_ws_server() -> SocketAddr {
     addr
 }
 
+/// A stub open-pass gate for the governed WS-accept: it PROCEEDS or REFUSES at the verify stage, and
+/// its `drive` is unreachable on the session path (the opener runs only the admission gate).
+struct GatePlane {
+    refuse: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::plane_host::GauntletPlane for GatePlane {
+    fn verify_destination(
+        &self,
+        _req: &crate::plane_host::GauntletRequest<'_>,
+    ) -> crate::plane_host::VerifyOutcome {
+        if self.refuse {
+            crate::plane_host::VerifyOutcome::Refuse(
+                axum::response::Response::builder()
+                    .status(axum::http::StatusCode::FORBIDDEN)
+                    .body(axum::body::Body::from("destination refused"))
+                    .expect("refusal response builds"),
+            )
+        } else {
+            crate::plane_host::VerifyOutcome::Proceed
+        }
+    }
+
+    async fn drive(
+        self: Box<Self>,
+        _req: crate::plane_host::GauntletRequest<'_>,
+    ) -> axum::response::Response {
+        axum::response::Response::builder()
+            .status(500)
+            .body(axum::body::Body::from("session gate never drives"))
+            .expect("fault response builds")
+    }
+}
+
+/// Bring up a loopback WS server whose one route serves an [`EchoPlane`] THROUGH the governed
+/// `serve_gauntlet` seam — the gauntlet runs BEFORE the socket is bound, refusing or proceeding per
+/// `refuse`. Returns the bound address.
+async fn spawn_gauntlet_ws_server(refuse: bool) -> SocketAddr {
+    async fn ws_route(
+        axum::extract::State(refuse): axum::extract::State<bool>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        let gov = busbar_api::PlaneRequestCtx::default();
+        let req = crate::plane_host::GauntletRequest {
+            gov: &gov,
+            destination: "model-x",
+            correlation_id: 1,
+            charged_at: 1,
+            started: std::time::Instant::now(),
+        };
+        ws_ingress::serve_gauntlet(
+            upgrade,
+            req,
+            Box::new(GatePlane { refuse }),
+            Arc::new(EchoPlane),
+        )
+    }
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(ws_route))
+        .with_state(refuse);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
 /// A permissive policy for a LOOPBACK plaintext `ws://` dial: loopback is private and plaintext, so both
 /// stances must be opened for the guard to admit the local test server. Everything else stays fail-closed.
 fn loopback_policy() -> GuardPolicy {
@@ -106,6 +175,36 @@ async fn websocket_transport_is_armed_by_a_real_dialer() {
         .expect("a reply arrived")
         .expect("the stream yielded a frame");
     assert_eq!(got, b"armed");
+}
+
+/// THE GOVERNED WS-ACCEPT RUNS THE GAUNTLET BEFORE BINDING THE SOCKET: a proceeding gate serves the
+/// session (a frame round-trips), a refusing gate binds NO socket (the dial cannot upgrade) — so a
+/// refused destination reaches neither the pump nor a charge. This is the open-pass invariant at the
+/// WS-accept boundary: verify strictly before the socket is bound.
+#[tokio::test]
+async fn governed_ws_accept_serves_on_proceed_and_binds_no_socket_on_refuse() {
+    // PROCEED: the gauntlet admits, the socket is bound to the echo pump, and a frame round-trips.
+    let addr = spawn_gauntlet_ws_server(false).await;
+    let url = format!("ws://{addr}/");
+    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("a proceeding gauntlet admits the session and binds the socket");
+    sink.send(b"governed".to_vec()).await.ok();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("a reply arrived")
+        .expect("the stream yielded a frame");
+    assert_eq!(got, b"governed", "the admitted session echoes the frame");
+
+    // REFUSE: the gauntlet refuses at verify, the upgrade never happens, and the dial cannot complete
+    // the WS handshake — the socket was never bound, so nothing reached the pump.
+    let addr = spawn_gauntlet_ws_server(true).await;
+    let url = format!("ws://{addr}/");
+    let refused = duplex_ws::dial(&url, loopback_policy()).await;
+    assert!(
+        refused.is_err(),
+        "a refused destination binds no socket, so the WS dial cannot upgrade"
+    );
 }
 
 /// THE DIALER REFUSES A GUARD-FAILING TARGET — it NEVER opens a socket to something the net-guard did

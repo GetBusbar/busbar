@@ -32,7 +32,7 @@ use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::{begin_session, SessionBudget, StartError};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane::registry::BuildCtx;
+use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_substrate::plane::PlaneAdmission;
 use busbar_substrate::plane_routes::PlaneRouteSpec;
 use std::any::Any;
@@ -103,6 +103,62 @@ fn absolute(public_url: &str, path: &str) -> Option<String> {
     u.set_query(None);
     u.set_fragment(None);
     Some(u.to_string())
+}
+
+/// [`PlaneDecl::hydrate`] — BOOT-REHYDRATE the durable voice-session working-set BEFORE any listener is
+/// bound, mirroring the A2A task-set restore. Under `store: memory` (the ephemeral posture this
+/// in-process mount runs) there is no durable working-set, so it skips exactly as the A2A / MCP hydrate
+/// hooks do — the plane's live carriers are per-connection and never survive a restart. When a durable
+/// store IS configured, it restores the persisted `voice_session` rows through the neutral engine seam
+/// ([`crate::runtime::scope::rehydrate_sessions`]): an active row is re-installed, a terminal one is
+/// counted and left, and a row whose durable body cannot be decoded is counted and skipped — one bad
+/// row never aborts the restore. Only a store-level list failure refuses boot (propagated as `Err`).
+///
+/// # Errors
+/// Returns the store error's text when the durable list itself fails — a boot-refusing condition.
+pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
+    // Ephemeral by design (no configured store): no durable working-set to restore, so skip — the same
+    // first move the A2A task-set restore makes.
+    let Some(store) = ctx.plane_store() else {
+        return Ok(());
+    };
+    // A configured store: restore the durable `voice_session` working-set into a fresh engine and
+    // surface the outcome. A durable row a resumed session reattaches to via `SessionHandle::bind`.
+    let engine = DurableHandleEngine::new();
+    let counts = crate::runtime::scope::rehydrate_sessions(&engine, store.as_ref())
+        .map_err(|e| format!("voice session rehydrate failed: {e}"))?;
+    if counts.unreadable > 0 {
+        tracing::warn!(
+            unreadable = counts.unreadable,
+            "voice: some durable session rows could not be decoded on boot; counted and skipped"
+        );
+    }
+    tracing::info!(
+        active = counts.active,
+        terminal = counts.terminal,
+        unreadable = counts.unreadable,
+        "voice: durable session working-set rehydrated"
+    );
+    Ok(())
+}
+
+/// [`PlaneDecl::start`] — the post-listener boot step. Voice opens no background boot task: a live
+/// session is admitted and served per WS-accept ARRIVAL (through `run_gauntlet_session`, one governed
+/// pass per connection), each running its own supervised pump that parks on the carrier's hard-close —
+/// there is no process-wide sweep loop to spawn here (unlike the A2A start, which resolves outbound
+/// client identities once). The live accept listener + provider dial are composed by the composition
+/// root behind the plane's ports (the credential-gated tail). So this confirms readiness and returns
+/// `Ok`, participating in the boot fold so the plane is an explicit member of it rather than silent.
+///
+/// # Errors
+/// Never fails today; the signature is the boot-hook shape so future post-listener work refuses boot
+/// through it rather than gaining a new seam.
+pub fn voice_start(_ctx: &dyn PlaneBootCtx) -> Result<(), String> {
+    tracing::debug!(
+        "voice: started — sessions are admitted and served per WS-accept arrival (one \
+         run_gauntlet_session pass each); no process-wide background task is spawned"
+    );
+    Ok(())
 }
 
 /// [`PlaneDecl::build`] — construct the voice DISPATCH slot for one config generation. Reads the

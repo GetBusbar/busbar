@@ -7,15 +7,122 @@
 //! live provider is called: a denied destination is refused at the gate, a clean open answers `501`
 //! (governed, but the live serving leg is the deployment's to compose).
 
-use super::{voice_admission, voice_build, voice_claims, voice_routes, Ingress, MOUNT_PATH};
+use super::{
+    voice_admission, voice_build, voice_claims, voice_hydrate, voice_routes, voice_start, Ingress,
+    MOUNT_PATH,
+};
+use crate::ir::codec::OpenAiRealtimeCodec;
 use crate::mount::open_governed;
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::scope::rehydrate_sessions;
+use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRuntime};
+use crate::topology::telephony::{begin_telephony, g711_config};
+use crate::topology::SessionBudget;
+use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane::registry::BuildCtx;
-use std::sync::Arc;
+use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
+use busbar_substrate::plane::store::PlaneStore;
+use busbar_substrate::plane_host::EngineHost;
+use futures::channel::mpsc::unbounded;
+use futures::StreamExt;
+use std::sync::{Arc, Mutex};
 
 const PUBLIC_URL: &str = "https://gw.example.com";
+
+/// A minimal in-memory [`PlaneStore`] — the durable sink stand-in a boot rehydrate reads back. Only the
+/// row upsert + `All` list are backed; the rest are the neutral no-ops a session restore never reaches.
+#[derive(Default)]
+struct MemStore {
+    rows: Mutex<Vec<PlaneRecord>>,
+}
+
+impl PlaneStore for MemStore {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
+            *existing = record.clone();
+        } else {
+            rows.push(record.clone());
+        }
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.body.clone()))
+    }
+    fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        match selector {
+            PlaneSelector::All => Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.body.clone())
+                .collect()),
+            PlaneSelector::Parent(_) => Ok(Vec::new()),
+        }
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> StoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> StoreResult<bool> {
+        Ok(true)
+    }
+}
+
+/// A minimal [`PlaneBootCtx`] carrying only the plane-narrowed store: enough to drive the voice boot
+/// hooks, which read `plane_store()` and nothing else. The methods a voice hook never calls
+/// (`engine_host`, the MCP call-log surface, `card_issuer`) are inert stand-ins.
+struct FakeBootCtx {
+    store: Option<Arc<dyn PlaneStore>>,
+}
+
+impl PlaneBootCtx for FakeBootCtx {
+    fn has_store(&self) -> bool {
+        self.store.is_some()
+    }
+    fn register_call_stream(&self) {}
+    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
+        Ok(RestoredSummary::default())
+    }
+    fn attach_mcp_durable_sinks(&self) {}
+    fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
+        self.store.clone()
+    }
+    fn card_issuer(&self) -> Option<CardIssuer> {
+        None
+    }
+    fn engine_host(&self) -> Arc<dyn EngineHost> {
+        unimplemented!("the voice boot hooks never mint the engine host")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 /// Build the voice dispatch slot the way `appbuild` does — a `BuildCtx` carrying the deployment's
 /// `public_url`. The other `BuildCtx` fields are the neutral absences the voice plane never reads.
@@ -160,4 +267,136 @@ fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge
             "{ingress:?}: the governed open succeeds; the live provider/media leg is uncomposed here"
         );
     }
+}
+
+#[test]
+fn hydrate_is_a_noop_under_the_ephemeral_posture_and_start_confirms_ready() {
+    // No configured store (the in-process posture this mount runs): the boot rehydrate has no durable
+    // working-set to restore, so it skips cleanly — exactly the first move the A2A/MCP hydrate makes.
+    let ctx = FakeBootCtx { store: None };
+    assert!(
+        voice_hydrate(&ctx).is_ok(),
+        "hydrate under no store is a clean no-op"
+    );
+    assert!(voice_start(&ctx).is_ok(), "start confirms readiness");
+}
+
+#[test]
+fn hydrate_rehydrates_the_durable_session_working_set() {
+    // Persist two sessions through an engine with the store attached as its durable sink: one left
+    // ACTIVE, one driven TERMINAL. A boot rehydrate must restore the active one and count the terminal.
+    let store: Arc<dyn PlaneStore> = Arc::new(MemStore::default());
+    let engine = Arc::new(DurableHandleEngine::new());
+    engine.set_sink(store.clone());
+
+    let active = SessionHandle::bind(Arc::clone(&engine), "acct", "sess-active");
+    active.open(10).expect("active session opens durably");
+
+    let terminal = SessionHandle::bind(Arc::clone(&engine), "acct", "sess-terminal");
+    terminal.open(10).expect("terminal session opens durably");
+    terminal
+        .settle_terminal(11)
+        .expect("the session drives terminal");
+
+    // A FRESH engine restores purely from the durable store — the boot path a restart takes.
+    let restored = Arc::new(DurableHandleEngine::new());
+    let counts = rehydrate_sessions(&restored, store.as_ref()).expect("rehydrate reads the store");
+    assert_eq!(counts.active, 1, "the active session is restored");
+    assert_eq!(
+        counts.terminal, 1,
+        "the terminal session is counted, not restored"
+    );
+    assert_eq!(counts.unreadable, 0, "every durable row decoded");
+
+    // The restored active handle is readable by its owner — the durable binding survived the restart.
+    let reattached = SessionHandle::bind(restored, "acct", "sess-active");
+    assert_eq!(
+        reattached.get().map(|r| r.id),
+        Some("sess-active".to_string()),
+        "the restored session reattaches by (owner, id)"
+    );
+
+    // And the hydrate HOOK drives the same restore off the boot store without error.
+    assert!(
+        voice_hydrate(&FakeBootCtx { store: Some(store) }).is_ok(),
+        "the hydrate hook restores the durable working-set off the boot store"
+    );
+}
+
+#[tokio::test]
+async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
+    // (1) HYDRATE first, before any listener — the ephemeral no-op gate.
+    assert!(voice_hydrate(&FakeBootCtx { store: None }).is_ok());
+
+    // (2) ARRIVAL: begin_telephony opens the session THROUGH `run_gauntlet_session` (verify strictly
+    // before the D2 lease reserve). g711 carries no model, so the destination is unset and admitted.
+    let rt = runtime_for("", &[]);
+    let budget = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: None,
+    };
+    let proxy = begin_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-x",
+        g711_config(),
+        budget,
+        1,
+    )
+    .expect("the open-pass gauntlet admits and the session opens");
+
+    // (3) HANDLER: drive the session over the neutral pump with an in-process MOCK PEER — four
+    // in-memory channels stand in for the provider socket and the client socket. No live provider.
+    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
+    let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
+    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
+    let (cli_out_tx, mut cli_out_rx) = unbounded::<Vec<u8>>();
+
+    prov_in_tx
+        .unbounded_send(
+            serde_json::to_vec(&serde_json::json!({
+                "type":"response.output_audio.delta","delta":"AAAA"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    cli_in_tx
+        .unbounded_send(
+            serde_json::to_vec(&serde_json::json!({
+                "type":"input_audio_buffer.append","audio":"BBBB"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    drop(prov_in_tx);
+    drop(cli_in_tx);
+
+    proxy
+        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
+        .await;
+
+    // Downlink: the provider's audio reached the client. Uplink: the client's audio reached the provider.
+    cli_out_rx.close();
+    let mut downlink = Vec::new();
+    while let Some(f) = cli_out_rx.next().await {
+        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
+        downlink.push(v["type"].as_str().unwrap().to_string());
+    }
+    assert!(
+        downlink.contains(&"response.output_audio.delta".to_string()),
+        "the governed session relayed provider downlink audio to the client: {downlink:?}"
+    );
+
+    prov_out_rx.close();
+    let mut uplink = Vec::new();
+    while let Some(f) = prov_out_rx.next().await {
+        let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
+        uplink.push(v["type"].as_str().unwrap().to_string());
+    }
+    assert!(
+        uplink.contains(&"input_audio_buffer.append".to_string()),
+        "the governed session relayed client uplink audio to the provider: {uplink:?}"
+    );
 }

@@ -130,6 +130,21 @@ const VOICE_ROUTES: Option<
     fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>,
 > = None;
 
+/// `PLANE_DECL.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
+/// binds ([`mount::voice_hydrate`]); `None` off-feature so the default decl is byte-unchanged.
+#[cfg(feature = "runtime")]
+const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> =
+    Some(mount::voice_hydrate);
+#[cfg(not(feature = "runtime"))]
+const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> = None;
+
+/// `PLANE_DECL.start` — the post-listener boot step ([`mount::voice_start`]); `None` off-feature so the
+/// default decl is byte-unchanged.
+#[cfg(feature = "runtime")]
+const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = Some(mount::voice_start);
+#[cfg(not(feature = "runtime"))]
+const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = None;
+
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
 /// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_DECL`] wire formats.
 pub const OPENAI_REALTIME: &str = "openai_realtime";
@@ -150,10 +165,12 @@ const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 /// feature with `build_runtime` wired to the real runtime constructor, and — behind the `runtime`
 /// feature (which `plane-voice` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
 /// `public_url`, `claims`/`admission` bind the plane's RFC 8707 audience, and `routes` mounts the four
-/// ingress doors (see [`mount`]). What stays `None` is the `ProtocolDecl` `handler` (a duplex protocol
-/// handler is not a one-shot `drive`) and the boot hooks `hydrate` / `start` (durable rehydrate + the
-/// WS-accept arrival kind) — follow-on work. The neutral registry unions this without naming it (the
-/// MCP/A2A precedent).
+/// ingress doors (see [`mount`]), and the BOOT hooks `hydrate` / `start` rehydrate the durable session
+/// working-set before the listener and confirm readiness after. What stays `None` is the `ProtocolDecl`
+/// `handler`: a long-lived duplex SESSION is not a one-shot `RequestHandler` (whose `OperationHandler`
+/// cells are request→response codecs), so the session driver lives in the plane's own runtime
+/// (`crate::topology`) over the neutral pump, not on that field. The neutral registry unions this
+/// without naming it (the MCP/A2A precedent).
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "voice",
@@ -186,8 +203,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         routes: VOICE_ROUTES,
         admin_routes: None,
         openapi: None,
-        hydrate: None,
-        start: None,
+        // BOOT hooks — rehydrate the durable session working-set before the listener, then the
+        // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
+        // `None` off-feature so the default decl is byte-unchanged.
+        hydrate: VOICE_HYDRATE,
+        start: VOICE_START,
         config_validate: None,
         card_signing_domain: None,
         card_kid_prefix: None,
@@ -207,9 +227,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         lower_endpoint: None,
         // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
         // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
-        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) are now
-        // wired too (see [`mount`]); the remaining BOOT hooks (`hydrate` / `start`) stay `None` —
-        // durable rehydrate + the WS-accept arrival kind are follow-on work outside this slice.
+        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
+        // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
         build_runtime: VOICE_BUILD_RUNTIME,
         viewer: None,
         retain_verify_gates: None,

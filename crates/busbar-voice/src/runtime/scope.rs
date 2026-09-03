@@ -10,12 +10,14 @@
 //! anti-enumeration contract is carried up from the engine unchanged; this module only stamps the
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
-use busbar_api::{PlaneDisposition, PlaneRecord};
+use busbar_api::{PlaneDisposition, PlaneRecord, StoreResult};
 use busbar_substrate::plane::handle_engine::{
-    ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, ScopedMutateError,
-    SealedEvent, SubmitRecord, SweepBounds,
+    ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
+    RehydrateOutcome, ScopedMutateError, SealedEvent, SubmitRecord, SweepBounds,
 };
+use busbar_substrate::plane::store::PlaneStore;
 use busbar_substrate::plane_host::SessionScope;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The durable-audit kind stamped on a voice session's records — matches `PLANE_DECL.audit_kind`.
@@ -34,7 +36,7 @@ fn session_bounds() -> SweepBounds {
 /// THE OPAQUE DURABLE ROW for one voice session — the neutral engine stores it as `Arc<dyn Any>`; the
 /// plane owns its shape. Carries the session `(owner, id)` (the engine's scoped key), a monotonic
 /// `turns` cursor bumped per settled turn, and whether the session has reached its terminal state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceSessionRow {
     /// The session id — the working-set key (must equal the [`SessionScope::id`]).
     pub id: String,
@@ -61,7 +63,10 @@ impl VoiceSessionRow {
             } else {
                 PlaneDisposition::Active
             },
-            body: Vec::new(),
+            // The durable body IS the row: a boot rehydrate reconstructs the working-set entry from it
+            // (see [`rehydrate_sessions`]). An in-memory-only posture (no sink attached) simply never
+            // reads it back; the encode is infallible for these scalar fields.
+            body: serde_json::to_vec(self).unwrap_or_default(),
         }
     }
 
@@ -196,6 +201,37 @@ impl SessionHandle {
     pub fn close(&self) -> bool {
         self.scope.close()
     }
+}
+
+/// BOOT-REHYDRATE the durable `voice_session` working-set from `store` into `engine` — the
+/// [`crate::PLANE_DECL`] `hydrate` step, mirroring the A2A task-set restore. Reads every persisted
+/// `voice_session` row through the neutral [`DurableHandleEngine::rehydrate`] seam and, per row:
+/// installs an ACTIVE session back into the working set, counts (and leaves) a TERMINAL one, and counts
+/// (and skips) a row whose durable body cannot be decoded — so one unreadable row never aborts the
+/// whole restore. Only a store-level list failure is fatal (propagated). Returns the neutral counts.
+///
+/// This restores the DURABLE binding a resumed session reattaches to via [`SessionHandle::bind`]; the
+/// live carrier/socket of a session cannot survive a restart, so a rehydrated session is a durable
+/// record to reattach or reconcile, not a live pump — exactly the A2A task-restore contract.
+pub fn rehydrate_sessions(
+    engine: &DurableHandleEngine,
+    store: &dyn PlaneStore,
+) -> StoreResult<RehydrateCounts> {
+    engine.rehydrate(store, VOICE_SESSION_KIND, |_store, body| {
+        // Decode the row the durable body IS; an undecodable body is counted unreadable, never fatal.
+        match serde_json::from_slice::<VoiceSessionRow>(body) {
+            Ok(row) if row.terminal => Ok(RehydrateOutcome::Terminal),
+            Ok(row) => Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                meta: row.meta(),
+                row: row.clone().arc(),
+                // Voice sessions carry no resumable event chain beyond genesis in this build.
+                pos: ChainPosition::genesis(),
+                event_unreadable: 0,
+            }),
+            Err(_) => Ok(RehydrateOutcome::Unreadable),
+        }
+    })
 }
 
 fn mutation_for(next: VoiceSessionRow) -> Mutation {
