@@ -339,19 +339,68 @@ fn realtime_input_prefers_ga_audio_over_media_chunks() {
 }
 
 #[test]
-fn realtime_input_audio_stream_end_yields_no_ir() {
-    // A GA manual end-of-stream marker has no shared IR home (documented drop+warn), even though the
-    // realtimeInput envelope is recognized.
+fn realtime_input_audio_stream_end_maps_to_input_audio_commit() {
+    // Gemini's manual end-of-uplink marker is the cross-dialect twin of OpenAI's discrete
+    // `input_audio_buffer.commit`; it maps to the shared `IrDuplexControl::InputAudioCommit` so the
+    // "end the buffered uplink turn" concept survives cross-dialect rather than dropping.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
     let ir = codec.read_up(
         wire(&json!({ "realtimeInput": { "audioStreamEnd": true } }).to_string()),
         &mut st,
     );
-    assert!(
-        ir.is_empty(),
-        "audioStreamEnd is dropped (no shared IR home)"
+    assert_eq!(
+        ir.len(),
+        1,
+        "audioStreamEnd yields exactly the commit control"
     );
+    assert!(
+        matches!(
+            &ir[0],
+            IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+        ),
+        "audioStreamEnd maps to InputAudioCommit, got {:?}",
+        ir[0]
+    );
+}
+
+#[test]
+fn realtime_input_audio_and_stream_end_yields_frame_then_commit() {
+    // A frame carrying BOTH an audio blob and the end marker decodes to the audio frame followed by
+    // the commit — the audio is buffered, then the turn is ended.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let ir = codec.read_up(
+        wire(
+            &json!({ "realtimeInput": {
+                "audio": { "mimeType": "audio/pcm;rate=16000", "data": b64(b"hi") },
+                "audioStreamEnd": true
+            } })
+            .to_string(),
+        ),
+        &mut st,
+    );
+    assert_eq!(ir.len(), 2, "expected audio frame then commit, got {ir:?}");
+    assert!(matches!(&ir[0], IrClientEvent::AudioFrame(_)));
+    assert!(matches!(
+        &ir[1],
+        IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+    ));
+}
+
+#[test]
+fn input_audio_commit_round_trips_to_audio_stream_end() {
+    // The encode side is the mirror: InputAudioCommit → `realtimeInput.audioStreamEnd` → decode back
+    // to InputAudioCommit (IR-fixpoint stable), the property the conformance harness now asserts.
+    let codec = GeminiLiveCodec;
+    let up = codec.write_up(IrClientEvent::Control(IrDuplexControl::InputAudioCommit));
+    let mut st = DecodeState::default();
+    let back = codec.read_up(up, &mut st);
+    assert_eq!(back.len(), 1);
+    assert!(matches!(
+        &back[0],
+        IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+    ));
 }
 
 // ── serverContent (downlink audio, turn/interrupt) ───────────────────────────────────────────────

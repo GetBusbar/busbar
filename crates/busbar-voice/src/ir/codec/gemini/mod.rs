@@ -52,6 +52,9 @@ mod wire {
     pub const SETUP: &str = "setup";
     pub const CLIENT_CONTENT: &str = "clientContent";
     pub const REALTIME_INPUT: &str = "realtimeInput";
+    /// The manual end-of-uplink marker nested under `realtimeInput`. Gemini's cross-dialect twin of
+    /// OpenAI's discrete `input_audio_buffer.commit` — both end the buffered uplink turn.
+    pub const AUDIO_STREAM_END: &str = "audioStreamEnd";
     pub const TOOL_RESPONSE: &str = "toolResponse";
     // server → client
     pub const SETUP_COMPLETE: &str = "setupComplete";
@@ -360,9 +363,13 @@ impl DuplexReader for GeminiLiveCodec {
                     push_blob(chunk, &mut out);
                 }
             }
-            // `realtimeInput.audioStreamEnd` is a manual end-of-stream marker with no shared IR home
-            // (drop+warn): the cross-dialect map aspires to a commit-mapping, but the asymmetry table
-            // exercises it as a documented drop, so it yields no IR here.
+            // `realtimeInput.audioStreamEnd` is Gemini's manual end-of-uplink marker; it is the
+            // cross-dialect twin of OpenAI's discrete `input_audio_buffer.commit`. Map it to the shared
+            // `IrDuplexControl::InputAudioCommit` so the "end the buffered uplink turn" concept survives
+            // cross-dialect (a frame may carry audio AND the end marker; emit the commit after the audio).
+            if ri.get(wire::AUDIO_STREAM_END).is_some() {
+                out.push(IrClientEvent::Control(IrDuplexControl::InputAudioCommit));
+            }
             return out;
         }
 
@@ -503,13 +510,18 @@ impl DuplexWriter for GeminiLiveCodec {
             IrClientEvent::Control(c) => match c {
                 IrDuplexControl::SessionConfigure { config } => setup_from_session_config(&config),
                 IrDuplexControl::ItemCreate { item } => json!({ wire::CLIENT_CONTENT: item }),
-                // The Gemini uplink has no discrete commit/clear/cancel/delete/truncate verbs; the
-                // model turn is driven by `clientContent.turnComplete` and activity detection. Frame
-                // these OpenAI-shaped controls as an empty realtime-input marker rather than panic —
-                // they are dropped cross-dialect (asymmetry).
+                // `InputAudioCommit` (end the buffered uplink turn) round-trips to Gemini's
+                // `realtimeInput.audioStreamEnd` marker — the cross-dialect twin of OpenAI's
+                // `input_audio_buffer.commit`, so the concept survives rather than dropping.
+                IrDuplexControl::InputAudioCommit => json!({
+                    wire::REALTIME_INPUT: { wire::AUDIO_STREAM_END: true }
+                }),
+                // The Gemini uplink has no discrete cancel/clear/delete/truncate verbs; the model turn
+                // is driven by `clientContent.turnComplete` and activity detection. Frame these
+                // OpenAI-shaped controls as an empty realtime-input marker rather than panic — they are
+                // dropped cross-dialect (asymmetry).
                 IrDuplexControl::ResponseCreate { .. }
                 | IrDuplexControl::ResponseCancel
-                | IrDuplexControl::InputAudioCommit
                 | IrDuplexControl::InputAudioClear
                 | IrDuplexControl::ItemDelete { .. }
                 | IrDuplexControl::ItemTruncate { .. } => {

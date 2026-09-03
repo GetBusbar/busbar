@@ -276,9 +276,9 @@ fn drop_reason(dialect: &str, fixture: &str) -> Option<&'static str> {
         ("gemini", "serverContent.outputTranscription.json") => {
             Some("output transcription side-channel: no shared IR home (drop+warn)")
         }
-        ("gemini", "realtimeInput.audioStreamEnd.json") => Some(
-            "gemini_audio_stream_end: codec drops (map aspires to commit-mapping; not yet wired)",
-        ),
+        // NB: `realtimeInput.audioStreamEnd` is NOT here — it is no longer a drop. It maps to the
+        // shared `InputAudioCommit` (OpenAI's `input_audio_buffer.commit` twin), so it decodes to a
+        // real IR event and is exercised as an IR-fixpoint-stable fixture, not a documented drop.
         _ => None,
     }
 }
@@ -822,8 +822,8 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
             )
         }
         "gemini_audio_stream_end" => drop_if(
-            n1.is_empty() && n2.is_empty(),
-            "codec drops (map aspires to commit-mapping; not yet wired)",
+            has(n1, &|n| matches!(n, Norm::Commit)) && has(n2, &|n| matches!(n, Norm::Commit)),
+            "audioStreamEnd ↔ input_audio_buffer.commit: the end-of-uplink turn survives cross-dialect",
         ),
         "gemini_setup_complete" => {
             // setupComplete → SessionCreated (the ack survives); the GATE semantics are runtime-only.
