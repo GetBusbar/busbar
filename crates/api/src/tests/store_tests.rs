@@ -5,6 +5,50 @@
 
 use super::*;
 
+/// A name-keyed reserved-four unit map (test helper) — the M1b replacement for the old
+/// `TierTokens { input, output, cache_read, cache_write }` literal. Zero tiers are omitted so the
+/// sparse-map (no-zero-entry) invariant holds.
+fn units(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in [
+        (UNIT_INPUT, input),
+        (UNIT_OUTPUT, output),
+        (UNIT_CACHE_READ, cache_read),
+        (UNIT_CACHE_WRITE, cache_write),
+    ] {
+        if v != 0 {
+            m.insert(k.to_string(), v);
+        }
+    }
+    m
+}
+
+/// The signed twin of [`units`] for `ModelTokensDelta` payloads.
+fn units_i(
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+) -> std::collections::BTreeMap<String, i64> {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in [
+        (UNIT_INPUT, input),
+        (UNIT_OUTPUT, output),
+        (UNIT_CACHE_READ, cache_read),
+        (UNIT_CACHE_WRITE, cache_write),
+    ] {
+        if v != 0 {
+            m.insert(k.to_string(), v);
+        }
+    }
+    m
+}
+
 fn sample_key() -> VirtualKey {
     VirtualKey {
         id: "vk_1".to_string(),
@@ -418,19 +462,18 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: 2,
         models: vec![ModelTokensDelta {
             model: "gpt-5".to_string(),
-            tokens: TierTokensDelta {
-                input: 100,
-                output: 50,
-                cache_read: 10,
-                cache_write: 5,
-            },
-            ..Default::default()
+            usage_units: units_i(100, 50, 10, 5),
         }],
     });
     assert_eq!(l.requests, 2);
-    let t = l.tokens_for("gpt-5").unwrap();
+    let m = &l.models[0];
     assert_eq!(
-        (t.input, t.output, t.cache_read, t.cache_write),
+        (
+            m.tier(UNIT_INPUT),
+            m.tier(UNIT_OUTPUT),
+            m.tier(UNIT_CACHE_READ),
+            m.tier(UNIT_CACHE_WRITE)
+        ),
         (100, 50, 10, 5)
     );
     assert_eq!(l.total_tokens(), 165);
@@ -441,17 +484,11 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: 1,
         models: vec![ModelTokensDelta {
             model: "haiku".to_string(),
-            tokens: TierTokensDelta {
-                input: 7,
-                output: 3,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            ..Default::default()
+            usage_units: units_i(7, 3, 0, 0),
         }],
     });
     assert_eq!(l.models.len(), 2);
-    assert_eq!(l.tokens_for("gpt-5").unwrap().input, 100);
+    assert_eq!(l.total_input(), 107);
 
     // Over-refund floors at 0, never negative.
     l.apply_delta(&UsageDelta {
@@ -459,18 +496,12 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: -10,
         models: vec![ModelTokensDelta {
             model: "haiku".to_string(),
-            tokens: TierTokensDelta {
-                input: -1000,
-                output: -1,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            ..Default::default()
+            usage_units: units_i(-1000, -1, 0, 0),
         }],
     });
     assert_eq!(l.requests, 0);
-    let h = l.tokens_for("haiku").unwrap();
-    assert_eq!((h.input, h.output), (0, 2));
+    let h = l.models.iter().find(|m| m.model == "haiku").unwrap();
+    assert_eq!((h.tier(UNIT_INPUT), h.tier(UNIT_OUTPUT)), (0, 2));
 }
 
 /// The default trait `add_usage` (read-modify-write fallback) accumulates through
@@ -520,20 +551,15 @@ fn default_add_usage_accumulates_via_get_put() {
         billable_requests: 1,
         models: vec![ModelTokensDelta {
             model: "m".to_string(),
-            tokens: TierTokensDelta {
-                input: 5,
-                output: 5,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            ..Default::default()
+            usage_units: units_i(5, 5, 0, 0),
         }],
     };
     s.add_usage("bucket", 0, &d).unwrap();
     s.add_usage("bucket", 0, &d).unwrap();
     let l = s.get_usage("bucket", 0).unwrap();
     assert_eq!(l.requests, 2);
-    assert_eq!(l.tokens_for("m").unwrap().input, 10);
+    assert_eq!(l.total_input(), 10);
+    assert_eq!(l.tokens_for("m"), Some(20));
 }
 
 #[test]
@@ -559,53 +585,36 @@ fn credential_secret_plaintext_extracts_v1_plain_only() {
 }
 
 #[test]
-fn tier_tokens_is_zero_requires_every_field_zero() {
-    assert!(TierTokens::default().is_zero());
-    assert!(!TierTokens {
-        input: 1,
-        ..Default::default()
+fn model_tokens_is_zero_requires_every_unit_zero() {
+    assert!(ModelTokens::default().is_zero());
+    for u in RESERVED_UNITS {
+        let m = ModelTokens {
+            model: "m".into(),
+            usage_units: std::collections::BTreeMap::from([(u.to_string(), 1u64)]),
+        };
+        assert!(!m.is_zero(), "a nonzero {u} tier is not zero");
     }
-    .is_zero());
-    assert!(!TierTokens {
-        output: 1,
-        ..Default::default()
-    }
-    .is_zero());
-    assert!(!TierTokens {
-        cache_read: 1,
-        ..Default::default()
-    }
-    .is_zero());
-    assert!(!TierTokens {
-        cache_write: 1,
-        ..Default::default()
-    }
-    .is_zero());
+    // An open (non-reserved) unit counts too.
+    let m = ModelTokens {
+        model: "m".into(),
+        usage_units: std::collections::BTreeMap::from([("audio".to_string(), 1u64)]),
+    };
+    assert!(!m.is_zero());
 }
 
 #[test]
-fn tier_tokens_delta_is_zero_requires_every_field_zero() {
-    assert!(TierTokensDelta::default().is_zero());
-    assert!(!TierTokensDelta {
-        input: 1,
-        ..Default::default()
-    }
-    .is_zero());
-    assert!(!TierTokensDelta {
-        output: -1,
-        ..Default::default()
-    }
-    .is_zero());
-    assert!(!TierTokensDelta {
-        cache_read: 1,
-        ..Default::default()
-    }
-    .is_zero());
-    assert!(!TierTokensDelta {
-        cache_write: 1,
-        ..Default::default()
-    }
-    .is_zero());
+fn model_tokens_delta_is_zero_requires_every_unit_zero() {
+    assert!(ModelTokensDelta::default().is_zero());
+    let d = ModelTokensDelta {
+        model: "m".into(),
+        usage_units: units_i(1, 0, 0, 0),
+    };
+    assert!(!d.is_zero());
+    let d = ModelTokensDelta {
+        model: "m".into(),
+        usage_units: units_i(0, -1, 0, 0),
+    };
+    assert!(!d.is_zero());
 }
 
 #[test]
@@ -624,11 +633,7 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
     assert!(!UsageDelta {
         models: vec![ModelTokensDelta {
             model: "m".to_string(),
-            tokens: TierTokensDelta {
-                input: 1,
-                ..Default::default()
-            },
-            ..Default::default()
+            usage_units: units_i(1, 0, 0, 0),
         }],
         ..Default::default()
     }
@@ -846,49 +851,42 @@ fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
 
 // ── The durable usage_units spine (1.6.0 M1): additive, back-compatible ─────────────────────────
 
-/// A no-opens `ModelTokens` serializes BYTE-IDENTICALLY to a pre-1.6 row (skip-if-empty), and an old
-/// row with no `usage_units` field deserializes into an empty map (serde default) — the additive
-/// back-compat guarantee (§9.5).
+/// An all-empty `ModelTokens` serializes to just `{"model":…}` (skip-if-empty), and an old row with
+/// no `usage_units` field deserializes into an empty map (serde default). The reserved four are now
+/// ordinary keys in the one map.
 #[test]
-fn model_tokens_usage_units_is_additive_and_byte_identical_when_empty() {
-    let no_opens = ModelTokens {
+fn model_tokens_usage_units_is_the_sole_representation() {
+    let reserved = ModelTokens {
         model: "gpt-x".into(),
-        tokens: TierTokens {
-            input: 10,
-            output: 20,
-            cache_read: 0,
-            cache_write: 0,
-        },
+        usage_units: units(10, 20, 0, 0),
+    };
+    let json = serde_json::to_string(&reserved).unwrap();
+    assert!(json.contains("usage_units") && json.contains("\"input\":10"));
+    // Round-trips losslessly.
+    let rt: ModelTokens = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt, reserved);
+    // An all-empty row omits the map entirely.
+    let empty = ModelTokens {
+        model: "z".into(),
         usage_units: std::collections::BTreeMap::new(),
     };
-    let json = serde_json::to_string(&no_opens).unwrap();
-    assert!(
-        !json.contains("usage_units"),
-        "an empty usage_units map must NOT appear on the wire (byte-identical to pre-1.6): {json}"
-    );
-    // An old persisted row (no usage_units key) deserializes with an empty map.
-    let old_wire =
-        r#"{"model":"gpt-x","tokens":{"input":10,"output":20,"cache_read":0,"cache_write":0}}"#;
-    let rt: ModelTokens = serde_json::from_str(old_wire).unwrap();
-    assert_eq!(rt, no_opens);
-    // A row WITH opens round-trips losslessly and now shows the map.
-    let mut with_opens = no_opens.clone();
-    with_opens.usage_units.insert("classifications".into(), 3);
-    let json2 = serde_json::to_string(&with_opens).unwrap();
-    assert!(json2.contains("usage_units") && json2.contains("classifications"));
-    let rt2: ModelTokens = serde_json::from_str(&json2).unwrap();
-    assert_eq!(rt2, with_opens);
+    let ej = serde_json::to_string(&empty).unwrap();
+    assert!(!ej.contains("usage_units"), "empty map is skipped: {ej}");
+    // A row with reserved AND open keys round-trips.
+    let mut mixed = reserved.clone();
+    mixed.usage_units.insert("classifications".into(), 3);
+    let rt2: ModelTokens = serde_json::from_str(&serde_json::to_string(&mixed).unwrap()).unwrap();
+    assert_eq!(rt2, mixed);
 }
 
-/// `apply_model_delta` folds the signed open-key delta beside the reserved tiers, flooring each open
+/// `apply_model_delta` folds every signed unit delta (reserved four AND opens, one map) flooring each
 /// counter at 0 (a refund can never drive it negative), allocating a key only on first sight.
 #[test]
 fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     let mut ledger = UsageLedger::default();
     let mut d1 = ModelTokensDelta {
         model: "m".into(),
-        tokens: TierTokensDelta::default(),
-        usage_units: std::collections::BTreeMap::new(),
+        usage_units: units_i(0, 0, 0, 0),
     };
     d1.usage_units.insert("search".into(), 5);
     ledger.apply_model_delta(&d1);
@@ -897,7 +895,6 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     // A refund larger than the balance floors at 0, never negative.
     let mut d2 = ModelTokensDelta {
         model: "m".into(),
-        tokens: TierTokensDelta::default(),
         usage_units: std::collections::BTreeMap::new(),
     };
     d2.usage_units.insert("search".into(), -9);

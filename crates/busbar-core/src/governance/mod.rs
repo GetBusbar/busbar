@@ -122,8 +122,12 @@ const AWS_SECRET_ACCESS_KEY_LEN: usize = 40;
 #[derive(Clone)]
 struct ModelCell {
     model: std::sync::Arc<str>,
-    cur: busbar_api::TierTokens,
-    flushed: busbar_api::TierTokens,
+    /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
+    /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
+    /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
+    cur: std::collections::BTreeMap<String, u64>,
+    /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
+    flushed: std::collections::BTreeMap<String, u64>,
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
@@ -175,29 +179,35 @@ impl BudgetCell {
         }
     }
 
-    /// Accrue one response's tier tokens under `model`, interning the model name on first sight.
-    fn accrue(&mut self, model: &str, t: &busbar_api::TierTokens) {
+    /// Accrue one response's keyed units under `model`, interning the model name on first sight and
+    /// each unit key on first sight of that (model, unit) pair.
+    fn accrue(&mut self, model: &str, units: &std::collections::BTreeMap<String, u64>) {
         let cell = match self.models.iter_mut().find(|m| &*m.model == model) {
             Some(m) => m,
             None => {
                 // Allocate ONLY on the first sight of a (bucket, model) pair.
                 self.models.push(ModelCell {
                     model: std::sync::Arc::from(model),
-                    cur: busbar_api::TierTokens::default(),
-                    flushed: busbar_api::TierTokens::default(),
+                    cur: std::collections::BTreeMap::new(),
+                    flushed: std::collections::BTreeMap::new(),
                 });
                 self.models.last_mut().expect("just pushed")
             }
         };
-        cell.cur.input = cell.cur.input.saturating_add(t.input);
-        cell.cur.output = cell.cur.output.saturating_add(t.output);
-        cell.cur.cache_read = cell.cur.cache_read.saturating_add(t.cache_read);
-        cell.cur.cache_write = cell.cur.cache_write.saturating_add(t.cache_write);
+        for (k, v) in units {
+            if *v == 0 {
+                continue;
+            }
+            let slot = cell.cur.entry(k.clone()).or_insert(0);
+            *slot = slot.saturating_add(*v);
+        }
     }
 
-    /// Borrowed (model, current tokens) view for the spend derivation - the few multiply-adds the
+    /// Borrowed (model, current units) view for the spend derivation - the few multiply-adds the
     /// admission check runs.
-    fn model_views(&self) -> impl Iterator<Item = (&str, &busbar_api::TierTokens)> {
+    fn model_views(
+        &self,
+    ) -> impl Iterator<Item = (&str, &std::collections::BTreeMap<String, u64>)> {
         self.models.iter().map(|m| (&*m.model, &m.cur))
     }
 
@@ -212,46 +222,49 @@ impl BudgetCell {
     /// amortized cell sweep, so it costs one linear pass on the same cadence as the stale-cell prune.
     fn prune_dead_models(&mut self) {
         self.models
-            .retain(|m| m.cur.total() != 0 || m.flushed.total() != 0);
+            .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
     }
 
-    /// Total current tokens across models and tiers (the legacy scalar view for admin reads).
+    /// Total current tokens across models and every unit (the legacy scalar view for admin reads).
     fn total_tokens(&self) -> u64 {
         self.models
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.cur.total()))
+            .fold(0u64, |acc, m| acc.saturating_add(units_total(&m.cur)))
     }
 
-    /// Current UNCACHED-INPUT tokens across models (`TierTokens.input`, which readers normalize to
-    /// exclude cache_read — cached prompt reads live in `cache_read`, not here). Mirrors
-    /// `total_tokens` for the `tokens_input` per-tier cap.
+    /// Current summed count of one reserved tier across models — a per-tier cap's counter.
+    fn total_tier(&self, unit: &str) -> u64 {
+        self.models.iter().fold(0u64, |acc, m| {
+            acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
+        })
+    }
+
+    /// Current UNCACHED-INPUT tokens across models — the `tokens_input` per-tier cap's counter.
     fn total_input(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.cur.input))
+        self.total_tier(busbar_api::UNIT_INPUT)
     }
 
     /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
     fn total_output(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.cur.output))
+        self.total_tier(busbar_api::UNIT_OUTPUT)
     }
 
     /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
     fn total_cache_read(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.cur.cache_read))
+        self.total_tier(busbar_api::UNIT_CACHE_READ)
     }
 
     /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
     /// per-tier cap's counter.
     fn total_cache_write(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.cur.cache_write))
+        self.total_tier(busbar_api::UNIT_CACHE_WRITE)
     }
+}
+
+/// Saturating sum of every count in a name-keyed unit map — the scalar "total tokens" view over the
+/// dissolved reserved-four-plus-opens ledger.
+fn units_total(units: &std::collections::BTreeMap<String, u64>) -> u64 {
+    units.values().fold(0u64, |acc, v| acc.saturating_add(*v))
 }
 
 /// Why an admission was refused by the group limit chain - carried to ingress so the rejection
@@ -932,7 +945,7 @@ pub use busbar_api::Store;
 pub use busbar_api::VirtualKey;
 pub(crate) use busbar_api::{
     CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, StoreError,
-    StoreResult, TierTokens, UsageDelta,
+    StoreResult, UsageDelta,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.

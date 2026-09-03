@@ -556,45 +556,55 @@ impl std::fmt::Debug for CredentialSecret {
     }
 }
 
-/// Per-model token counts split by PRICING TIER (input / output / cache-read / cache-write) - the
-/// four token classes providers price differently. RAW counts, never money: every dollar figure is
-/// DERIVED at read time as `tokens x current rate card` (tokens are the ledger; dollars are always
-/// derived, never stored as truth).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub struct TierTokens {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
-}
+/// THE CANONICAL RESERVED UNIT NAMES (1.6.0 M1b). The reserved four pricing tiers are no longer a
+/// distinct `TierTokens` struct; they are PLAIN KEYS in the name-keyed `usage_units` ledger, sharing
+/// the one map with every open (operator/plane) unit. These constants are the single source of truth
+/// for those four names, so the pricer, the ledger, the flush primitive, and the boot migration can
+/// never disagree on the spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older
+/// `cache_creation` name is folded onto it at migration (see [`usage_migration`]).
+pub const UNIT_INPUT: &str = "input";
+pub const UNIT_OUTPUT: &str = "output";
+pub const UNIT_CACHE_READ: &str = "cache_read";
+pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
-impl TierTokens {
-    /// All four tiers zero (nothing to persist / flush).
-    pub fn is_zero(&self) -> bool {
-        self.input == 0 && self.output == 0 && self.cache_read == 0 && self.cache_write == 0
-    }
+/// The reserved four, in canonical order — the set the pricer prices via the `RateNanos` tiers and
+/// the migration folds the old `TierTokens` fields onto.
+pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
-    /// Total tokens across all tiers (saturating - counts are upstream-controlled).
-    pub fn total(&self) -> u64 {
-        self.input
-            .saturating_add(self.output)
-            .saturating_add(self.cache_read)
-            .saturating_add(self.cache_write)
-    }
-}
-
-/// One model's accumulated tier-token counts inside a [`UsageLedger`].
+/// One model's accumulated billable-unit counts inside a [`UsageLedger`]. RAW counts, never money:
+/// every dollar figure is DERIVED at read time as `units x current rate card` (units are the ledger;
+/// dollars are always derived, never stored as truth).
+///
+/// (1.6.0 M1b) `usage_units` is the SOLE neutral usage representation: the reserved four
+/// (`input`/`output`/`cache_read`/`cache_write`) ride as ordinary map keys BESIDE every open
+/// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
+/// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a pre-M1b persisted
+/// row with the old scalar `tokens` field is folded into this map ONCE by the store-versioned boot
+/// migration (see [`usage_migration`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
-    pub tokens: TierTokens,
-    /// (1.6.0 M1) OPEN, non-reserved keyed billable counts that ride BESIDE the reserved-four
-    /// [`TierTokens`] — the durable half of the neutral usage_units spine. Opaque `key → count`
-    /// DATA the store never interprets; the reserved four stay in `tokens` (`TierTokens` is
-    /// unchanged and still `Copy`). `#[serde(default, skip_serializing_if)]` so an old persisted row
-    /// deserializes with an empty map and a no-opens row serializes BYTE-IDENTICALLY to today.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub usage_units: std::collections::BTreeMap<String, u64>,
+}
+
+impl ModelTokens {
+    /// This model's count for one reserved tier (0 if absent).
+    pub fn tier(&self, unit: &str) -> u64 {
+        self.usage_units.get(unit).copied().unwrap_or(0)
+    }
+
+    /// Total units across every key (saturating — counts are upstream-controlled).
+    pub fn total(&self) -> u64 {
+        self.usage_units
+            .values()
+            .fold(0u64, |acc, v| acc.saturating_add(*v))
+    }
+
+    /// All four tiers zero AND no open units (nothing to persist / flush).
+    pub fn is_zero(&self) -> bool {
+        self.usage_units.values().all(|v| *v == 0)
+    }
 }
 
 /// The TOKEN LEDGER for one (bucket, window): the request count plus per-(model, tier) token
@@ -620,53 +630,53 @@ pub struct UsageLedger {
 }
 
 impl UsageLedger {
-    /// The accumulated tier tokens for `model`, if any.
-    pub fn tokens_for(&self, model: &str) -> Option<&TierTokens> {
+    /// This model's summed billable units (across every unit key), if the model is present.
+    pub fn tokens_for(&self, model: &str) -> Option<u64> {
         self.models
             .iter()
             .find(|m| m.model == model)
-            .map(|m| &m.tokens)
+            .map(ModelTokens::total)
     }
 
-    /// Total tokens across every model and tier (the old scalar `tokens` view).
+    /// Total units across every model and unit key (the scalar `tokens` view).
     pub fn total_tokens(&self) -> u64 {
         self.models
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.total()))
+            .fold(0u64, |acc, m| acc.saturating_add(m.total()))
     }
 
-    /// UNCACHED-INPUT tokens across every model (`TierTokens.input`) — the durable counterpart of
-    /// the `tokens_input` per-tier cap. Mirrors [`Self::total_tokens`].
-    pub fn total_input(&self) -> u64 {
+    /// Summed count of one reserved tier across every model — the durable counterpart of the
+    /// matching per-tier cap.
+    fn total_tier(&self, unit: &str) -> u64 {
         self.models
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.input))
+            .fold(0u64, |acc, m| acc.saturating_add(m.tier(unit)))
+    }
+
+    /// UNCACHED-INPUT tokens across every model — the durable counterpart of the `tokens_input`
+    /// per-tier cap.
+    pub fn total_input(&self) -> u64 {
+        self.total_tier(UNIT_INPUT)
     }
 
     /// OUTPUT tokens across every model — the durable counterpart of the `tokens_output` cap.
     pub fn total_output(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.output))
+        self.total_tier(UNIT_OUTPUT)
     }
 
     /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
     /// cap.
     pub fn total_cache_read(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_read))
+        self.total_tier(UNIT_CACHE_READ)
     }
 
     /// CACHE-WRITE (cache_creation) tokens across every model — the durable counterpart of the
     /// `tokens_cache_write` cap.
     pub fn total_cache_write(&self) -> u64 {
-        self.models
-            .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_write))
+        self.total_tier(UNIT_CACHE_WRITE)
     }
 
-    /// Apply one signed per-model tier delta, flooring every counter at 0 (a refund can never
+    /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
     /// drive a durable counter negative). Allocates a model entry only on first sight.
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
         let entry = match self.models.iter_mut().find(|m| m.model == delta.model) {
@@ -679,15 +689,9 @@ impl UsageLedger {
                 self.models.last_mut().expect("just pushed")
             }
         };
-        let t = &mut entry.tokens;
-        t.input = t.input.saturating_add_signed(delta.tokens.input);
-        t.output = t.output.saturating_add_signed(delta.tokens.output);
-        t.cache_read = t.cache_read.saturating_add_signed(delta.tokens.cache_read);
-        t.cache_write = t
-            .cache_write
-            .saturating_add_signed(delta.tokens.cache_write);
-        // Fold the open keyed units the same way — flooring each counter at 0 (a refund can never
-        // drive a durable counter negative), allocating a key only on first sight.
+        // Fold every keyed unit (reserved four AND opens, one map now) — flooring each counter at 0
+        // (a refund can never drive a durable counter negative), allocating a key only on first
+        // sight.
         for (key, d) in &delta.usage_units {
             let cur = entry.usage_units.entry(key.clone()).or_insert(0);
             *cur = cur.saturating_add_signed(*d);
@@ -707,32 +711,22 @@ impl UsageLedger {
     }
 }
 
-/// Signed per-tier token delta (the fleet-additive flush primitive's per-model payload).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub struct TierTokensDelta {
-    pub input: i64,
-    pub output: i64,
-    pub cache_read: i64,
-    pub cache_write: i64,
-}
-
-impl TierTokensDelta {
-    /// All four tiers zero (nothing to send).
-    pub fn is_zero(&self) -> bool {
-        self.input == 0 && self.output == 0 && self.cache_read == 0 && self.cache_write == 0
-    }
-}
-
-/// One model's signed tier delta inside a [`UsageDelta`].
+/// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's
+/// per-model payload. (1.6.0 M1b) The signed twin of [`ModelTokens::usage_units`]: one name-keyed
+/// map carrying the reserved four AND every open unit. `#[serde(default, skip_serializing_if)]` so
+/// an all-zero delta serializes to `{"model":…}`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokensDelta {
     pub model: String,
-    pub tokens: TierTokensDelta,
-    /// (1.6.0 M1) The signed twin of [`ModelTokens::usage_units`] — the fleet-additive flush
-    /// primitive's open-key payload. `#[serde(default, skip_serializing_if)]` so an old delta
-    /// deserializes with an empty map and a no-opens delta serializes byte-identically.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub usage_units: std::collections::BTreeMap<String, i64>,
+}
+
+impl ModelTokensDelta {
+    /// Every unit delta zero (nothing to send for this model).
+    pub fn is_zero(&self) -> bool {
+        self.usage_units.values().all(|d| *d == 0)
+    }
 }
 
 /// The additive cross-node reconciliation payload for one (bucket, window): a signed requests
@@ -751,9 +745,7 @@ pub struct UsageDelta {
 impl UsageDelta {
     /// Nothing to flush (both request deltas zero and every model delta zero).
     pub fn is_zero(&self) -> bool {
-        self.requests == 0
-            && self.billable_requests == 0
-            && self.models.iter().all(|m| m.tokens.is_zero())
+        self.requests == 0 && self.billable_requests == 0 && self.models.iter().all(|m| m.is_zero())
     }
 }
 

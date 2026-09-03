@@ -72,13 +72,25 @@ pub(crate) fn key(group: Option<&str>) -> VirtualKey {
     }
 }
 
-fn toks(input: u64, output: u64) -> TierTokens {
-    TierTokens {
-        input,
-        output,
-        cache_read: 0,
-        cache_write: 0,
+/// A name-keyed reserved-four unit map (test helper) — the M1b replacement for the old
+/// `TierTokens` literal. Zero tiers are omitted (sparse map / no-zero-entry invariant).
+fn toks4(input: u64, output: u64, cache_read: u64, cache_write: u64) -> BTreeMap<String, u64> {
+    let mut m = BTreeMap::new();
+    for (k, v) in [
+        (UNIT_INPUT, input),
+        (UNIT_OUTPUT, output),
+        (UNIT_CACHE_READ, cache_read),
+        (UNIT_CACHE_WRITE, cache_write),
+    ] {
+        if v != 0 {
+            m.insert(k.to_string(), v);
+        }
     }
+    m
+}
+
+fn toks(input: u64, output: u64) -> BTreeMap<String, u64> {
+    toks4(input, output, 0, 0)
 }
 
 /// ABSENT rate card => token pricing is 0 for every model; only the flat per-request fee
@@ -366,12 +378,12 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let t = TierTokens {
-        input: 10_000_000,     // 10_000_000_000 nanos
-        output: 1_000_000,     //  2_000_000_000
-        cache_read: 2_000_000, //  1_000_000_000
-        cache_write: 500_000,  //  2_000_000_000
-    };
+    let t = toks4(
+        10_000_000, // 10_000_000_000 nanos
+        1_000_000,  //  2_000_000_000
+        2_000_000,  //  1_000_000_000
+        500_000,    //  2_000_000_000
+    );
     // sum 15_000_000_000 nanos / 10_000_000 = 1500 cents exactly.
     assert_eq!(
         cm.derive_spend_cents([("quad", &t)].into_iter(), 0, false),
@@ -448,12 +460,7 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
         !cm.model_unpriced("freebie"),
         "an all-zero entry is present, not missing"
     );
-    let t = TierTokens {
-        input: u64::MAX,
-        output: u64::MAX,
-        cache_read: u64::MAX,
-        cache_write: u64::MAX,
-    };
+    let t = toks4(u64::MAX, u64::MAX, u64::MAX, u64::MAX);
     assert_eq!(
         cm.derive_spend_cents([("freebie", &t)].into_iter(), 0, false),
         0,
@@ -627,14 +634,13 @@ fn price_reserved_four_is_byte_identical_to_cost_nanos() {
     let rate = rate_2_5();
     let tt = toks(3, 4); // 3*2000 + 4*5000 = 26_000 nano
     let usage = NeutralUsage {
-        tokens: tt,
-        ..Default::default()
+        usage_units: tt.clone(),
     };
     let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid breakdown");
     assert_eq!(
         bd.total(),
-        CostAmount(rate.cost_nanos(&tt)),
-        "reserved-four pricing must equal the unchanged Copy cost_nanos"
+        CostAmount(rate.reserved_nanos(&tt)),
+        "reserved-four pricing must equal the shared reserved_nanos summation"
     );
     // Two disjoint top-level lines (Prompt, Output); a zero tier is omitted.
     assert_eq!(
@@ -650,8 +656,7 @@ fn price_open_key_priced_via_opaque_extras_lookup() {
     let mut extras = ExtraRates::new();
     extras.insert("audio".to_string(), 100); // 100 nano per audio unit
     let mut usage = NeutralUsage {
-        tokens: toks(3, 0), // base 6000
-        ..Default::default()
+        usage_units: toks(3, 0), // base 6000
     };
     usage.usage_units.insert("audio".to_string(), 7); // 700 nano
     let bd = price(&rate, &extras, STANDARD_TIER_BP, &usage).expect("valid");
@@ -662,8 +667,7 @@ fn price_open_key_priced_via_opaque_extras_lookup() {
 fn price_present_but_unpriced_open_key_is_omitted_never_silent_zero() {
     let rate = rate_2_5();
     let mut usage = NeutralUsage {
-        tokens: toks(3, 0), // base 6000
-        ..Default::default()
+        usage_units: toks(3, 0), // base 6000
     };
     usage.usage_units.insert("web_search".to_string(), 3); // no extras entry
     let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid");
@@ -672,12 +676,37 @@ fn price_present_but_unpriced_open_key_is_omitted_never_silent_zero() {
     assert_eq!(bd.components().len(), 1, "only the priced Prompt line");
 }
 
+/// FIX 2b — DUPLICATE-LABEL DoS. An OPEN unit literally named like a reserved tier's display label
+/// (`Prompt`) or the surcharge label (`service_tier`) must still price cleanly — its component label
+/// is namespaced so it can never collide inside `CostBreakdown::new` (which rejects duplicates). Before
+/// the fix this returned `Err(DuplicateLabel)` and the whole response failed to price.
+#[test]
+fn price_adversarial_open_unit_name_cannot_collide_with_reserved_or_surcharge_label() {
+    let rate = rate_2_5();
+    let mut extras = ExtraRates::new();
+    extras.insert("Prompt".to_string(), 10);
+    extras.insert("service_tier".to_string(), 20);
+    let mut usage = NeutralUsage {
+        usage_units: toks(3, 0), // reserved input → "Prompt" reserved label, base 6000
+    };
+    usage.usage_units.insert("Prompt".to_string(), 5); // open, priced 5*10 = 50
+    usage.usage_units.insert("service_tier".to_string(), 4); // open, priced 4*20 = 80
+                                                             // Surcharge tier too, so the surcharge "service_tier" label is ALSO present.
+    let bd =
+        price(&rate, &extras, 12_000, &usage).expect("adversarial names must not fail pricing");
+    // base = 6000 (Prompt tier) + 50 (open Prompt) + 80 (open service_tier) = 6130.
+    // surcharge = 6130 * 2000/10000 = 1226. total = 7356.
+    assert_eq!(bd.total(), CostAmount(6130 + 1226));
+    // Four distinct labels: reserved "Prompt", "unit:Prompt", "unit:service_tier", surcharge
+    // "service_tier" — none collide.
+    assert_eq!(bd.components().len(), 4);
+}
+
 #[test]
 fn price_surcharge_tier_is_a_top_level_line_preserving_exact_sum() {
     let rate = rate_2_5();
     let usage = NeutralUsage {
-        tokens: toks(3, 4), // base 26_000
-        ..Default::default()
+        usage_units: toks(3, 4), // base 26_000
     };
     let bd = price(&rate, &ExtraRates::new(), 12_000, &usage).expect("exact-sum holds");
     // surcharge = 26_000 * (12_000 - 10_000) / 10_000 = 5_200; total = 31_200.
@@ -694,8 +723,7 @@ fn price_surcharge_tier_is_a_top_level_line_preserving_exact_sum() {
 fn price_discount_tier_folds_into_rate_with_no_named_line() {
     let rate = rate_2_5();
     let usage = NeutralUsage {
-        tokens: toks(3, 4), // base 26_000
-        ..Default::default()
+        usage_units: toks(3, 4), // base 26_000
     };
     let bd = price(&rate, &ExtraRates::new(), 8_000, &usage).expect("exact-sum holds");
     // each per-tier amount scaled ×0.8: Prompt 6000→4800, Output 20000→16000; total 20_800.
@@ -703,5 +731,37 @@ fn price_discount_tier_folds_into_rate_with_no_named_line() {
     assert!(
         !bd.components().iter().any(|c| c.label == "service_tier"),
         "a discount folds into effective rate, never a named line"
+    );
+}
+
+/// FIX 2a — DISCOUNT SINGLE-DIVIDE, the NON-DIVISIBLE case the old per-component floor hid. Two
+/// components each 5 nano, discounted ×0.5: a per-component floor gives `floor(2.5)+floor(2.5)=2+2=4`
+/// (under-charge); a SINGLE divide of the summed nanos gives `floor(10*0.5)=5`. The pricer must bill
+/// 5, and the breakdown's top-level lines must SUM to exactly 5 (exact-sum invariant intact).
+#[test]
+fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
+    // Two OPEN units, each 1 count at 5 nano → 5 nano undiscounted apiece, 10 total.
+    let rate = crate::cost::RateNanos::default(); // no reserved tiers priced
+    let mut extras = ExtraRates::new();
+    extras.insert("a".to_string(), 5);
+    extras.insert("b".to_string(), 5);
+    let mut usage = NeutralUsage::default();
+    usage.usage_units.insert("a".to_string(), 1);
+    usage.usage_units.insert("b".to_string(), 1);
+    let bd = price(&rate, &extras, 5_000, &usage).expect("exact-sum holds");
+    assert_eq!(
+        bd.total(),
+        CostAmount(5),
+        "single divide of the summed nanos (5), NOT the sum of per-component floors (4)"
+    );
+    let sum: u128 = bd
+        .components()
+        .iter()
+        .filter(|c| c.parent.is_none())
+        .map(|c| c.amount.0)
+        .sum();
+    assert_eq!(
+        sum, 5,
+        "top-level lines must sum to the single-divide total"
     );
 }

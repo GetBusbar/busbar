@@ -241,14 +241,13 @@ fn card_and_group_cost(
     crate::cost::CostModel::resolve_parts(Some(&one_entry_card(model, input_utok)), 0, &groups_cfg)
 }
 
-/// An input-only tier split of `n` tokens (the scalar-total shorthand old tests used).
-fn tt(n: u64) -> TierTokens {
-    TierTokens {
-        input: n,
-        output: 0,
-        cache_read: 0,
-        cache_write: 0,
+/// An input-only unit map of `n` tokens (the scalar-total shorthand old tests used).
+fn tt(n: u64) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    if n != 0 {
+        m.insert(busbar_api::UNIT_INPUT.to_string(), n);
     }
+    m
 }
 
 /// The store ledger's total tokens for (bucket, window) - the old scalar `tokens` view.
@@ -974,12 +973,12 @@ fn test_two_node_flush_is_additive_no_lost_update() {
         "the durable record is the FLEET SUM (3 + 2), not last-writer-wins"
     );
     assert_eq!(
-        u.tokens_for("gpt-5").unwrap().input,
+        u.tokens_for("gpt-5").unwrap(),
         140,
         "per-model token deltas SUM across nodes (100 + 40)"
     );
     assert_eq!(
-        u.tokens_for("haiku").unwrap().input,
+        u.tokens_for("haiku").unwrap(),
         7,
         "a model only one node used still lands"
     );
@@ -989,7 +988,7 @@ fn test_two_node_flush_is_additive_no_lost_update() {
     node_b.flush_budgets();
     let u = store.get_usage("k_fleet", 0).unwrap();
     assert_eq!(u.requests, 5, "an idle re-flush adds nothing");
-    assert_eq!(u.tokens_for("gpt-5").unwrap().input, 140);
+    assert_eq!(u.tokens_for("gpt-5").unwrap(), 140);
 
     // More accrual on one node keeps accumulating correctly.
     assert!(node_a.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
@@ -1395,7 +1394,7 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
     gov.record_usage(&cost, &k, "", "gpt-5", &tt(2000), 1_700_000_000);
     gov.flush_budgets();
     let ledger = store.get_usage("k1", 0).unwrap();
-    assert_eq!(ledger.tokens_for("gpt-5").unwrap().input, 2000);
+    assert_eq!(ledger.tokens_for("gpt-5").unwrap(), 2000);
     let u = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
     assert_eq!(u.spend_cents, 100, "2000 x 500 micro = 100 cents derived");
     assert_eq!(u.tokens, 2000);
@@ -1508,7 +1507,7 @@ async fn test_record_usage_write_behind_under_runtime() {
     assert_eq!(gov.flush_budgets(), 1, "one dirty cell flushed");
     let u = store.get_usage("k1", 0).unwrap();
     assert_eq!(
-        u.tokens_for("gpt-5").unwrap().input,
+        u.tokens_for("gpt-5").unwrap(),
         2000,
         "the per-model tier split lands durably"
     );

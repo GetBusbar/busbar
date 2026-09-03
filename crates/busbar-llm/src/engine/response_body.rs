@@ -730,7 +730,7 @@ where
                             // fields ADDITIVE, so the four tiers are correct provider-agnostically.
                             let tier = token_usage
                                 .as_ref()
-                                .map(crate::engine::usage::tier_tokens)
+                                .map(crate::engine::usage::tier_usage)
                                 .unwrap_or_default();
                             if let (Some(host), Some(lane)) = (
                                 this.host.as_ref(),
@@ -803,9 +803,9 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()
-            .map(crate::engine::usage::tier_tokens)
+            .map(crate::engine::usage::tier_usage)
             .unwrap_or_default();
-        if !tier.is_zero() {
+        if !tier.usage_units.is_empty() {
             if let (Some(host), Some(lane)) = (
                 self.host.as_ref(),
                 self.rt

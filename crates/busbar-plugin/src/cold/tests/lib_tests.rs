@@ -143,13 +143,11 @@ fn request_response_json_roundtrip() {
                 billable_requests: 1,
                 models: vec![busbar_api::ModelTokens {
                     model: "gpt-5".into(),
-                    tokens: busbar_api::TierTokens {
-                        input: 7,
-                        output: 3,
-                        cache_read: 1,
-                        cache_write: 0,
-                    },
-                    ..Default::default()
+                    usage_units: std::collections::BTreeMap::from([
+                        (busbar_api::UNIT_INPUT.to_string(), 7u64),
+                        (busbar_api::UNIT_OUTPUT.to_string(), 3),
+                        (busbar_api::UNIT_CACHE_READ.to_string(), 1),
+                    ]),
                 }],
             },
         },
@@ -161,13 +159,10 @@ fn request_response_json_roundtrip() {
                 billable_requests: 1,
                 models: vec![busbar_api::ModelTokensDelta {
                     model: "gpt-5".into(),
-                    tokens: busbar_api::TierTokensDelta {
-                        input: 7,
-                        output: -3,
-                        cache_read: 0,
-                        cache_write: 0,
-                    },
-                    ..Default::default()
+                    usage_units: std::collections::BTreeMap::from([
+                        (busbar_api::UNIT_INPUT.to_string(), 7i64),
+                        (busbar_api::UNIT_OUTPUT.to_string(), -3),
+                    ]),
                 }],
             },
         },

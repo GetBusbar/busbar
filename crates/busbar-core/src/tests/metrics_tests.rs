@@ -136,13 +136,10 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                 billable_requests: 200,
                 models: vec![busbar_api::ModelTokens {
                     model: "m".to_string(),
-                    tokens: crate::governance::TierTokens {
-                        input: 5000,
-                        output: 0,
-                        cache_read: 0,
-                        cache_write: 0,
-                    },
-                    ..Default::default()
+                    usage_units: std::collections::BTreeMap::from([(
+                        busbar_api::UNIT_INPUT.to_string(),
+                        5000u64,
+                    )]),
                 }],
             },
         )
@@ -279,12 +276,12 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         &key,
         "",
         "gpt-5",
-        &busbar_api::TierTokens {
-            input: 100,
-            output: 40,
-            cache_read: 7,
-            cache_write: 3,
-        },
+        &std::collections::BTreeMap::from([
+            (busbar_api::UNIT_INPUT.to_string(), 100u64),
+            (busbar_api::UNIT_OUTPUT.to_string(), 40),
+            (busbar_api::UNIT_CACHE_READ.to_string(), 7),
+            (busbar_api::UNIT_CACHE_WRITE.to_string(), 3),
+        ]),
         1_700_000_000,
     );
 
@@ -916,13 +913,10 @@ fn test_key_gauge_limit_truncation() {
                     billable_requests: 1,
                     models: vec![busbar_api::ModelTokens {
                         model: "m".to_string(),
-                        tokens: crate::governance::TierTokens {
-                            input: 10,
-                            output: 0,
-                            cache_read: 0,
-                            cache_write: 0,
-                        },
-                        ..Default::default()
+                        usage_units: std::collections::BTreeMap::from([(
+                            busbar_api::UNIT_INPUT.to_string(),
+                            10u64,
+                        )]),
                     }],
                 },
             )
@@ -991,13 +985,10 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
                     billable_requests: 1,
                     models: vec![busbar_api::ModelTokens {
                         model: "m".to_string(),
-                        tokens: crate::governance::TierTokens {
-                            input: 1,
-                            output: 0,
-                            cache_read: 0,
-                            cache_write: 0,
-                        },
-                        ..Default::default()
+                        usage_units: std::collections::BTreeMap::from([(
+                            busbar_api::UNIT_INPUT.to_string(),
+                            1u64,
+                        )]),
                     }],
                 },
             )

@@ -846,18 +846,19 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         key: &busbar_api::VirtualKey,
         pool: &str,
         model: &str,
-        tokens: &busbar_api::TierTokens,
+        usage: &busbar_substrate::billing::Usage,
         now: u64,
     ) {
         // Recover the concrete gov/cost the plane's sink minted these handles from and drive the SAME
-        // accrual `sink.gov.record_usage(&sink.cost, …)` did — byte-identical, no re-read of the host
-        // snapshot. A downcast miss (never in practice — the handles are minted here) is a silent no-op,
-        // matching `record_usage`'s own fail-soft posture.
+        // accrual `sink.gov.record_usage(&sink.cost, …)` did. The neutral `Usage` carries the one
+        // name-keyed unit map (reserved four + opens); accrual folds it straight into the cell. A
+        // downcast miss (never in practice — the handles are minted here) is a silent no-op, matching
+        // `record_usage`'s own fail-soft posture.
         if let (Ok(g), Ok(c)) = (
             gov.0.clone().downcast::<crate::governance::GovState>(),
             cost.0.clone().downcast::<crate::cost::CostModel>(),
         ) {
-            g.record_usage(&c, key, pool, model, tokens, now);
+            g.record_usage(&c, key, pool, model, &usage.usage_units, now);
         }
     }
 

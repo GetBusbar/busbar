@@ -760,7 +760,7 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
         key: &busbar_api::VirtualKey,
         pool: &str,
         model: &str,
-        tokens: &busbar_api::TierTokens,
+        usage: &crate::billing::Usage,
         now: u64,
     );
 

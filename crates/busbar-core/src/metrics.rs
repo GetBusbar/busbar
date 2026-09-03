@@ -1014,11 +1014,12 @@ pub fn refresh_scrape_gauges(app: &App) {
             for (model, tokens) in
                 gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
             {
+                let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                 for (tier, v) in [
-                    ("input", tokens.input),
-                    ("output", tokens.output),
-                    ("cache_read", tokens.cache_read),
-                    ("cache_write", tokens.cache_write),
+                    ("input", tier_v(busbar_api::UNIT_INPUT)),
+                    ("output", tier_v(busbar_api::UNIT_OUTPUT)),
+                    ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
+                    ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
                 ] {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
@@ -1073,11 +1074,12 @@ pub fn refresh_scrape_gauges(app: &App) {
                 for (model, tokens) in
                     gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now)
                 {
+                    let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                     for (tier, v) in [
-                        ("input", tokens.input),
-                        ("output", tokens.output),
-                        ("cache_read", tokens.cache_read),
-                        ("cache_write", tokens.cache_write),
+                        ("input", tier_v(busbar_api::UNIT_INPUT)),
+                        ("output", tier_v(busbar_api::UNIT_OUTPUT)),
+                        ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
+                        ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
                     ] {
                         metrics::gauge!(
                             BUCKET_TOKENS,

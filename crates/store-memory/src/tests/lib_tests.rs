@@ -49,13 +49,14 @@ fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
         billable_requests: requests,
         models: vec![busbar_api::ModelTokens {
             model: model.to_string(),
-            tokens: busbar_api::TierTokens {
-                input,
-                output,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            ..Default::default()
+            usage_units: [
+                (busbar_api::UNIT_INPUT, input),
+                (busbar_api::UNIT_OUTPUT, output),
+            ]
+            .into_iter()
+            .filter(|(_, v)| *v != 0)
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
         }],
     }
 }
@@ -70,13 +71,10 @@ fn key_crud_and_ledger_roundtrip() {
     s.put_usage("a", 0, &ledger(3, "m", 100, 40)).unwrap();
     let u = s.get_usage("a", 0).unwrap();
     assert_eq!(u.requests, 3);
-    assert_eq!(u.tokens_for("m").unwrap().input, 100);
+    assert_eq!(u.total_input(), 100);
     // absolute overwrite (not additive)
     s.put_usage("a", 0, &ledger(1, "m", 20, 0)).unwrap();
-    assert_eq!(
-        s.get_usage("a", 0).unwrap().tokens_for("m").unwrap().input,
-        20
-    );
+    assert_eq!(s.get_usage("a", 0).unwrap().total_input(), 20);
     // unknown window is default-empty
     assert_eq!(s.get_usage("a", 999).unwrap(), UsageLedger::default());
 }
@@ -91,21 +89,21 @@ fn add_usage_accumulates_per_model() {
         billable_requests: 1,
         models: vec![busbar_api::ModelTokensDelta {
             model: "gpt-5".to_string(),
-            tokens: busbar_api::TierTokensDelta {
-                input: 10,
-                output: 5,
-                cache_read: 1,
-                cache_write: 0,
-            },
-            ..Default::default()
+            usage_units: std::collections::BTreeMap::from([
+                (busbar_api::UNIT_INPUT.to_string(), 10i64),
+                (busbar_api::UNIT_OUTPUT.to_string(), 5),
+                (busbar_api::UNIT_CACHE_READ.to_string(), 1),
+            ]),
         }],
     };
     s.add_usage("bucket", 100, &d).unwrap();
     s.add_usage("bucket", 100, &d).unwrap();
     let u = s.get_usage("bucket", 100).unwrap();
     assert_eq!(u.requests, 2);
-    let t = u.tokens_for("gpt-5").unwrap();
-    assert_eq!((t.input, t.output, t.cache_read), (20, 10, 2));
+    assert_eq!(
+        (u.total_input(), u.total_output(), u.total_cache_read()),
+        (20, 10, 2)
+    );
     // Refund floors at zero.
     s.add_usage(
         "bucket",

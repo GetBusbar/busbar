@@ -1537,7 +1537,7 @@ fn build_without_group_conflict_when_keys_still_bound() {
 
 // ---- group usage read ----
 
-use crate::governance::{GovState, MemoryStore, TierTokens, VirtualKey};
+use crate::governance::{GovState, MemoryStore, VirtualKey};
 
 /// The fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
 /// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
@@ -1598,13 +1598,12 @@ fn usage_key(group: &str) -> VirtualKey {
     }
 }
 
-fn input_toks(n: u64) -> TierTokens {
-    TierTokens {
-        input: n,
-        output: 0,
-        cache_read: 0,
-        cache_write: 0,
+fn input_toks(n: u64) -> std::collections::BTreeMap<String, u64> {
+    let mut m = std::collections::BTreeMap::new();
+    if n != 0 {
+        m.insert(busbar_api::UNIT_INPUT.to_string(), n);
     }
+    m
 }
 
 /// `get_group_usage` returns ONE row per `(window, pool?)` enforcement bucket. Usage is
@@ -1691,6 +1690,30 @@ async fn get_group_usage_unknown_group_not_found() {
     assert!(
         matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")),
         "unknown group is not_found: {err:?}"
+    );
+}
+
+/// ADMIN-API BACK-COMPAT (M1b): the public GET-usage JSON still emits the FLAT
+/// `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_creation` fields, BYTE-IDENTICAL
+/// to pre-M1b for a token workload — the reserved-four dissolution into the name-keyed ledger changed
+/// nothing on this wire (the `UsageBreakdown` contract is unchanged; the pricer adapter projects the
+/// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
+#[test]
+fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
+    use crate::admin::v1::contract::UsageBreakdown;
+    let b = UsageBreakdown {
+        tokens_input: 100,
+        tokens_output: 40,
+        tokens_cache_read: 7,
+        tokens_cache_creation: 3,
+        requests: 5,
+        spend_micros: 12_345,
+    };
+    let json = serde_json::to_string(&b).unwrap();
+    assert_eq!(
+        json,
+        r#"{"tokens_input":100,"tokens_output":40,"tokens_cache_read":7,"tokens_cache_creation":3,"requests":5,"spend_micros":12345}"#,
+        "the admin usage JSON must keep the flat token aliases, byte-identical to pre-M1b"
     );
 }
 

@@ -801,10 +801,10 @@ impl GovState {
         key: &VirtualKey,
         pool: &str,
         model: &str,
-        tokens: &TierTokens,
+        units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
-        if tokens.is_zero() {
+        if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
@@ -814,25 +814,25 @@ impl GovState {
             Err(missing) => {
                 diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
-                self.accrue_bucket(&key.id, super::WINDOW_TOTAL, model, tokens, now);
+                self.accrue_bucket(&key.id, super::WINDOW_TOTAL, model, units, now);
                 return;
             }
         };
         // Tokens land only on the buckets this request's pool participates in - the same
         // predicate the admission charge used, so accrual mirrors the charge exactly.
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.accrue_bucket(bucket.bucket_id, bucket.window, model, tokens, now);
+            self.accrue_bucket(bucket.bucket_id, bucket.window, model, units, now);
         }
     }
 
-    /// Accrue `tokens` under `model` to ONE bucket's current-window ledger cell (straddle-safe;
+    /// Accrue `units` under `model` to ONE bucket's current-window ledger cell (straddle-safe;
     /// see [`GovState::record_usage`]).
     fn accrue_bucket(
         &self,
         bucket_id: &str,
         budget_period: &str,
         model: &str,
-        tokens: &TierTokens,
+        units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
         let window = budget_window(budget_period, now);
@@ -847,7 +847,7 @@ impl GovState {
                 .entry(bucket_id.to_string())
                 .or_insert_with(|| BudgetCell::fresh(window)),
         };
-        cell.accrue(model, tokens);
+        cell.accrue(model, units);
         cell.dirty = true;
         cell.last_touch = now;
     }
@@ -1526,8 +1526,8 @@ impl GovState {
                 .iter()
                 .map(|m| ModelCell {
                     model: std::sync::Arc::from(m.model.as_str()),
-                    cur: m.tokens,
-                    flushed: m.tokens,
+                    cur: m.usage_units.clone(),
+                    flushed: m.usage_units.clone(),
                 })
                 .collect();
             self.budget
@@ -1593,7 +1593,10 @@ impl GovState {
         let ledger = self.store.get_usage(bucket_id, window)?;
         Ok(DerivedUsage {
             spend_cents: cost.derive_spend_cents(
-                ledger.models.iter().map(|m| (m.model.as_str(), &m.tokens)),
+                ledger
+                    .models
+                    .iter()
+                    .map(|m| (m.model.as_str(), &m.usage_units)),
                 ledger.billable_requests,
                 include_request_fee,
             ),
@@ -1610,7 +1613,7 @@ impl GovState {
         bucket_id: &str,
         budget_period: &str,
         now: u64,
-    ) -> Vec<(String, TierTokens)> {
+    ) -> Vec<(String, std::collections::BTreeMap<String, u64>)> {
         let window = budget_window(budget_period, now);
         {
             let map = self.budget.read(bucket_id);
@@ -1619,7 +1622,7 @@ impl GovState {
                     return cell
                         .models
                         .iter()
-                        .map(|m| (m.model.to_string(), m.cur))
+                        .map(|m| (m.model.to_string(), m.cur.clone()))
                         .collect();
                 }
             }
@@ -1628,7 +1631,7 @@ impl GovState {
             Ok(ledger) => ledger
                 .models
                 .into_iter()
-                .map(|m| (m.model, m.tokens))
+                .map(|m| (m.model, m.usage_units))
                 .collect(),
             Err(_) => Vec::new(),
         }
@@ -2093,7 +2096,7 @@ impl GovState {
             delta: UsageDelta,
             cur_requests: u64,
             cur_billable_requests: u64,
-            cur_models: Vec<(std::sync::Arc<str>, TierTokens)>,
+            cur_models: Vec<(std::sync::Arc<str>, std::collections::BTreeMap<String, u64>)>,
         }
         // Snapshot dirty cells across ALL shards and clear their flags. One shard is locked at a
         // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
@@ -2108,19 +2111,24 @@ impl GovState {
                     .models
                     .iter()
                     .filter_map(|m| {
-                        let d = busbar_api::TierTokensDelta {
-                            input: signed(m.cur.input) - signed(m.flushed.input),
-                            output: signed(m.cur.output) - signed(m.flushed.output),
-                            cache_read: signed(m.cur.cache_read) - signed(m.flushed.cache_read),
-                            cache_write: signed(m.cur.cache_write) - signed(m.flushed.cache_write),
-                        };
-                        (!d.is_zero()).then(|| busbar_api::ModelTokensDelta {
+                        // The signed delta-since-last-ack over the UNION of unit keys in cur+flushed
+                        // (a key can appear in either: freshly accrued, or refunded away). One
+                        // name-keyed map now carries the reserved four AND any open unit.
+                        let mut units: std::collections::BTreeMap<String, i64> =
+                            std::collections::BTreeMap::new();
+                        for k in m.cur.keys().chain(m.flushed.keys()) {
+                            if units.contains_key(k) {
+                                continue;
+                            }
+                            let d = signed(m.cur.get(k).copied().unwrap_or(0))
+                                - signed(m.flushed.get(k).copied().unwrap_or(0));
+                            if d != 0 {
+                                units.insert(k.clone(), d);
+                            }
+                        }
+                        (!units.is_empty()).then(|| busbar_api::ModelTokensDelta {
                             model: m.model.to_string(),
-                            tokens: d,
-                            // The in-memory enforcement cell carries no OPEN keyed units in 1.6.0 M1
-                            // (a designed later-milestone residual); the reserved-four flush is
-                            // unchanged, so this stays empty and serializes byte-identically.
-                            usage_units: Default::default(),
+                            usage_units: units,
                         })
                     })
                     .collect();
@@ -2138,7 +2146,7 @@ impl GovState {
                     cur_models: cell
                         .models
                         .iter()
-                        .map(|m| (m.model.clone(), m.cur))
+                        .map(|m| (m.model.clone(), m.cur.clone()))
                         .collect(),
                 });
                 cell.dirty = false;
@@ -2173,7 +2181,7 @@ impl GovState {
                             for (model, cur) in &snap.cur_models {
                                 if let Some(mc) = cell.models.iter_mut().find(|m| m.model == *model)
                                 {
-                                    mc.flushed = *cur;
+                                    mc.flushed = cur.clone();
                                 }
                             }
                         }

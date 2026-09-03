@@ -357,6 +357,10 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
         "billed_units present → the ledger bills the BILLED counts, not the raw tokens bucket"
     );
     // The reserved-tier projection the ledger actually accrues follows the billed counts.
-    let tier = crate::engine::usage::tier_tokens(&tu);
-    assert_eq!((tier.input, tier.output), (90, 35));
+    let tier = crate::engine::usage::tier_usage(&tu);
+    let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
+    assert_eq!(
+        (u(busbar_api::UNIT_INPUT), u(busbar_api::UNIT_OUTPUT)),
+        (90, 35)
+    );
 }

@@ -47,16 +47,26 @@ pub(crate) fn record_resp_usage(
     }
 }
 
-/// Project the IR's normalized usage into the LEDGER'S four pricing tiers. Readers normalize
-/// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping is direct:
-/// cache-creation is the rate card's `cache_write` tier.
-pub(crate) fn tier_tokens(u: &busbar_substrate::billing::TokenUsage) -> busbar_api::TierTokens {
-    busbar_api::TierTokens {
-        input: u.input,
-        output: u.output,
-        cache_read: u.cache_read.unwrap_or(0),
-        cache_write: u.cache_creation.unwrap_or(0),
+/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate::billing::Usage`]
+/// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
+/// keys (M1b — `TierTokens` is dissolved). Readers normalize `input_tokens` to UNCACHED and keep the
+/// cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit. Zero
+/// tiers are omitted so the map stays sparse (no-zero-entry).
+pub(crate) fn tier_usage(
+    u: &busbar_substrate::billing::TokenUsage,
+) -> busbar_substrate::billing::Usage {
+    let mut usage_units = std::collections::BTreeMap::new();
+    for (k, v) in [
+        (busbar_api::UNIT_INPUT, u.input),
+        (busbar_api::UNIT_OUTPUT, u.output),
+        (busbar_api::UNIT_CACHE_READ, u.cache_read.unwrap_or(0)),
+        (busbar_api::UNIT_CACHE_WRITE, u.cache_creation.unwrap_or(0)),
+    ] {
+        if v != 0 {
+            usage_units.insert(k.to_string(), v);
+        }
     }
+    busbar_substrate::billing::Usage { usage_units }
 }
 
 /// THE ONE PLACE a delivered response is attributed to a model — for the budget LEDGER and for the
@@ -87,7 +97,7 @@ pub(crate) fn ledger_and_meter(
     sink: &UsageSink,
     lane: &crate::engine::Lane,
     usage: Option<&busbar_substrate::billing::TokenUsage>,
-    tier: &busbar_api::TierTokens,
+    tier: &busbar_substrate::billing::Usage,
 ) {
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
     // differently under the rate card) against the key's budget chain, in the SAME window as the
@@ -128,7 +138,7 @@ pub(crate) fn record_token_usage(
 ) {
     if let Some(sink) = usage_sink {
         let Some(lane) = lane else { return };
-        ledger_and_meter(host, sink, lane, Some(usage), &tier_tokens(usage));
+        ledger_and_meter(host, sink, lane, Some(usage), &tier_usage(usage));
     }
 }
 
