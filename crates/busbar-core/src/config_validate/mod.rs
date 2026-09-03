@@ -1027,7 +1027,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
     // so this neutral rule carries no plane token: the concrete noun ("MCP server", …) is
     // registry-supplied at runtime, never a literal here.
-    let endpoint_section = crate::config::named_map::NamedMapSection::Tools.key();
+    let endpoint_section = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
     {

@@ -1269,7 +1269,7 @@ pub fn build_app_from_config(
             // owning plane is compiled out (resolve produced no resource then).
             mcp_slot: cfg
                 .endpoint_resources
-                .get(crate::config::named_map::NamedMapSection::Tools.key())
+                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),
             // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
             // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
@@ -1301,7 +1301,7 @@ pub fn build_app_from_config(
     // config that produced it never disagree. With `plane-mcp` off there is no built-in decl, so no
     // slot is inserted and nothing downcasts it (no MCP accessor exists then).
     if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
-        crate::config::named_map::NamedMapSection::Tools.key(),
+        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
     )
     .and_then(|d| {
         d.build_runtime
@@ -1435,10 +1435,10 @@ pub fn build_app_from_config(
             // no MCP audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
-                .get(crate::config::named_map::NamedMapSection::Tools.key())
+                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
-                        crate::config::named_map::NamedMapSection::Tools.key(),
+                        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
                 })
@@ -1538,7 +1538,7 @@ pub fn build_app_from_config(
             // key identically to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                crate::config::named_map::NamedMapSection::Agents.key(),
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, cfg.agent_pools.clone());
             }
@@ -1567,12 +1567,12 @@ pub fn build_app_from_config(
             // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                crate::config::named_map::NamedMapSection::Tools.key(),
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
             ) {
                 m.insert(decl.key, mcp_server_gates);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                crate::config::named_map::NamedMapSection::Agents.key(),
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, a2a_agent_gates);
             }

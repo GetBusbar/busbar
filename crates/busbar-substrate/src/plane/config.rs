@@ -250,6 +250,18 @@ pub fn plane_sections() -> Vec<&'static str> {
         .unwrap_or_default()
 }
 
+/// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
+/// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
+/// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
+/// `NamedMapSection::sections()` tail whether or not those planes are registered.
+///
+/// This is the STATIC NOUN SOURCE the deletion-gate and every `.key()` repoint read after the
+/// `NamedMapSection::Tools`/`Agents` variants were folded into `Plane(&str)`: it does NOT go empty
+/// when a plane is compiled out, so a `tools:`/`agents:` block written for an absent plane is still
+/// recognised (and refused) rather than silently accepted. None is a plane KEY, so the
+/// neutral-purity lint's token rules do not fire on them.
+pub const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tools", "agents"];
+
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
 /// into `busbar_core::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
@@ -257,15 +269,9 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
 /// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
 /// named-map sections — so the trailing pair guarantees they are known even when their owning plane is
-/// not registered in a given test binary, exactly as core's `NamedMapSection::ALL` tail does.
+/// not registered in a given test binary, exactly as core's `NamedMapSection::sections()` tail does.
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_plane_sections() -> Vec<&'static str> {
-    // The frozen 1.5.3 named-DEFINITION-map section keys (additive-only since 1.5.3, guarded by the
-    // config-stability gate). `identity-providers`/`export` are core-native; `tools`/`agents` are the
-    // MCP/A2A plane sections, listed here too so the fold matches core's `NamedMapSection::ALL` tail
-    // whether or not those planes are registered. None is a plane KEY, so the neutral-purity lint's
-    // token rules do not fire on them.
-    const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tools", "agents"];
     let mut out: Vec<&'static str> = Vec::new();
     for section in crate::plane::registry::test_registered_planes()
         .iter()

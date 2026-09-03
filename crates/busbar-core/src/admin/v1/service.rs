@@ -1089,12 +1089,10 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
-            // Both plane sections read their registrations through the plane's `named_def_list` seam,
+            // A plane section reads its registrations through the plane's `named_def_list` seam,
             // so this arm names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view or registry type; the empty vec for
             // a plane compiled out is the seam's own `None`.
-            NamedMapSection::Tools | NamedMapSection::Agents => {
-                plane_named_def_list(section, &self.app)
-            }
+            NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1130,11 +1128,9 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
-            // Both plane sections read their one registration through the plane's `named_def_get`
+            // A plane section reads its one registration through the plane's `named_def_get`
             // seam; `None` for a plane compiled out is the seam's own `None`.
-            NamedMapSection::Tools | NamedMapSection::Agents => {
-                plane_named_def_get(section, &self.app, name)
-            }
+            NamedMapSection::Plane(_) => plane_named_def_get(section, &self.app, name),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a

@@ -167,7 +167,7 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
     ));
     cfg.endpoint_resources.insert(
-        busbar_core::config::named_map::NamedMapSection::Tools.key(),
+        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
         std::sync::Arc::new(
             busbar_mcp::mcp::McpResource::from_cfg(&busbar_mcp::testkit::mcp_cfg_at(
                 "https://gw.example.com/mcp",

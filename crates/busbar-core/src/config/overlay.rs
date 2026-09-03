@@ -619,9 +619,9 @@ impl OverlaySection {
             OverlaySection::PluginVersions,
         ];
         out.extend(
-            crate::config::named_map::NamedMapSection::ALL
-                .iter()
-                .map(|s| OverlaySection::NamedMap(*s)),
+            crate::config::named_map::NamedMapSection::sections()
+                .into_iter()
+                .map(OverlaySection::NamedMap),
         );
         out
     }
@@ -1055,7 +1055,7 @@ pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &Over
 /// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
 pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     use crate::config::named_map::NamedMapSection;
-    for section in NamedMapSection::ALL {
+    for section in NamedMapSection::sections() {
         let Some(entries) = doc.named_maps.get(section.key()) else {
             continue;
         };
