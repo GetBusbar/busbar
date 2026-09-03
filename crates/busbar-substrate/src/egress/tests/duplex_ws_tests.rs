@@ -350,12 +350,15 @@ fn ws_arrival_spec_installs_and_drains_verbatim() {
         path: "/v1/duplex/{id}".to_string(),
         auth: RouteAuth::Key,
         slot_key: "test-duplex-plane",
-        // The accept fn takes the newtype BY VALUE — the single-compiled `WsArrival`, never a box.
+        // The accept fn takes the newtype BY VALUE — the single-compiled `WsArrival`, never a box — and
+        // is ASYNC (returns a `WsAcceptFuture`) so a plane runs its pre-upgrade hooks before the upgrade.
         accept: std::sync::Arc::new(|_a: WsArrival| {
-            axum::response::Response::builder()
-                .status(axum::http::StatusCode::NOT_IMPLEMENTED)
-                .body(axum::body::Body::empty())
-                .expect("response builds")
+            Box::pin(async move {
+                axum::response::Response::builder()
+                    .status(axum::http::StatusCode::NOT_IMPLEMENTED)
+                    .body(axum::body::Body::empty())
+                    .expect("response builds")
+            }) as crate::ingress::duplex_ws::WsAcceptFuture
         }),
     };
     install_ws_arrivals(vec![spec]);

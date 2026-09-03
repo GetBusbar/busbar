@@ -636,9 +636,10 @@ fn mount_ws_arrivals(
                         host,
                         slot,
                     };
-                    // The accept fn returns the finished response: the 101-switching upgrade on admit,
-                    // or the gauntlet's refusal on refuse (no socket bound, no task spawned).
-                    accept(arrival)
+                    // The accept fn resolves to the finished response: the 101-switching upgrade on
+                    // admit, or a pre-upgrade refusal (operator-hook or gauntlet) on refuse — no socket
+                    // bound, no task spawned. It is async so the plane runs its hooks before the upgrade.
+                    accept(arrival).await
                 }
             }
         });

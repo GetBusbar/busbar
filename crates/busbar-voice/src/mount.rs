@@ -40,7 +40,9 @@ use crate::topology::{
 };
 use busbar_substrate::egress::engine::{send_bounded, EngineClient};
 use busbar_substrate::ingress::byte_duplex::serve_messages;
-use busbar_substrate::ingress::duplex_ws::{accept_gauntlet, WsArrival, WsArrivalSpec};
+use busbar_substrate::ingress::duplex_ws::{
+    accept_gauntlet, WsAcceptFuture, WsArrival, WsArrivalSpec,
+};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
@@ -318,13 +320,17 @@ pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
             path: SIDEBAND_PATH.to_string(),
             auth: RouteAuth::Key,
             slot_key: key,
-            accept: Arc::new(|a: WsArrival| ws_accept(a, Ingress::Sideband)),
+            accept: Arc::new(|a: WsArrival| -> WsAcceptFuture {
+                Box::pin(ws_accept(a, Ingress::Sideband))
+            }),
         },
         WsArrivalSpec {
             path: TELEPHONY_PATH.to_string(),
             auth: RouteAuth::Key,
             slot_key: key,
-            accept: Arc::new(|a: WsArrival| ws_accept(a, Ingress::Telephony)),
+            accept: Arc::new(|a: WsArrival| -> WsAcceptFuture {
+                Box::pin(ws_accept(a, Ingress::Telephony))
+            }),
         },
     ]
 }
@@ -851,7 +857,7 @@ async fn sdp_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::re
 /// free [`open_admitted_session`] (the gauntlet already ran; re-running it would double the gate). A
 /// refused accept opens nothing; a post-admit budget/durable refusal commits no durable row and simply
 /// closes the just-upgraded socket. So no refused-or-aborted accept ever leaves a live session row.
-fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::response::Response {
+pub(crate) async fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::response::Response {
     let Some(mount) = arrival.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -860,6 +866,15 @@ fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::response::Response {
     };
     // Clone the per-generation runtime (Arc bump) so the post-admit `on_socket` closure owns it.
     let rt = Arc::clone(&mount.runtime);
+    // The neutral host seam the operator hooks fire through — the SAME seam the one-shot passes read in
+    // `open_governed`, so the WS-accept front door screens a session-open identically to mint/SDP.
+    let host = Arc::clone(&arrival.host);
+    // The caller `(id, name)` the hook gate/tap read — the middleware-resolved key, or `None` ungoverned.
+    let key = arrival
+        .gov
+        .as_ref()
+        .and_then(|g| g.key())
+        .map(|k| (k.id.clone(), k.name.clone()));
     // The resolved caller the audience-checked key chain attached (the session owner), or the honest
     // constant on an ungoverned deployment.
     let owner = arrival
@@ -876,10 +891,25 @@ fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::response::Response {
     let now = unix_secs();
     // The locked session posture: g711 for telephony, the plane-default otherwise. The destination the
     // gauntlet judges is this config's model, exactly as `begin_session` derives it.
-    let session_cfg = match ingress {
+    let mut session_cfg = match ingress {
         Ingress::Telephony => g711_config(),
         _ => rt.session_defaults.clone(),
     };
+    // (1) HOOKS-GATE — a rejecting operator gate refuses the session-open BEFORE the upgrade: a
+    // pre-upgrade refusal Response, no socket bound, no lease/durable open. This closes the intra-plane
+    // gap where telephony (which has no preceding `ek_` mint pass) reached the media leg screened by
+    // nothing but the destination gauntlet; both WS legs now honor the operator gate exactly as the
+    // one-shot mint/SDP passes do in `open_governed`.
+    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+        return *refused;
+    }
+    // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
+    // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
+    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+        Ok(Some(rewritten)) => session_cfg = rewritten,
+        Ok(None) => {}
+        Err(refused) => return *refused,
+    }
     let destination = session_cfg.model.clone().unwrap_or_default();
     let gov = arrival.gov.clone().unwrap_or_default();
     let gauntlet_req = GauntletRequest {
@@ -929,9 +959,11 @@ fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::response::Response {
                 match ingress {
                     Ingress::Telephony => {
                         // The uplink plane forwards client→server frames to the shared upstream sink;
-                        // absent a composed provider the sink is drained (the receiver is dropped), so
-                        // client uplink is decoded + metered with no upstream to funnel to.
-                        let (upstream_tx, _drain) = futures::channel::mpsc::unbounded::<Vec<u8>>();
+                        // absent a composed provider the receiver is DROPPED (bare `_`, not a named
+                        // binding), so `unbounded_send` fails fast via `is_disconnected` and each frame
+                        // is discarded with ZERO buffering — client uplink is decoded + metered with no
+                        // upstream to funnel to, and no unbounded queue grows for the session's life.
+                        let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
                         serve_messages(
                             stream,
                             sink,

@@ -275,10 +275,13 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     let app = busbar_core::test_support::TestApp::new().build();
     let host = busbar_core::plane_host::engine_host(&app);
     let denied = runtime_for("blocked-model", &["blocked-model"]);
+    // Mint is a live `open_governed` production ingress (the browser `ek_` pass); the Sideband/Telephony
+    // WS legs prove the same verify-before-charge through `ws_accept`'s destination gauntlet + the
+    // substrate `accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks` witness.
     let refused = open_governed(governed_open(
         &denied,
         Arc::clone(&host),
-        Ingress::Sideband,
+        Ingress::Mint,
         "call-denied",
     ))
     .await;
@@ -289,14 +292,13 @@ async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_
     );
 
     // A non-denied destination proceeds PAST the gate and opens the governed session; with no provider
-    // configured the mint/SDP passes and the WS-accept legs all answer 501 (governed, uncomposed).
+    // configured the one-shot mint/SDP passes answer 501 (governed, uncomposed). Only Mint/Sdp route
+    // through `open_governed`; the Sideband/Telephony WS legs route through `ws_accept` (the inbound
+    // WS-accept seam) — their governed open + operator-gate screening is proven by
+    // `hook_gate_tests::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` and their
+    // route mounting by `the_four_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams`.
     let allowed = runtime_for("allowed-model", &["blocked-model"]);
-    for ingress in [
-        Ingress::Mint,
-        Ingress::Sdp,
-        Ingress::Sideband,
-        Ingress::Telephony,
-    ] {
+    for ingress in [Ingress::Mint, Ingress::Sdp] {
         let opened = open_governed(governed_open(
             &allowed,
             Arc::clone(&host),

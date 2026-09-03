@@ -170,3 +170,54 @@ recovering upstream. The leg is wired-but-not-yet-live (only tests reach `dial_p
 - **FIX:** when the telephony provider leg goes live (WS-accept seam), hold the `DispatchScope` across the
   dial and `breaker_settle` after, restoring canonical HalfOpen single-flight.
 - **PREVENT:** a breaker recovery test asserting a single probe in flight during recovery, added with the leg.
+
+---
+
+## WS-accept-seam audit (3-model adversarial: money-path / gauntlet+lifecycle+hooks / neutrality+registry)
+The inbound WS-accept seam + voice sideband/telephony wiring was reviewed by three independent agents.
+Transport marquee guarantees all CONFIRMED CLEAN: money-path byte-identity (default build carries no
+tokio-tungstenite; `PlaneReqCtx`/`PlaneRouteSpec`/`mount_plane_route` untouched), voice strong-form
+deletable, gauntlet-before-upgrade (`WsArrival` by-value newtype, single audited `on_upgrade`, refused
+destination binds zero sockets), verify-before-charge with no orphaned row on refusal/abort, and neutrality
+both directions (`slot_key` opaque, registry install-once/read-many correct).
+
+### WS-F1 — operator hooks bypassed on BOTH WS-accept legs (governance, HIGH — FIXED)
+`ws_accept` ran only the destination gauntlet, never the operator `gate_decide`/`transform_over` hooks the
+mint/SDP passes run in `open_governed`. Telephony was the sharp case: it has NO preceding `ek_` mint pass, so
+a Twilio session-open was screened by nothing but destination-deny.
+- **FIX:** made the neutral `WsAcceptFn` ASYNC (a `WsAcceptFuture`, mirroring the data-plane `PlaneRouteFn`),
+  and `ws_accept` now runs `hook_gate → hook_tap → destination-gauntlet` before the upgrade — identical to
+  `open_governed`. A hook reject is a PRE-UPGRADE refusal (403, no socket). Entirely `duplex-ws`/`runtime`-
+  gated, so the default money-path dep closure is untouched (default-edge gate still PASS).
+- **PREVENT:** `hook_gate_tests::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` drives the
+  REAL `ws_accept` over a loopback server; a reject-all gate fails the client handshake (pre-upgrade 403),
+  the no-gate control upgrades (101) — falsifiable, on the production telephony WS path.
+
+### WS-F2 — hooks-gate PROVEN cell attested an abandoned path (ledger honesty, HIGH — FIXED)
+`hook_gate_tests` drove `open_governed` with `Ingress::Sideband`, but production sideband now routes through
+`ws_accept` — so the cell proved a path production abandoned.
+- **FIX:** retargeted the existing gate test to `Ingress::Mint` (a live `open_governed` ingress) and added the
+  WS-F1 production-path test; narrowed the `mount_tests` 4-ingress `open_governed` loop + denied-destination
+  test to the real `open_governed` ingresses (Mint/Sdp). The armed hooks-gate PROVEN cell now points at the
+  `ws_accept` test.
+- **PREVENT:** the ledger cell + test are co-located on the production path; the retarget removes the false
+  attestation.
+
+### WS-F3 — `ws_accept` was untested (MEDIUM — FIXED) — covered by the WS-F1 loopback test.
+
+### WS-F4 — telephony no-provider leg buffered uplink unboundedly (resource, LOW — FIXED)
+`let (upstream_tx, _drain) = unbounded()` kept the receiver alive (named binding), so `UplinkForwarder`
+enqueued every uplink frame into a never-drained channel (per-session growth for the call's life). Changed to
+bare `_` (drop the receiver): sends fail fast via `is_disconnected` and discard with ZERO buffering.
+
+### WS-F6 — `on_upgrade` lint exempted by basename (LOW — FIXED)
+The lint allowed `duplex_ws.rs` by BASENAME, but the egress dialer shares it; a bare `on_upgrade` there would
+slip. Tightened to the full path suffix `ingress/duplex_ws.rs` (only the acceptor). Test stays non-vacuous.
+
+### WS-F5 — ungated `pub fn accept`/`serve` (governance hardening, LOW — DEFERRED to the audit swarm)
+`duplex_ws::accept`/`serve` bind a socket with no gauntlet and are `pub`; a future plane could call them to
+bypass the gauntlet. Production `ws_accept` correctly uses `accept_gauntlet`, so this is LATENT. The clean fix
+(restrict visibility) is blocked by two legitimate cross-crate TEST callers (`ws_ingress::serve` loopback
+echoes in substrate + voice topology tests), so it needs test-helper restructuring or a source-scan lint that
+bans the ungated primitives in NON-TEST files. Tracked for the post-green hardening swarm; NOT arming-blocking
+(no production misuse, and the `on_upgrade` confinement already pins the single socket-bind site).

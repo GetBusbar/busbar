@@ -97,7 +97,11 @@ fn an_open<'a>(rt: &'a VoiceRuntime, host: Arc<dyn EngineHost>) -> GovernedOpen<
         rt,
         host,
         provider: None,
-        ingress: Ingress::Sideband,
+        // The `ek_` MINT one-shot pass — a LIVE `open_governed` production ingress (browser WebRTC),
+        // so this cell proves the gate on a path production actually takes. The WS-accept front door
+        // (sideband + telephony) runs the SAME `hook_gate` before the upgrade; that production path is
+        // proven by `a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade` below.
+        ingress: Ingress::Mint,
         owner: "acct".to_string(),
         call_id: "call-gate".to_string(),
         key: None,
@@ -141,5 +145,98 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
         String::from_utf8_lossy(&body),
         "no voice session today",
         "the hook's OWN message reaches the caller, so an operator can tell WHICH control refused"
+    );
+}
+
+/// The plane's real dispatch slot, built the way `appbuild` does — a `BuildCtx` over a `public_url`.
+fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
+    let unit = ();
+    let ctx = busbar_substrate::plane::registry::BuildCtx {
+        mcp_slot: None,
+        agent_defs: &unit,
+        public_url: Some("https://voice.example"),
+        prior: None,
+    };
+    crate::mount::voice_build(&ctx).expect("voice_build yields a slot for a public_url")
+}
+
+/// Drive the REAL `ws_accept` over a loopback WS server with `host`, and return the client handshake
+/// outcome: `Ok` on a 101 upgrade (the gate proceeded), `Err` on a pre-upgrade refusal (the gate
+/// rejected — a 403, no socket bound). A WS upgrade cannot be forged off a live connection
+/// (`ConnectionNotUpgradable`), so the accept fn must be driven through a real server + client.
+async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
+    #[derive(Clone)]
+    struct S {
+        host: Arc<dyn EngineHost>,
+        slot: Arc<dyn std::any::Any + Send + Sync>,
+    }
+    async fn route(
+        axum::extract::State(s): axum::extract::State<S>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        let arrival = busbar_substrate::ingress::duplex_ws::WsArrival {
+            upgrade,
+            gov: None,
+            principal: None,
+            caller_principal: Some("acct".to_string()),
+            path: "/telephony/call-ws".to_string(),
+            uri: axum::http::Uri::from_static("/telephony/call-ws"),
+            headers: axum::http::HeaderMap::new(),
+            path_params: vec![("call_id".to_string(), "call-ws".to_string())],
+            host: s.host,
+            slot: s.slot,
+        };
+        crate::mount::ws_accept(arrival, Ingress::Telephony).await
+    }
+    let app = axum::Router::new()
+        .route("/telephony/call-ws", axum::routing::get(route))
+        .with_state(S {
+            host,
+            slot: a_slot(),
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let policy = busbar_substrate::net_guard::GuardPolicy {
+        allow_private: true,
+        allow_plaintext: true,
+        ..busbar_substrate::net_guard::GuardPolicy::default()
+    };
+    match busbar_substrate::egress::duplex_ws::dial(
+        &format!("ws://{addr}/telephony/call-ws"),
+        policy,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(_) => Err(()),
+    }
+}
+
+/// THE WS-ACCEPT FRONT DOOR honors the operator gate — telephony is the sharp case (it has NO preceding
+/// `ek_` mint pass, so before this wiring it reached the media leg screened by nothing but the
+/// destination gauntlet). A `reject-all` gate REFUSES the session-open BEFORE the socket upgrades, so
+/// the client handshake FAILS (a pre-upgrade 403, no socket, no session). The control (no gate)
+/// upgrades (101), making the refusal falsifiable.
+#[tokio::test]
+async fn a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade() {
+    let ungated = busbar_core::plane_host::engine_host(&TestApp::new().build());
+    assert!(
+        ws_accept_handshake(ungated).await.is_ok(),
+        "with no gate attached the telephony WS-accept proceeds past the gate and upgrades (101)"
+    );
+
+    let (_app, host) = gated_host(
+        "reject-all",
+        gate(serde_json::json!({
+            "raw_decide_reply": {"reject": {"status": 403, "message": "no voice session today"}}
+        })),
+    );
+    assert!(
+        ws_accept_handshake(host).await.is_err(),
+        "a reject-all operator gate REFUSES a telephony WS-accept BEFORE the socket upgrades — telephony \
+         has no `ek_` mint pass, so the operator gate on this front door is its ONLY request screening"
     );
 }

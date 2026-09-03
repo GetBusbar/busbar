@@ -200,11 +200,19 @@ pub struct WsArrival {
     pub slot: Arc<dyn std::any::Any + Send + Sync>,
 }
 
+/// The finished-`Response` FUTURE a [`WsAcceptFn`] returns — ASYNC (the mirror of the data-plane
+/// `PlaneRouteFuture`), so a plane's accept fn can run its `async` operator hooks (gate/tap) BEFORE the
+/// upgrade, exactly as the one-shot request path does, and still return the 101 (or a pre-upgrade
+/// refusal) as its resolved value.
+pub type WsAcceptFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
+
 /// ONE PLANE'S WS-ACCEPT HANDLER: a neutral fn that receives a [`WsArrival`] BY VALUE and returns a
-/// finished axum [`Response`]. It MUST reach [`serve_gauntlet`] / [`accept_gauntlet`] internally (the
-/// only path that consumes the upgrade into a live socket); it never sees a bare `on_upgrade`. `Arc`
-/// so the core mount clones it into the per-request axum closure it wires.
-pub type WsAcceptFn = Arc<dyn Fn(WsArrival) -> Response + Send + Sync>;
+/// finished axum [`Response`] (as a [`WsAcceptFuture`]). It MUST reach [`serve_gauntlet`] /
+/// [`accept_gauntlet`] internally (the only path that consumes the upgrade into a live socket); it never
+/// sees a bare `on_upgrade`. `Arc` so the core mount clones it into the per-request axum closure it
+/// wires. ASYNC so the plane runs its pre-upgrade admission (operator hooks + the destination gauntlet)
+/// before any socket binds — a hook/gauntlet refusal resolves to a pre-upgrade refusal Response.
+pub type WsAcceptFn = Arc<dyn Fn(WsArrival) -> WsAcceptFuture + Send + Sync>;
 
 /// ONE WS-ACCEPT ARRIVAL a plane DECLARES: the exact path, the admission bar recorded VERBATIM in the
 /// `CoreRouteTable` (identical shape to `PlaneRouteSpec::auth`, so the auth middleware enforces it

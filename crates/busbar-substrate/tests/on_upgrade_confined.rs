@@ -12,8 +12,10 @@
 
 use std::path::Path;
 
-/// The ONLY file allowed to contain an `on_upgrade(` call — the neutral WS acceptor.
-const ALLOWED_BASENAME: &str = "duplex_ws.rs";
+/// The ONLY file allowed to contain an `on_upgrade(` call — the neutral WS acceptor. Matched by its
+/// FULL relative path (not basename): the egress dialer shares the basename `duplex_ws.rs`, and a bare
+/// `on_upgrade(` there must NOT be exempted, so only the ingress acceptor path is allowed.
+const ALLOWED_PATH_SUFFIX: &str = "ingress/duplex_ws.rs";
 
 fn crates_root() -> std::path::PathBuf {
     // CARGO_MANIFEST_DIR is crates/busbar-substrate; its parent is the crates/ tree.
@@ -77,9 +79,12 @@ fn on_upgrade_appears_in_no_file_except_the_neutral_acceptor() {
         if basename == "on_upgrade_confined.rs" {
             continue;
         }
+        // Full-path (not basename) exemption: only the ingress acceptor, never the egress dialer that
+        // shares the `duplex_ws.rs` basename.
+        let rel = path.to_string_lossy().replace('\\', "/");
         for (lineno, line) in src.lines().enumerate() {
             if has_uncommented_on_upgrade_call(line) {
-                if basename == ALLOWED_BASENAME {
+                if rel.ends_with(ALLOWED_PATH_SUFFIX) {
                     allowed_hits += 1;
                 } else {
                     offenders.push(format!(
@@ -97,12 +102,12 @@ fn on_upgrade_appears_in_no_file_except_the_neutral_acceptor() {
         offenders.is_empty(),
         "a bare `on_upgrade(` call escaped the neutral acceptor ({}): it must be reached ONLY through \
          serve_gauntlet/accept_gauntlet so the gauntlet runs before the socket binds:\n{}",
-        ALLOWED_BASENAME,
+        ALLOWED_PATH_SUFFIX,
         offenders.join("\n")
     );
     assert!(
         allowed_hits >= 1,
-        "expected the single audited `on_upgrade(` call in {ALLOWED_BASENAME}; found none — the \
+        "expected the single audited `on_upgrade(` call in {ALLOWED_PATH_SUFFIX}; found none — the \
          acceptor moved and this gate is now scanning the wrong tree"
     );
 }
