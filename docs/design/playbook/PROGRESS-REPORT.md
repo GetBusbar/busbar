@@ -57,17 +57,38 @@ workspace test, MCP/A2A/Voice conformance.
     comment + `name:` discovery phantoms (a commented mention of `plane-delete-test.sh` was running bare
     and false-redding), and skipped the release-artifact / promotion-branch gates with reasons. Selftest
     green; **full run: 57 gates, all pass across 12 build configurations, 0 FAILED**. BUILD → GREEN → 10/11.
+13. **Gemini `audioStreamEnd` ↔ `input_audio_buffer.commit` commit-mapping wired (isomorphism advance)** —
+    the ONE remaining unwired codec asymmetry. Gemini's manual end-of-uplink marker now maps to the
+    shared `IrDuplexControl::InputAudioCommit` (decode) and round-trips back (encode), so the end-of-turn
+    concept SURVIVES cross-dialect instead of dropping. Conformance: fixture now IR-fixpoint-stable; LEG 3
+    asserts the commit survives both sides. 84 voice tests (+3), 0 conformance failures. No money path.
 
-## THE REMAINDER — ONE honest, credential-gated residual (the owner's LOCKED position: voice feature-off until T2 DoD, promote-when-green)
-Voice is BOOTED + config-complete + **config-grammar frozen** + money-path-complete + both codecs
-(superset) + both topology runtimes + hydrate/start + gauntlet-first WS-accept seam + **routes mounted
-(structural serving)** + gauntlet-governed. It ships **feature-gated OFF** (`plane-voice` not in
-`default`) per the locked invariant. The SOLE remaining item on its production-serving DoD (a SEPARATE
-promote-when-green milestone) is:
-- **Live-provider legs** — the concrete `ek_` HTTPS minter, SDP-broker upstream POST, provider WSS dial,
-  WS socket upgrade — behind ports; **credential-gated, un-validatable unattended** (needs real
-  Gemini/OpenAI/Twilio endpoints + secrets). This is the single thing a laptop with no secrets cannot
-  prove, and it is exactly what the one remaining NO-DEFERRAL RED signals. Not faked, not waived.
+## THE REMAINDER — the audited voice-DoD back-half + ONE genuine design decision
+Voice is BOOTED + config-complete + config-grammar frozen + money-path-complete + both codecs (superset,
+now with the commit-mapping) + both topology runtimes + hydrate/start + gauntlet-first WS-accept seam +
+routes mounted + gauntlet-governed. Reaching the last **1/11** (NO-DEFERRAL --strict-done) mechanically
+requires **arming voice** — which the audited playbook (`prod-composition.md`, `capability-equality-
+resolution.md`, `gate-no-deferral.md` §3.4) shows is the release back-half, not a one-liner:
+- **Live legs (REQUIRED)** — concrete `ek_` HTTPS mint + SDP broker POST + `rtc_<call_id>` correlation,
+  behind the substrate egress engine, **mock-tested via the loopback `MockServer` exactly as the LLM
+  plane's egress is** (CI never dials a real provider for ANY plane — so "credential-gated" was the wrong
+  framing; the correct bar is mock-tested-to-LLM-parity). Twilio + real Pricing/ToolExecutor are honestly
+  **deferrable** (never in the T2 plan's scope).
+- **7 capability cells (isomorphism-to-zero)** — breaker-trip/fastfail, hooks-tap, hooks-gate, metrics,
+  egress-auth, catalogue: real LLM-parity wiring on the voice dial/session-open path, each with a proving
+  test, flipping the capability-equality ledger (voice-client/voice-server columns) + plane-isomorphism
+  (add voice to `installed_decls`) + retiring `VOICE_PENDING_COLUMN`. EQUALITY currently reads 0-missing
+  ONLY because voice is pinned pending; arming honestly means these land proven/N-A, not missing.
+- **De-skeleton + arm** — remove the 21 `SKELETON`/`dev-only until DoD` markers, `handler: Some` + verbs.
+
+**The one genuine decision (not mine to make blind): voice default-ON vs default-OFF.** The audited
+corpus CONTRADICTS itself — `integration-order.md` + `busbar-voice/Cargo.toml` + the prior session's
+recorded owner-lock say voice ships **behind the `plane-voice` feature, OFF by default** ("a red voice
+crate never reddens the neutral release"; "promote-when-green"); but `gate-no-deferral.md` §3.4 asserts
+"done" == `PLANE_DECL.handler` is `Some` **in the DEFAULT build** == voice IN `default`. The final 1/11
+cannot go green until this is resolved, and resolving it toward default-ON ships only-mock-tested voice
+serving in the shipped binary — the "wrong design is the cost" hazard. Everything ABOVE can (and should)
+be built behind the feature first; the default-ON flip is the last, owner-owned step.
 
 ## GATE CALIBRATION (transparent — not gaming)
 - **config-noun → REPORT-ONLY**: the 18 residual (pools 8 · tools 3 · agents 2 · streams 5) are the
