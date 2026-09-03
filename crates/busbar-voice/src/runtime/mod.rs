@@ -17,8 +17,8 @@ pub mod tools;
 
 pub use carrier::Carrier;
 pub use metering::{
-    HostLease, HostMeteringPort, LeaseState, LocalLease, LocalMeteringPort, MeteringLease,
-    MeteringPort, Pricing,
+    HostLease, HostMeteringPort, LeaseCloseGuard, LeaseState, LocalLease, LocalMeteringPort,
+    MeteringLease, MeteringPort,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{Outbound, SessionCore, UplinkForwarder, VoiceSession};
@@ -35,29 +35,53 @@ use std::sync::Arc;
 pub struct VoiceRuntime {
     /// The process-wide durable-handle engine every session's [`SessionHandle`] binds into.
     pub engine: Arc<DurableHandleEngine>,
-    /// The D2 metering port — opens a reserve-then-settle lease at each session start.
+    /// The D2 metering port — opens a reserve-then-settle lease at each session start. The lease also
+    /// carries the turn PRICING leg (`price_usage`): the host prices each turn's usage_units against the
+    /// deployment rate card, so the plane holds no price book of its own.
     pub metering: Arc<dyn MeteringPort>,
     /// The server-side tool executor (the tool moat) shared across sessions.
     pub tools: Arc<dyn ToolExecutor>,
-    /// The per-token price book usage is priced with before it crosses the metering lease.
-    pub pricing: Pricing,
+    /// The plane's OPEN-PASS destination denial set — upstream models (destinations) a session
+    /// `begin_session` refuses at the shared gauntlet gate BEFORE any lease/durable open (zero bytes,
+    /// zero charge). Empty by default (no denial policy yet); the pre-admission hook a real model
+    /// blocklist fills. Named by `session_gauntlet` through [`Self::destination_denied`].
+    pub denied_destinations: std::collections::BTreeSet<String>,
 }
 
 impl VoiceRuntime {
-    /// Assemble a runtime object from its dependencies.
+    /// Assemble a runtime object from its dependencies (no destination denial policy).
     #[must_use]
     pub fn new(
         engine: Arc<DurableHandleEngine>,
         metering: Arc<dyn MeteringPort>,
         tools: Arc<dyn ToolExecutor>,
-        pricing: Pricing,
     ) -> Self {
         VoiceRuntime {
             engine,
             metering,
             tools,
-            pricing,
+            denied_destinations: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Builder: DENY the given upstream destinations (models) at the session open-pass gate. A session
+    /// naming a denied destination is refused before any lease/durable open (zero bytes, zero charge).
+    #[must_use]
+    pub fn with_denied_destinations<I, S>(mut self, destinations: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.denied_destinations
+            .extend(destinations.into_iter().map(Into::into));
+        self
+    }
+
+    /// Whether the open-pass gate must REFUSE a session targeting `destination` (an upstream model on
+    /// the plane's denial set).
+    #[must_use]
+    pub fn destination_denied(&self, destination: &str) -> bool {
+        self.denied_destinations.contains(destination)
     }
 
     /// Bind a fresh [`SessionHandle`] for `(owner, id)` into this runtime's durable engine.
@@ -85,8 +109,9 @@ impl VoiceRuntime {
 /// skeleton build leaves the hook `None`.
 ///
 /// DEV DEFAULTS (reported). It builds from DEV defaults — a fresh durable engine, the [`LocalLease`]
-/// metering port, the [`EchoToolExecutor`], and a zero price book — because deriving the real
-/// dependencies from config needs the plane's config-section grammar (`PLANE_DECL.parse_section` /
+/// metering port (which prices at 0: the dev stand-in carries no rate card), and the
+/// [`EchoToolExecutor`] — because deriving the real dependencies from config needs the plane's
+/// config-section grammar (`PLANE_DECL.parse_section` /
 /// `default_section`), which touches the frozen config snapshot and is a SEPARATE slice. The first
 /// argument (the plane's own config section) and `prior` (carry-over) are therefore ignored today; the
 /// signature is the real one so binding the config-derived dependencies is a body change, not an ABI
@@ -109,7 +134,7 @@ pub fn build_runtime(
 /// the narrow [`MeteringHost`](busbar_substrate::plane_host::MeteringHost) slice) calls this so a live
 /// voice session reserves/settles/exhausts against the caller's real grant, not the in-process
 /// [`LocalLease`] stand-in. Every other dependency matches [`build_runtime`]'s dev defaults for now (the
-/// config-derived engine/tools/pricing are a separate slice — see [`build_runtime`]).
+/// config-derived engine/tools are a separate slice — see [`build_runtime`]).
 #[must_use]
 pub fn build_runtime_hosted(
     host: Arc<dyn busbar_substrate::plane_host::MeteringHost>,
@@ -119,7 +144,7 @@ pub fn build_runtime_hosted(
 
 /// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given metering
 /// PORT (the one dependency the dev/prod paths differ on) plus the current dev defaults for the durable
-/// engine, tool executor and price book.
+/// engine and tool executor. Turn pricing rides the port's lease (`price_usage`), host-side.
 fn build_runtime_with_metering(
     metering: Arc<dyn MeteringPort>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
@@ -127,13 +152,6 @@ fn build_runtime_with_metering(
         Arc::new(DurableHandleEngine::new()),
         metering,
         Arc::new(EchoToolExecutor),
-        Pricing {
-            audio_in_nanos: 0,
-            audio_out_nanos: 0,
-            text_in_nanos: 0,
-            text_out_nanos: 0,
-            cached_nanos: 0,
-        },
     ))
 }
 

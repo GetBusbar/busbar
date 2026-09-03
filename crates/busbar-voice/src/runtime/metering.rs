@@ -24,7 +24,6 @@
 //! settle accrues exact increments, exhausted = `settled ≥ cap`, refuse-all cap denies at the door). The
 //! port abstraction ([`MeteringLease`] / [`MeteringPort`]) is the seam both share.
 
-use crate::ir::usage::IrDuplexUsage;
 use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -54,12 +53,74 @@ impl LeaseState {
 /// ONE OPEN METERING LEASE — the plane-side port over the D2 `cost_settle` leg. `Send + Sync` so the
 /// per-frame session handlers (which run concurrently under `Arc<Self>`) can settle against it.
 pub trait MeteringLease: Send + Sync {
+    /// PRICE one turn's neutral usage_units for `model` into an already-priced nanodollar increment via
+    /// the deployment rate card — the plane's `price_usage`-before-`settle` step. The HOST prices (core's
+    /// `CostModel`, the SAME arithmetic the LLM path uses), so the plane stays neutral and never names a
+    /// pricer. `None` when the rate card is present but names no rate for `model` (the caller FAILS CLOSED
+    /// and hard-closes the carrier, exactly as on exhaustion); `Some(0)` when pricing is off (no rate
+    /// card) or the turn is empty. The host u128 nanodollars clamp saturating into u64 (a per-turn
+    /// increment fits u64 far below the ~$18.4B ceiling), fail-closed HIGH.
+    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u64>;
+
     /// Settle ONE exact already-priced increment (nanodollars) against this lease and read back the
     /// post-settle state — the `cost_settle` leg. Idempotent after exhaustion: once dry it stays dry.
     fn settle(&self, nanos: u64) -> LeaseState;
 
     /// The total nanodollars settled so far — the audit tap the caller journals (and the tests assert).
     fn settled_nanos(&self) -> u64;
+
+    /// Mint a BY-VALUE [`LeaseCloseGuard`] a topology's `run()` frame OWNS, so the host lease is closed
+    /// deterministically on EVERY exit of the session loop — EOF, the hard-close `select!` race, or a
+    /// panic unwinding through it — independent of a detached `Arc<SessionCore>` a parked-at-await frame
+    /// handler may pin (which would otherwise refcount-gate this lease's own `Drop` close and leak the
+    /// reserve). Empty for the in-process [`LocalLease`] (it owns its budget cell directly; nothing
+    /// host-side to close).
+    fn close_guard(&self) -> LeaseCloseGuard;
+}
+
+/// A BY-VALUE close guard for the D2 lease. The topology `run()` frame holds it by value so
+/// [`MeteringHost::cost_close`] fires on ANY return path (including a panic unwinding through `run()`),
+/// closing the hard-close-race hole the session-drop audit found: a per-frame handler PARKED at an
+/// `.await` keeps an `Arc<SessionCore>` alive, so the settle handle's own `Drop` close is refcount-gated
+/// and never runs while parked. The guard is decoupled from that refcount, so the reserve is released the
+/// instant `run()` returns. `cost_close` is idempotent (the registry entry is removed on first close), so
+/// a redundant close from a later-dropped settle handle is a harmless `None` — no double refund.
+pub struct LeaseCloseGuard {
+    /// The host to close against — `None` for a lease with no host-side registry entry (the dev
+    /// [`LocalLease`], which owns its budget cell in-process and leaks nothing).
+    host: Option<Arc<dyn MeteringHost>>,
+    /// The lease id to close; [`CostLeaseId::NONE`] for the no-op guard.
+    lease: CostLeaseId,
+}
+
+impl LeaseCloseGuard {
+    /// A guard over a live host lease — closes `lease` against `host` on drop.
+    #[must_use]
+    fn hosted(host: Arc<dyn MeteringHost>, lease: CostLeaseId) -> Self {
+        LeaseCloseGuard {
+            host: Some(host),
+            lease,
+        }
+    }
+
+    /// A NO-OP guard — the in-process lease has no host-side registry entry to close.
+    #[must_use]
+    fn none() -> Self {
+        LeaseCloseGuard {
+            host: None,
+            lease: CostLeaseId::NONE,
+        }
+    }
+}
+
+impl Drop for LeaseCloseGuard {
+    fn drop(&mut self) {
+        // Deterministic host-side close on run() exit; idempotent, so harmless if the lease already
+        // closed (a lingering settle handle, or a previous guard drop).
+        if let Some(host) = &self.host {
+            let _ = host.cost_close(self.lease);
+        }
+    }
 }
 
 /// OPENS a metering lease at session start — the plane-side port over the D2 `cost_reserve` leg. The
@@ -75,43 +136,6 @@ pub trait MeteringPort: Send + Sync {
         fee_nanos: u64,
         cap_nanos: Option<u64>,
     ) -> Option<Box<dyn MeteringLease>>;
-}
-
-/// THE PER-TOKEN PRICE BOOK the plane prices a turn's [`IrDuplexUsage`] with BEFORE handing the money
-/// across the D2 lease (core prices nothing — the plane hands already-priced nanodollars, `plane4-duplex-session.md` §2.5). Audio
-/// and text are separate classes (audio dominates); cached input bills at the cache rate.
-#[derive(Debug, Clone, Copy)]
-pub struct Pricing {
-    /// Nanodollars per audio input token.
-    pub audio_in_nanos: u64,
-    /// Nanodollars per audio output token.
-    pub audio_out_nanos: u64,
-    /// Nanodollars per text input token.
-    pub text_in_nanos: u64,
-    /// Nanodollars per text output token.
-    pub text_out_nanos: u64,
-    /// Nanodollars per cached input token (billed at the cache rate, distinct from a fresh input).
-    pub cached_nanos: u64,
-}
-
-impl Pricing {
-    /// Price ONE turn's extracted usage into a single already-priced nanodollar increment — the value
-    /// the plane settles against the lease. Saturating throughout: a runaway turn can never wrap the
-    /// budget arithmetic into a small number and dodge the cap.
-    #[must_use]
-    pub fn price(&self, u: &IrDuplexUsage) -> u64 {
-        [
-            (u.audio_in, self.audio_in_nanos),
-            (u.audio_out, self.audio_out_nanos),
-            (u.text_in, self.text_in_nanos),
-            (u.text_out, self.text_out_nanos),
-            (u.cached, self.cached_nanos),
-        ]
-        .into_iter()
-        .fold(0u64, |acc, (tokens, rate)| {
-            acc.saturating_add(tokens.saturating_mul(rate))
-        })
-    }
 }
 
 /// THE FAITHFUL, FULLY-WIRED LEASE the runtime drives today — the plane-side twin of the host's
@@ -139,6 +163,16 @@ impl LocalLease {
 }
 
 impl MeteringLease for LocalLease {
+    fn price_usage(&self, _model: &str, _usage: &busbar_substrate::billing::Usage) -> Option<u64> {
+        // The in-process TEST/DEV lease carries NO rate card (the money hop's rates live host-side): a
+        // dev build with no configured rate card prices at 0, exactly as core's `CostModel` does when
+        // `rate_card` is absent. This is NOT a plane-private price book — it holds no rates, labels or
+        // units; it is the honest "pricing off" for the dev stand-in. The REAL rate-card pricing rides
+        // the host lease ([`HostLease::price_usage`] → [`MeteringHost::price_usage`]); the runtime tests
+        // drive that faithful path over a mock host with real rates.
+        Some(0)
+    }
+
     fn settle(&self, nanos: u64) -> LeaseState {
         // Saturating accrual: the budget arithmetic can never wrap below the cap.
         let prior = self.settled_nanos.fetch_add(nanos, Ordering::SeqCst);
@@ -153,6 +187,11 @@ impl MeteringLease for LocalLease {
 
     fn settled_nanos(&self) -> u64 {
         self.settled_nanos.load(Ordering::SeqCst)
+    }
+
+    fn close_guard(&self) -> LeaseCloseGuard {
+        // No host-side registry entry: the in-process budget cell drops with this lease. No-op guard.
+        LeaseCloseGuard::none()
     }
 }
 
@@ -228,6 +267,17 @@ pub struct HostLease {
 }
 
 impl MeteringLease for HostLease {
+    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u64> {
+        // The REAL money hop's pricing leg: the host prices the turn's usage_units against the deployment
+        // rate card (the SAME `CostModel` arithmetic the LLM path uses), so the plane never names a pricer.
+        // A per-turn increment fits u64 far below the ~$18.4B ceiling; saturate defensively (fail-closed
+        // HIGH) rather than wrap. `None` (rate card present, model unpriced) surfaces so the caller fails
+        // closed and hard-closes — an unpriced passthrough model must not meter as free.
+        self.host
+            .price_usage(model, usage)
+            .map(|n| u64::try_from(n).unwrap_or(u64::MAX))
+    }
+
     fn settle(&self, nanos: u64) -> LeaseState {
         // The `cost_settle` leg: accrue the exact increment host-side and map the outcome. An unknown /
         // already-closed lease (`None`) fails CLOSED — the plane hard-closes just as on exhaustion.
@@ -246,6 +296,12 @@ impl MeteringLease for HostLease {
             .map(|n| u64::try_from(n).unwrap_or(u64::MAX))
             .unwrap_or(0)
     }
+
+    fn close_guard(&self) -> LeaseCloseGuard {
+        // A live host lease: hand the topology a by-value guard that closes it deterministically on
+        // run() exit, decoupled from this settle handle's refcount-gated `Drop`.
+        LeaseCloseGuard::hosted(Arc::clone(&self.host), self.lease)
+    }
 }
 
 impl Drop for HostLease {
@@ -254,5 +310,115 @@ impl Drop for HostLease {
         // registry. Idempotent and fire-and-forget: a second close (or an already-forgotten lease) is a
         // harmless `None`.
         let _ = self.host.cost_close(self.lease);
+    }
+}
+
+/// A FAITHFUL in-test mock of the host's [`MeteringHost`] seam — a `CostHold`-shaped registry keyed by
+/// lease id PLUS the real-rate `price_usage` pricing leg — shared by the runtime and topology tests so
+/// both exercise the PRODUCTION shape (host lease + host pricing) rather than the dev [`LocalLease`]
+/// (which prices at 0). Reserve = estimate+fee (audit tap), exact increments accrue toward the TRUE cap,
+/// exhausted = `settled ≥ cap`, refuse-all denies; `price_usage` prices every reserved key at 1 nano/unit
+/// (so a turn's usage_units sum IS its nanodollar cost) unless the model is the sentinel `UNPRICED_MODEL`,
+/// which returns `None` to drive the fail-closed path. `cost_close` records each closed id ONCE, so a test
+/// can prove a by-value guard closed the lease exactly once even under a parked-task refcount pin.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MockMeteringHost {
+    inner: std::sync::Mutex<MockInner>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MockInner {
+    next: u64,
+    leases: std::collections::HashMap<u64, MockLease>,
+    /// Every id closed host-side (each recorded ONCE — a second close is a harmless `None`), so a test
+    /// proves a dropped/guarded lease closed exactly once.
+    pub(crate) closed: Vec<u64>,
+}
+
+#[cfg(test)]
+pub(crate) struct MockLease {
+    pub(crate) reserved: u128,
+    settled: u128,
+    cap: Option<u128>,
+}
+
+#[cfg(test)]
+impl MockMeteringHost {
+    /// The sentinel model whose `price_usage` returns `None` — drives the caller's fail-closed path.
+    pub(crate) const UNPRICED_MODEL: &'static str = "__unpriced__";
+
+    /// A snapshot of the ids closed host-side so far (for the lease-leak witness).
+    pub(crate) fn closed_ids(&self) -> Vec<u64> {
+        self.inner.lock().unwrap().closed.clone()
+    }
+
+    /// The number of leases ever MINTED (reserved) — `0` proves a refused session never charged.
+    pub(crate) fn minted_count(&self) -> u64 {
+        self.inner.lock().unwrap().next
+    }
+
+    /// The reserved (estimate+fee) recorded for lease `id`, if still open (for reserve-audit asserts).
+    pub(crate) fn reserved_of(&self, id: u64) -> Option<u128> {
+        self.inner.lock().unwrap().leases.get(&id).map(|l| l.reserved)
+    }
+
+    /// Forget every open lease host-side — simulate the host dropping a lease out from under a handle.
+    pub(crate) fn clear_leases(&self) {
+        self.inner.lock().unwrap().leases.clear();
+    }
+}
+
+#[cfg(test)]
+impl MeteringHost for MockMeteringHost {
+    fn cost_reserve(
+        &self,
+        estimate_nanos: u128,
+        fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<CostLeaseId> {
+        if matches!(cap_nanos, Some(0)) {
+            return None; // refuse-all denies at the door.
+        }
+        let mut g = self.inner.lock().unwrap();
+        g.next += 1;
+        let id = g.next;
+        g.leases.insert(
+            id,
+            MockLease {
+                reserved: estimate_nanos + fee_nanos,
+                settled: 0,
+                cap: cap_nanos,
+            },
+        );
+        Some(CostLeaseId(id))
+    }
+
+    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.leases.get_mut(&lease.0)?;
+        l.settled += exact_nanos;
+        let exhausted = matches!(l.cap, Some(c) if l.settled >= c);
+        Some(SettleOutcome { exhausted })
+    }
+
+    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
+        Some(self.inner.lock().unwrap().leases.get(&lease.0)?.settled)
+    }
+
+    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
+        let mut g = self.inner.lock().unwrap();
+        let l = g.leases.remove(&lease.0)?;
+        g.closed.push(lease.0);
+        Some(l.settled)
+    }
+
+    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {
+        if model == Self::UNPRICED_MODEL {
+            return None; // rate card present, model unpriced → the caller fails closed.
+        }
+        // 1 nano per reserved unit: a turn's usage_units sum IS its nanodollar cost (legible asserts).
+        Some(usage.usage_units.values().copied().map(u128::from).sum())
     }
 }

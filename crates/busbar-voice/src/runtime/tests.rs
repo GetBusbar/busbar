@@ -9,12 +9,15 @@
 use crate::ir::codec::{OpenAiRealtimeCodec, WireEvent};
 use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{LeaseState, LocalMeteringPort, MeteringPort, Pricing};
+use crate::runtime::metering::{
+    HostMeteringPort, LeaseState, LocalMeteringPort, MeteringPort, MockMeteringHost,
+};
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, VoiceSession};
 use busbar_substrate::ingress::byte_duplex::serve_messages;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::handle_engine::{HandleDenied, ScopedMutateError};
+use busbar_substrate::plane_host::MeteringHost;
 use bytes::Bytes;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
 use futures::StreamExt;
@@ -22,19 +25,10 @@ use std::sync::Arc;
 
 // ── fixtures ──────────────────────────────────────────────────────────────────────────────────────
 
-fn test_pricing() -> Pricing {
-    // 1 nanodollar per token of every class — keeps the arithmetic legible in assertions.
-    Pricing {
-        audio_in_nanos: 1,
-        audio_out_nanos: 1,
-        text_in_nanos: 1,
-        text_out_nanos: 1,
-        cached_nanos: 1,
-    }
-}
-
-/// A downlink-facing core with a real downlink sink, a metering lease over `cap` nanodollars, and the
-/// echo tool executor. Returns the core plus the downlink receiver the client would read.
+/// A downlink-facing core with a real downlink sink, a metering lease over `cap` nanodollars, the echo
+/// tool executor, and the PRODUCTION money hop (a host lease + host pricing over [`MockMeteringHost`],
+/// which prices every reserved unit at 1 nano). Returns the core plus the downlink receiver the client
+/// would read.
 fn core_with_downlink(
     cap: Option<u64>,
 ) -> (
@@ -43,14 +37,14 @@ fn core_with_downlink(
 ) {
     let (dtx, drx) = unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(dtx);
-    let lease = LocalMeteringPort
+    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
+    let lease = HostMeteringPort::new(host)
         .reserve(1_000, 0, cap)
         .expect("lease opens for a non-refuse-all cap");
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
         lease,
         Arc::new(crate::runtime::tools::EchoToolExecutor),
-        test_pricing(),
         carrier,
         None,
     ));
@@ -78,22 +72,61 @@ fn audio_delta(b64: &str) -> WireEvent {
 // ── metering: pricing + lease semantics ─────────────────────────────────────────────────────────
 
 #[test]
-fn pricing_sums_every_token_class() {
-    let p = Pricing {
-        audio_in_nanos: 2,
-        audio_out_nanos: 3,
-        text_in_nanos: 5,
-        text_out_nanos: 7,
-        cached_nanos: 11,
-    };
+fn usage_folds_five_classes_onto_the_four_reserved_keys() {
+    // The 5→4 map: audio_in+text_in→input, audio_out+text_out→output, cached→cache_read. No new
+    // unit/label/constant — only the existing reserved keys, and only non-zero classes are keyed.
     let u = IrDuplexUsage {
-        audio_in: 1,
-        audio_out: 1,
-        text_in: 1,
-        text_out: 1,
-        cached: 1,
+        audio_in: 2,
+        audio_out: 3,
+        text_in: 5,
+        text_out: 7,
+        cached: 11,
     };
-    assert_eq!(p.price(&u), 2 + 3 + 5 + 7 + 11);
+    let usage = u.to_billing_usage();
+    assert_eq!(
+        usage.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(2 + 5),
+        "audio_in + text_in fold onto `input`"
+    );
+    assert_eq!(
+        usage.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(3 + 7),
+        "audio_out + text_out fold onto `output`"
+    );
+    assert_eq!(
+        usage.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        Some(11),
+        "cached folds onto `cache_read`"
+    );
+    assert_eq!(usage.usage_units.len(), 3, "only the three touched reserved keys");
+    // An empty turn keys nothing (no zero components ever price).
+    assert!(IrDuplexUsage::default().to_billing_usage().usage_units.is_empty());
+}
+
+#[test]
+fn host_prices_usage_then_settles_the_priced_increment() {
+    // The price_usage → settle path: the mock host prices every reserved unit at 1 nano, so a turn of
+    // (audio_out 3, text_out 4) folds to output=7 and prices to 7 nanos, settled against the lease.
+    let host = Arc::new(MockMeteringHost::default());
+    let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
+    let lease = port.reserve(0, 0, Some(100)).expect("uncapped-enough opens");
+    let u = IrDuplexUsage {
+        audio_out: 3,
+        text_out: 4,
+        ..IrDuplexUsage::default()
+    };
+    let usage = u.to_billing_usage();
+    let nanos = lease.price_usage("gpt-realtime", &usage).expect("model is priced");
+    assert_eq!(nanos, 7, "output 3+4 priced at 1 nano each = 7");
+    assert_eq!(lease.settle(nanos), LeaseState::Live);
+    assert_eq!(lease.settled_nanos(), 7);
+    // An UNPRICED model fails closed (None) — never meters as free.
+    assert!(
+        lease
+            .price_usage(MockMeteringHost::UNPRICED_MODEL, &usage)
+            .is_none(),
+        "an unpriced model returns None so the caller hard-closes"
+    );
 }
 
 #[test]
@@ -116,75 +149,6 @@ fn local_lease_exhausts_at_cap_and_refuse_all_denies() {
 
 // ── THE HOST-LEASE PORT (the REAL D2 money hop) — the production `HostMeteringPort` over a mock host ─
 
-/// A FAITHFUL mock of the host's [`MeteringHost`] seam: a host-owned `CostHold`-shaped registry keyed by
-/// lease id, so the [`HostMeteringPort`]/`HostLease` ADAPTER is exercised against the exact reserve/
-/// settle/exhaustion/close contract core's `EngineHostImpl` provides — reserve = estimate+fee (audit
-/// tap), exact increments accrue toward the TRUE cap, exhausted = `settled ≥ cap`, refuse-all denies.
-#[derive(Default)]
-struct MockMeteringHost {
-    inner: std::sync::Mutex<MockInner>,
-}
-
-#[derive(Default)]
-struct MockInner {
-    next: u64,
-    leases: std::collections::HashMap<u64, MockLease>,
-    /// Every id ever minted, so a test can prove a dropped `HostLease` closed its lease host-side.
-    closed: Vec<u64>,
-}
-
-struct MockLease {
-    reserved: u128,
-    settled: u128,
-    cap: Option<u128>,
-}
-
-use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
-
-impl MeteringHost for MockMeteringHost {
-    fn cost_reserve(
-        &self,
-        estimate_nanos: u128,
-        fee_nanos: u128,
-        cap_nanos: Option<u128>,
-    ) -> Option<CostLeaseId> {
-        if matches!(cap_nanos, Some(0)) {
-            return None; // refuse-all denies at the door.
-        }
-        let mut g = self.inner.lock().unwrap();
-        g.next += 1;
-        let id = g.next;
-        g.leases.insert(
-            id,
-            MockLease {
-                reserved: estimate_nanos + fee_nanos,
-                settled: 0,
-                cap: cap_nanos,
-            },
-        );
-        Some(CostLeaseId(id))
-    }
-
-    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
-        let mut g = self.inner.lock().unwrap();
-        let l = g.leases.get_mut(&lease.0)?;
-        l.settled += exact_nanos;
-        let exhausted = matches!(l.cap, Some(c) if l.settled >= c);
-        Some(SettleOutcome { exhausted })
-    }
-
-    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
-        Some(self.inner.lock().unwrap().leases.get(&lease.0)?.settled)
-    }
-
-    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
-        let mut g = self.inner.lock().unwrap();
-        let l = g.leases.remove(&lease.0)?;
-        g.closed.push(lease.0);
-        Some(l.settled)
-    }
-}
-
 #[test]
 fn host_lease_reserves_settles_and_hard_closes_at_the_real_cap() {
     use crate::runtime::metering::HostMeteringPort;
@@ -198,12 +162,7 @@ fn host_lease_reserves_settles_and_hard_closes_at_the_real_cap() {
         .expect("a real cap opens the lease");
     // The flat fee folded into `reserved` ONCE (estimate 100 + fee 10), never into the cap.
     assert_eq!(
-        host.inner
-            .lock()
-            .unwrap()
-            .leases
-            .get(&1)
-            .map(|l| l.reserved),
+        host.reserved_of(1),
         Some(110),
         "reserve = estimate + flat fee, charged once"
     );
@@ -223,7 +182,7 @@ fn host_lease_reserves_settles_and_hard_closes_at_the_real_cap() {
     // Dropping the handle closes the lease host-side (no registry leak).
     drop(lease);
     assert!(
-        host.inner.lock().unwrap().closed.contains(&1),
+        host.closed_ids().contains(&1),
         "the dropped HostLease closed its lease host-side"
     );
 }
@@ -251,7 +210,7 @@ fn host_lease_unknown_or_closed_settle_fails_closed() {
     let lease = port.reserve(0, 0, Some(100)).unwrap();
     // Forget the lease host-side out from under the handle: the next settle names no open lease and the
     // adapter maps the host's `None` to `Refused`, so the plane hard-closes fail-closed (not silently).
-    host.inner.lock().unwrap().leases.clear();
+    host.clear_leases();
     assert_eq!(
         lease.settle(1),
         LeaseState::Refused,

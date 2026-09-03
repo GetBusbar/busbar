@@ -21,7 +21,7 @@ use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{MeteringLease, Pricing};
+use crate::runtime::metering::MeteringLease;
 use crate::runtime::tools::ToolExecutor;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -64,7 +64,8 @@ struct Inner {
 
 /// THE GOVERNED SESSION CORE — the synchronous heart shared across the concurrent frame handlers. It
 /// owns the codec, the locked config (the plane's tools + instructions the browser cannot override),
-/// the metering lease, the tool executor, the pricing book, and the carrier. Generic over the codec
+/// the metering lease (which also prices each turn host-side), the tool executor, the priced model id,
+/// and the carrier. Generic over the codec
 /// `C` (HARD RULE 3); the lease and tool executor are dependency-inverted ports.
 pub struct SessionCore<C> {
     codec: C,
@@ -74,7 +75,10 @@ pub struct SessionCore<C> {
     locked_config: Option<SessionConfig>,
     lease: Box<dyn MeteringLease>,
     tools: Arc<dyn ToolExecutor>,
-    pricing: Pricing,
+    /// The upstream MODEL id this session prices against (from the locked `session` config; empty when
+    /// the dialect carries it server-side and none was locked). Handed to the lease's `price_usage` so
+    /// the host prices each turn against that model's rate-card lane.
+    model: String,
     carrier: Carrier,
 }
 
@@ -88,17 +92,22 @@ where
         codec: C,
         lease: Box<dyn MeteringLease>,
         tools: Arc<dyn ToolExecutor>,
-        pricing: Pricing,
         carrier: Carrier,
         locked_config: Option<SessionConfig>,
     ) -> Self {
+        // The pricing model rides the locked config (the plane's authoritative `session` shape); a
+        // dialect that carries the model server-side and locked none prices under the empty lane.
+        let model = locked_config
+            .as_ref()
+            .and_then(|c| c.model.clone())
+            .unwrap_or_default();
         SessionCore {
             codec,
             inner: Mutex::new(Inner::default()),
             locked_config,
             lease,
             tools,
-            pricing,
+            model,
             carrier,
         }
     }
@@ -135,9 +144,17 @@ where
                 match ev {
                     // ── metering: the marquee guarantee ──────────────────────────────────────────
                     IrServerEvent::Usage(u) => {
-                        let nanos = self.pricing.price(&u);
-                        if self.lease.settle(nanos).must_close() {
-                            // Budget dry (or the lease refused / faulted): cancel the in-flight
+                        // Fold the turn's five token classes onto the neutral reserved-key `Usage` (the
+                        // 5→4 map), price it HOST-side against the model's rate-card lane, then settle the
+                        // already-priced increment. A missing rate (`None`) fails CLOSED — the turn cannot
+                        // meter as free — exactly as an exhaustion would.
+                        let usage = u.to_billing_usage();
+                        let close = match self.lease.price_usage(&self.model, &usage) {
+                            Some(nanos) => self.lease.settle(nanos).must_close(),
+                            None => true,
+                        };
+                        if close {
+                            // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
                             out.upstream.push(
                                 self.codec.write_up(IrClientEvent::Control(

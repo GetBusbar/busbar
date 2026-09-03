@@ -673,6 +673,27 @@ impl CostModel {
         }
     }
 
+    /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
+    /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
+    /// seam a live carrier (voice) drives folds through. Byte-for-byte the SAME arithmetic the
+    /// enforcement/derive summation uses ([`Self::rate_for`] → [`RateNanos::reserved_nanos`], exactly as
+    /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
+    /// so this is a new READER over the existing pricer — the LLM money path is untouched.
+    ///
+    /// The three `rate_for` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
+    /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
+    /// caller fails closed on an unpriced passthrough model). Only the reserved four price here — the
+    /// carrier maps its own unit classes onto the reserved keys before calling, so no open-key
+    /// `ExtraRates` lookup (and thus no `CostBreakdown`) is involved.
+    pub(crate) fn price_usage_nanos(
+        &self,
+        model: &str,
+        usage: &busbar_substrate::billing::Usage,
+    ) -> Option<u128> {
+        self.rate_for(model)
+            .map(|rate| rate.reserved_nanos(&usage.usage_units))
+    }
+
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
     /// entry (an arbitrary passthrough model string not in any configured lane). Fail-closed and
     /// consistent with the completeness rule: you either price nothing or price everything.

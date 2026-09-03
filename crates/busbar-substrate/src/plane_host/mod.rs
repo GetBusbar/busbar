@@ -208,21 +208,81 @@ pub trait GauntletPlane: Send + Sync {
     async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
 }
 
+/// The successful OPEN-PASS ADMISSION result of [`admit_open`] — the request cleared the verify-before-
+/// charge gate. Carries the per-request `correlation_id` so a SESSION opener ([`run_gauntlet_session`])
+/// can join its own later durable/audit rows on it. A one-shot [`run_gauntlet`] discards it and proceeds
+/// straight to `drive`; a session opener returns it to the plane, which then reserves/binds/opens its
+/// live carrier AFTER (nothing charged before the gate cleared).
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admitted {
+    /// The per-request correlation id the caller threads into its stage-6 / durable-session record.
+    pub correlation_id: u64,
+}
+
+/// THE ONE OPEN-PASS ADMISSION GATE both gauntlet siblings share — the pre-admission `verify_destination`
+/// (stage 2) in its correct verify-STRICTLY-before-charge position, so NOTHING may reject an already-
+/// charged request. Returns [`Admitted`] on `Proceed`, or the plane's OWN finished, protocol-native
+/// refusal on `Refuse` (returned verbatim so refusal shaping stays byte-identical to the plane's in-place
+/// rejection). A pure factor-out: the shared verify order lives HERE once, so [`run_gauntlet`] (the
+/// one-shot Response path) and [`run_gauntlet_session`] (the duplex session opener) can never drift on
+/// it. The plane's OWN govern/breaker/charge stay inside its `drive` (run_gauntlet) or its post-admit
+/// reserve/bind/open (the session) — this gate owns only the ORDER, matching the LLM plane's real
+/// verify-before-admission-door sequence.
+///
+/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
+/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — the same type that path
+/// returns un-boxed. Boxing it here to shrink the cold refuse path would diverge the two siblings.)
+#[allow(clippy::result_large_err)]
+fn admit_open(
+    req: &GauntletRequest<'_>,
+    plane: &(dyn GauntletPlane + '_),
+) -> Result<Admitted, axum::response::Response> {
+    match plane.verify_destination(req) {
+        VerifyOutcome::Refuse(resp) => Err(resp),
+        VerifyOutcome::Proceed => Ok(Admitted {
+            correlation_id: req.correlation_id,
+        }),
+    }
+}
+
 /// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. Stage 1 identity
-/// is already resolved (threaded via `req.gov`); this calls the plane's `verify_destination` (stage
-/// 2) in the correct PRE-ADMISSION position and, only if it proceeds, the plane's `drive` (stages
-/// 4+5, its own byte-identical engine + metering). Returns the plane's (possibly streaming) response
-/// verbatim. The plane owns admission/route/metering/finish; the sequence owns solely the
-/// verify-before-admit order (nothing may reject after a charge) — so all planes enforce that
+/// is already resolved (threaded via `req.gov`); this runs the shared [`admit_open`] gate (the plane's
+/// `verify_destination`, stage 2) in the correct PRE-ADMISSION position and, only if it proceeds, the
+/// plane's `drive` (stages 4+5, its own byte-identical engine + metering). Returns the plane's (possibly
+/// streaming) response verbatim. The plane owns admission/route/metering/finish; the sequence owns solely
+/// the verify-before-admit order (nothing may reject after a charge) — so all planes enforce that
 /// invariant in ONE place rather than each re-implementing it.
 pub async fn run_gauntlet(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> axum::response::Response {
-    match plane.verify_destination(&req) {
-        VerifyOutcome::Refuse(resp) => resp,
-        VerifyOutcome::Proceed => plane.drive(req).await,
+    match admit_open(&req, &*plane) {
+        Err(resp) => resp,
+        Ok(_admitted) => plane.drive(req).await,
     }
+}
+
+/// THE SESSION SIBLING of [`run_gauntlet`] — the OPEN-PASS admission for a live, session-oriented plane
+/// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME shared
+/// [`admit_open`] gate (verify STRICTLY before any charge) and returns the [`Admitted`] result instead of
+/// driving a request: the plane's own reserve/bind/open + socket bind proceed only on `Ok`, so a `Refuse`
+/// costs ZERO bytes and ZERO charge (nothing opened before the gate cleared). Distinct from
+/// [`run_gauntlet`] (one Response) but a TRUE sibling — they share `admit_open`, so a refactor can neither
+/// inline nor foreclose this opener, and both enforce the one verify-before-charge order.
+///
+/// Synchronous: the admission gate is `verify_destination` (sync), so a session opener (a sync
+/// `begin_session`) calls this directly — there is no async `drive` leg on the session path.
+///
+/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
+/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — boxing it would diverge
+/// the two siblings on the type they carry a refusal in.)
+#[allow(clippy::result_large_err)]
+pub fn run_gauntlet_session(
+    req: GauntletRequest<'_>,
+    plane: Box<dyn GauntletPlane + '_>,
+) -> Result<Admitted, axum::response::Response> {
+    admit_open(&req, &*plane)
 }
 
 /// The `plane_slots` companion key under which a plane's ALWAYS-PRESENT per-generation runtime object
@@ -447,6 +507,24 @@ pub trait MeteringHost: Send + Sync {
     /// sum — never the coarse reserve). `None` for an unknown / already-closed lease. Idempotent: a
     /// second close reads `None`. Bounds the host registry so a finished carrier's lease does not leak.
     fn cost_close(&self, lease: CostLeaseId) -> Option<u128>;
+
+    /// PRICE a plane's neutral [`billing::Usage`](crate::billing::Usage) for `model` into nanodollars
+    /// via the deployment's rate card — the SAME `CostModel` arithmetic the LLM enforcement/derive path
+    /// uses (a new ENTRY POINT over the same function, so the LLM money path is byte-for-byte untouched).
+    /// A live carrier a plane cannot price after the fact folds each turn's usage_units and calls this to
+    /// get the already-priced nanodollar increment it then hands to [`cost_settle`](Self::cost_settle),
+    /// so the plane stays PLANE-NEUTRAL (it never names core's pricer) yet meters against the real rates.
+    ///
+    /// Semantics mirror the host's per-model rate lookup exactly:
+    /// - no rate card configured ⇒ `Some(0)` (pricing off — every model prices at 0, as core does);
+    /// - card present, `model` priced ⇒ `Some(nanos)`;
+    /// - card present, `model` UNKNOWN ⇒ `None` — the caller FAILS CLOSED (an unpriced passthrough model
+    ///   must not meter as free).
+    ///
+    /// Amounts are u128 nanodollars — the plain-Rust neutral seam carries the rich type directly (unlike
+    /// the frozen hot FFI). Core prices nothing of its own here: it projects the caller's already-mapped
+    /// reserved-unit counts through the configured rate card, the one authoritative cost source.
+    fn price_usage(&self, model: &str, usage: &crate::billing::Usage) -> Option<u128>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1184,4 +1262,130 @@ pub trait ContainerGateSink: PlaneSlots {
         containers: &[(&str, &[String])],
         section_hooks: &[String],
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D3 WITNESS — the gauntlet siblings COEXIST and share ONE `admit_open` gate. (That `begin_session`
+// actually CALLS `run_gauntlet_session` at its call site is pinned in busbar-voice's topology tests.)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod gauntlet_session_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// A stub plane that records whether its `drive` (stages 4+5, the CHARGE-bearing leg) ran, and either
+    /// proceeds or refuses at the verify gate — so a test can prove NEITHER sibling drives on a refuse
+    /// (verify strictly before charge) and the one-shot path drives on a proceed.
+    struct StubPlane {
+        refuse: bool,
+        drove: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl GauntletPlane for StubPlane {
+        fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
+            if self.refuse {
+                VerifyOutcome::Refuse(
+                    axum::response::Response::builder()
+                        .status(429)
+                        .body(axum::body::Body::from("refused"))
+                        .expect("refusal response"),
+                )
+            } else {
+                VerifyOutcome::Proceed
+            }
+        }
+
+        async fn drive(self: Box<Self>, _req: GauntletRequest<'_>) -> axum::response::Response {
+            self.drove.store(true, Ordering::SeqCst);
+            axum::response::Response::builder()
+                .status(200)
+                .body(axum::body::Body::from("driven"))
+                .expect("driven response")
+        }
+    }
+
+    fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
+        GauntletRequest {
+            gov,
+            destination: "model-x",
+            correlation_id: 77,
+            charged_at: 1,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn siblings_coexist_and_share_the_admit_open_gate() {
+        let gov = busbar_api::PlaneRequestCtx::default();
+
+        // PROCEED: run_gauntlet DRIVES (charge leg runs); run_gauntlet_session ADMITS (no drive) and the
+        // Admitted carries the correlation id — the same shared gate said "proceed" to both.
+        let drove_rg = Arc::new(AtomicBool::new(false));
+        let resp = run_gauntlet(
+            req(&gov),
+            Box::new(StubPlane {
+                refuse: false,
+                drove: Arc::clone(&drove_rg),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), 200, "proceed drives the one-shot path");
+        assert!(drove_rg.load(Ordering::SeqCst), "run_gauntlet drove on proceed");
+
+        let drove_rgs = Arc::new(AtomicBool::new(false));
+        let admitted = run_gauntlet_session(
+            req(&gov),
+            Box::new(StubPlane {
+                refuse: false,
+                drove: Arc::clone(&drove_rgs),
+            }),
+        )
+        .expect("proceed admits the session");
+        assert_eq!(
+            admitted.correlation_id, 77,
+            "the admitted session joins on the correlation id"
+        );
+        assert!(
+            !drove_rgs.load(Ordering::SeqCst),
+            "the session opener NEVER drives a one-shot response"
+        );
+
+        // REFUSE: BOTH siblings return the plane's OWN refusal verbatim and NEITHER drives — the one
+        // shared verify-before-charge gate rejects before any charge in both paths.
+        let drove_rg_r = Arc::new(AtomicBool::new(false));
+        let resp = run_gauntlet(
+            req(&gov),
+            Box::new(StubPlane {
+                refuse: true,
+                drove: Arc::clone(&drove_rg_r),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), 429, "refuse returns the plane's refusal verbatim");
+        assert!(
+            !drove_rg_r.load(Ordering::SeqCst),
+            "refuse never drives (run_gauntlet)"
+        );
+
+        let drove_rgs_r = Arc::new(AtomicBool::new(false));
+        let refusal = run_gauntlet_session(
+            req(&gov),
+            Box::new(StubPlane {
+                refuse: true,
+                drove: Arc::clone(&drove_rgs_r),
+            }),
+        )
+        .expect_err("refuse denies the session before any charge");
+        assert_eq!(
+            refusal.status(),
+            429,
+            "the session refusal is the plane's own response"
+        );
+        assert!(
+            !drove_rgs_r.load(Ordering::SeqCst),
+            "refuse never drives (run_gauntlet_session) — zero bytes, zero charge"
+        );
+    }
 }
