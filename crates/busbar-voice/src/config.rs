@@ -19,12 +19,12 @@
 //! plane-imposed ceilings — session wall-clock, context window, per-response output tokens — as the
 //! sole NEW scalars. No second copy of the VAD grammar exists to drift from the wire one.
 //!
-//! ## It is NOT in the config-schema tracked set (voice is dev-only)
+//! ## It IS in the config-schema tracked set
 //!
-//! Unlike `tools:`/`agents:`, this file is not yet fingerprinted by `scripts/config-schema.py`: only
-//! the neutral `StreamsSection` FIELD reference on `DeployCfg` is (an additive optional field). Voice
-//! is dev-only until DoD, so its per-key grammar is not frozen yet; adding this file to `SOURCES` is a
-//! later, additive step taken WITH the plane's DoD.
+//! Exactly like `tools:`/`agents:`, this file is fingerprinted by `scripts/config-schema.py` (it is a
+//! `SOURCES` entry). Both the neutral `StreamsSection` FIELD on `DeployCfg` AND this per-key grammar —
+//! the three plane-imposed session ceilings — are covered by the additive-only gate, so a deployment's
+//! live-voice CEILINGS cannot be retyped or removed without the gate flagging it.
 
 use crate::ir::config::SessionConfig;
 use crate::ir::control::IrVad;
