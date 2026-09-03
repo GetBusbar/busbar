@@ -111,3 +111,72 @@ fn on_upgrade_appears_in_no_file_except_the_neutral_acceptor() {
          acceptor moved and this gate is now scanning the wrong tree"
     );
 }
+
+/// The ungated socket-bind wrappers (`accept`/`serve`) live beside the gauntlet siblings in the neutral
+/// acceptor: they bind a socket WITHOUT running the open-pass gauntlet, so PRODUCTION plane code must
+/// never call them — a plane's WS-accept must go through `accept_gauntlet`/`serve_gauntlet`. Test code
+/// may stand up a loopback echo server with the bare `serve` (no governance to run), so this gate
+/// exempts test files; it fails only on a NON-TEST caller of the ungated wrappers outside the acceptor.
+/// This closes WS-F5: the `on_upgrade` confinement above pins WHERE the socket binds; this pins that
+/// every production bind is GAUNTLET-GATED.
+fn is_test_file(path: &Path) -> bool {
+    let p = path.to_string_lossy().replace('\\', "/");
+    p.contains("/tests/")
+        || p.ends_with("_tests.rs")
+        || p.ends_with("/tests.rs")
+        || p.contains("/test_support")
+}
+
+fn has_ungated_ws_wrapper_call(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+        return false;
+    }
+    let code = match line.find("//") {
+        Some(i) => &line[..i],
+        None => line,
+    };
+    // The ungated wrappers reached via the module path or the conventional `ws_ingress` alias. The
+    // gauntlet siblings (`accept_gauntlet(`/`serve_gauntlet(`) do NOT match these substrings.
+    for pat in [
+        "duplex_ws::serve(",
+        "duplex_ws::accept(",
+        "ws_ingress::serve(",
+        "ws_ingress::accept(",
+    ] {
+        if code.contains(pat) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn ungated_ws_accept_serve_wrappers_have_no_production_caller() {
+    let mut files = Vec::new();
+    rs_files(&crates_root(), &mut files);
+    assert!(!files.is_empty(), "the source scan found no .rs files");
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &files {
+        // The acceptor DEFINES the wrappers and calls them from its gauntlet siblings — exempt it.
+        let rel = path.to_string_lossy().replace('\\', "/");
+        if rel.ends_with(ALLOWED_PATH_SUFFIX) || is_test_file(path) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (lineno, line) in src.lines().enumerate() {
+            if has_ungated_ws_wrapper_call(line) {
+                offenders.push(format!("{}:{}: {}", path.display(), lineno + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production code calls an UNGATED WS wrapper (`accept`/`serve`) that binds a socket before the \
+         open-pass gauntlet — route it through `accept_gauntlet`/`serve_gauntlet` instead:\n{}",
+        offenders.join("\n")
+    );
+}

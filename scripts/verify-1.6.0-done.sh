@@ -118,7 +118,11 @@ end_group
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/UPDATE_CONFIG_SCHEMA/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
-  step "openapi.json matches committed file"        cargo test -p busbar-core --quiet openapi_json_matches_committed_file
+  # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
+  # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
+  # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
+  # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
+  step "openapi.json goldens match committed file"  cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
   step "6 busbar-llm same-proto byte-exact oracles" cargo test -p busbar-llm --quiet round_trip_byte_exact
 else

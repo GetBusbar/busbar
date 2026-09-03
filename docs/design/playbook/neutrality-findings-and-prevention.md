@@ -221,3 +221,37 @@ bypass the gauntlet. Production `ws_accept` correctly uses `accept_gauntlet`, so
 echoes in substrate + voice topology tests), so it needs test-helper restructuring or a source-scan lint that
 bans the ungated primitives in NON-TEST files. Tracked for the post-green hardening swarm; NOT arming-blocking
 (no production misuse, and the `on_upgrade` confinement already pins the single socket-bind site).
+
+---
+
+## Zero-leakage audit swarm (10 dimensions, 1 Opus agent each, verified against real code)
+Fired at 11/11 dev-green. Result: ZERO new untracked leaks. plane-purity (KEY/SYMBOL/TYPE/DIALECT/
+BACKWARDS all 0) + transport-neutrality both PASS. Every confirmed leak maps to already-tracked debt
+(F1/F3/F5/F6 in-core MCP/A2A twin + the LLM-ABI-purity §3E residue). Dimensions D1-D10: forward
+noun/name (D1), reverse reach (D2), host-ABI single-plane (D3), store opacity (D4), config/registry
+(D5), observability (D6), ingress/egress dialect-freedom (D7), lean-linear-core (D8), cross-plane graph
+(D9), byte-identity-through-arming (D10) — all CLEAN or documented-tracked. Store seam opaque; cross-plane
+production off-diagonal ZERO; dispatch uniform (every plane folds through plane_decls()→mount_plane_route,
+no `if plane==`); money-path byte-identity held through arming.
+
+### Actionable-now items the swarm surfaced (all fixed here)
+- **WS-F5 (ungated accept/serve):** FIXED — `on_upgrade_confined.rs` now also bans the ungated
+  `accept`/`serve` wrappers in NON-TEST production code (test loopbacks exempt), so every production
+  socket-bind is gauntlet-gated, not just confined to one file.
+- **Oracle openapi vacuity (D10):** FIXED — the done-oracle's byte-identity openapi step ran without
+  `--features openapi-schema` (0 tests, vacuous green); now runs `-p busbar -p busbar-core --features
+  openapi-schema` over the broad `openapi` filter (3 goldens), matching full-gate.
+- **Ledger honesty (D1):** the earlier CLEAN verdict "no dialect scheme in core" was OVERSTATED —
+  dialect-named PRODUCTION identifiers still reside in neutral crates: `verify_bedrock_sigv4`
+  (busbar-core/src/auth/mod.rs), `openai_context_length_prose_scan` + the wire-sentinel value
+  `__busbar_openai_message_names` (busbar-substrate/src/proto.rs). These are the LLM-ABI-purity §3E
+  residue (the word-boundary gate misses `openai_`/`bedrock_` — no `\b`). Tracked; part of the LLM seal.
+
+### Informational (deliberate, not leaks)
+- `x-api-key`/`x-goog-api-key` inbound-key acceptor names (auth/mod.rs) — busbar accepts its OWN virtual
+  key from whichever SDK header slot carries it; forwards no dialect credential. Deliberate.
+- `AWS4-HMAC-SHA256` sigv4 algorithm const (substrate) — generic AWS signing primitive, reused by both
+  ingress verify and the plane's egress signer. Generic.
+- core spells the bare `"streams"` config-section literal (plane/config.rs) — the locked-legitimate
+  config-noun floor (report-only gate); `tools`/`agents` key off a substrate index, `streams` (singular)
+  doesn't. Consistency item within the config-noun floor.
