@@ -483,11 +483,11 @@ impl busbar_substrate::plane_host::LanePoolHost for EngineHostImpl {
         crate::limits::default_probe_timeout_secs()
     }
 
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
+    fn pool_members_repeatable(&self, member: &str) -> Option<(String, Vec<String>, Vec<String>)> {
         self.app
             .tool_pools
             .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == member))
             .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
     }
 
@@ -699,14 +699,14 @@ impl busbar_substrate::plane_host::RegistryHost for EngineHostImpl {
         self.app.secret_resolver.clone()
     }
 
-    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
+    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
         // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
         // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
         // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
         card_sign_over(&self.app, signing_input)
     }
 
-    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
         // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
         // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
         self.app.agent_defs.clone()

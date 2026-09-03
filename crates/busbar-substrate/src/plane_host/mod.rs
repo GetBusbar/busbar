@@ -401,7 +401,7 @@ pub trait BreakerHost: Send + Sync {
 /// ([`lane_store`](Self::lane_store)), the two process-wide active-probe fallbacks
 /// ([`default_probe_interval_secs`](Self::default_probe_interval_secs) /
 /// [`default_probe_timeout_secs`](Self::default_probe_timeout_secs)), and the failover-pool membership
-/// resolvers ([`tool_pool_members`](Self::tool_pool_members) /
+/// resolvers ([`pool_members_repeatable`](Self::pool_members_repeatable) /
 /// [`plane_pool_members`](Self::plane_pool_members)). PURE STRUCTURAL: signatures and bodies are
 /// unchanged; a plane that names `EngineHost` reaches these through the inherited supertrait bound.
 pub trait LanePoolHost: Send + Sync {
@@ -429,11 +429,12 @@ pub trait LanePoolHost: Send + Sync {
     /// Byte-identical to `busbar_core::limits::default_probe_timeout_secs`.
     fn default_probe_timeout_secs(&self) -> u64;
 
-    /// The `(pool_name, members, repeatable)` of the `tool_pools:` failover pool `server` belongs to,
-    /// off the BOUND snapshot; `None` when `server` is un-pooled. `repeatable` is the pool's
-    /// `repeatable:` operation list (what `CandidatePoolCfg::repeatability` consults). Identical to
-    /// scanning `App::tool_pools`.
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
+    /// The `(pool_name, members, repeatable)` of the failover pool `member` belongs to, off the BOUND
+    /// snapshot; `None` when `member` is un-pooled. `repeatable` is the pool's `repeatable:` operation
+    /// list (what `CandidatePoolCfg::repeatability` consults) — the extra tuple element that
+    /// distinguishes this seam from the 2-tuple [`plane_pool_members`](Self::plane_pool_members).
+    /// Identical to scanning the deployment's repeatable-carrying pool map.
+    fn pool_members_repeatable(&self, member: &str) -> Option<(String, Vec<String>, Vec<String>)>;
 
     /// The `(pool_name, members)` of the failover pool `member` belongs to on the plane identified by
     /// the opaque registry `plane_key`, off the BOUND snapshot; `None` when `member` is un-pooled. The
@@ -695,13 +696,13 @@ pub trait RegistryHost: Send + Sync {
     /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
     /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
     /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
-    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
+    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
 
     /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
     /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
     /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
     /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
-    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 /// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off

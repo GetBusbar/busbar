@@ -121,7 +121,7 @@ impl PoolRoute {
         selected_auth: Authorised,
         arguments: &serde_json::Value,
     ) -> PoolRoute {
-        let pool = host.tool_pool_members(&selected.server);
+        let pool = host.pool_members_repeatable(&selected.server);
         let Some((pool_name, members, repeatable)) = pool else {
             // THE DEGENERATE SINGLE-MEMBER SET — the breaker unit's cell, unchanged: same key,
             // lane 0, fast-fail and no reroute, exactly what an un-pooled registration had.

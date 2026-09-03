@@ -293,6 +293,23 @@ jobs:
         run: scripts/plane-purity-lint.sh --selftest
       - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
         run: scripts/plane-purity-lint.sh --check
+      # VOICE-TRANSPORT/MEDIA neutrality — the FORWARD-edge companion to plane-purity. plane-purity bans
+      # the plane KEYS + LLM dialects; this bans the Plane-4 (busbar-voice) TRANSPORT/MEDIA nouns
+      # (rtc/sdp/webrtc/twilio/dtmf/rtp/sideband/realtime/audio/mulaw/g711/barge) that plane-purity does
+      # NOT name, so core can never learn a protocol's transport words. Self-test first (it plants a
+      # SdpOffer/webrtc hit and proves the scanner RED-flags it and passes a clean/comment/test tree),
+      # then the tree is scanned in --check (BLOCKING): the neutral crates carry ZERO transport nouns
+      # today and any regression that introduces one fails it RED.
+      - name: Plane transport-neutrality self-test (the transport/media scanner cannot be lied to)
+        run: scripts/plane-transport-neutrality.sh --selftest
+      - name: Plane transport-neutrality gate (BLOCKING — no voice-transport noun in the neutral crates)
+        run: scripts/plane-transport-neutrality.sh --check
+      # PLANE-ABI NEUTRALITY witness — the plane ABI's capability surface was DERIVED from a primitive
+      # taxonomy, not ENUMERATED from one protocol. This greps the busbar-plugin HOT lane for the banned
+      # protocol/role nouns and asserts ZERO (with a ban-list self-check of its own). It PASSES today;
+      # wired here as a BLOCKING gate so "derived, not enumerated" stays a machine fact, not a claim.
+      - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
+        run: scripts/plane-abi-neutrality.sh
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
 

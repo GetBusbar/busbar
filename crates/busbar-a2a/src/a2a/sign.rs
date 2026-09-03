@@ -185,13 +185,13 @@ impl CardSigner<'_> {
         // RFC 7515's signing input, spelled exactly as the verifier spells it.
         let signing_input = format!("{protected_b64}.{payload_b64}");
         // THE HOST DOES THE CRYPTO. The plane frames the signing input and hands the bytes to the
-        // host `card_sign` seam; the domain-derived card subkey is expanded and used entirely
+        // host `subkey_sign` seam; the domain-derived card subkey is expanded and used entirely
         // host-side (`GovState::card_sign`) and only the 64 signature bytes come back — so no signing
         // material is ever held on this plane. `None` only if the deployment holds no card-signing
         // key, which `card_signer` already screened out before constructing a `CardSigner`.
         let signature = self
             .host
-            .card_sign(signing_input.as_bytes())
+            .subkey_sign(signing_input.as_bytes())
             .ok_or(SignError::HostUnavailable)?;
 
         let mut out: Map<String, Value> = card
