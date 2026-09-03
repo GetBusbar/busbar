@@ -63,6 +63,8 @@ declare -a SKIP_REASON=(
   "scripts/plugin-registry-check.sh|reads the published plugin registry over the network; a local run measures the network, not the tree."
   "scripts/loom.sh|exhaustive interleaving model, minutes of CPU per run. Deliberately out of the default loop; run it directly when touching the config swap."
   "scripts/txn-fence.sh|compiles a module that MUST FAIL to type-check, in its own target dir. Correct, but it inverts the exit code and confuses a batch runner; run it directly."
+  "scripts/build-provenance-gate.sh|asserts the provenance stamp of a BUILT release binary ('… target/release/busbar release false'). Needs the release artifact the release build produces, exactly as verify-artifact.py does; a bare local run has no binary to inspect. The --selftest form runs here — it is the local mirror that proves the stamp discriminates."
+  "scripts/proof-manifest.py|the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
   "scripts/release-order-lint.py|release-graph shape; included via its own entries below, see RELEASE_ORDER."
 )
 
@@ -91,6 +93,7 @@ declare -a CARGO_LOCAL=(
   "cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture"
   "cargo build --locked --bin busbar"
   "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
+  "cargo test -p busbar-voice --features runtime --locked"
 )
 
 declare -a CARGO_CI_ONLY=(
@@ -98,12 +101,17 @@ declare -a CARGO_CI_ONLY=(
   "cargo test --workspace|the WINDOWS job's test run; same reason. This is the one gap a local run genuinely cannot close: read a green here as 'green on this platform'."
   "cargo clippy --workspace --all-targets -- -D warnings|the WINDOWS job's clippy. It exists to catch the platform-gated code no local run compiles at all -- a #[cfg(unix)] item whose #[cfg(windows)] twin was never written is a warning THERE and nowhere here. A macOS/Linux clippy cannot substitute: it takes the other arm of every cfg. Approximated locally with 'cargo xwin clippy --target x86_64-pc-windows-msvc', which type-checks the Windows arms without a Windows host but still executes nothing."
   "cargo test --release --locked timing_gate -- --ignored|a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."
+  "cargo build -p busbar --release --locked|the RELEASE-profile build that feeds build-provenance-gate.sh (it asserts the shipped binary's optimized posture). The local build mirror is the debug 'cargo build --locked --bin busbar' above; a release build here would re-measure the laptop, not prove anything the debug build does not."
+  "cargo build -p busbar-core -p busbar-substrate -p busbar-api|the plane-DELETION matrix build, whose '\${{ matrix.features }}' expands per kept-plane combination -- a CI matrix construct with no single local form. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."
+  "cargo test -p busbar-core --lib alloc_gate -- --nocapture|the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same test is also executed by 'cargo test --workspace --locked' above, which DOES run locally."
 )
 
-# Normalise a cargo invocation for comparison: drop the shell plumbing CI wraps it in (`2>&1`),
-# drop `--verbose` (it changes output, not what is proven), collapse whitespace.
+# Normalise a cargo invocation for comparison: drop the shell plumbing CI wraps it in (`2>&1`, a
+# trailing `\` line-continuation, and a trailing `>` stdout redirect whose target file was already cut
+# off at the opening `"`), drop `--verbose` (it changes output, not what is proven), collapse
+# whitespace. So the COMMAND, not the log file it writes, is what gets classified.
 cargo_norm() {
-  printf '%s\n' "$1" | sed -e 's/2>&1//g' -e 's/--verbose//g' -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//'
+  printf '%s\n' "$1" | sed -e 's/2>&1//g' -e 's/--verbose//g' -e 's/[[:space:]]*\\$//' -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//' -e 's/[[:space:]]*>$//'
 }
 
 cargo_ci_only_reason() {
@@ -120,17 +128,25 @@ die() { printf 'full-gate: %s\n' "$*" >&2; exit 2; }
 
 # ── DISCOVERY ─────────────────────────────────────────────────────────────────────────────────────
 # Every `scripts/...` invocation CI makes, with its arguments, deduplicated and in a stable order.
+# COMMENT LINES AND STEP `name:` LABELS ARE STRIPPED FIRST, exactly as the cargo discovery below does:
+# a `#` comment that MENTIONS a script by name (e.g. "scripts/plane-delete-test.sh PHYSICALLY REMOVES
+# ...") is documentation, not an invocation, and running that bare mention as if it were a gate prints
+# a usage line and a false red. Only real `run:` lines survive.
 mapfile -t DISCOVERED < <(
-  grep -oE "(python3 |bash )?scripts/[a-z0-9-]+\.(sh|py)( --[a-z-]+( [^ \"'|]+)?)*" "$CI_YML" \
+  sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
+    | grep -oE "(python3 |bash )?scripts/[a-z0-9-]+\.(sh|py)( --[a-z-]+( [^ \"'|]+)?)*" \
     | sed 's/^ *//' | sort -u
 )
 
 [ "${#DISCOVERED[@]}" -ge "$MIN_GATES" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $MIN_GATES). The parser is broken, and a broken discovery reports a clean tree."
 
-# Every cargo invocation CI makes, normalised. COMMENT LINES ARE STRIPPED FIRST: `ci.yml` documents
-# the openapi refresh command in a comment, and a documented command is not a gate.
+# Every cargo invocation CI makes, normalised. COMMENT LINES AND STEP `name:` LABELS ARE STRIPPED
+# FIRST: `ci.yml` documents the openapi refresh command in a comment, and a step's `name:` field is a
+# human label that quotes commands in prose (e.g. "the suite `cargo test --workspace` never runs") —
+# a documented or quoted command is not a gate. A `>` redirect is likewise excluded at capture, so the
+# COMMAND, not the log file it writes, is what gets classified.
 mapfile -t CARGO_DISCOVERED < <(
-  sed -e 's/^[[:space:]]*#.*$//' "$CI_YML" \
+  sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
     | grep -v "^[[:space:]]*echo " \
     | grep -oE 'cargo (fmt|clippy|build|test|run)[^"|)]*' \
     | while IFS= read -r c; do cargo_norm "$c"; done \
