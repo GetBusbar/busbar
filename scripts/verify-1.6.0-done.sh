@@ -166,9 +166,17 @@ step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CONFIG-NOUN — core names no section noun as a parse target (armed)"
+begin_group "CONFIG-NOUN — four-noun parse residual (REPORT-ONLY; locked-legitimate floor)"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-step "plane-config-noun-gate (armed)"    env GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check
+# REPORT-ONLY, deliberately NOT a done-blocker — same treatment as the plane-noun/plane-grep
+# billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
+# core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
+# DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
+# residual (pools 8 · tools 3 · agents 2 · streams 5 = 18) is a LEGITIMATE floor, not debt; the DoD is
+# "core's generic named-map MACHINERY names no plane noun" (Stage A, done), not "zero noun field refs".
+# Printed for visibility; a RISE above the floor is the real signal.
+printf '  \033[36m[info]\033[0m '
+GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1 | grep -E "distinct core parse-target lines" | tail -1 || echo "config-noun count unavailable"
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

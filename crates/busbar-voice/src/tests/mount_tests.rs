@@ -65,7 +65,8 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 
     // The admission BINDS the audience derived from `public_url` — the confused-deputy defence: a token
     // minted for another resource is refused here (R2: a claim without an admission refuses boot).
-    let admission = voice_admission(slot.as_ref()).expect("a claimed plane must admit (R2)");
+    let admission =
+        voice_admission(slot.as_ref()).expect("a claimed plane must admit (mounted ⇒ admitted)");
     assert_eq!(
         admission.audience,
         format!("{PUBLIC_URL}/v1/realtime"),
