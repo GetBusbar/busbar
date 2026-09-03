@@ -3,12 +3,12 @@
   "release": {
     "version": "dev",
     "tag": "dev",
-    "qa_sha": "c722df261e4e0c7e7a13fdc0e289576dd65290ac",
+    "qa_sha": "6f68168778a87433e6ab1a441d2cf97d48574bc1",
     "staging_tag": null,
     "digest": null,
-    "run_id": "33777619391",
-    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33777619391",
-    "recorded_at": "2026-09-03T16:33:32Z"
+    "run_id": "33796409315",
+    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33796409315",
+    "recorded_at": "2026-09-03T19:39:51Z"
   },
   "verdicts": [
     {
