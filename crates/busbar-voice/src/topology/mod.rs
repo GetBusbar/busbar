@@ -219,8 +219,8 @@ impl std::error::Error for StartError {}
 /// lease/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
 /// session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a
 /// neutral 500 if a future refactor ever mis-routed a session opener through the one-shot path.
-struct SessionGauntlet {
-    deny: bool,
+pub(crate) struct SessionGauntlet {
+    pub(crate) deny: bool,
 }
 
 #[async_trait::async_trait]
@@ -294,7 +294,44 @@ where
     // The call-site the D3 witness pins: begin_session ACTUALLY calls run_gauntlet_session here.
     run_gauntlet_session(gauntlet_req, plane).map_err(|_refusal| StartError::DestinationRefused)?;
 
-    // Only past the gate: the marquee guarantee's charge — no lease ⇒ no session (fail closed).
+    // Only past the gate: reserve/bind/open the live carrier. Factored into [`open_admitted_session`]
+    // so the inbound WS-accept seam — where the gauntlet has ALREADY run inside `accept_gauntlet`,
+    // strictly before the socket upgrades — reuses the SAME post-admit open without re-running (or
+    // duplicating) the gate. begin_session's own order is byte-identical: gauntlet, then this.
+    open_admitted_session(
+        rt,
+        codec,
+        owner,
+        call_id,
+        locked_config,
+        carrier,
+        budget,
+        now,
+    )
+}
+
+/// THE POST-ADMIT OPEN of a governed session — the reserve/bind/open half of [`begin_session`],
+/// called ONLY after the open-pass gauntlet has already admitted the destination (verify strictly
+/// before any charge). Opens the D2 metering lease (fail-closed on a refused budget), opens the
+/// durable [`SessionHandle`] at genesis, and assembles the [`SessionCore`]. NO gauntlet runs here: the
+/// caller (`begin_session`, or the inbound WS-accept `accept_gauntlet` path) is responsible for having
+/// run it first. A refused budget or a failed durable open returns before ANY durable row is committed
+/// — so an aborted open, like a refused gauntlet, leaves no orphaned live session row.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_admitted_session<C>(
+    rt: &VoiceRuntime,
+    codec: C,
+    owner: impl Into<String>,
+    call_id: impl Into<String>,
+    locked_config: Option<SessionConfig>,
+    carrier: Carrier,
+    budget: SessionBudget,
+    now: u64,
+) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    // The marquee guarantee's charge — no lease ⇒ no session (fail closed). Reserved AFTER admission.
     let lease = rt
         .open_lease(budget.estimate_nanos, budget.fee_nanos, budget.cap_nanos)
         .ok_or(StartError::BudgetRefused)?;

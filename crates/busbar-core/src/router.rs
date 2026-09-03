@@ -442,6 +442,14 @@ pub(crate) fn base_data_router(
             }
         }
     }
+    // THE PLANES' INBOUND WS-ACCEPT ARRIVALS, drained from the neutral substrate registry the
+    // composition root installed (`install_ws_arrivals`). Behind the neutral `duplex-ws` feature: the
+    // default/shipped money-path build compiles neither this line nor `mount_ws_arrivals`, so the
+    // router emits the same routes in the same order (byte-identical assembly) and `axum/ws` (hence
+    // tokio-tungstenite) stays out of the graph. Each spec's live slot is resolved from the SAME
+    // `plane_slots` the non-WS loop reads, so an unconfigured plane mounts nothing.
+    #[cfg(feature = "duplex-ws")]
+    let router = mount_ws_arrivals(router, plane_slots);
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
     // metadata document and nothing in the route table.
@@ -550,6 +558,92 @@ fn mount_plane_route(
             }
         },
     )
+}
+
+/// Mount the planes' inbound WS-accept ARRIVALS onto the core router (the WS sibling of
+/// [`mount_plane_route`]) — behind the neutral `duplex-ws` feature, so the default build compiles
+/// none of this and names no WS type. Drains the neutral substrate registry
+/// (`take_ws_arrivals`), and per spec calls the SAME [`crate::core_routes::CoreRouter::route`] the
+/// non-WS adapter calls, with the spec's own `(path, GET, auth)` — so the `CoreRouteTable` row is
+/// byte-identical in shape to a data route and the auth middleware enforces `auth` BEFORE the accept
+/// fn, exactly as for `PlaneRouteSpec`. Method is GET: a WS upgrade is an HTTP GET.
+///
+/// The handler is a CORE-owned axum closure whose ONLY new extractor is
+/// [`axum::extract::ws::WebSocketUpgrade`] (named here and nowhere the default build compiles). It
+/// assembles a substrate-owned [`busbar_substrate::ingress::duplex_ws::WsArrival`] from the SAME
+/// sources `mount_plane_route` reads (minus the body — a WS GET carries none), carrying the upgrade
+/// BY VALUE and the plane's live slot (resolved from `plane_slots` under the spec's `slot_key`, so an
+/// unconfigured plane mounts nothing), and hands it to the plane's neutral accept fn — which reaches
+/// `serve_gauntlet`/`accept_gauntlet` internally and never a bare `on_upgrade`.
+#[cfg(feature = "duplex-ws")]
+fn mount_ws_arrivals(
+    router: crate::core_routes::CoreRouter,
+    plane_slots: &std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+) -> crate::core_routes::CoreRouter {
+    use busbar_plugin_loader::RouteMethod;
+    let mut router = router;
+    for spec in busbar_substrate::ingress::duplex_ws::take_ws_arrivals() {
+        let busbar_substrate::ingress::duplex_ws::WsArrivalSpec {
+            path,
+            auth,
+            slot_key,
+            accept,
+        } = spec;
+        // No live slot this generation ⇒ the plane is unconfigured ⇒ mount nothing, exactly as the
+        // non-WS route loop skips a plane with no slot.
+        let Some(slot) = plane_slots.get(slot_key) else {
+            continue;
+        };
+        let slot = slot.clone();
+        let ctx_path = path.clone();
+        router = router.route(path, RouteMethod::Get, auth, {
+            move |upgrade: axum::extract::ws::WebSocketUpgrade,
+                  axum::extract::State(handle): axum::extract::State<
+                std::sync::Arc<state::AppHandle>,
+            >,
+                  raw_params: axum::extract::RawPathParams,
+                  uri: axum::http::Uri,
+                  gov: Option<axum::extract::Extension<busbar_api::PlaneRequestCtx>>,
+                  principal: Option<axum::extract::Extension<busbar_api::AuthPrincipal>>,
+                  headers: axum::http::HeaderMap| {
+                let accept = accept.clone();
+                let slot = slot.clone();
+                let ctx_path = ctx_path.clone();
+                let path_params: Vec<(String, String)> = raw_params
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                async move {
+                    let gov = gov.map(|axum::extract::Extension(g)| g);
+                    let caller_principal = gov
+                        .as_ref()
+                        .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
+                    // Mint the neutral host seam over the request's live engine snapshot, exactly as
+                    // `mount_plane_route` does — the accept fn reaches host capabilities through it.
+                    let host = crate::plane_host::engine_host_from_handle(&handle);
+                    let arrival = busbar_substrate::ingress::duplex_ws::WsArrival {
+                        upgrade,
+                        gov,
+                        principal: principal.map(|axum::extract::Extension(p)| p),
+                        caller_principal,
+                        path: ctx_path,
+                        uri,
+                        headers,
+                        path_params,
+                        host,
+                        slot,
+                    };
+                    // The accept fn returns the finished response: the 101-switching upgrade on admit,
+                    // or the gauntlet's refusal on refuse (no socket bound, no task spawned).
+                    accept(arrival)
+                }
+            }
+        });
+    }
+    router
 }
 
 /// Apply the shared middleware stack — auth chain, request-body cap, 413 reshaping, server-timing —

@@ -187,39 +187,56 @@ fn build_binds_the_audience_from_public_url_and_none_without() {
 }
 
 #[test]
-fn the_four_ingress_routes_mount_audience_checked() {
+fn the_four_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() {
     let slot = slot_from_public_url(Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
-    let routes = voice_routes(slot.as_ref());
 
-    // The four ingress doors: ek_ mint + SDP broker (one-shot HTTP) and the two WS accepts.
-    let mounted: Vec<(&str, &RouteMethod, &RouteAuth)> = routes
-        .iter()
-        .map(|r| (r.path.as_str(), &r.method, &r.auth))
+    // The TWO one-shot HTTP doors ride the buffered-body `routes` seam: ek_ mint + SDP broker.
+    let http: Vec<(String, RouteMethod, RouteAuth)> = voice_routes(slot.as_ref())
+        .into_iter()
+        .map(|r| (r.path, r.method, r.auth))
         .collect();
     assert_eq!(
-        mounted,
+        http,
         vec![
             (
-                "/v1/realtime/client_secrets",
-                &RouteMethod::Post,
-                &RouteAuth::Key
-            ),
-            ("/v1/realtime/calls", &RouteMethod::Post, &RouteAuth::Key),
-            (
-                "/v1/realtime/sideband/{call_id}",
-                &RouteMethod::Get,
-                &RouteAuth::Key
+                "/v1/realtime/client_secrets".to_string(),
+                RouteMethod::Post,
+                RouteAuth::Key
             ),
             (
-                "/v1/realtime/telephony/{call_id}",
-                &RouteMethod::Get,
-                &RouteAuth::Key
+                "/v1/realtime/calls".to_string(),
+                RouteMethod::Post,
+                RouteAuth::Key
             ),
         ],
-        "all four voice ingress routes mount, each RouteAuth::Key behind the plane's one audience"
+        "the two one-shot HTTP doors mount, each RouteAuth::Key behind the plane's one audience"
     );
 
-    // No receiving side ⇒ no routes, exactly as it claims and admits nothing.
+    // The TWO inbound WS-accept doors ride the neutral WS-accept seam instead (an upgrade cannot ride
+    // the buffered-body adapter): sideband + telephony, SAME RouteAuth::Key under the same audience,
+    // keyed to the plane's decl slot so the core mount resolves the live runtime.
+    let ws: Vec<(String, RouteAuth, &'static str)> = crate::mount::voice_ws_arrivals()
+        .into_iter()
+        .map(|a| (a.path, a.auth, a.slot_key))
+        .collect();
+    assert_eq!(
+        ws,
+        vec![
+            (
+                "/v1/realtime/sideband/{call_id}".to_string(),
+                RouteAuth::Key,
+                crate::PLANE_DECL.key
+            ),
+            (
+                "/v1/realtime/telephony/{call_id}".to_string(),
+                RouteAuth::Key,
+                crate::PLANE_DECL.key
+            ),
+        ],
+        "the two WS-accept doors declare through the neutral seam, RouteAuth::Key under the plane's key"
+    );
+
+    // No receiving side ⇒ no HTTP routes, exactly as it claims and admits nothing.
     assert!(
         voice_routes(&()).is_empty(),
         "a slot that is not a VoiceMount mounts no routes"

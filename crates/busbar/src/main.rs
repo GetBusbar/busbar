@@ -705,6 +705,22 @@ fn register_diagnostics() {
     busbar_substrate::diagnostics::install_diagnostics(installed.leak());
 }
 
+/// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
+/// into the neutral WS-accept registry (`busbar_substrate::ingress::duplex_ws::install_ws_arrivals`),
+/// exactly `register_planes`' shape on the WS-accept axis. Each duplex plane crate OWNS its
+/// `WsArrivalSpec`s (path + audience + a neutral gauntlet-gated accept fn) and exposes them as
+/// `voice_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
+/// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
+/// router mounts no WS-accept route. Voice is the only duplex plane today, so this is a single
+/// feature-gated push — with `plane-voice` off, nothing installs, exactly as the plane row is absent.
+fn register_ws_arrivals() {
+    #[cfg(feature = "plane-voice")]
+    {
+        let installed = busbar_voice::mount::voice_ws_arrivals();
+        busbar_substrate::ingress::duplex_ws::install_ws_arrivals(installed);
+    }
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -721,6 +737,13 @@ fn main() {
     // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build
     // installs nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
+    // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
+    // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
+    // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
+    // duplex plane contributes its `WsArrivalSpec`s under its feature; a build with no duplex plane
+    // installs nothing and the router mounts no WS-accept route. Gated to `plane-voice` (voice is the
+    // only duplex plane today), so a shipped build drops it entirely — strong-form deletable.
+    register_ws_arrivals();
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
     // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An

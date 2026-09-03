@@ -169,7 +169,15 @@ plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", 
 # crate with one flip, exactly as `plane-llm` does. NOT default-on: voice is dev-only until DoD, so
 # the shipped/default build is byte-unchanged; the binary's `plane-voice` (which also carries the
 # `dep:busbar-voice` + `busbar-voice/runtime` edges) forwards to this via `busbar-core/plane-voice`.
-plane-voice = ["busbar-substrate/plane-voice"]
+plane-voice = ["busbar-substrate/plane-voice", "duplex-ws"]
+# THE NEUTRAL INBOUND WS-ACCEPT CAPABILITY — arms the core-side `mount_ws_arrivals` seam (router.rs)
+# that mounts a plane's gauntlet-gated inbound-WebSocket arrivals. NAMES NO PLANE: any duplex plane
+# (voice today, a future telephony/stream plane tomorrow) turns on the same capability. Forwards to
+# substrate's neutral `runtime` (which arms `axum/ws` + the `duplex_ws` acceptor and the `WsArrival`
+# newtype/registry). OFF by default and pulled ONLY by `plane-voice` above, so the default/shipped
+# money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and this seam is
+# compiled out entirely — byte-identical assembly, strong-form deletable.
+duplex-ws  = ["busbar-substrate/runtime"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that

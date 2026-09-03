@@ -248,3 +248,126 @@ async fn dial_refuses_unpinned_and_guard_failing_targets() {
         "a non-ws scheme must be a Url error, got {err:?}"
     );
 }
+
+// ── THE INBOUND WS-ACCEPT ARRIVAL SEAM (WsArrival newtype + accept_gauntlet + registry) ──────────
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// The socket-task counter the accept-fn's `on_socket` bumps — proves a REFUSED accept spawns ZERO
+/// socket tasks (the R2 gauntlet-before-upgrade invariant), and a proceeding one spawns exactly one.
+static ON_SOCKET_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Bring up a loopback WS server whose route drives `accept_gauntlet` directly (the primitive a plane's
+/// WS-accept fn uses) with a `GatePlane { refuse }` and an `on_socket` that BUMPS [`ON_SOCKET_RUNS`].
+/// So a refused accept returns the refusal WITHOUT ever constructing the socket task, and the counter
+/// stays 0; a proceeding one binds the socket and the counter reaches 1.
+async fn spawn_accept_gauntlet_ws_server(refuse: bool) -> SocketAddr {
+    async fn ws_route(
+        axum::extract::State(refuse): axum::extract::State<bool>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        let gov = busbar_api::PlaneRequestCtx::default();
+        let req = crate::plane_host::GauntletRequest {
+            gov: &gov,
+            destination: "model-x",
+            correlation_id: 1,
+            charged_at: 1,
+            started: std::time::Instant::now(),
+        };
+        ws_ingress::accept_gauntlet(
+            upgrade,
+            req,
+            Box::new(GatePlane { refuse }),
+            |_stream, _sink| async move {
+                ON_SOCKET_RUNS.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+    }
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(ws_route))
+        .with_state(refuse);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// GAUNTLET-BEFORE-UPGRADE, ZERO-TASK: a REFUSED destination returns the gate's refusal and spawns
+/// ZERO socket tasks — the accept fn never reaches `accept`/`on_upgrade`. A PROCEEDING one binds the
+/// socket, so exactly one task runs — proving the counter is live (the refuse `0` is not vacuous).
+#[tokio::test]
+async fn accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks() {
+    ON_SOCKET_RUNS.store(0, Ordering::SeqCst);
+
+    // REFUSE: the dial cannot upgrade (no socket bound) and NO on_socket task ran.
+    let addr = spawn_accept_gauntlet_ws_server(true).await;
+    let refused = duplex_ws::dial(&format!("ws://{addr}/"), loopback_policy()).await;
+    assert!(
+        refused.is_err(),
+        "a refused destination binds no socket, so the dial cannot upgrade"
+    );
+    // The refusal is synchronous and precedes any task; give the server no chance to have spawned one.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        ON_SOCKET_RUNS.load(Ordering::SeqCst),
+        0,
+        "a refused accept spawns ZERO socket tasks — the accept fn never reached on_upgrade"
+    );
+
+    // PROCEED: the socket binds and the on_socket task runs exactly once — the counter is not vacuous.
+    let addr = spawn_accept_gauntlet_ws_server(false).await;
+    let (_stream, _sink) = duplex_ws::dial(&format!("ws://{addr}/"), loopback_policy())
+        .await
+        .expect("a proceeding gauntlet binds the socket");
+    let mut ran = false;
+    for _ in 0..50 {
+        if ON_SOCKET_RUNS.load(Ordering::SeqCst) >= 1 {
+            ran = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        ran,
+        "a proceeding accept binds the socket and runs exactly one on_socket task"
+    );
+}
+
+/// THE WS-ARRIVAL SPEC + PROCESS REGISTRY round-trip: a plane declares a `WsArrivalSpec` (the neutral,
+/// single-compiled seam carrying the substrate-owned `WsArrival` newtype BY VALUE — never `Box<dyn
+/// Any>`), the composition root installs it, and the core router drains it VERBATIM. Witnesses the R1
+/// seam shape (spec is constructible with a by-value accept fn) and the install/take registry.
+#[test]
+fn ws_arrival_spec_installs_and_drains_verbatim() {
+    use crate::ingress::duplex_ws::{
+        install_ws_arrivals, take_ws_arrivals, WsArrival, WsArrivalSpec,
+    };
+    use busbar_plugin::cold::http_endpoint::RouteAuth;
+
+    let spec = WsArrivalSpec {
+        path: "/v1/duplex/{id}".to_string(),
+        auth: RouteAuth::Key,
+        slot_key: "test-duplex-plane",
+        // The accept fn takes the newtype BY VALUE — the single-compiled `WsArrival`, never a box.
+        accept: std::sync::Arc::new(|_a: WsArrival| {
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::NOT_IMPLEMENTED)
+                .body(axum::body::Body::empty())
+                .expect("response builds")
+        }),
+    };
+    install_ws_arrivals(vec![spec]);
+    let drained = take_ws_arrivals();
+    assert_eq!(drained.len(), 1, "the installed arrival drains verbatim");
+    assert_eq!(drained[0].path, "/v1/duplex/{id}");
+    assert_eq!(drained[0].slot_key, "test-duplex-plane");
+    assert!(matches!(drained[0].auth, RouteAuth::Key));
+    // Read-many: a second drain still yields the same installed set (the router may build twice).
+    assert_eq!(
+        take_ws_arrivals().len(),
+        1,
+        "take is read-many, not destructive"
+    );
+}
