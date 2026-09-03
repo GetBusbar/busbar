@@ -116,12 +116,10 @@ where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
     M: TokenMinter,
 {
-    // Mint the ephemeral secret scoped to the SAME config busbar will lock and re-apply.
-    let token = minter
-        .mint(&locked_config)
-        .await
-        .map_err(AttachError::Mint)?;
-
+    // GOVERN FIRST, MINT SECOND (verify-strictly-before-charge, and before any credential is issued):
+    // begin_session runs the shared open-pass gauntlet gate + reserves the D2 lease + opens the durable
+    // handle. NOTHING is minted on a denied or budget-refused session — a refused open costs zero bytes,
+    // zero charge, and hands the browser NO ephemeral secret. The mint runs ONLY past a clean open.
     // A sideband carrier: no downlink media relay — the browser's media path is peer-to-peer.
     let carrier = Carrier::sideband();
     let (core, handle, guard) = begin_session(
@@ -129,12 +127,20 @@ where
         codec,
         owner,
         call_id,
-        Some(locked_config),
+        Some(locked_config.clone()),
         carrier,
         budget,
         now,
     )
     .map_err(AttachError::Start)?;
+
+    // Only past the governed open: mint the ephemeral secret scoped to the SAME config busbar locked and
+    // re-applies. A mint failure tears the just-opened session down through the returned guard/handle
+    // drop rather than leaking a governed-but-unusable session.
+    let token = minter
+        .mint(&locked_config)
+        .await
+        .map_err(AttachError::Mint)?;
 
     let session = VoiceSession::new(Arc::clone(&core));
     Ok(Attached {

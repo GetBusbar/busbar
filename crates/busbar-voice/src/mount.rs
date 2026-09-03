@@ -27,16 +27,60 @@
 //! This mount proves the door is real and governed; it opens no socket and calls no provider.
 
 use crate::ir::codec::OpenAiRealtimeCodec;
+use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
+use crate::runtime::scope::SessionHandle;
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config};
+use crate::topology::webrtc::TokenMinter;
 use crate::topology::{begin_session, SessionBudget, StartError};
+use busbar_substrate::egress::engine::{send_bounded, EngineClient};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
+use busbar_substrate::plane::observe::Counted;
 use busbar_substrate::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_substrate::plane::PlaneAdmission;
+use busbar_substrate::plane_host::{EngineHost, GateOutcome, TransformVerdict};
 use busbar_substrate::plane_routes::PlaneRouteSpec;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
 use std::any::Any;
 use std::sync::Arc;
+
+/// The `busbar_plane_requests_total` family name (labels: plane, ingress_protocol, pool, outcome) —
+/// the neutral per-mounted-plane request counter the core `/metrics` scrape exposes. Named by literal
+/// so the voice plane emits into the SAME family without reaching into `busbar-core` (which owns the
+/// constant); a `Counted` marker on the answer stands the core `plane::observe` middleware down so the
+/// front-door series is never double-counted.
+const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
+
+/// The bounded `pool` label the voice FRONT DOOR (the voice-server cell) emits under — a constant, not
+/// a caller value, so the series count stays bounded. The outbound provider dial (the voice-client
+/// cell) counts on its own `busbar_upstream_attempts_total` family in `topology::dial_provider`.
+const FRONT_DOOR_POOL: &str = "voice-server";
+
+/// The session-open method label the hook gate/tap projection carries — the single operation a voice
+/// front-door request performs. Bounded (one value), so it is safe as the hook `tool` slot the
+/// operator's gate reads.
+const SESSION_OPEN_METHOD: &str = "session.open";
+
+/// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
+/// section noun (`streams`), since voice declares no per-registration container (its config is one
+/// object, not a named-definition map). The operator attaches a session-open gate to this ONE
+/// container, and `gate_attached(plane_key, container)` reads it here.
+const GATE_CONTAINER: &str = "streams";
+
+/// A CONFIGURED PROVIDER ENDPOINT the one-shot mint / SDP-broker passes reach the realtime provider
+/// through — the base origin plus the real server-side key. `None` on the dispatch slot until the
+/// composition root threads the provider-credential config (the SAME follow-on the runtime money hop
+/// documents); a loopback test injects one directly into [`open_governed`]. The real key stays
+/// server-side: it authenticates only the busbar↔provider hop and never reaches a browser payload.
+pub(crate) struct ProviderEndpoint {
+    /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
+    pub base_url: String,
+    /// The REAL provider key, held server-side.
+    pub api_key: String,
+}
 
 /// THE VOICE PLANE'S RFC 8707 RESOURCE PATH — the segment the plane's canonical audience carries and
 /// the base every voice ingress route sits under. A token presented on any `/v1/realtime/*` path must
@@ -80,6 +124,11 @@ pub struct VoiceMount {
     /// composition root as a follow-on — the SAME gap `build_runtime_hosted` documents — so this
     /// structural mount reserves against an in-process cell and never a real caller grant.
     runtime: Arc<VoiceRuntime>,
+    /// The configured realtime provider endpoint the one-shot mint / SDP-broker passes reach — `None`
+    /// until the composition root threads the provider-credential config (the same follow-on the
+    /// runtime money hop documents). While `None`, the mint / SDP routes answer `501` (governed, but
+    /// no provider credential composed); a loopback test injects one directly into [`open_governed`].
+    provider: Option<ProviderEndpoint>,
 }
 
 impl VoiceMount {
@@ -175,6 +224,9 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
         audience,
         resource_metadata,
         runtime: Arc::new(dispatch_runtime()),
+        // The provider-credential config is the composition root's follow-on (see the field doc); until
+        // it is threaded, the mint / SDP routes answer `501` — governed, but no provider composed.
+        provider: None,
     };
     Some(Arc::new(mount))
 }
@@ -272,68 +324,381 @@ pub(crate) enum Ingress {
     Telephony,
 }
 
-/// THE SHARED GOVERNED OPEN every voice route funnels through — the ONE choke point that runs
-/// `run_gauntlet_session` (verify-strictly-before-charge) via [`crate::topology::begin_session`] /
-/// [`crate::topology::telephony::begin_telephony`]. On a destination the runtime denies the gate
-/// REFUSES before any lease/durable open (zero bytes, zero charge) and this answers `403`. On a clean
-/// open it answers `501`: the session was GOVERNED, but the live provider/media leg (the `ek_` mint,
-/// the SDP broker, the provider WSS dial, the socket upgrade) is composed by the deployment behind the
-/// plane's ports, not by this in-process structural mount. Synchronous — the gate is `verify` (sync)
-/// and the session opener is sync — so a route handler awaits nothing to reach it.
-pub(crate) fn open_governed(
-    rt: &VoiceRuntime,
-    ingress: Ingress,
-    owner: String,
-    call_id: String,
-    now: u64,
-) -> axum::response::Response {
+/// The neutral inputs one governed session-open reads — bundled so the choke point takes ONE argument
+/// and a test constructs the SAME shape the route handler does. `host` is the owned host seam (cloned
+/// per blocking hook hop), `provider` the configured realtime endpoint (`None` ⇒ the mint / SDP passes
+/// answer `501`), `key` the caller `(id, name)` the hook gate reads, `body`/`headers` the one-shot
+/// pass's request payload (the SDP offer + its `Authorization: Bearer ek_`).
+pub(crate) struct GovernedOpen<'a> {
+    pub rt: &'a VoiceRuntime,
+    pub host: Arc<dyn EngineHost>,
+    pub provider: Option<&'a ProviderEndpoint>,
+    pub ingress: Ingress,
+    pub owner: String,
+    pub call_id: String,
+    pub key: Option<(String, String)>,
+    pub body: Bytes,
+    pub headers: axum::http::HeaderMap,
+    pub now: u64,
+}
+
+/// THE SHARED GOVERNED OPEN every voice route funnels through — the ONE choke point. In order:
+///
+/// 1. **hooks-gate** (`host.gate_decide`) — the operator's request-admission gate over the session-open
+///    params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL (nothing serialized, no
+///    blocking hop) when no gate is attached — the `gate_attached` presence pre-filter.
+/// 2. **hooks-tap** (`host.transform_over`) — a `prompt: rw` rewrite over the same params, AFTER the
+///    gate and BEFORE the credential is leased. A committed rewrite REPLACES the locked session params
+///    the mint/dial then carries; an abstaining chain (or no attached rewrite) leaves them
+///    byte-identical.
+/// 3. **the governed open** — [`crate::topology::begin_session`] /
+///    [`crate::topology::telephony::begin_telephony`] runs `run_gauntlet_session`
+///    (verify-strictly-before-charge): a denied destination refuses `403` before any lease/durable open.
+/// 4. **the serving leg** — for `Mint`, the `ek_` is minted through [`HttpsTokenMinter`] over the
+///    configured provider and returned as JSON; for `Sdp`, the offer is brokered upstream, the
+///    `rtc_<call_id>` correlation key is stamped onto the durable row, and the answer + `Location`
+///    header are returned. The `Sideband` / `Telephony` WS-accept legs answer `501` — the inbound
+///    WS-accept seam lands separately.
+///
+/// The front-door request is COUNTED on `busbar_plane_requests_total` (plane = voice), and the answer
+/// carries a [`Counted`] marker so the core `plane::observe` middleware stands down (no double count).
+pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Response {
+    let GovernedOpen {
+        rt,
+        host,
+        provider,
+        ingress,
+        owner,
+        call_id,
+        key,
+        body,
+        headers,
+        now,
+    } = req;
     // A coarse structural budget: an over-estimate the in-process lease reserves, no flat fee, uncapped.
     let budget = SessionBudget {
         estimate_nanos: 1_000,
         fee_nanos: 0,
         cap_nanos: None,
     };
-    let opened = match ingress {
-        Ingress::Telephony => begin_telephony(
+    // The session-open params the hooks screen and (maybe) rewrite: the g711 lock for telephony, the
+    // plane-default session posture otherwise. One projection both the gate and the tap read.
+    let mut session_cfg = match ingress {
+        Ingress::Telephony => g711_config(),
+        Ingress::Mint | Ingress::Sdp | Ingress::Sideband => rt.session_defaults.clone(),
+    };
+
+    // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
+    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+        return finish(*refused);
+    }
+    // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
+    // (params untouched) when no rewrite hook is attached or the chain abstains.
+    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+        Ok(Some(rewritten)) => session_cfg = rewritten,
+        Ok(None) => {}
+        Err(refused) => return finish(*refused),
+    }
+
+    // (3) THE GOVERNED OPEN. Telephony has no durable handle to correlate; the sideband topologies keep
+    // the handle so the SDP broker can stamp the `rtc_<call_id>` onto the row.
+    let resp = match ingress {
+        Ingress::Telephony => match begin_telephony(
             rt,
             OpenAiRealtimeCodec,
             owner,
             call_id,
-            g711_config(),
+            session_cfg,
             budget,
             now,
-        )
-        .map(|_proxy| ()),
-        Ingress::Mint | Ingress::Sdp | Ingress::Sideband => begin_session(
+        ) {
+            Ok(_proxy) => sideband_pending(),
+            Err(e) => start_refusal(&e),
+        },
+        Ingress::Mint | Ingress::Sdp | Ingress::Sideband => match begin_session(
             rt,
             OpenAiRealtimeCodec,
             owner,
             call_id,
-            Some(rt.session_defaults.clone()),
+            Some(session_cfg.clone()),
             Carrier::sideband(),
             budget,
             now,
-        )
-        .map(|_open| ()),
+        ) {
+            // (4) THE SERVING LEG, past a clean governed open.
+            Ok((_core, handle, _guard)) => match ingress {
+                Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
+                Ingress::Sdp => serve_sdp(provider, &headers, body, &handle, now).await,
+                // The inbound WS-accept seam (browser sideband) lands separately — no bare on_upgrade.
+                _ => sideband_pending(),
+            },
+            Err(e) => start_refusal(&e),
+        },
     };
-    match opened {
-        // GOVERNED, but the live serving leg is the deployment's to compose behind the plane's ports.
-        Ok(()) => refusal(
-            axum::http::StatusCode::NOT_IMPLEMENTED,
-            "voice session governed-open succeeded; the live provider/media leg (ek_ mint / SDP \
-             broker / provider WSS) is composed by the deployment behind the plane's ports, not by \
-             this in-process structural mount",
+    finish(resp)
+}
+
+/// EMIT the front-door session-open count and MARK the answer counted. The plane-labelled counter
+/// (`plane = voice`, the voice-server cell) lands on the neutral `busbar_plane_requests_total` family;
+/// the [`Counted`] marker on the response tells the core `plane::observe` middleware this request was
+/// already counted, so the front-door series is never double-counted at the boundary.
+fn finish(mut resp: axum::response::Response) -> axum::response::Response {
+    let outcome = busbar_substrate::telemetry::outcome_of(resp.status().as_u16());
+    metrics::counter!(
+        PLANE_REQUESTS_TOTAL,
+        "plane" => "voice",
+        "ingress_protocol" => crate::OPENAI_REALTIME,
+        "pool" => FRONT_DOOR_POOL,
+        "outcome" => outcome,
+    )
+    .increment(1);
+    resp.extensions_mut().insert(Counted);
+    resp
+}
+
+/// The hooks-GATE leg (`host.gate_decide`) over the session-open params. `Ok(())` proceeds; `Err` is a
+/// finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the `gate_attached` presence
+/// pre-filter short-circuits before any serialize or blocking hop.
+async fn hook_gate(
+    host: &Arc<dyn EngineHost>,
+    key: Option<(String, String)>,
+    session_id: &str,
+    now: u64,
+    cfg: &SessionConfig,
+) -> Result<(), Box<axum::response::Response>> {
+    if !host.gate_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+        return Ok(());
+    }
+    // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
+    // `(plane_key, container)` and runs the same decision — the Seam-B inversion, so this plane body
+    // names no core hook symbol. Driven on a blocking thread (the host runs the async gate on a fresh
+    // runtime), so it MUST NOT run on a worker.
+    let args_json = serde_json::to_vec(cfg).unwrap_or_default();
+    let sid = session_id.to_string();
+    let host = Arc::clone(host);
+    let outcome = tokio::task::spawn_blocking(move || {
+        host.gate_decide(
+            crate::PLANE_DECL.key,
+            GATE_CONTAINER,
+            now,
+            SESSION_OPEN_METHOD,
+            &args_json,
+            key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
+            (!sid.is_empty()).then_some(sid.as_str()),
+        )
+    })
+    .await
+    .unwrap_or(GateOutcome::Reject {
+        status: 403,
+        message: String::new(),
+        hook: String::new(),
+    });
+    match outcome {
+        GateOutcome::Proceed => Ok(()),
+        GateOutcome::Reject {
+            status, message, ..
+        } => Err(Box::new(hook_refusal(status, &message))),
+    }
+}
+
+/// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
+/// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
+/// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a rewrite-gate rejection.
+async fn hook_tap(
+    host: &Arc<dyn EngineHost>,
+    key: Option<(String, String)>,
+    session_id: &str,
+    now: u64,
+    cfg: &SessionConfig,
+) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
+    if !host.tap_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
+        return Ok(None);
+    }
+    let args_json = serde_json::to_vec(cfg).unwrap_or_default();
+    let sid = session_id.to_string();
+    let host = Arc::clone(host);
+    let verdict = tokio::task::spawn_blocking(move || {
+        host.transform_over(
+            crate::PLANE_DECL.key,
+            GATE_CONTAINER,
+            now,
+            SESSION_OPEN_METHOD,
+            &args_json,
+            key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
+            (!sid.is_empty()).then_some(sid.as_str()),
+        )
+    })
+    .await
+    // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed unchanged.
+    .unwrap_or(TransformVerdict::Proceed {
+        applied: false,
+        args_json: Vec::new(),
+    });
+    match verdict {
+        TransformVerdict::Proceed { applied, args_json } => {
+            if applied {
+                // A committed rewrite REPLACES the locked session params the mint/dial carries.
+                if let Ok(v) = serde_json::from_slice::<SessionConfig>(&args_json) {
+                    return Ok(Some(v));
+                }
+            }
+            Ok(None)
+        }
+        TransformVerdict::Reject {
+            status, message, ..
+        } => Err(Box::new(hook_refusal(status, &message))),
+    }
+}
+
+/// THE `ek_` MINT one-shot pass, past the governed open: mint through [`HttpsTokenMinter`] over the
+/// configured provider (the real key held server-side) and return the browser-facing `ek_` as JSON.
+/// `None` provider ⇒ `501` (governed, but no provider credential composed).
+async fn serve_mint(
+    provider: Option<&ProviderEndpoint>,
+    owner: &str,
+    cfg: &SessionConfig,
+) -> axum::response::Response {
+    let Some(p) = provider else {
+        return sideband_pending();
+    };
+    let minter = HttpsTokenMinter::new(egress_client(), &p.base_url, &p.api_key, owner, None);
+    match minter.mint(cfg).await {
+        Ok(token) => json_response(
+            axum::http::StatusCode::OK,
+            &serde_json::json!({
+                "value": token.value,
+                "expires_at_unix": token.expires_at_unix,
+            }),
         ),
-        // The open-pass gate refused the destination BEFORE any charge (verify-before-charge).
-        Err(StartError::DestinationRefused) => refusal(
+        Err(e) => text_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("voice ephemeral-secret mint failed: {e}"),
+        ),
+    }
+}
+
+/// THE SDP BROKER one-shot pass, past the governed open: broker the browser's `application/sdp` offer
+/// to the provider's `POST /v1/realtime/calls` under BUSBAR'S OWN provider credential (busbar brokers
+/// the call server-side), PRESERVE the `Location: …/rtc_<call_id>` response header verbatim, STAMP that
+/// `rtc_<call_id>` onto the durable session row (so busbar's governance and the brokered media call
+/// name the SAME session), and return the SDP answer. `None` provider ⇒ `501`.
+///
+/// `_inbound` (the caller's request headers) is deliberately NOT read for egress: the inbound
+/// `Authorization` is the caller's `RouteAuth::Key` GOVERNANCE bearer (the Auth plugin already consumed
+/// it at the door), and forwarding it upstream would leak busbar's own authority to the provider. The
+/// provider hop authenticates ONLY through [`crate::voice_provider_bearer`] — the same lane-constant
+/// builder the `egress_auth_headers` decl and the `egress_tests` battery pin — never a caller token.
+async fn serve_sdp(
+    provider: Option<&ProviderEndpoint>,
+    _inbound: &axum::http::HeaderMap,
+    offer: Bytes,
+    handle: &SessionHandle,
+    now: u64,
+) -> axum::response::Response {
+    let Some(p) = provider else {
+        return sideband_pending();
+    };
+    let uri = format!("{}/v1/realtime/calls", p.base_url.trim_end_matches('/'));
+    let mut builder = http::Request::builder()
+        .method(http::Method::POST)
+        .uri(&uri)
+        .header(http::header::CONTENT_TYPE, "application/sdp");
+    // Busbar's OWN provider credential — never the caller's inbound governance bearer.
+    for (name, value) in crate::voice_provider_bearer(&p.api_key) {
+        builder = builder.header(name, value);
+    }
+    let req = match builder.body(Full::new(offer)) {
+        Ok(r) => r,
+        Err(e) => {
+            return text_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("voice SDP request did not build: {e}"),
+            )
+        }
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let resp = match send_bounded(&egress_client(), req, deadline).await {
+        Ok(r) => r,
+        Err(e) => {
+            return text_response(
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("voice SDP broker upstream failed: {}", e.into_cause()),
+            )
+        }
+    };
+    let status = resp.status();
+    // PRESERVE the `Location` header verbatim, and derive the `rtc_<call_id>` correlation key from it.
+    let location = resp.headers().get(http::header::LOCATION).cloned();
+    let answer = match tokio::time::timeout_at(deadline, resp.into_body().collect()).await {
+        Ok(Ok(b)) => b.to_bytes(),
+        _ => {
+            return text_response(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "voice SDP answer was not read before the deadline".to_string(),
+            )
+        }
+    };
+    // STAMP the correlation key onto the durable row (owner-gated) — broker → row, the single key that
+    // ties governance here to the media that flows there. A mismatch/absence is left unstamped.
+    if let Some(rtc) = location
+        .as_ref()
+        .and_then(|v| v.to_str().ok())
+        .and_then(rtc_call_id_of)
+    {
+        let _ = handle.set_rtc_call_id(&rtc, now);
+    }
+    let mut builder = axum::response::Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, "application/sdp");
+    if let Some(loc) = location {
+        builder = builder.header(http::header::LOCATION, loc);
+    }
+    builder
+        .body(axum::body::Body::from(answer))
+        .unwrap_or_else(|_| sideband_pending())
+}
+
+/// The last `rtc_<call_id>` path segment of a brokered call's `Location` header — the correlation key
+/// the SDP broker stamps onto the durable row. `None` when no segment carries the `rtc_` prefix.
+fn rtc_call_id_of(location: &str) -> Option<String> {
+    location
+        .rsplit('/')
+        .find(|seg| seg.starts_with("rtc_"))
+        .map(|seg| seg.split(['?', '#']).next().unwrap_or(seg).to_string())
+}
+
+/// The substrate egress client the one-shot HTTPS passes dial through (the same posture the concrete
+/// minter uses). Built per pass; the composition root pools one once the provider config is threaded.
+fn egress_client() -> EngineClient {
+    busbar_substrate::proxy::build_egress_client(
+        &busbar_substrate::egress::engine::EngineSpec::pooled_webpki(4, 300, false, false),
+    )
+}
+
+/// A GOVERNED-BUT-UNCOMPOSED answer for a WS-accept leg (browser sideband / telephony media): the
+/// session opened and was governed, but the inbound WS-accept seam that upgrades the socket lands
+/// separately, so no bare `on_upgrade` is taken here.
+fn sideband_pending() -> axum::response::Response {
+    refusal(
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        "voice session governed-open succeeded; the inbound WS-accept seam that upgrades the browser \
+         sideband / telephony media socket lands separately",
+    )
+}
+
+/// The finished refusal for a `begin_session` / `begin_telephony` [`StartError`] — verify-before-charge
+/// at the route layer (a denied destination is `403` with zero charge).
+fn start_refusal(e: &StartError) -> axum::response::Response {
+    match e {
+        StartError::DestinationRefused => refusal(
             axum::http::StatusCode::FORBIDDEN,
             "voice session destination refused at the open-pass gate (fail closed)",
         ),
-        Err(StartError::BudgetRefused) => refusal(
+        StartError::BudgetRefused => refusal(
             axum::http::StatusCode::PAYMENT_REQUIRED,
             "voice session budget refused (fail closed)",
         ),
-        Err(StartError::Durable(_)) => refusal(
+        StartError::Durable(_) => refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "voice session durable open failed",
         ),
@@ -347,6 +712,43 @@ fn refusal(status: axum::http::StatusCode, msg: &'static str) -> axum::response:
         .status(status)
         .body(axum::body::Body::from(msg))
         .expect("a static-body response always builds")
+}
+
+/// A finished plain-text response over an OWNED body (a hook's own message, an upstream failure cause).
+fn text_response(status: axum::http::StatusCode, msg: String) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(status)
+        .body(axum::body::Body::from(msg))
+        .expect("a text-body response always builds")
+}
+
+/// A finished JSON response (the minted `ek_` payload).
+fn json_response(
+    status: axum::http::StatusCode,
+    body: &serde_json::Value,
+) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(body).unwrap_or_default(),
+        ))
+        .expect("a json-body response always builds")
+}
+
+/// A hook's OWN refusal, framed with its status (clamped to a valid code) and message — the shape both
+/// the gate and the rewrite-gate reject in.
+fn hook_refusal(status: u16, message: &str) -> axum::response::Response {
+    let status =
+        axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::FORBIDDEN);
+    text_response(
+        status,
+        if message.is_empty() {
+            "voice session-open refused by a hook gate".to_string()
+        } else {
+            message.to_string()
+        },
+    )
 }
 
 /// Read the voice dispatch slot off the neutral `PlaneReqCtx::slot`, resolve the caller + a session id,
@@ -376,7 +778,25 @@ async fn serve(
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| format!("voice-{}", unix_secs()));
-    open_governed(&mount.runtime, ingress, owner, call_id, unix_secs())
+    // The caller `(id, name)` the hook gate reads — the middleware-resolved key, or `None` ungoverned.
+    let key = ctx
+        .gov
+        .as_ref()
+        .and_then(|g| g.key())
+        .map(|k| (k.id.clone(), k.name.clone()));
+    open_governed(GovernedOpen {
+        rt: &mount.runtime,
+        host: Arc::clone(&ctx.host),
+        provider: mount.provider.as_ref(),
+        ingress,
+        owner,
+        call_id,
+        key,
+        body: ctx.body.clone(),
+        headers: ctx.headers.clone(),
+        now: unix_secs(),
+    })
+    .await
 }
 
 /// Wall-clock unix seconds for the session's `charged_at` / genesis stamp. The gauntlet clock the
@@ -409,3 +829,26 @@ async fn telephony_route(
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;
+
+// The egress-credential cell reads only `DECLS` — no host, no live money hop.
+#[cfg(test)]
+#[path = "tests/egress_tests.rs"]
+mod egress_tests;
+
+// The remaining cells drive a real `EngineHost` double (breaker cell store / hook gate maps / the
+// process-global metrics recorder) or a loopback provider, so they gate on `test-support`.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/breaker_tests.rs"]
+mod breaker_tests;
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/hook_gate_tests.rs"]
+mod hook_gate_tests;
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/hook_tap_tests.rs"]
+mod hook_tap_tests;
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/metrics_tests.rs"]
+mod metrics_tests;
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/sdp_tests.rs"]
+mod sdp_tests;

@@ -137,7 +137,10 @@ async fn spawn_echo_provider() -> std::net::SocketAddr {
 
 /// The plane SELECTS `Transport::WebSocket` and lets the substrate open the socket: `dial_provider`
 /// dials the loopback provider THROUGH the net-guard and a frame crosses both directions. This is the
-/// plane using the neutral transport instead of carrying its own socket plumbing.
+/// plane using the neutral transport instead of carrying its own socket plumbing. Gated on
+/// `test-support` because the governed dial now rides the breaker beneath it, reached through a real
+/// `EngineHost` double over a bare app.
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn dial_provider_routes_through_the_guarded_ws_transport() {
     let addr = spawn_echo_provider().await;
@@ -147,7 +150,10 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
         allow_plaintext: true,
         ..GuardPolicy::default()
     };
-    let (mut stream, mut sink) = dial_provider(&url, policy)
+    let app = busbar_core::test_support::TestApp::new().build();
+    let host = busbar_core::plane_host::engine_host(&app);
+    let pool = crate::topology::stream_breaker_key("openai-realtime");
+    let (mut stream, mut sink) = dial_provider(host.as_ref(), &pool, 0, &url, policy)
         .await
         .expect("the plane dials the provider through the guarded transport");
     sink.send(b"realtime-frame".to_vec()).await.ok();
@@ -163,13 +169,23 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
 
 /// The provider dial FAILS CLOSED on a guard-failing target — the plane never opens a socket the
 /// net-guard did not pin (the egress-audit finding this closes).
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn dial_provider_fails_closed_on_a_guarded_target() {
     // A public loopback under the fail-closed default is an internal address — refused, no socket.
+    let app = busbar_core::test_support::TestApp::new().build();
+    let host = busbar_core::plane_host::engine_host(&app);
+    let pool = crate::topology::stream_breaker_key("openai-realtime");
     assert!(
-        dial_provider("wss://127.0.0.1/", GuardPolicy::default())
-            .await
-            .is_err(),
+        dial_provider(
+            host.as_ref(),
+            &pool,
+            0,
+            "wss://127.0.0.1/",
+            GuardPolicy::default()
+        )
+        .await
+        .is_err(),
         "the provider dial must refuse an unpinned/guard-failing target"
     );
 }
@@ -380,6 +396,77 @@ fn abnormal_close_releases_the_reserve_via_the_by_value_guard() {
         host.closed_ids(),
         vec![1],
         "the lingering settle handle's later close is a harmless no-op (no double refund)"
+    );
+}
+
+/// A minter that RECORDS whether it was ever asked to mint — the witness for the ordering fix: on a
+/// refused governed open NOTHING may mint.
+struct RecordingMinter {
+    minted: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl TokenMinter for RecordingMinter {
+    async fn mint(&self, _config: &SessionConfig) -> Result<EphemeralToken, MintError> {
+        self.minted.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(EphemeralToken {
+            value: "ek_should_never_be_minted".into(),
+            expires_at_unix: 1,
+        })
+    }
+}
+
+/// THE ORDERING FIX: `attach` runs the gauntlet + D2 lease FIRST and mints the ephemeral secret
+/// only past a clean open. A session whose destination the plane denies is refused at the gate BEFORE
+/// any mint — so the browser is handed NO `ek_` on a denied session (zero bytes, zero charge, zero
+/// credential). RED before the reorder: the mint ran before `begin_session`, so a denied session still
+/// minted a secret.
+#[tokio::test]
+async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
+    let host = Arc::new(MockMeteringHost::default());
+    let rt = VoiceRuntime::new(
+        Arc::new(DurableHandleEngine::new()),
+        Arc::new(HostMeteringPort::new(
+            Arc::clone(&host) as Arc<dyn MeteringHost>
+        )),
+        Arc::new(crate::runtime::tools::EchoToolExecutor),
+    )
+    .with_denied_destinations(["blocked-model"]);
+    let minter = RecordingMinter {
+        minted: std::sync::atomic::AtomicBool::new(false),
+    };
+    let locked = SessionConfig {
+        model: Some("blocked-model".into()),
+        ..SessionConfig::default()
+    };
+    let budget = SessionBudget {
+        estimate_nanos: 1_000,
+        fee_nanos: 0,
+        cap_nanos: None,
+    };
+    let r = attach(
+        &rt,
+        &minter,
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-denied",
+        locked,
+        budget,
+        1,
+    )
+    .await;
+    assert!(
+        matches!(r, Err(crate::topology::webrtc::AttachError::Start(_))),
+        "a denied destination is refused at the open-pass gate before the mint"
+    );
+    assert!(
+        !minter.minted.load(std::sync::atomic::Ordering::SeqCst),
+        "NOTHING mints on a refused session — the gauntlet/lease run before the mint"
+    );
+    assert_eq!(
+        host.minted_count(),
+        0,
+        "no lease opened on the refused session either — zero charge"
     );
 }
 

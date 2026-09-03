@@ -99,6 +99,11 @@ tracing = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
+# The neutral telemetry recorder the front-door session-open counter emits into
+# (`busbar_plane_requests_total`, plane = voice) — the SAME `metrics` crate the substrate's
+# `upstream_attempt_on` emit names, so voice counts on the family without reaching into `busbar-core`.
+# OPTIONAL, pulled only by `runtime` (the mount that emits is runtime-gated).
+metrics = { workspace = true, optional = true }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
@@ -109,7 +114,7 @@ hyper = { workspace = true, optional = true }
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "busbar-substrate/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
@@ -119,3 +124,9 @@ openapi-schema = ["busbar-substrate/openapi-schema"]
 # plane tests name `busbar_core::…`, so this feature is the one edge that puts busbar-core in the
 # closure — the default/prod build has none.
 test-support = ["dep:busbar-core", "busbar-core/test-support"]
+
+[dev-dependencies]
+# TEST MACHINERY ONLY: the hooks-gate / hooks-tap acceptance batteries name `busbar_plugin_sign::HookNeeds`
+# to load the hermetic `busbar-hook-test-plugin` cdylib through the real scan/trust/load pipeline (the
+# SAME harness the MCP/A2A hook batteries use). Absent from every shipped build.
+busbar-plugin-sign = { path = "../plugin-sign" }

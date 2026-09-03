@@ -27,15 +27,72 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::SessionCore;
 use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
+use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
 use busbar_substrate::egress::duplex_ws::{self, DialError};
 use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::HandleEngineError;
 use busbar_substrate::plane_host::{
-    run_gauntlet_session, GauntletPlane, GauntletRequest, VerifyOutcome,
+    run_gauntlet_session, DispatchScope, EngineHost, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
 use busbar_substrate::transport::{Transport, UpstreamWireKind};
 use futures::{Sink, Stream};
 use std::sync::Arc;
+
+/// THE VOICE PLANE'S BREAKER-CELL KEY for one provider dial target. The `stream:` prefix is the
+/// plane-qualified keyspace rule (the `tool:` / `agent:` precedent — a voice cell can never collide
+/// with an MCP tool cell, an A2A agent cell, or a bare LLM pool name), and the id is the operator's
+/// provider/pool name that a refusal names. Formed HERE (not in the neutral substrate) so the voice
+/// plane keys its own cell without a substrate helper and stays strong-form deletable.
+#[must_use]
+pub fn stream_breaker_key(provider: &str) -> String {
+    format!("stream:{provider}")
+}
+
+/// Why a governed provider dial did not open a socket.
+#[derive(Debug)]
+pub enum DialProviderError {
+    /// The `(pool, lane)` breaker cell was OPEN, so admission was refused BEFORE any socket — the
+    /// fast-fail leg. Carries the honest `Retry-After` read off the cell's own cooldown.
+    BreakerOpen {
+        /// Seconds until the cell's cooldown expires (floored at 1).
+        retry_after_secs: u64,
+    },
+    /// The dial itself failed (guard-refused / connect / TLS / handshake). The failure has already
+    /// been recorded into the breaker cell.
+    Dial(DialError),
+}
+
+impl std::fmt::Display for DialProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DialProviderError::BreakerOpen { retry_after_secs } => write!(
+                f,
+                "voice provider dial refused: breaker open (retry after {retry_after_secs}s)"
+            ),
+            DialProviderError::Dial(e) => write!(f, "voice provider dial failed: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for DialProviderError {}
+
+/// The canonical breaker signal one [`DialError`] means. A target busbar's OWN net-guard or URL parse
+/// refused is a DEFINITIVE (hard-down) failure — that configured/derived target can never be dialed
+/// for this session, so its cell earns the sticky cooldown, exactly as an auth/billing hard-down does.
+/// A connect / TLS / handshake failure to a pinned address is a TRANSIENT upstream signal (the cell
+/// trips only once the error-rate window crosses its threshold), the same disposition the model
+/// plane's own dispatch records a network blip under.
+fn dial_signal(e: &DialError) -> CanonicalSignal {
+    let class = match e {
+        DialError::Guard(_) | DialError::Url(_) => StatusClass::Auth,
+        DialError::Connect(_) | DialError::Tls(_) | DialError::Handshake(_) => StatusClass::Network,
+    };
+    CanonicalSignal {
+        class,
+        provider_signal: None,
+        retry_after: None,
+    }
+}
 
 /// DIAL THE PROVIDER SIDEBAND/UPSTREAM WSS through the neutral, net-guarded WS transport — the plane's
 /// one door to an outbound duplex socket, and the close of the egress-audit finding that voice's
@@ -51,7 +108,19 @@ use std::sync::Arc;
 ///
 /// `policy` is the outbound trust posture (a public provider `wss://` takes the fail-closed
 /// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin.
+///
+/// THE BREAKER RIDES BENEATH THE DIAL (the voice-client cell): before any socket, the `(pool, lane)`
+/// cell is probed through `host.breaker_admit` — an OPEN cell fast-fails in microseconds with the
+/// cell's own `Retry-After` (never waiting out a dial timeout against a target already known down).
+/// Past admission the attempt is counted on `busbar_upstream_attempts_total`, and the dial's outcome
+/// is FOLDED back into the same cell: a clean open records a success (diluting the error window /
+/// closing a recovery probe), a failure records its canonical signal (a guard/URL refusal opens the
+/// cell hard-down; a connect/TLS/handshake blip is transient). `pool` is the plane's breaker-cell key
+/// (see [`stream_breaker_key`]); `lane` is the member position (0 for a degenerate cell).
 pub async fn dial_provider(
+    host: &dyn EngineHost,
+    pool: &str,
+    lane: usize,
     url: &str,
     policy: GuardPolicy,
 ) -> Result<
@@ -59,14 +128,46 @@ pub async fn dial_provider(
         impl Stream<Item = Vec<u8>> + Unpin,
         impl Sink<Vec<u8>> + Unpin + Send + 'static,
     ),
-    DialError,
+    DialProviderError,
 > {
+    // FAST-FAIL ADMISSION FIRST: probe the cell through the host seam. An OPEN cell refuses here with
+    // its own cooldown as `Retry-After` — no socket, no dial timeout. The probe is scoped so any
+    // recovery probe it wins is released the instant this block ends; the in-place record below is the
+    // authoritative fold, the documented `breaker_record_*` fallback disposition.
+    {
+        let scope = DispatchScope::new();
+        if host
+            .breaker_admit(&scope, pool.as_bytes(), lane as u32)
+            .is_err()
+        {
+            return Err(DialProviderError::BreakerOpen {
+                retry_after_secs: host.breaker_retry_after_secs(pool, lane),
+            });
+        }
+    }
+
+    // ADMITTED: count the dispatch attempt on the voice-client leg (both labels operator-configured
+    // and bounded — a provider/pool name and a small lane integer — so the series count stays bounded).
+    busbar_substrate::telemetry::upstream_attempt_on(pool, &lane.to_string());
+
     // The axis pins `WebSocket` to the full-duplex wire; the `else` is unreachable by construction (a
     // closed axis), expressed as a refusal rather than a panic so a mis-selection fails closed.
     let Some(UpstreamWireKind::Duplex) = Transport::WebSocket.upstream_wire() else {
-        return Err(DialError::Url(url.to_string()));
+        let e = DialError::Url(url.to_string());
+        host.breaker_record_signal(pool, lane, &dial_signal(&e));
+        return Err(DialProviderError::Dial(e));
     };
-    duplex_ws::dial(url, policy).await
+
+    match duplex_ws::dial(url, policy).await {
+        Ok(pair) => {
+            host.breaker_record_success(pool, lane);
+            Ok(pair)
+        }
+        Err(e) => {
+            host.breaker_record_signal(pool, lane, &dial_signal(&e));
+            Err(DialProviderError::Dial(e))
+        }
+    }
 }
 
 /// THE ALREADY-PRICED SESSION BUDGET handed across the D2 lease at session start (`plane4-duplex-session.md` §2.5): the coarse

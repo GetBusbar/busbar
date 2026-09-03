@@ -116,3 +116,57 @@ enforced — the re-audit day verifies the gates, not the tree by hand.
   taskstore on the neutral engine.
 - Cross-plane graph: production off-diagonal zero; only acyclic dev-dep test back-edges.
 - New-crate-only diff: true for logic + a fixed ~8-file assembly delta; one irreducible `main.rs` push.
+
+---
+
+## Voice-serving audit (4-model adversarial, money / credential / governance / neutrality+failure-modes)
+The voice serving substrate (mint/SDP/breaker/egress/hooks/metrics one-shot passes) was reviewed by four
+independent adversarial agents, one per angle, each grounding claims against a green build/107-test run.
+Money path CLEAN (verify-before-charge, no double-charge, by-value guard closes on every exit, fail-closed,
+breaker-fold-can't-charge — all confirmed). Neutrality CLEAN both directions (diff confined to busbar-voice
++ Cargo.lock; `dial_provider` parameterized; `rtc_call_id` correlation forgery-resistant/owner-gated/durable;
+`dial_signal` fails safe; no panics on attacker input). Governance ordering sound and bypass-resistant.
+
+### F7 — SDP broker forwarded the caller's inbound GOVERNANCE bearer to the provider (credential, HIGH)
+`serve_sdp` read the inbound `Authorization` and forwarded it verbatim to `POST /v1/realtime/calls`. The SDP
+route is `RouteAuth::Key`, so that inbound header is the caller's busbar GOVERNANCE bearer — forwarding it
+exfiltrates busbar's own authority to the provider (replayable against busbar). Latent behind `provider=None`
+(501 today) but committed, green-tested behavior that fires the instant provider config is threaded. The decl
+doc had imagined "browser `ek_` on the SDP hop", but an `ek_` can't ride the `RouteAuth::Key` slot and no
+server-side `ek_` is persisted between the separate mint/SDP requests — a credential-slot collision.
+- **FIX:** the SDP broker authenticates upstream with busbar's OWN provider key (busbar brokers the call
+  server-side), via the shared `voice_provider_bearer` builder; the inbound headers are NEVER read for
+  egress. An `ek_`-relay model (forward the browser secret) needs a resolved `ek_` source on a
+  non-`Authorization` inbound slot or a minted+persisted secret — a flagged PROTOCOL follow-on, not guessed.
+- **PREVENT:** `sdp_tests` now records the `Authorization` the loopback provider is dialed with and asserts
+  it equals `Bearer <provider key>` AND `!=` a distinct inbound-governance sentinel — a regression guard that
+  reddens the instant any inbound token is forwarded upstream.
+
+### F8 — the declared egress-credential builder was not on the live serving path (credential, MEDIUM)
+`voice_egress_auth_headers` (the lane-constant `egress_auth_headers` decl the `egress_tests` battery proves)
+was referenced only by the decl + its test — `serve_sdp` forwarded the inbound header and `serve_mint`'s
+minter built its own bearer, so the tested builder gave false assurance masking F7.
+- **FIX:** extracted `voice_provider_bearer` as the ONE provider-bearer construction; both the decl and the
+  live `serve_sdp` egress authenticate through it, so the tested builder IS the live credential path.
+- **PREVENT:** `egress_tests` (the builder) + F7's `sdp_tests` guard (the live path) now pin the same code.
+
+### F9 — one-shot / uncomposed-501 durable-session lifecycle (money+governance, LOW — deferred to WS-accept)
+The one-shot Mint/SDP passes and the not-yet-served sideband/telephony 501 legs run `begin_session`
+(gauntlet + lease + durable genesis) then return without an explicit `handle.close`. The lease closes
+deterministically (by-value guard) — NO money leak — but the durable row persists. For SDP this persistence
+is INTENDED (the `rtc_call_id` correlation the sideband later reads; `sdp_tests` reads the row back), so a
+per-request close would be WRONG. The genuine residue is orphan-REAPING of rows from looped/uncomposed opens,
+whose correct resolution (session TTL/close across the mint→sdp→sideband lifecycle) is coupled to the pending
+WS-accept seam — the accept path opens/keeps the session at accept time and owns teardown.
+- **FIX:** resolve in the WS-accept seam (imminent), where the session lifecycle is designed end-to-end.
+- **PREVENT:** the WS-accept work adds a lifecycle test (an uncomposed/aborted open leaves no live row after
+  its TTL/teardown) alongside the existing `sdp_tests` correlation-persistence test.
+
+### F10 — breaker single-flight relaxed on recovery (neutrality/robustness, LOW — deferred to WS-accept)
+`dial_provider` admits a HalfOpen recovery probe then drops the admission scope BEFORE the dial resolves,
+folding the outcome in-place via `breaker_record_*`. Safe (the in-place record is authoritative; no
+double-count, no mistrip) but it collapses the single-flight window, so concurrent dials can herd a
+recovering upstream. The leg is wired-but-not-yet-live (only tests reach `dial_provider` today).
+- **FIX:** when the telephony provider leg goes live (WS-accept seam), hold the `DispatchScope` across the
+  dial and `breaker_settle` after, restoring canonical HalfOpen single-flight.
+- **PREVENT:** a breaker recovery test asserting a single probe in flight during recovery, added with the leg.

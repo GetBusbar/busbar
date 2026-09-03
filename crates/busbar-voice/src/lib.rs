@@ -159,6 +159,37 @@ pub const GEMINI_LIVE: &str = "gemini_live";
 /// the A2A discipline — a plane earns a superset at its SECOND wire format and not before.
 const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 
+/// THE VOICE PLANE'S PROVIDER-FACING BEARER — the ONE construction that plans the provider-facing
+/// `Authorization: Bearer <credential>` from the RESOLVED provider-credential string, and NEVER a
+/// caller/governance token passed through. Both [`voice_egress_auth_headers`] (the
+/// `egress_auth_headers` decl) and the LIVE one-shot serving passes ([`mount::serve_sdp`]) authenticate
+/// the provider hop through THIS function, so the lane-constant builder the `egress_tests` battery
+/// proves is the SAME code the live SDP broker runs — the tested builder IS the live credential path.
+/// It authenticates busbar's OWN authority to the provider (the real provider key on the broker hop),
+/// never the caller's inbound bearer (which the Auth plugin already consumed at the door).
+///
+/// NOTE — the SDP broker authenticates with the PROVIDER key (busbar brokers the call server-side).
+/// An `ek_`-RELAY model (forward the browser's ephemeral secret as the upstream credential) is a
+/// distinct protocol shape: it needs a resolved `ek_` source — the inbound `RouteAuth::Key`
+/// `Authorization` slot carries the caller's GOVERNANCE key (forwarding it upstream would leak
+/// busbar's own authority), so an `ek_` relay would have to arrive on a non-`Authorization` inbound
+/// slot or be minted+persisted server-side. That is a flagged protocol follow-on, not this hop.
+pub(crate) fn voice_provider_bearer(
+    key: &str,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    busbar_substrate::proto::bearer_auth_headers(OPENAI_REALTIME, key)
+}
+
+/// `ProtocolDecl::egress_auth_headers` — the plain-Bearer arm of `busbar-llm`'s OpenAI dialect (the
+/// Bedrock module hands in its SigV4 signer the same way). A pure function of the resolved credential
+/// string (it reads nothing off the [`SigningContext`]), so [`DECLS`] declares it LANE-CONSTANT.
+fn voice_egress_auth_headers(
+    key: &str,
+    _ctx: &busbar_substrate::proto::SigningContext,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    voice_provider_bearer(key)
+}
+
 /// THE VOICE PLANE'S DECLARATION — a `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). It declares the plane's identity
 /// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-voice`
@@ -268,8 +299,13 @@ pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::prot
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
     ingress_auth: busbar_substrate::proto::IngressAuth::Bearer,
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
+    // THE ONE EGRESS CREDENTIAL MECHANISM: the provider bearer / WebRTC `ek_` / telephony carrier
+    // credential is planned onto the dial's headers HERE, never a caller token passed through (see
+    // [`voice_egress_auth_headers`]). LANE-CONSTANT: the builder is a pure function of the resolved
+    // credential string and reads nothing off the `SigningContext`, so the boot path may prebuild the
+    // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
+    egress_auth_headers: Some(voice_egress_auth_headers),
+    egress_auth_lane_constant: true,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
     // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`

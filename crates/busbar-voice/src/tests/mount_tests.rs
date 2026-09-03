@@ -226,27 +226,53 @@ fn the_four_ingress_routes_mount_audience_checked() {
     );
 }
 
-#[test]
-fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge() {
+/// One `GovernedOpen` over a real host double, no provider configured — the shape the route handler
+/// builds. Gated on `test-support` (the host double needs a bare app).
+#[cfg(feature = "test-support")]
+fn governed_open<'a>(
+    rt: &'a VoiceRuntime,
+    host: Arc<dyn EngineHost>,
+    ingress: Ingress,
+    call_id: &str,
+) -> crate::mount::GovernedOpen<'a> {
+    crate::mount::GovernedOpen {
+        rt,
+        host,
+        provider: None,
+        ingress,
+        owner: "acct".to_string(),
+        call_id: call_id.to_string(),
+        key: None,
+        body: axum::body::Bytes::new(),
+        headers: axum::http::HeaderMap::new(),
+        now: 1,
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge() {
     // ARRIVAL runs `run_gauntlet_session`: a denied destination is REFUSED at the open-pass gate before
     // any lease/durable open — the governed open returns the gate's `403`, proving the gate ran. This
     // is the D3 call-site invariant at the ROUTE layer: no byte, no charge on a refused destination.
+    let app = busbar_core::test_support::TestApp::new().build();
+    let host = busbar_core::plane_host::engine_host(&app);
     let denied = runtime_for("blocked-model", &["blocked-model"]);
-    let refused = open_governed(
+    let refused = open_governed(governed_open(
         &denied,
+        Arc::clone(&host),
         Ingress::Sideband,
-        "acct".to_string(),
-        "call-denied".to_string(),
-        1,
-    );
+        "call-denied",
+    ))
+    .await;
     assert_eq!(
         refused.status(),
         axum::http::StatusCode::FORBIDDEN,
         "a denied destination is refused at the gate (run_gauntlet_session ran, verify-before-charge)"
     );
 
-    // A non-denied destination proceeds PAST the gate and opens the governed session; the live serving
-    // leg is the deployment's to compose, so the structural mount answers 501 (governed, uncomposed).
+    // A non-denied destination proceeds PAST the gate and opens the governed session; with no provider
+    // configured the mint/SDP passes and the WS-accept legs all answer 501 (governed, uncomposed).
     let allowed = runtime_for("allowed-model", &["blocked-model"]);
     for ingress in [
         Ingress::Mint,
@@ -254,13 +280,13 @@ fn arrival_runs_run_gauntlet_session_refusing_a_denied_destination_before_charge
         Ingress::Sideband,
         Ingress::Telephony,
     ] {
-        let opened = open_governed(
+        let opened = open_governed(governed_open(
             &allowed,
+            Arc::clone(&host),
             ingress,
-            "acct".to_string(),
-            "call-ok".to_string(),
-            1,
-        );
+            "call-ok",
+        ))
+        .await;
         assert_eq!(
             opened.status(),
             axum::http::StatusCode::NOT_IMPLEMENTED,
