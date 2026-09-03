@@ -64,6 +64,11 @@ bytes = { workspace = true }
 # the argument bytes).
 serde = { workspace = true }
 serde_json = { workspace = true }
+# THE `streams:` CONFIG-SECTION reader (`config.rs`): `PLANE_DECL.parse_section` deserializes the
+# owned section from a `serde_yaml::Value` through the plane's own typed `StreamsCfg`, exactly as the
+# MCP/A2A `parse_section` hooks do. UNCONDITIONAL (config parse/validate is needed in the skeleton
+# build too), so it is a plain dep rather than a `runtime`-gated one.
+serde_yaml = { workspace = true }
 
 # ── THE T2 RUNTIME's async surface — OPTIONAL, pulled ONLY by the `runtime` feature (OFF by default).
 # The default / prod `cargo build -p busbar-voice` compiles with NONE of these in its closure: the

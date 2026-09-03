@@ -477,6 +477,10 @@
           "optional": true,
           "type": "StoreCfg"
         },
+        "streams": {
+          "optional": true,
+          "type": "StreamsSection"
+        },
         "tls": {
           "optional": true,
           "type": "TlsCfg"

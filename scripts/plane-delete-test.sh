@@ -87,10 +87,12 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
-# `voice` (busbar-voice, Plane 4) is a SKELETON crate NOT yet wired into the bin: it has no
-# `dep:busbar-voice` optional dependency and no bin feature. Its bin_feature is the forward-looking
-# `plane-voice` (matches nothing in the bin today, so neutralise_bin is a no-op for it); its
-# neutral_keep is the full default plane set (removing voice touches neither mcp nor a2a).
+# `voice` (busbar-voice, Plane 4) is now WIRED into the bin at M5, but OFF-DEFAULT: it has a
+# `dep:busbar-voice` optional dependency and the `plane-voice` bin feature (NOT in `default`), whose
+# forwards to the plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and
+# `busbar-voice?/openapi-schema` — all three stripped by neutralise_bin. Its bin_feature is
+# `plane-voice`; its neutral_keep is the full default plane set (removing voice touches neither mcp nor
+# a2a). Because voice is off-default, the bin's default build is already coherent without it.
 bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
 neutral_keep() {
   case "$1" in
