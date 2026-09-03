@@ -19,8 +19,10 @@ use busbar_voice::ir::{
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
 };
 use busbar_voice::runtime::{
-    Carrier, EchoToolExecutor, LeaseState, LocalMeteringPort, MeteringPort, Pricing, SessionCore,
+    Carrier, EchoToolExecutor, HostMeteringPort, LeaseState, LocalMeteringPort, MeteringPort,
+    SessionCore,
 };
+use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -884,24 +886,76 @@ fn core_with_downlink(
 ) {
     let (dtx, drx) = futures::channel::mpsc::unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(dtx);
-    let lease = LocalMeteringPort
+    // The conformance harness drives the PRODUCTION money hop: a host lease + host pricing over the
+    // in-harness [`ConformHost`] (prices every reserved unit at 1 nano), so the D2/V governance probes
+    // exercise the real reserve/price/settle/exhaust path rather than the dev-default zero pricing.
+    let host = Arc::new(ConformHost::default()) as Arc<dyn MeteringHost>;
+    let lease = HostMeteringPort::new(host)
         .reserve(1_000, 0, cap)
         .expect("lease opens for a non-refuse-all cap");
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
         lease,
         Arc::new(EchoToolExecutor),
-        Pricing {
-            audio_in_nanos: 1,
-            audio_out_nanos: 1,
-            text_in_nanos: 1,
-            text_out_nanos: 1,
-            cached_nanos: 1,
-        },
         carrier,
         None,
     ));
     (core, drx)
+}
+
+/// A FAITHFUL in-harness host over the neutral [`MeteringHost`] seam — a `CostHold`-shaped lease
+/// registry plus a real-rate `price_usage` (every reserved unit at 1 nano/token, so a turn's usage_units
+/// sum IS its nanodollar cost). The conformance harness reuses THIS crate's runtime and needs a priced
+/// deployment to exercise the D2 hard-close; it stands in for core's `EngineHostImpl` exactly as the
+/// unit tests' mock does. Not a plane-private price book: it holds a lease ledger + a single flat rate,
+/// living only in the dev-only conformance binary.
+#[derive(Default)]
+struct ConformHost {
+    inner: std::sync::Mutex<ConformInner>,
+}
+
+#[derive(Default)]
+struct ConformInner {
+    next: u64,
+    leases: std::collections::HashMap<u64, (u128, Option<u128>)>, // id -> (settled, cap)
+}
+
+impl MeteringHost for ConformHost {
+    fn cost_reserve(
+        &self,
+        _estimate_nanos: u128,
+        _fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<CostLeaseId> {
+        if matches!(cap_nanos, Some(0)) {
+            return None;
+        }
+        let mut g = self.inner.lock().unwrap();
+        g.next += 1;
+        let id = g.next;
+        g.leases.insert(id, (0, cap_nanos));
+        Some(CostLeaseId(id))
+    }
+
+    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
+        let mut g = self.inner.lock().unwrap();
+        let (settled, cap) = g.leases.get_mut(&lease.0)?;
+        *settled += exact_nanos;
+        let exhausted = matches!(*cap, Some(c) if *settled >= c);
+        Some(SettleOutcome { exhausted })
+    }
+
+    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
+        Some(self.inner.lock().unwrap().leases.get(&lease.0)?.0)
+    }
+
+    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
+        Some(self.inner.lock().unwrap().leases.remove(&lease.0)?.0)
+    }
+
+    fn price_usage(&self, _model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {
+        Some(usage.usage_units.values().copied().map(u128::from).sum())
+    }
 }
 
 /// D2 — the marquee guarantee: settle past cap ⇒ carrier HARD-closes ⇒ no post-close audio reaches the

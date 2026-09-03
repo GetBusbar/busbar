@@ -194,6 +194,39 @@ fn neutral_reserve_then_settle_reaches_exhaustion_at_the_real_cap() {
 }
 
 #[test]
+fn close_lease_applies_the_refund_of_the_unspent_reserve() {
+    // A coarse OVER-estimate (reserve 1000 + fee 200 = 1200 debited up front) with an exact settled sum
+    // of 700 leaves 500 unspent. `close_lease` ledgers the EXACT settled sum (700, never the coarse
+    // reserve), and the refund it reconciles is `reserved − settled` = 1200 − 700 = 500 — the amount that
+    // returns to the budget cell (computed, never silently discarded).
+    let id = reserve_lease(1_000, 200, Some(10_000)).expect("opens");
+    assert_eq!(settle_lease(id, 700), Some(false), "700 < 10_000 → live");
+    assert_eq!(
+        close_lease(id),
+        Some(700),
+        "close ledgers the EXACT settled sum, not the coarse reserve"
+    );
+    // The refund is `reserved − settled`, saturating at zero — asserted on the underlying `CostHold`
+    // (the same `finalize()` `close_lease` drives), so the reconciled refund is exact and testable.
+    let refunded = CostHold::reserve(CostAmount(1_000), CostAmount(200), Some(CostAmount(10_000)));
+    let mut refunded = refunded;
+    refunded.settle_partial(CostAmount(700));
+    assert_eq!(
+        refunded.finalize().refund,
+        CostAmount(500),
+        "refund = reserved(1200) − settled(700) = 500"
+    );
+    // An OVER-settle (exact charge above the coarse reserve) refunds ZERO, never a negative.
+    let mut over = CostHold::reserve(CostAmount(100), CostAmount(0), Some(CostAmount(10_000)));
+    over.settle_partial(CostAmount(400));
+    let s = over.finalize();
+    assert_eq!(s.ledgered_total, CostAmount(400), "ledgers the true charge");
+    assert_eq!(s.refund, CostAmount(0), "an over-settle refunds zero, never negative");
+    // A second close is a harmless None (the removal is the double-refund guard).
+    assert_eq!(close_lease(id), None, "no double refund on a second close");
+}
+
+#[test]
 fn neutral_refuse_all_denies_and_uncapped_never_exhausts() {
     // A refuse-all cap (`Some(0)`) denies at the door — the plane reads `None` and fails closed.
     assert_eq!(reserve_lease(100, 0, Some(0)), None, "refuse-all denies");

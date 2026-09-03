@@ -14,7 +14,7 @@ use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, VoiceSession};
-use crate::runtime::VoiceRuntime;
+use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
 use crate::topology::{begin_session, SessionBudget, StartError};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -89,6 +89,12 @@ pub struct Attached<C> {
     pub core: Arc<SessionCore<C>>,
     /// The durable session binding to close at teardown.
     pub handle: SessionHandle,
+    /// The by-value D2 lease close guard the caller HOLDS for the session lifetime (drop-only): closing
+    /// the reserve deterministically when this `Attached` is dropped. The sideband has no `run()` loop,
+    /// so the guard lives here so the reserve is never orphaned even if a detached `Arc<SessionCore>`
+    /// clone lingers. Keep it alive as long as the sideband session is served; dropping it closes the D2
+    /// lease.
+    pub guard: LeaseCloseGuard,
 }
 
 /// ATTACH a browser WebRTC sideband session: lock the plane's `instructions` + `tools` into the
@@ -118,7 +124,7 @@ where
 
     // A sideband carrier: no downlink media relay — the browser's media path is peer-to-peer.
     let carrier = Carrier::sideband();
-    let (core, handle) = begin_session(
+    let (core, handle, guard) = begin_session(
         rt,
         codec,
         owner,
@@ -136,5 +142,6 @@ where
         session,
         core,
         handle,
+        guard,
     })
 }
