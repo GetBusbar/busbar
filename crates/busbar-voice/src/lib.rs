@@ -23,6 +23,16 @@
 
 pub mod ir;
 
+pub mod diagnostics;
+
+/// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
+/// composition root installs via `busbar_substrate::diagnostics::install_diagnostics`, re-exported at
+/// the crate root so the `busbar` binary names one stable path (`busbar_voice::DIAGNOSTICS`), exactly
+/// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. Not yet booted by the binary — voice
+/// joins `register_diagnostics` at M5; the export exists now so that is a one-line addition. See
+/// [`diagnostics`].
+pub use diagnostics::DIAGNOSTICS;
+
 // THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
 // HARD RULE 4). The default / prod build compiles the skeleton IR + declarations only; turning the
 // feature on compiles the duplex session pump, the D2 metering lease, the durable `SessionScope`
