@@ -151,26 +151,30 @@
     {
       "capability": "hooks-tap",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "grep transform under mcp/: zero production hits. The gate projects content to hooks, but there is no observe/transform (rewrite) path over the upstream leg's payloads."
+      "state": "proven",
+      "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
+      "note": "the `prompt: rw` transform pass at mcp/method.rs (through the EngineHost::transform_over host seam, mirroring the LLM apply_global_rewrites) rewrites the tool-call arguments over the SAME InvokeReq projection the gate builds, BEFORE the upstream credential is leased. One wiring at the method layer covers both directions (no ungated production entry to the client leg), exactly as the hooks-gate cells."
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-server",
-      "state": "missing",
-      "note": "the gate sees content (mcp/tests/hook_gate_tests.rs::mcp_content_reaches_the_gate) but no transform/rewrite path exists for MCP traffic; the tap half of the hook surface is LLM-only today."
+      "state": "proven",
+      "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
+      "note": "same transform_over wiring at mcp/method.rs; the test asserts on the arguments the real upstream peer received (peer.last_mcp()). BYTE-IDENTICAL when no rewrite hook is attached (tap_attached misses)."
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "no observe/transform hook path over relay/originate payloads; grep transform under a2a/: zero production hits."
+      "state": "proven",
+      "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
+      "note": "the `prompt: rw` transform pass at a2a/receive.rs::admitted rewrites the submission params over the same InvokeReq projection the gate builds; the relay (a2a-client) leg runs downstream of that admission, so one wiring covers both directions. The test asserts on the params the backend actually received (h.sent())."
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-server",
-      "state": "missing",
-      "note": "the gate sees content (a2a/tests/hook_gate_tests.rs::a2a_content_reaches_the_gate) but there is no transform/rewrite path for inbound A2A payloads."
+      "state": "proven",
+      "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
+      "note": "same transform_over wiring at a2a/receive.rs; BYTE-IDENTICAL verbatim passthrough when no rewrite hook is attached (the relay re-serializes the envelope only when a rewrite actually committed)."
     },
     {
       "capability": "hooks-gate",
@@ -194,8 +198,8 @@
     {
       "capability": "hooks-gate",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "originate and push delivery have no hook gate (the '--' row). The relay inherits the inbound gate at receive.rs, but busbar-originated A2A traffic is ungated."
+      "state": "not-applicable",
+      "reason": "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under."
     },
     {
       "capability": "hooks-gate",

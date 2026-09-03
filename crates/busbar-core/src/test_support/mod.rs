@@ -1723,6 +1723,33 @@ impl TestApp {
             }
             m
         };
+        // THE TAP twin of `plane_gates_map`, resolved the same way from the same per-plane container
+        // hook specs — so a fixture that attaches a `prompt: rw` hook gets a real rewrite chain the
+        // transform seam fires, exactly as production `appbuild` builds `plane_rewrites`.
+        let plane_rewrites_map: crate::state::PlaneRewriteMap = {
+            let mut m = std::collections::BTreeMap::new();
+            for section in [
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
+            ] {
+                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                    let (containers, section_hooks) = self
+                        .container_hooks
+                        .get(decl.key)
+                        .cloned()
+                        .unwrap_or_default();
+                    let rewrites = crate::hooks::resolve_container_rewrites(
+                        containers.iter().map(|(n, h)| (n.as_str(), h.as_slice())),
+                        &section_hooks,
+                        &self.hook_registry,
+                        &hook_env,
+                        0,
+                    );
+                    m.insert(decl.key, rewrites);
+                }
+            }
+            m
+        };
         let app = std::sync::Arc::new(crate::state::App {
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
@@ -1778,6 +1805,7 @@ impl TestApp {
             pool_decision_gates: self.pool_decision_gates,
             pool_rewrite_chains: self.pool_rewrite_chains,
             plane_gates: plane_gates_map,
+            plane_rewrites: plane_rewrites_map,
             hook_env,
             hook_registry: self.hook_registry,
             requested_signals,

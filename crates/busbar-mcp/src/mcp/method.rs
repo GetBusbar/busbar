@@ -1601,6 +1601,99 @@ async fn tools_call(
         }
     }
 
+    // (2b-ii) THE OPERATOR'S REWRITE (TAP/TRANSFORM) PASS — the `prompt: rw` half of `tools.hooks:`
+    // and `tools.<server>.hooks:`, fired here.
+    //
+    // ## Why HERE — right after the gate, over the arguments THAT GO UPSTREAM
+    //
+    // The gate one block up decided the call MAY happen; this pass, over the SAME merged arguments,
+    // lets a `prompt: rw` hook edit what the tool actually receives (a redaction/compression/guardrail
+    // rewrite) BEFORE the outbound credential is leased and before any task row is minted — the twin
+    // of the LLM plane's `apply_global_rewrites`, through the neutral `transform_over` host seam so
+    // this plane body still names no core hook symbol (the Seam-B inversion, exactly as the gate).
+    //
+    // ## BYTE-IDENTICAL when nothing is attached
+    //
+    // `tap_attached` is one hash lookup that MISSES on every deployment with no `prompt: rw` hook:
+    // no arguments clone, no serialize, no blocking hop, and `arguments` is never touched — so the
+    // request that goes upstream is byte-for-byte what it is today. A committed rewrite is the only
+    // thing that changes a byte; an abstaining chain returns the original bytes.
+    if ctx.host.tap_attached(crate::PLANE_DECL.key, &selected.server) {
+        // Serialized ONCE for the seam. Byte-safe for the same reason the gate's is: `preserve_order`
+        // is OFF, so the round-trip preserves the `Value`.
+        let args_json = serde_json::to_vec(&arguments).unwrap_or_default();
+        let request_id = log.request_id.parse().unwrap_or_default();
+        let sid = ctx
+            .headers
+            .get("x-session-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let server = selected.server.clone();
+        let tool = selected.namespaced.clone();
+        let key = ctx.gov.key().map(|k| (k.id.clone(), k.name.clone()));
+        let host = ctx.host.clone();
+        // The host seam drives the ASYNC rewrite chain on a fresh runtime, so it MUST run on a BLOCKING
+        // thread — one hop per request that has an attached rewrite hook.
+        let verdict = tokio::task::spawn_blocking(move || {
+            host.transform_over(
+                crate::PLANE_DECL.key,
+                &server,
+                request_id,
+                &tool,
+                &args_json,
+                key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
+                (!sid.is_empty()).then_some(sid.as_str()),
+            )
+        })
+        .await
+        // A join panic is FAIL-SAFE on the transform path (the gate already admitted the request):
+        // proceed with the original arguments, unchanged.
+        .unwrap_or(busbar_substrate::plane_host::TransformVerdict::Proceed {
+            applied: false,
+            args_json: Vec::new(),
+        });
+        match verdict {
+            busbar_substrate::plane_host::TransformVerdict::Reject {
+                status,
+                message,
+                hook,
+            } => {
+                ctx.host.audit_emit(
+                    "mcp_tool.call",
+                    &format!("mcp_tool:{}", selected.namespaced),
+                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                    ctx.actor,
+                );
+                tracing::info!(
+                    tool = %selected.namespaced,
+                    hook = %hook,
+                    status,
+                    "mcp tools/call refused by a rewrite (prompt: rw) hook"
+                );
+                return log.refused(
+                    busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
+                    error(
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
+                        id,
+                        CODE_REFUSED,
+                        &message,
+                        Some(serde_json::json!({ "reason": busbar_substrate::audit::vocab::REASON_HOOK_REJECTED, "hook": hook })),
+                    ),
+                );
+            }
+            busbar_substrate::plane_host::TransformVerdict::Proceed { applied, args_json } => {
+                // A committed rewrite REPLACES the arguments the rest of this path uses (ask-merge is
+                // already done above; the egress gate, task row and dispatch all read `arguments`).
+                if applied {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
+                        arguments = v;
+                    }
+                }
+            }
+        }
+    }
+
     // (2c) THE TASK PATH. Everything above has already decided that this call is admitted, current,
     // authorised to ask, and answered — so the only remaining question is whether the answer is a
     // RESULT or a TASK, and that is the operator's declaration crossed with the caller's.

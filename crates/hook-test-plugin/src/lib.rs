@@ -43,6 +43,12 @@ struct HookConfig {
     /// fail-closed 403).
     #[serde(default)]
     raw_decide_reply: Option<serde_json::Value>,
+    /// A raw reply shape to return VERBATIM from `transform` (the `prompt: rw` rewrite pass), overriding
+    /// the default fixed rewrite — the transform-path twin of `raw_decide_reply`. Lets a test drive an
+    /// arbitrary rewrite reply (e.g. `{"rewrite": {"messages": [{"role":"user","content": {..new
+    /// args..}}]}}`) through the engine's fail-closed transform normalizer + a plane's apply seam.
+    #[serde(default)]
+    raw_transform_reply: Option<serde_json::Value>,
     /// Sleep this many milliseconds inside `decide` before replying — lets a test drive the engine's
     /// hard wall-clock `budget` timeout (a slow gate → the caller's `on_error`).
     #[serde(default)]
@@ -73,6 +79,7 @@ struct TestGate {
     reject_status: i64,
     restrict_tags: Option<Vec<String>>,
     raw_decide_reply: Option<serde_json::Value>,
+    raw_transform_reply: Option<serde_json::Value>,
     sleep_ms: Option<u64>,
     empty_management: bool,
     nack_configure: bool,
@@ -154,6 +161,11 @@ impl HookHandler for TestGate {
         // (proves the rewrite arm rides the ABI and is applied only under the rw grant).
         if self.should_reject(payload) {
             return serde_json::json!({"reject": {"status": 451, "message": "screened"}});
+        }
+        // The raw-transform escape hatch wins over the fixed rewrite: lets a test drive an arbitrary
+        // rewrite reply (e.g. a replacement arguments OBJECT for the invoke-family apply) over the ABI.
+        if let Some(raw) = &self.raw_transform_reply {
+            return raw.clone();
         }
         serde_json::json!({"rewrite": {"messages": [{"role": "user", "content": "rewritten by test gate"}]}})
     }
@@ -237,6 +249,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         reject_status: c.reject_status.unwrap_or(403),
         restrict_tags: c.restrict_tags,
         raw_decide_reply: c.raw_decide_reply,
+        raw_transform_reply: c.raw_transform_reply,
         sleep_ms: c.sleep_ms,
         empty_management: c.empty_management,
         nack_configure: c.nack_configure,
