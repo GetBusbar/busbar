@@ -427,9 +427,9 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
     let boxed: Box<dyn Any> = app
         .take_plane_scratch_any(SLOT_KEY)
         .expect("the core slot still holds the erased engine");
-    let engine_back: Box<DurableHandleEngine> = boxed
-        .downcast::<DurableHandleEngine>()
-        .expect("the erased engine downcasts back — its TypeId survived the core Box<dyn Any> slot");
+    let engine_back: Box<DurableHandleEngine> = boxed.downcast::<DurableHandleEngine>().expect(
+        "the erased engine downcasts back — its TypeId survived the core Box<dyn Any> slot",
+    );
 
     // (4) Read the row back out of the recovered engine and downcast the NESTED `Arc<dyn Any>` to the
     // plane row. Byte-identical to what was submitted — no re-encode round-trip — proving the inner

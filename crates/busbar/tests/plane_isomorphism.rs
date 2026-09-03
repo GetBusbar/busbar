@@ -154,8 +154,12 @@ fn verify(
         .as_array()
         .ok_or("qa/capability-equality.json: `cells` must be an array")?
     {
-        let cap = cell["capability"].as_str().ok_or("a ledger cell has no `capability`")?;
-        let plane = cell["plane"].as_str().ok_or("a ledger cell has no `plane`")?;
+        let cap = cell["capability"]
+            .as_str()
+            .ok_or("a ledger cell has no `capability`")?;
+        let plane = cell["plane"]
+            .as_str()
+            .ok_or("a ledger cell has no `plane`")?;
         ledger_cells.insert((cap.to_string(), plane.to_string()));
     }
 
@@ -187,7 +191,9 @@ fn verify(
 
     let mut declared_set: BTreeSet<(String, String)> = BTreeSet::new();
     for row in rows {
-        let field = row["field"].as_str().ok_or("an allowlist row has no `field`")?;
+        let field = row["field"]
+            .as_str()
+            .ok_or("an allowlist row has no `field`")?;
         let capability = row["capability"]
             .as_str()
             .ok_or_else(|| format!("allowlist row for `{field}` has no `capability`"))?;
@@ -215,9 +221,9 @@ fn verify(
             .as_array()
             .ok_or_else(|| format!("allowlist row `{field}` has no `planes_none` array"))?;
         for p in planes_none {
-            let plane = p
-                .as_str()
-                .ok_or_else(|| format!("allowlist row `{field}`: a `planes_none` entry is not a string"))?;
+            let plane = p.as_str().ok_or_else(|| {
+                format!("allowlist row `{field}`: a `planes_none` entry is not a string")
+            })?;
             let cols = columns.get(plane).ok_or_else(|| {
                 format!(
                     "allowlist row `{field}` names plane `{plane}`, which is not an installed plane \
@@ -281,7 +287,8 @@ fn verify(
 
 fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_str(
-        &std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display())),
+        &std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display())),
     )
     .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
 }
@@ -352,7 +359,12 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
 /// A tiny fixture: 15 hook fields (to clear the floor) over 2 planes, exactly one asymmetric None
 /// (`h0`: p_a Some, p_b None). A minimal ledger declaring the referenced capability for both planes'
 /// columns, and an allowlist that (by default) accounts for the one asymmetry.
-fn fixtures() -> (Matrix, serde_json::Value, serde_json::Value, BTreeMap<&'static str, &'static [&'static str]>) {
+fn fixtures() -> (
+    Matrix,
+    serde_json::Value,
+    serde_json::Value,
+    BTreeMap<&'static str, &'static [&'static str]>,
+) {
     let mut matrix: Matrix = BTreeMap::new();
     for i in 0..15 {
         let mut row = BTreeMap::new();
@@ -397,20 +409,29 @@ fn selftest_undeclared_asymmetric_none_is_red() {
     allow["asymmetries"] = serde_json::json!([]);
     let err = verify(&m, &ledger, &allow, &cols, 15, 0)
         .expect_err("an undeclared asymmetric None must be red");
-    assert!(err.contains("UNDECLARED") && err.contains("h0×p_b"), "got: {err}");
+    assert!(
+        err.contains("UNDECLARED") && err.contains("h0×p_b"),
+        "got: {err}"
+    );
 }
 
 #[test]
 fn selftest_stale_allowlist_row_is_red() {
     // Declare an asymmetry that does not exist (h1 is symmetric) → stale row → RED.
     let (m, ledger, mut allow, cols) = fixtures();
-    allow["asymmetries"].as_array_mut().unwrap().push(serde_json::json!({
-        "field": "h1", "planes_none": ["p_b"], "capability": "cap-x",
-        "reason": "a fixture argument long enough to be an actual reviewable argument here"
-    }));
-    let err = verify(&m, &ledger, &allow, &cols, 15, 1)
-        .expect_err("a stale allowlist row must be red");
-    assert!(err.contains("STALE") && err.contains("h1×p_b"), "got: {err}");
+    allow["asymmetries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "field": "h1", "planes_none": ["p_b"], "capability": "cap-x",
+            "reason": "a fixture argument long enough to be an actual reviewable argument here"
+        }));
+    let err =
+        verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a stale allowlist row must be red");
+    assert!(
+        err.contains("STALE") && err.contains("h1×p_b"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -420,14 +441,16 @@ fn selftest_asymmetry_mapping_to_no_ledger_cell_is_red() {
     allow["asymmetries"][0]["capability"] = "cap-absent".into();
     let err = verify(&m, &ledger, &allow, &cols, 15, 1)
         .expect_err("an asymmetry mapping to a non-existent capability must be red");
-    assert!(err.contains("not declared in qa/capability-equality.json"), "got: {err}");
+    assert!(
+        err.contains("not declared in qa/capability-equality.json"),
+        "got: {err}"
+    );
 }
 
 #[test]
 fn selftest_a_token_reason_is_red() {
     let (m, ledger, mut allow, cols) = fixtures();
     allow["asymmetries"][0]["reason"] = "n/a".into();
-    let err = verify(&m, &ledger, &allow, &cols, 15, 1)
-        .expect_err("a token reason must be red");
+    let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
     assert!(err.contains("real"), "got: {err}");
 }
