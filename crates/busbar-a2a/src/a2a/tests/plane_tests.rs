@@ -309,3 +309,158 @@ fn every_registry_mutation_moves_the_generation() {
     plane.with_registrations(|regs| assert_eq!(regs.len(), 1));
     assert_eq!(plane.generation(), before);
 }
+
+/// SEAM-AUDIT-C item (d): THE DUAL-COMPILED `Box<dyn Any>` READBACK WITNESS.
+///
+/// The whole opaque design of [`DurableHandleEngine`] — rows held as `Arc<dyn Any + Send + Sync>`,
+/// every read a downcast + clone — exists so the engine can ride a per-plane opaque state slot
+/// (`Box<dyn Any>`) that CORE reads back, WITHOUT the engine's `TypeId` diverging across the two core
+/// instances a dual-compiled plane test binary links. Today the only non-test constructor of the
+/// engine is A2A's `TaskRegistry`, which holds it as a CONCRETE field in a plane-crate static — never
+/// boxed into a core slot — so that survival is asserted (the module doc), not proven. Voice is the
+/// first plausible consumer to ride the engine through a core `Box<dyn Any>` slot, so it is the first
+/// to depend on the claim being true.
+///
+/// This witness proves it in the config that can actually exhibit the trap: the `busbar-a2a`
+/// `--features test-support` binary, which links substrate's SINGLE compile of the engine AND the
+/// plane's own core-typed helpers (a two-core binary — the single-compiled coverage in
+/// `handle_engine_tests.rs` has only one core instance and cannot exhibit a cross-instance divergence).
+/// It:
+///   1. builds an engine and submits one plane-crate-local row (RAM posture, no sink),
+///   2. ERASES the engine into the core-owned `Box<dyn Any>` scratch slot (`plane_scratch_any` — the
+///      exact core-readback path the design promises; the slot lives inside core's `TestApp`),
+///   3. reads it BACK through the neutral seam and DOWNCASTS to `DurableHandleEngine` — the
+///      load-bearing assertion: it succeeds only because the engine is substrate-single-compiled and
+///      non-generic, so its `TypeId` is identical on the core store side and the plane read side,
+///   4. reads the row back out and downcasts the NESTED `Arc<dyn Any>` to the plane row, asserting it
+///      is BYTE-IDENTICAL to the submitted row (no re-encode round-trip) — proving the inner erasure
+///      also survives with its own preserved `TypeId`.
+///
+/// The baked NEGATIVE CONTROL at the end proves the witness is not vacuously green: a plane-crate
+/// stand-in monomorphised HERE (what a generic `Engine<Row>` compiled in the plane crate would present
+/// as) erased into the SAME slot FAILS the downcast to the substrate engine. See the commit's
+/// red-before-green note: temporarily boxing that stand-in in step 2/3 turns the load-bearing
+/// `.expect(...)` red, confirming this discriminates on `TypeId` and would catch a divergent engine.
+#[test]
+fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_slot() {
+    use busbar_core::test_support::TestApp;
+    use busbar_substrate::plane::handle_engine::{
+        DurableHandleEngine, HandleMeta, SubmitRecord, SweepBounds,
+    };
+    use busbar_substrate::testkit::TestAppSeam;
+    use std::any::Any;
+    use std::sync::Arc;
+
+    /// A PLANE-CRATE-LOCAL row the engine holds opaquely — the analogue of an A2A task row / a
+    /// Responses-stateful row a voice consumer would install. Its `TypeId` is the plane crate's.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PlaneRow {
+        id: String,
+        owner: String,
+        body: String,
+    }
+
+    const SLOT_KEY: &str = "handle-engine-readback-witness";
+
+    // (1) Build the engine and submit one plane row. RAM posture (no sink): the durable
+    // upsert/append no-op, so `row_record` is built but never hits a store — the witness is about the
+    // in-memory opaque row surviving the erase, not durability.
+    let engine = DurableHandleEngine::new();
+    let row = PlaneRow {
+        id: "resp_witness_1".to_string(),
+        owner: "tenant-a".to_string(),
+        body: "the-load-bearing-bytes".to_string(),
+    };
+    let bounds = SweepBounds {
+        abandon_secs: 10_000,
+        terminal_ttl_secs: 10_000,
+        max_retained: 16,
+    };
+    engine
+        .submit(
+            1,
+            bounds,
+            |_pos| {
+                Ok(SubmitRecord {
+                    id: row.id.clone(),
+                    row: Arc::new(row.clone()) as Arc<dyn Any + Send + Sync>,
+                    meta: HandleMeta {
+                        owner: row.owner.clone(),
+                        updated_at: 1,
+                        terminal: false,
+                        cursor: 0,
+                    },
+                    row_record: busbar_api::PlaneRecord {
+                        kind: "witness".to_string(),
+                        id: row.id.clone(),
+                        parent: None,
+                        seq: 0,
+                        ts: 1,
+                        disposition: busbar_api::PlaneDisposition::Active,
+                        body: row.body.clone().into_bytes(),
+                    },
+                    // Chainless: this witness is about type survival, not the provenance chain.
+                    event: None,
+                })
+            },
+            |_id, _row, _pos, _now| None,
+            |_id, _e| {},
+        )
+        .expect("submit installs the handle");
+
+    // (2) ERASE the populated engine into the CORE-OWNED `Box<dyn Any>` scratch slot. The slot lives
+    // inside core's `TestApp` (`plane_scratch` map), so this is core holding the plane's engine
+    // type-erased — exactly the `Box<dyn Any>` core-readback path the opaque design is paying for.
+    // `plane_scratch_any`'s init is an `Fn` (called at most once), so the move goes through a cell.
+    let mut app = TestApp::new();
+    let pending = std::cell::RefCell::new(Some(engine));
+    let _installed: &mut dyn Any = app.plane_scratch_any(SLOT_KEY, &|| {
+        Box::new(pending.borrow_mut().take().expect("engine moved in once")) as Box<dyn Any>
+    });
+
+    // (3) READ IT BACK through the neutral seam and DOWNCAST to the substrate engine. THE
+    // LOAD-BEARING ASSERTION: this succeeds only because `DurableHandleEngine` is
+    // substrate-single-compiled and non-generic, so the `TypeId` core computed when the plane boxed it
+    // in is the same `TypeId` the plane names on the way out. A generic `Engine<PlaneRow>`
+    // monomorphised in the plane crate would present a divergent `TypeId` in this two-core binary and
+    // this `.downcast()` would return `Err` (see the negative control below).
+    let boxed: Box<dyn Any> = app
+        .take_plane_scratch_any(SLOT_KEY)
+        .expect("the core slot still holds the erased engine");
+    let engine_back: Box<DurableHandleEngine> = boxed
+        .downcast::<DurableHandleEngine>()
+        .expect("the erased engine downcasts back — its TypeId survived the core Box<dyn Any> slot");
+
+    // (4) Read the row back out of the recovered engine and downcast the NESTED `Arc<dyn Any>` to the
+    // plane row. Byte-identical to what was submitted — no re-encode round-trip — proving the inner
+    // erasure survived with its own preserved `TypeId` too.
+    let got: Arc<dyn Any + Send + Sync> = engine_back
+        .scoped_get(&row.owner, &row.id)
+        .expect("the rightful owner reads its row back out of the recovered engine");
+    let got_row = got
+        .downcast_ref::<PlaneRow>()
+        .expect("the inner Arc<dyn Any> downcasts back to the plane row");
+    assert_eq!(
+        *got_row, row,
+        "the row is byte-identical across erase -> downcast across the two core instances"
+    );
+
+    // NEGATIVE CONTROL (baked red-before-green): a plane-crate-local stand-in — what a generic engine
+    // monomorphised HERE, in the plane crate, would present as — erased into the SAME core slot must
+    // FAIL the downcast to the substrate engine. If this ever downcasts successfully, the witness above
+    // is vacuous (the downcast would be discriminating on nothing). This is the exact failure a
+    // divergent-TypeId engine would trip at the point core hands the plane its state back.
+    struct PlaneMonomorphisedEngineStandIn;
+    let mut app2 = TestApp::new();
+    app2.plane_scratch_any(SLOT_KEY, &|| {
+        Box::new(PlaneMonomorphisedEngineStandIn) as Box<dyn Any>
+    });
+    let boxed2 = app2
+        .take_plane_scratch_any(SLOT_KEY)
+        .expect("the slot holds the stand-in");
+    assert!(
+        boxed2.downcast::<DurableHandleEngine>().is_err(),
+        "a plane-crate-monomorphised stand-in must NOT downcast to the substrate engine — the witness \
+         discriminates on TypeId and would catch a divergent engine"
+    );
+}
