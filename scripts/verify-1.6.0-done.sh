@@ -144,15 +144,18 @@ end_group
 begin_group "CONFORMANCE — rig selftests + verdict coverage + voice legs =ready"
 [ -f scripts/mcp-conformance.sh ] && step "mcp-conformance --selftest" bash scripts/mcp-conformance.sh --selftest \
   || absent_step "mcp-conformance --selftest" "scripts/mcp-conformance.sh"
-if [ -f scripts/verdict-covers-every-leg.py ]; then
-  step "verdict-covers-every-leg.py" python3 scripts/verdict-covers-every-leg.py
+if [ -f testing/verdict-covers-every-leg.py ]; then
+  step "verdict-covers-every-leg.py" python3 testing/verdict-covers-every-leg.py
 else
-  absent_step "verdict-covers-every-leg.py" "scripts/verdict-covers-every-leg.py — T2 conformance coverage gate not built yet"
+  absent_step "verdict-covers-every-leg.py" "testing/verdict-covers-every-leg.py — T2 conformance coverage gate not built yet"
 fi
-if [ -f scripts/voice-conformance.sh ]; then
-  step "voice conformance legs =ready" bash scripts/voice-conformance.sh --require-ready
+if [ -f testing/verdict-covers-every-leg.py ]; then
+  step "verdict-covers-every-leg.py --selftest" python3 testing/verdict-covers-every-leg.py --selftest
+fi
+if [ -f testing/voice-conformance/voice-conformance.sh ]; then
+  step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
 else
-  absent_step "voice conformance legs =ready" "scripts/voice-conformance.sh — voice boot/serve conformance rig not built yet"
+  absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"
 fi
 end_group
 
