@@ -82,6 +82,13 @@ serde_yaml = { workspace = true }
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optional = true }
+# THE NEUTRAL ROUTE-ENUM ABI (`RouteAuth`/`RouteMethod`) the plane names to describe its data routes as
+# `PlaneRouteSpec`s (`PLANE_DECL.routes`), the SAME crate busbar-a2a names for its own routes. OPTIONAL,
+# pulled only by `runtime`: the default feature-off build mounts no routes and names no route enum.
+busbar-plugin = { path = "../busbar-plugin", optional = true }
+# `url` — ONE reading of the deployment's `public_url` into the plane's RFC 8707 audience + metadata URL
+# (`crate::mount::absolute`, the A2A `serve::absolute` discipline). OPTIONAL, pulled only by `runtime`.
+url = { workspace = true, optional = true }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
@@ -92,7 +99,7 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optiona
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "busbar-substrate/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "dep:url", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane

@@ -790,6 +790,7 @@ dependencies = [
  "axum",
  "busbar-api",
  "busbar-core",
+ "busbar-plugin",
  "busbar-substrate",
  "bytes",
  "futures",
@@ -797,6 +798,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+ "url",
 ]
 
 [[package]]
