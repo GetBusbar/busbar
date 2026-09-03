@@ -2482,8 +2482,12 @@ fn default_weight() -> u32 {
 /// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
 /// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
 /// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
+///
+/// Delegates to the NEUTRAL raw-rate view ([`busbar_substrate::billing::RawTierRates::blended_per_mtok`])
+/// so the routing scalar is computed through the same seam the pricing oracle projects through (S2a);
+/// byte-identical to the pre-seam `(r.input_utok + r.output_utok) / 2.0`.
 pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
-    (r.input_utok + r.output_utok) / 2.0
+    r.raw_tier_rates().blended_per_mtok()
 }
 
 /// Trip mode for breaker configuration.
@@ -3686,6 +3690,22 @@ pub struct RateEntryCfg {
     pub cache_read_utok: f64,
     #[serde(default)]
     pub cache_write_utok: f64,
+}
+
+impl RateEntryCfg {
+    /// This entry's NEUTRAL raw-rate view — the four raw micro-float rates in canonical reserved order
+    /// ([`busbar_substrate::billing::RawTierRates`]). The seam (S2a) core's pricing oracle + routing
+    /// scalar read rates through WITHOUT naming this config type's `_utok` grammar: the map values ARE
+    /// the raw micro-floats, so this is a pure field lift, byte-identical. When the `rate_card:`
+    /// grammar relocates to the owning plane (S2b), the plane fills the SAME view and this lift goes.
+    pub fn raw_tier_rates(&self) -> busbar_substrate::billing::RawTierRates {
+        busbar_substrate::billing::RawTierRates {
+            input: self.input_utok,
+            output: self.output_utok,
+            cache_read: self.cache_read_utok,
+            cache_write: self.cache_write_utok,
+        }
+    }
 }
 
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the

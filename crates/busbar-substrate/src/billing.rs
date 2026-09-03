@@ -99,3 +99,43 @@ pub struct Usage {
     /// OPAQUE billable counts, reserved four AND opens. Keys are plane/operator DATA.
     pub usage_units: std::collections::BTreeMap<String, u64>,
 }
+
+/// THE NEUTRAL RAW-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as RAW
+/// micro-float-per-token values (1e-6 abstract cost unit per token), in the CANONICAL reserved-four
+/// order the engine already fixes ([`busbar_api::RESERVED_UNITS`] = input, output, cache_read,
+/// cache_write). The field names are the neutral reserved-unit spellings (`busbar_api::UNIT_INPUT`
+/// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
+///
+/// It is the read-back seam core's pricing oracle projects to integer nanos through
+/// (`busbar_core::cost::RateNanos::from_raw`) WITHOUT naming the plane's own config type: today
+/// (S2a) core fills it from its in-core `RateEntryCfg`; once the `rate_card:` grammar relocates to
+/// the owning plane (S2b, `busbar-llm`), the plane fills the SAME view from its parsed section and
+/// core is unchanged. FLOATS live ONLY at this config boundary; the projection to integer nanos and
+/// all hot-path math stay integer, exactly as before.
+///
+/// THE REUSABLE PATTERN: each evictable numeric config section (S3 `limits`, S4 `models`-caps) gets
+/// its own neutral raw-value view of this shape — a small POD of the section's raw scalars in a
+/// canonical order — that core reads through and the owning plane fills. The section's GRAMMAR (field
+/// spellings, `deny_unknown_fields`, validation strings) stays with the plane; only these neutral
+/// numbers cross into core.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RawTierRates {
+    /// Raw micro-units per token for the `input` reserved tier (`busbar_api::UNIT_INPUT`).
+    pub input: f64,
+    /// Raw micro-units per token for the `output` reserved tier (`busbar_api::UNIT_OUTPUT`).
+    pub output: f64,
+    /// Raw micro-units per token for the `cache_read` reserved tier (`busbar_api::UNIT_CACHE_READ`).
+    pub cache_read: f64,
+    /// Raw micro-units per token for the `cache_write` reserved tier (`busbar_api::UNIT_CACHE_WRITE`).
+    pub cache_write: f64,
+}
+
+impl RawTierRates {
+    /// The ROUTING cost scalar (abstract units per MILLION tokens) the `cheapest` policy and the hook
+    /// `Candidate.cost_per_mtok` signal read: the blended `(input + output) / 2` (1 micro-unit/token
+    /// == 1 unit/mtok, so no further scaling). Byte-identical to the pre-seam
+    /// `busbar_core::config::rate_entry_per_mtok`, which now delegates here.
+    pub fn blended_per_mtok(&self) -> f64 {
+        (self.input + self.output) / 2.0
+    }
+}

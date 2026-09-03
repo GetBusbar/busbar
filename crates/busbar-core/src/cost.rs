@@ -127,7 +127,12 @@ pub(crate) struct RateNanos {
 }
 
 impl RateNanos {
-    pub(crate) fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
+    /// Project the NEUTRAL raw-rate view ([`busbar_substrate::billing::RawTierRates`]) — the four raw
+    /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. This is
+    /// the ONE projection: config micro-units × 1000, rounded once, with the defense-in-depth clamp.
+    /// Core reads rates through this NEUTRAL view so the projection names no plane config type; the
+    /// arithmetic (and thus every derived figure) is byte-identical to the pre-seam `from_cfg`.
+    pub(crate) fn from_raw(raw: &busbar_substrate::billing::RawTierRates) -> Self {
         // Config values are validated finite + >= 0; the clamp here is defense-in-depth so a NaN
         // or negative that slipped past validation becomes 0, never a huge/garbage integer rate.
         fn nanos(utok: f64) -> u64 {
@@ -139,11 +144,19 @@ impl RateNanos {
             }
         }
         Self {
-            input: nanos(r.input_utok),
-            output: nanos(r.output_utok),
-            cache_read: nanos(r.cache_read_utok),
-            cache_write: nanos(r.cache_write_utok),
+            input: nanos(raw.input),
+            output: nanos(raw.output),
+            cache_read: nanos(raw.cache_read),
+            cache_write: nanos(raw.cache_write),
         }
+    }
+
+    /// Project a core `RateEntryCfg` by first taking its neutral raw-rate view, then
+    /// [`from_raw`](Self::from_raw). A thin BYTE-IDENTICAL adapter kept while the `rate_card:` grammar
+    /// still lives in core (S2a): the map values ARE the raw micro-floats. Once the grammar relocates
+    /// to the owning plane (S2b) this adapter goes and callers hand [`from_raw`] the plane-filled view.
+    pub(crate) fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
+        Self::from_raw(&r.raw_tier_rates())
     }
 
     /// The nano rate for one RESERVED tier key (0 for a non-reserved key — opens price via the
