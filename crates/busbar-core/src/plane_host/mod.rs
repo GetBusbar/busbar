@@ -818,14 +818,6 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         g.budget_state(&c, key, now)
     }
 
-    fn default_max_tokens(&self) -> u32 {
-        self.app.default_max_tokens
-    }
-
-    fn reasoning_effort_budgets(&self) -> &[u32; 4] {
-        &self.app.reasoning_effort_budgets
-    }
-
     fn governance(&self) -> Option<busbar_substrate::plane_host::GovHandle> {
         // One Arc bump, erased to `dyn Any` — byte-identical to the sink's `app.governance.clone()`.
         self.app.governance.clone().map(|g| {

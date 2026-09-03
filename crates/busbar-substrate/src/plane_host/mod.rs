@@ -722,15 +722,10 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState>;
 
-    /// The GLOBAL fallback `max_tokens` the cross-protocol translation seam injects when a lane has no
-    /// per-lane `default_max_tokens` — the read of `App::default_max_tokens`. A single `u32` load, no
-    /// `HostCtx`, byte-identical.
-    fn default_max_tokens(&self) -> u32;
-
-    /// The four reasoning-effort token budgets (`limits.reasoning_effort_budgets`, low→high) the
-    /// cross-protocol seam maps a request's declared effort onto — the borrow of
-    /// `App::reasoning_effort_budgets`. A pure array borrow, no `HostCtx`, byte-identical.
-    fn reasoning_effort_budgets(&self) -> &[u32; 4];
+    // The cross-protocol translation seam's global-fallback max-output-tokens and effort→budget-table
+    // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
+    // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
+    // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
 
     /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
     /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane

@@ -379,9 +379,11 @@ pub(crate) fn translate_request_cross_protocol(
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
             lane_default_max_tokens: EngineTables::new(rt).lanes()[i].default_max_tokens,
-            global_default_max_tokens: host.default_max_tokens(),
+            // The global fallback + effort→budget table are this plane's own runtime vocabulary now,
+            // read off `rt` rather than a neutral `PlaneHost` method over `App`.
+            global_default_max_tokens: rt.global_default_max_tokens,
             reasoning_allowed,
-            reasoning_budgets: *host.reasoning_effort_budgets(),
+            reasoning_budgets: rt.reasoning_budgets,
             // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
             // (Bedrock) must assert `prompt_caching` to receive breakpoints.
             prompt_caching_allowed: EngineTables::new(rt).lanes()[i].prompt_caching

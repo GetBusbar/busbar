@@ -233,6 +233,15 @@ pub(crate) struct NativeRuntime {
     /// generation reuses this generation's warm `client` (its kept-alive upstream sockets) iff these
     /// are unchanged. Moved IN-PLANE from core's `App::client_settings` with the client build itself.
     pub(crate) client_settings: busbar_substrate::plane_host::ClientSettingsInput,
+    /// The GLOBAL fallback `max_tokens` the cross-protocol translation seam injects when a lane has no
+    /// per-lane `default_max_tokens` (`limits.default_max_tokens`). This is LLM-plane vocabulary; it
+    /// USED to be read off the neutral `App`/`PlaneHost` (`App::default_max_tokens`) but now rides this
+    /// plane's own runtime, stamped from the neutral `PlaneBuildInput` carrier `appbuild` fills.
+    pub(crate) global_default_max_tokens: u32,
+    /// The resolved effort-word → thinking-budget table (`limits.reasoning_effort_budgets`, low→high),
+    /// stamped onto each cross-protocol `EgressPrep`. Formerly `App::reasoning_effort_budgets`, now
+    /// carried in-plane.
+    pub(crate) reasoning_budgets: [u32; 4],
 }
 
 impl NativeRuntime {
@@ -450,6 +459,11 @@ fn empty_native_runtime() -> &'static NativeRuntime {
             http1_only: false,
             h2_prior_knowledge: false,
         },
+        // The zero-plane empty runtime has no lanes, so no cross-protocol translation ever reads these;
+        // they carry the frozen defaults (`limits.default_max_tokens` = 4096, effort budgets
+        // 1024/4096/8192/16384) so the field has an honest value rather than a sentinel.
+        global_default_max_tokens: 4096,
+        reasoning_budgets: [1024, 4096, 8192, 16384],
     })
 }
 
