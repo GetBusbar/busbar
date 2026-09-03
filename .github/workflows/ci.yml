@@ -493,7 +493,7 @@ jobs:
       # until DoD, so this is a plain `-p busbar-voice --features runtime` run: no service containers,
       # no floor accounting, just the previously-dark plane suite made to actually run and go green.
       - name: Voice runtime tests (the `runtime`-gated plane suite `cargo test --workspace` never runs)
-        run: cargo test -p busbar-voice --features runtime --locked --verbose
+        run: cargo test -p busbar-voice --features runtime,test-support --locked --verbose
 
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,

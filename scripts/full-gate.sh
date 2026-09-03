@@ -93,7 +93,7 @@ declare -a CARGO_LOCAL=(
   "cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture"
   "cargo build --locked --bin busbar"
   "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
-  "cargo test -p busbar-voice --features runtime --locked"
+  "cargo test -p busbar-voice --features runtime,test-support --locked"
 )
 
 declare -a CARGO_CI_ONLY=(
