@@ -416,22 +416,20 @@ pub trait MeteringHost: Send + Sync {
     fn cost_close(&self, lease: CostLeaseId) -> Option<u128>;
 }
 
-/// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
-///
-/// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
-/// typed methods rather than naming `busbar_core::plane_host::*_over(&App, …)`. Each method reaches
-/// the SAME host vtable slot the in-core veneer drives, so the value is identical — this is a
-/// same-dispatch relocation of the reach, not a new behaviour.
-///
-/// `Send + Sync` because a plane carries the handle across `.await` and between threads (e.g. into a
-/// `spawn_blocking` breaker leg). That is sound precisely because no method exposes the `!Send`
-/// `HostCtx`: each mints it internally, uses it synchronously, and drops it before returning.
-///
-/// `#[async_trait]` because ONE method — [`identity_admit`](EngineHost::identity_admit) — is `async`
-/// (it awaits a `spawn_blocking` join over the host auth chain). Every other method is a plain sync
-/// fn the attribute leaves untouched; only the async one is desugared to a boxed `Send` future.
-#[async_trait::async_trait]
-pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// CAPABILITY SLICES (M4 god-trait split) — the residual flat host seam, cut into cohesive capability
+// supertraits so a plane depends ONLY on the slices it uses. `EngineHost` is the SUM (a supertrait of
+// every slice), so an existing `Arc<dyn EngineHost>` caller is unaffected — it still reaches every
+// method through the inherited bound — while a plane that needs a narrower capability (a voice/bytes
+// port that must NOT name LLM-only `synthesize_completion`) can take `&dyn SliceX` instead. PURELY
+// STRUCTURAL: every method keeps its exact signature, doc and same-dispatch body; nothing moves in the
+// wire/ABI/money plane. The single `EngineHostImpl` (busbar-core) implements each slice.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The CLOCK slice: the host wall-clock reads a plane's timing/window arithmetic needs, in whole
+/// seconds and milliseconds. Split off `EngineHost` as a supertrait; a plane that only needs the
+/// clock can take `&dyn ClockHost`.
+pub trait ClockHost: Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form
     /// of a plane's in-place seconds clock. Identical to `busbar_core::plane_host::clock_now_secs_over`.
     fn clock_now_secs(&self) -> u64;
@@ -439,62 +437,12 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// Read the host wall clock in MILLISECONDS through the `clock_now` seam — the host-driven form of
     /// a plane's in-place millis clock. Identical to `busbar_core::plane_host::clock_now_ms_over`.
     fn clock_now_ms(&self) -> u64;
+}
 
-    /// Fire the operator's REQUEST-ADMISSION hook gates over the host `gate_decide` seam and
-    /// reconstruct the [`GateOutcome`]. Identical to `busbar_core::plane_host::gate_decide_over`:
-    /// same reconstructed facts, same key identity, same gate decision. Drives the ASYNC gate on a
-    /// fresh runtime, so it MUST be called from a BLOCKING thread (`spawn_blocking`).
-    ///
-    /// `plane_key` is the opaque registry key (the plane's stable decl key) the host resolves the
-    /// gate set and the `ingress_protocol` label from. `key` is the caller's resolved `(id, name)`;
-    /// `session_id` is the caller's session, `Some` only when non-empty.
-    #[allow(clippy::too_many_arguments)]
-    fn gate_decide(
-        &self,
-        plane_key: &str,
-        container: &str,
-        request_id: u64,
-        tool: &str,
-        args_json: &[u8],
-        key: Option<(&str, &str)>,
-        session_id: Option<&str>,
-    ) -> GateOutcome;
-
-    /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
-    /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.
-    /// Identical to `busbar_core::plane_host::govern_admit_reason_over`.
-    fn govern_admit_reason(
-        &self,
-        scope: &DispatchScope,
-        pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
-    ) -> GovAdmit;
-
-    /// Settle a drift disposition for `subject` through the host `drift_quarantine` seam, pulling the
-    /// demotion store host-side. Returns whether the slot answered `Ok`; the settle is
-    /// fire-and-forget, so a non-`Ok` is a durability miss, not a refusal. Identical to
-    /// `busbar_core::plane_host::trust::quarantine_settle_over`.
-    fn quarantine_settle(&self, subject: &str, state: TrustState) -> bool;
-
-    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena.
-    /// `usage` carries the resolved `(key_id, model, provider)` attribution the host writes the cost row
-    /// from; the transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
-    /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
-    /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
-
-    /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
-    /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
-    /// redemption; `false` when already spent OR the durable ledger could not answer (fail-closed).
-    /// Identical to `busbar_core::plane_host::trust::approval_redeem_q`.
-    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool;
-
-    /// Stamp the NEXT per-request correlation id — one relaxed `fetch_add` on the host-owned counter.
-    /// Identical to `busbar_core::state::App::next_request_id` (the counter is boot-seeded and carried
-    /// across config swaps, so the value is engine-snapshot independent).
-    fn next_request_id(&self) -> u64;
-
+/// The TELEMETRY slice: the plane-labelled metric emits a plane fires to close a request out and to
+/// count its dispatch/failover/translation events, plus the `pool_label` cardinality bound every emit
+/// path runs first. Split off `EngineHost` as a supertrait; each emit is snapshot-scoped, no `HostCtx`.
+pub trait TelemetryHost: Send + Sync {
     /// Stamp the plane-labelled request-completion metric family for a MOUNTED plane through the host.
     /// A neutral trait seam: the plane hands its own `(plane, ingress_protocol, pool, outcome, seconds)`
     /// and the host records the completion, so the plane never names core's engine snapshot to close a
@@ -542,55 +490,115 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// Identical to `busbar_core::ingress::pool_label` over the bound snapshot; the returned slice
     /// borrows `model` (or a `'static` sentinel), independent of the host.
     fn pool_label<'a>(&self, model: &'a str) -> &'a str;
+}
 
-    /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
-    /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
-    /// protocol-native rejection response (finished via the not-charged terminal). Identical to
-    /// `busbar_core::ingress::destination_guard` over the bound snapshot + `gov` scope.
-    fn destination_guard(
-        &self,
-        gov: &PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(), Box<axum::response::Response>>;
+/// The JOURNAL slice: the durable admin-audit / call-log emits a plane writes as a side effect of the
+/// mutation it records. All fire-and-forget (a store miss never fails the recorded action). Split off
+/// `EngineHost` as a supertrait.
+pub trait JournalHost: Send + Sync {
+    /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
+    /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
+    /// records. Identical to `busbar_core::plane::auditlog::emit_admin_hostless_now` — this seam needs
+    /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
+    fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
 
-    /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
-    /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
-    /// admission (`charged`). Identical to `busbar_core::ingress::finish_admitted` over the bound
-    /// snapshot + `gov` scope.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_admitted(
+    /// Record ONE admin-audit event `(action, resource, outcome, principal)` through the IN-PROCESS
+    /// ADMIN RING (`busbar_core::admin::audit::AUDIT::record_by`), which seals it into the retained ring
+    /// AND cascades the SAME record onto the durable hostless journal seam. Distinct from
+    /// [`audit_emit`](Self::audit_emit) (durable-only): this is the seam the DATA-plane egress
+    /// audit-and-allow path (a dropped cross-dialect control) writes through, so the record lands in the
+    /// in-process ring the egress audit-trail assertions read. `outcome` is a fixed vocabulary literal.
+    ///
+    /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
+    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+
+    /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
+    /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
+    /// registers no host handle, so the arena choice is immaterial). Identical to
+    /// `busbar_core::calllog::emit`.
+    fn call_log_emit(&self, principal: &str, input: CallInput);
+
+    /// The DEFERRED-SITE twin of [`call_log_emit`](Self::call_log_emit): emit through the
+    /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
+    /// `busbar_core::calllog::emit_hostless`.
+    fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
+}
+
+/// The MOUNT slice: the pure mount-table reads that shape an arrival's dialect and its pre-collapse
+/// fallback error. Split off `EngineHost` as a supertrait; both are pure snapshot reads, no `HostCtx`.
+pub trait MountHost: Send + Sync {
+    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
+    /// `busbar_core::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
+    /// mount-table read, no `HostCtx`.
+    ///
+    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
+    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
+    /// crosses the host seam like every other.
+    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
+
+    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
+    /// `busbar_core::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
+    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
+    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
+    fn arrival_fallback_error(
         &self,
-        gov: &PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-        charged: bool,
+        path: &str,
+        status: axum::http::StatusCode,
+        kind: &str,
+        message: &str,
     ) -> axum::response::Response;
+}
 
-    /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
-    /// refund, for a request rejected BEFORE the admission charge ever ran (governance guard denial or
-    /// a pre-routing failure). Identical to `busbar_core::ingress::finish_rejected` over the bound
-    /// snapshot + `gov` scope.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_rejected(
-        &self,
-        gov: &PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response;
+/// The REGISTRY slice: the per-generation registry/snapshot reads a plane pulls off the bound (or
+/// live) snapshot — its type-erased runtime slot, its type-erased defs, the request-id counter, the
+/// neutral secret resolver, and the host-held card-signing key. Split off `EngineHost` as a supertrait.
+pub trait RegistryHost: Send + Sync {
+    /// Stamp the NEXT per-request correlation id — one relaxed `fetch_add` on the host-owned counter.
+    /// Identical to `busbar_core::state::App::next_request_id` (the counter is boot-seeded and carried
+    /// across config swaps, so the value is engine-snapshot independent).
+    fn next_request_id(&self) -> u64;
 
-    /// Whether governance is configured for this deployment. Identical to
-    /// `busbar_core::state::App::governance.is_some()`.
-    fn governance_enabled(&self) -> bool;
+    /// The plane's type-erased runtime object off the BOUND snapshot (the one this host was minted
+    /// over), owned (an `Arc` clone) so it outlives the call. `None` when the plane contributed no
+    /// slot under `key` this generation. Identical to `busbar_core::state::App::plane_slot(key)`
+    /// cloned — a pure `plane_slots` map read, no `HostCtx` (mirrors [`next_request_id`]).
+    ///
+    /// [`next_request_id`]: RegistryHost::next_request_id
+    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
+    /// The plane's slot off the CURRENT snapshot — re-reads the LIVE handle so a config swap AFTER
+    /// this host was minted is seen (the dispatch-time re-validation / per-round revocation / watch
+    /// loops depend on this). Falls back to the bound snapshot for a snapshot-only mint (one built
+    /// without a live handle). A pure map read, no `HostCtx`.
+    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so a
+    /// plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
+    /// engine's concrete `SecretResolver`. A pure snapshot read of `App::secret_resolver`, no
+    /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
+    /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
+    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
+
+    /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
+    /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
+    /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
+    /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
+    /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
+    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
+
+    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
+    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
+    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
+    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
+    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+}
+
+/// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off
+/// the resolved hook/config facades — the rewrite/tap/gate chains, the routing policy, the requested-
+/// signal bitmask and the group-membership walk. Each is a pure borrow of the bound snapshot tied to
+/// `&self`, no `HostCtx`. Split off `EngineHost` as a supertrait; every borrow is byte-identical to the
+/// `App::X` field read the wedge-3 flip targets.
+pub trait HookConfigHost: Send + Sync {
     /// Whether `caller_group` sits within (any ancestor of) one of `hook_groups` — the group-membership
     /// walk a hook's `groups:` filter consults, resolved against this deployment's group registry.
     /// Identical to `busbar_core::config::caller_in_hook_groups(caller_group, hook_groups, &App::groups_registry)`;
@@ -600,14 +608,6 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// `&App::groups_registry` argument HOST-side means the engine reads group membership without naming
     /// `busbar_core::config` or `App::groups_registry`.
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool;
-
-    // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) ────────────────────────────────────────────
-    // The residual `busbar-llm` request-path reads off the resolved hook/config facades, each given a
-    // NEUTRAL borrowed home here so the wedge-3 flip (`app.X` → `host.X()`) names no `busbar_core`
-    // type. Every borrow is tied to `&self` (elided): when wedge 3 threads `host: &dyn EngineHost` as
-    // a STABLE forward-loop param, the returned slice/ref outlives the await loop, unlike a per-call
-    // `engine_host_value` stack temporary. Purely ADDITIVE — the engine still reads `app.X`, so
-    // `--baseline` is unchanged; these become live at the wedge-3 flip.
 
     /// This pool's resolved REWRITE chain `(timeout, policy)` — the phase-1 transform hooks fired for
     /// requests routed to `pool`, empty (the default) ⇒ no pool rewrites. Byte-identical to
@@ -677,15 +677,23 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// candidate-signal loop gates on (`requested.is_empty()` / `requested.wants(sig)`); the all-zero
     /// default short-circuits the whole loop. Byte-identical to the field read.
     fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
+}
 
-    /// TEST-ONLY raw-token → resolved `VirtualKey` resolution over this deployment's governance state
-    /// (the data-plane boundary: no audience). The host-driven form of
-    /// `App::governance.and_then(|g| g.verify_token(token, now, None))`, for the test paths that
-    /// exercise the routing-policy seam WITHOUT building a full `PlaneRequestCtx` (production always
-    /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
-    /// production binary carries a raw-token verifier on the neutral seam.
-    #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
+/// The BUDGET/METERING slice: the money-path seams — the opaque gov/cost handle mints, the record-usage
+/// / record-metering accruals, the reserve-then-charge meter, and the pure headroom/budget projections.
+/// Split off `EngineHost` as a supertrait; the accrual seams downcast the opaque handles host-side and
+/// drive the SAME accrual the plane's sink did, no `HostCtx`.
+pub trait BudgetHost: Send + Sync {
+    /// Whether governance is configured for this deployment. Identical to
+    /// `busbar_core::state::App::governance.is_some()`.
+    fn governance_enabled(&self) -> bool;
+
+    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena.
+    /// `usage` carries the resolved `(key_id, model, provider)` attribution the host writes the cost row
+    /// from; the transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
+    /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
+    /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
+    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
 
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
@@ -721,11 +729,6 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
         key: &busbar_api::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState>;
-
-    // The cross-protocol translation seam's global-fallback max-output-tokens and effort→budget-table
-    // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
-    // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
-    // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
 
     /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
     /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`; the plane
@@ -775,52 +778,35 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     );
+}
 
-    /// STAGE 3–4 budget-admission door: charge the chain buckets for one request under `gov` on
-    /// `pool`, returning the ADMISSION grant (as the opaque [`AdmitHandle`] the sink holds Drop-only)
-    /// and any budget DOWNGRADE re-pool, or the already-finished not-charged rejection. Identical to
-    /// `busbar_core::ingress::admission_door` over the bound snapshot; the returned `AdmitHandle`
-    /// wraps the SAME `AdmitGrant` the in-place door produced, so `.is_some()` (charged?) and the
-    /// gauge-releasing `Drop` are byte-identical. No `HostCtx` on this path.
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `native_ingress::drive` flip targets
-    /// (a host is already minted there). The `AdmitGrant`→[`AdmitHandle`] carrier-field retype
-    /// (`response_body.rs` / `native_ingress.rs`) rides the same wedge-3 governance flip.
-    fn admission_door(
-        &self,
-        gov: &PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
+/// The IDENTITY/TRUST slice: inbound identity resolution + the trust/approval seams around it — the
+/// audience pre-filter, the auth-chain admit, the standing re-ask, the ask-state sealer derivation, the
+/// drift quarantine settle, the one-time approval redeem, and the test-only token verifier. Split off
+/// `EngineHost` as a supertrait. `#[async_trait]` because [`identity_admit`](Self::identity_admit) is
+/// the one async method (it awaits a `spawn_blocking` join over the host auth chain).
+#[async_trait::async_trait]
+pub trait IdentityHost: Send + Sync {
+    /// Settle a drift disposition for `subject` through the host `drift_quarantine` seam, pulling the
+    /// demotion store host-side. Returns whether the slot answered `Ok`; the settle is
+    /// fire-and-forget, so a non-`Ok` is a durability miss, not a refusal. Identical to
+    /// `busbar_core::plane_host::trust::quarantine_settle_over`.
+    fn quarantine_settle(&self, subject: &str, state: TrustState) -> bool;
 
-    /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
-    /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
-    /// records. Identical to `busbar_core::plane::auditlog::emit_admin_hostless_now` — this seam needs
-    /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
-    fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
+    /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
+    /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
+    /// redemption; `false` when already spent OR the durable ledger could not answer (fail-closed).
+    /// Identical to `busbar_core::plane_host::trust::approval_redeem_q`.
+    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool;
 
-    /// Record ONE admin-audit event `(action, resource, outcome, principal)` through the IN-PROCESS
-    /// ADMIN RING (`busbar_core::admin::audit::AUDIT::record_by`), which seals it into the retained ring
-    /// AND cascades the SAME record onto the durable hostless journal seam. Distinct from
-    /// [`audit_emit`](Self::audit_emit) (durable-only): this is the seam the DATA-plane egress
-    /// audit-and-allow path (a dropped cross-dialect control) writes through, so the record lands in the
-    /// in-process ring the egress audit-trail assertions read. `outcome` is a fixed vocabulary literal.
-    ///
-    /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
-    fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
-
-    /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
-    /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
-    /// registers no host handle, so the arena choice is immaterial). Identical to
-    /// `busbar_core::calllog::emit`.
-    fn call_log_emit(&self, principal: &str, input: CallInput);
-
-    /// The DEFERRED-SITE twin of [`call_log_emit`](EngineHost::call_log_emit): emit through the
-    /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
-    /// `busbar_core::calllog::emit_hostless`.
-    fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
+    /// TEST-ONLY raw-token → resolved `VirtualKey` resolution over this deployment's governance state
+    /// (the data-plane boundary: no audience). The host-driven form of
+    /// `App::governance.and_then(|g| g.verify_token(token, now, None))`, for the test paths that
+    /// exercise the routing-policy seam WITHOUT building a full `PlaneRequestCtx` (production always
+    /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
+    /// production binary carries a raw-token verifier on the neutral seam.
+    #[cfg(any(test, feature = "test-support"))]
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
 
     /// Establish what can be established about a presented bearer's RFC 8707 audience binding against
     /// `expected_aud` — the fail-closed pre-filter a plane runs BEFORE the auth chain, for credentials
@@ -859,20 +845,31 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// `busbar_core::plane::approvals::ask_state_sealer(app.governance)` — the derivation stays core
     /// behind this seam.
     fn ask_state_sealer(&self) -> Option<Sealer>;
+}
 
-    /// The plane's type-erased runtime object off the BOUND snapshot (the one this host was minted
-    /// over), owned (an `Arc` clone) so it outlives the call. `None` when the plane contributed no
-    /// slot under `key` this generation. Identical to `busbar_core::state::App::plane_slot(key)`
-    /// cloned — a pure `plane_slots` map read, no `HostCtx` (mirrors [`next_request_id`]).
+/// The ADMISSION slice: the request-admission gauntlet seams — the gate decision + presence pre-filter,
+/// the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
+/// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
+pub trait AdmissionHost: Send + Sync {
+    /// Fire the operator's REQUEST-ADMISSION hook gates over the host `gate_decide` seam and
+    /// reconstruct the [`GateOutcome`]. Identical to `busbar_core::plane_host::gate_decide_over`:
+    /// same reconstructed facts, same key identity, same gate decision. Drives the ASYNC gate on a
+    /// fresh runtime, so it MUST be called from a BLOCKING thread (`spawn_blocking`).
     ///
-    /// [`next_request_id`]: EngineHost::next_request_id
-    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
-
-    /// The plane's slot off the CURRENT snapshot — re-reads the LIVE handle so a config swap AFTER
-    /// this host was minted is seen (the dispatch-time re-validation / per-round revocation / watch
-    /// loops depend on this). Falls back to the bound snapshot for a snapshot-only mint (one built
-    /// without a live handle). A pure map read, no `HostCtx`.
-    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+    /// `plane_key` is the opaque registry key (the plane's stable decl key) the host resolves the
+    /// gate set and the `ingress_protocol` label from. `key` is the caller's resolved `(id, name)`;
+    /// `session_id` is the caller's session, `Some` only when non-empty.
+    #[allow(clippy::too_many_arguments)]
+    fn gate_decide(
+        &self,
+        plane_key: &str,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        key: Option<(&str, &str)>,
+        session_id: Option<&str>,
+    ) -> GateOutcome;
 
     /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on the
     /// plane identified by the opaque registry `plane_key` (the plane's stable decl key)? Lets a plane
@@ -880,54 +877,94 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// `App::plane_gates(plane_key).contains_key(container)`.
     fn gate_attached(&self, plane_key: &str, container: &str) -> bool;
 
+    /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
+    /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.
+    /// Identical to `busbar_core::plane_host::govern_admit_reason_over`.
+    fn govern_admit_reason(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        identity_id: &[u8],
+        group: Option<&[u8]>,
+    ) -> GovAdmit;
+
+    /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
+    /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
+    /// protocol-native rejection response (finished via the not-charged terminal). Identical to
+    /// `busbar_core::ingress::destination_guard` over the bound snapshot + `gov` scope.
+    fn destination_guard(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(), Box<axum::response::Response>>;
+
+    /// STAGE 3–4 budget-admission door: charge the chain buckets for one request under `gov` on
+    /// `pool`, returning the ADMISSION grant (as the opaque [`AdmitHandle`] the sink holds Drop-only)
+    /// and any budget DOWNGRADE re-pool, or the already-finished not-charged rejection. Identical to
+    /// `busbar_core::ingress::admission_door` over the bound snapshot; the returned `AdmitHandle`
+    /// wraps the SAME `AdmitGrant` the in-place door produced, so `.is_some()` (charged?) and the
+    /// gauge-releasing `Drop` are byte-identical. No `HostCtx` on this path.
+    ///
+    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `native_ingress::drive` flip targets
+    /// (a host is already minted there). The `AdmitGrant`→[`AdmitHandle`] carrier-field retype
+    /// (`response_body.rs` / `native_ingress.rs`) rides the same wedge-3 governance flip.
+    fn admission_door(
+        &self,
+        gov: &PlaneRequestCtx,
+        proto: &'static str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
+
+    /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
+    /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
+    /// admission (`charged`). Identical to `busbar_core::ingress::finish_admitted` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_admitted(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+        charged: bool,
+    ) -> axum::response::Response;
+
+    /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
+    /// refund, for a request rejected BEFORE the admission charge ever ran (governance guard denial or
+    /// a pre-routing failure). Identical to `busbar_core::ingress::finish_rejected` over the bound
+    /// snapshot + `gov` scope.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_rejected(
+        &self,
+        gov: &PlaneRequestCtx,
+        ingress_protocol: &str,
+        pool: &str,
+        started: std::time::Instant,
+        charged_at: u64,
+        resp: axum::response::Response,
+    ) -> axum::response::Response;
+
     /// Whether the plane identified by the opaque registry `plane_key` is mounted under an
     /// AUDIENCE-BOUND door — the deployment gate a request path reads before it trusts an inbound
     /// audience claim. Identical to
     /// `App::planes.mount_of(plane_key).and_then(|m| App::planes.admission_for(m)).is_some()`. A pure
     /// snapshot read, no `HostCtx`.
     fn plane_audience_bound(&self, plane_key: &str) -> bool;
+}
 
-    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so a
-    /// plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
-    /// engine's concrete `SecretResolver`. A pure snapshot read of `App::secret_resolver`, no
-    /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
-    /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
-    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
-
-    /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
-    /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
-    /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
-    /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
-    /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
-    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
-
-    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
-    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
-    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
-    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
-    fn agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
-
-    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
-    /// `busbar_core::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
-    /// mount-table read, no `HostCtx`.
-    ///
-    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
-    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
-    /// crosses the host seam like every other.
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
-
-    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
-    /// `busbar_core::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
-    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
-    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response;
-
+/// The COMPLETION slice — LLM-ONLY. The single seam that drives a non-streaming chat completion through
+/// the resolved ingress pipeline. Split off `EngineHost` as a supertrait SPECIFICALLY so a non-LLM plane
+/// (a voice/bytes port) is NOT forced to name it: such a plane takes the slices it uses and never sees
+/// this one. `#[async_trait]` because [`synthesize_completion`](Self::synthesize_completion) is async.
+#[async_trait::async_trait]
+pub trait CompletionHost: Send + Sync {
     /// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved
     /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
     /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
@@ -935,7 +972,7 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     /// chat protocol (`None` — no chat dialect installed — surfaces as an error, not a hard-coded
     /// identity), so MCP's `sampling/complete` bridge names no LLM dialect to reach a completion.
     ///
-    /// The ONE async method beside [`identity_admit`](EngineHost::identity_admit) — but simpler:
+    /// The ONE async method beside [`IdentityHost::identity_admit`] — but simpler:
     /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
     /// `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
     /// bounds the response body read.
@@ -946,6 +983,55 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
         body: bytes::Bytes,
         max_body_bytes: usize,
     ) -> Result<HostCompletion, String>;
+}
+
+/// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
+///
+/// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
+/// typed methods rather than naming `busbar_core::plane_host::*_over(&App, …)`. Each method reaches
+/// the SAME host vtable slot the in-core veneer drives, so the value is identical — this is a
+/// same-dispatch relocation of the reach, not a new behaviour.
+///
+/// `Send + Sync` because a plane carries the handle across `.await` and between threads (e.g. into a
+/// `spawn_blocking` breaker leg). That is sound precisely because no method exposes the `!Send`
+/// `HostCtx`: each mints it internally, uses it synchronously, and drops it before returning.
+///
+/// ## M4 — `EngineHost` is the SUM of the capability slices
+///
+/// The residual flat method set has been cut into cohesive capability SUPERTRAITS
+/// ([`ClockHost`], [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`],
+/// [`HookConfigHost`], [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`], [`CompletionHost`]),
+/// alongside the earlier braking slices ([`BreakerHost`], [`LanePoolHost`], [`MeteringHost`]).
+/// `EngineHost` now declares NO methods of its own beyond the provided [`run_gauntlet`](Self::run_gauntlet)
+/// ergonomic entry — it is the SUM (a supertrait bound of every slice). An existing
+/// `Arc<dyn EngineHost>` caller is unaffected (it still reaches every method through the inherited
+/// bound); a plane that needs a narrower capability takes `&dyn SliceX` and depends only on what it
+/// uses — a voice/bytes port never names LLM-only [`CompletionHost::synthesize_completion`].
+///
+/// `#[async_trait]` is inherited via the async slices; `EngineHost` itself carries only the provided
+/// `run_gauntlet` future, so the attribute leaves it a thin sum.
+#[async_trait::async_trait]
+pub trait EngineHost:
+    BreakerHost
+    + LanePoolHost
+    + MeteringHost
+    + ClockHost
+    + TelemetryHost
+    + JournalHost
+    + MountHost
+    + RegistryHost
+    + HookConfigHost
+    + BudgetHost
+    + IdentityHost
+    + AdmissionHost
+    + CompletionHost
+    + Send
+    + Sync
+{
+    // The cross-protocol translation seam's global-fallback max-output-tokens and effort→budget-table
+    // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
+    // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
+    // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
 
     /// Run one request through THE shared gauntlet sequence ([`run_gauntlet`]) — the ergonomic entry
     /// for a plane that already holds an `Arc<dyn EngineHost>`. A PROVIDED method: it delegates to the
@@ -960,18 +1046,38 @@ pub trait EngineHost: BreakerHost + LanePoolHost + MeteringHost + Send + Sync {
     }
 }
 
-/// Compile-time witness for the audit-D brake: any `EngineHost` implementor IS a `BreakerHost`, a
-/// `LanePoolHost` and a `MeteringHost`. If a future edit dropped any supertrait bound (or an impl
-/// stopped satisfying it), this stops compiling — so the families cannot silently re-dissolve back into
-/// the flat god-trait.
+/// Compile-time witness for the M4 god-trait split: any `EngineHost` implementor IS every capability
+/// slice. If a future edit dropped any supertrait bound (or an impl stopped satisfying it), this stops
+/// compiling — so `EngineHost` cannot silently cease to equal the SUM of its slices (the families
+/// cannot re-dissolve back into the flat god-trait).
 const _: () = {
-    fn _assert_engine_host_brakes<T: EngineHost + ?Sized>() {
+    fn _assert_engine_host_is_sum_of_slices<T: EngineHost + ?Sized>() {
         fn _needs_breaker<U: BreakerHost + ?Sized>() {}
         fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
         fn _needs_metering<U: MeteringHost + ?Sized>() {}
+        fn _needs_clock<U: ClockHost + ?Sized>() {}
+        fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
+        fn _needs_journal<U: JournalHost + ?Sized>() {}
+        fn _needs_mount<U: MountHost + ?Sized>() {}
+        fn _needs_registry<U: RegistryHost + ?Sized>() {}
+        fn _needs_hook_config<U: HookConfigHost + ?Sized>() {}
+        fn _needs_budget<U: BudgetHost + ?Sized>() {}
+        fn _needs_identity<U: IdentityHost + ?Sized>() {}
+        fn _needs_admission<U: AdmissionHost + ?Sized>() {}
+        fn _needs_completion<U: CompletionHost + ?Sized>() {}
         _needs_breaker::<T>();
         _needs_lane_pool::<T>();
         _needs_metering::<T>();
+        _needs_clock::<T>();
+        _needs_telemetry::<T>();
+        _needs_journal::<T>();
+        _needs_mount::<T>();
+        _needs_registry::<T>();
+        _needs_hook_config::<T>();
+        _needs_budget::<T>();
+        _needs_identity::<T>();
+        _needs_admission::<T>();
+        _needs_completion::<T>();
     }
 };
 
