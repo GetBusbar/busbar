@@ -46,6 +46,17 @@ pub struct VoiceRuntime {
     /// zero charge). Empty by default (no denial policy yet); the pre-admission hook a real model
     /// blocklist fills. Named by `session_gauntlet` through [`Self::destination_denied`].
     pub denied_destinations: std::collections::BTreeSet<String>,
+    /// THE LOCKED SESSION DEFAULTS every session opens with, read from the operator's `streams.session:`
+    /// (VAD/media/tool set). Seeded from [`crate::config::StreamsCfg`] at [`build_runtime`]; the pump
+    /// re-applies it server-side so a client `session.update` is reconciled against it, never trusted
+    /// blind.
+    pub session_defaults: crate::ir::config::SessionConfig,
+    /// The hard session wall-clock ceiling (`streams.session_max_secs:`) the pump enforces.
+    pub session_max_secs: u32,
+    /// The context-window ceiling (`streams.context_window_tokens:`).
+    pub context_window_tokens: u32,
+    /// The per-response output-token ceiling (`streams.max_output_tokens:`).
+    pub max_output_tokens: u32,
 }
 
 impl VoiceRuntime {
@@ -56,12 +67,30 @@ impl VoiceRuntime {
         metering: Arc<dyn MeteringPort>,
         tools: Arc<dyn ToolExecutor>,
     ) -> Self {
+        let defaults = crate::config::StreamsCfg::default();
         VoiceRuntime {
             engine,
             metering,
             tools,
             denied_destinations: std::collections::BTreeSet::new(),
+            session_defaults: defaults.session,
+            session_max_secs: defaults.session_max_secs,
+            context_window_tokens: defaults.context_window_tokens,
+            max_output_tokens: defaults.max_output_tokens,
         }
+    }
+
+    /// SEED the locked session config + the three session ceilings from the operator's `streams:`
+    /// section. Called by [`build_runtime`] with the plane's own typed [`crate::config::StreamsCfg`]
+    /// (an absent section falls back to `StreamsCfg::default()`), so the runtime a session is built
+    /// FROM carries the operator's real posture rather than the dev defaults.
+    #[must_use]
+    pub fn with_streams(mut self, cfg: &crate::config::StreamsCfg) -> Self {
+        self.session_defaults = cfg.session.clone();
+        self.session_max_secs = cfg.session_max_secs;
+        self.context_window_tokens = cfg.context_window_tokens;
+        self.max_output_tokens = cfg.max_output_tokens;
+        self
     }
 
     /// Builder: DENY the given upstream destinations (models) at the session open-pass gate. A session
@@ -117,16 +146,25 @@ impl VoiceRuntime {
 /// signature is the real one so binding the config-derived dependencies is a body change, not an ABI
 /// change. Voice is dev-only until DoD, so a dev-default runtime object is the honest interim.
 pub fn build_runtime(
-    _section: &dyn std::any::Any,
+    section: &dyn std::any::Any,
     _prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
+    // READ THE REAL `streams:` CONFIG: core passes the plane's own typed section as `cfg.streams.as_any()`
+    // (the `PlaneCfg::as_any` of `StreamsCfg`). An absent/other section downcasts to `None` and falls back
+    // to the plane default, so a deployment with no `streams:` block still builds a runtime — with the
+    // plane's own default posture, not an empty one.
+    let streams = section
+        .downcast_ref::<crate::config::StreamsCfg>()
+        .cloned()
+        .unwrap_or_default();
     // The DEV / TEST default binds [`LocalMeteringPort`] (HARD RULE 4): the runtime/topology tests and
     // the conformance governance leg drive the faithful in-process lease. The PRODUCTION composition root
     // — which holds an `Arc<dyn EngineHost>`/`MeteringHost` for the live grant — calls
-    // [`build_runtime_hosted`] instead, binding the REAL host lease so the D2 money hop meters against the
-    // caller's real budget. The frozen `PlaneDecl::build_runtime` fn-pointer signature carries no host, so
-    // the hosted entry is a sibling rather than a body branch.
-    build_runtime_with_metering(Arc::new(LocalMeteringPort))
+    // [`build_runtime_hosted`] instead, binding the REAL host lease so the D2 money hop PRICES each turn's
+    // usage against the deployment rate card (`MeteringHost::price_usage`) rather than the dev-default zero.
+    // The frozen `PlaneDecl::build_runtime` fn-pointer signature carries no host, so the hosted entry is a
+    // sibling rather than a body branch.
+    build_runtime_with_metering(Arc::new(LocalMeteringPort), &streams)
 }
 
 /// THE PRODUCTION composition entry — build the voice runtime with the REAL host metering lease bound as
@@ -139,7 +177,13 @@ pub fn build_runtime(
 pub fn build_runtime_hosted(
     host: Arc<dyn busbar_substrate::plane_host::MeteringHost>,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
-    build_runtime_with_metering(Arc::new(metering::HostMeteringPort::new(host)))
+    // The hosted entry carries the live metering host but no config section (the fn-pointer that carries
+    // the section is `build_runtime`); the config-derived session posture is seeded there. Until the
+    // composition root threads both together, the hosted path opens with the plane default posture.
+    build_runtime_with_metering(
+        Arc::new(metering::HostMeteringPort::new(host)),
+        &crate::config::StreamsCfg::default(),
+    )
 }
 
 /// The shared composition body: assemble the per-generation [`VoiceRuntime`] over the given metering
@@ -147,12 +191,16 @@ pub fn build_runtime_hosted(
 /// engine and tool executor. Turn pricing rides the port's lease (`price_usage`), host-side.
 fn build_runtime_with_metering(
     metering: Arc<dyn MeteringPort>,
+    streams: &crate::config::StreamsCfg,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
-    Arc::new(VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        metering,
-        Arc::new(EchoToolExecutor),
-    ))
+    Arc::new(
+        VoiceRuntime::new(
+            Arc::new(DurableHandleEngine::new()),
+            metering,
+            Arc::new(EchoToolExecutor),
+        )
+        .with_streams(streams),
+    )
 }
 
 #[cfg(test)]

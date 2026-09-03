@@ -340,6 +340,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
  "busbar-substrate",
+ "busbar-voice",
  "bytes",
  "core_affinity",
  "criterion",
@@ -794,6 +795,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tokio",
 ]
 

@@ -23,6 +23,12 @@
 
 pub mod ir;
 
+/// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and
+/// its `parse_section` / `default_section` seam hooks. UNCONDITIONAL (outside the `runtime` gate):
+/// the plane DECLARES and PARSES `streams:` even in the skeleton build, so config validation reaches
+/// the owned grammar whether or not the live session pump is compiled in.
+pub mod config;
+
 pub mod diagnostics;
 
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
@@ -121,7 +127,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
-        parse_section: None,
+        // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
+        // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
+        // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
+        // the skeleton build validates `streams:` too.
+        parse_section: Some(config::streams_parse_section),
         parse_endpoint: None,
         lower_endpoint: None,
         // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
@@ -132,9 +142,15 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         build_runtime: VOICE_BUILD_RUNTIME,
         viewer: None,
         retain_verify_gates: None,
-        default_section: None,
-        // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
-        owned_config_sections: &[],
+        // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
+        // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
+        // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
+        // typed default.
+        default_section: Some(config::streams_default_section),
+        // config-seam: voice OWNS the `streams:` grammar. `"streams"` is NOT in core's
+        // `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits), so the dup-claim
+        // guard admits this claim; a second claimant of `streams` is refused by construction.
+        owned_config_sections: &["streams"],
     };
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None` and ONE dialect

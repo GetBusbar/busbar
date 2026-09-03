@@ -43,6 +43,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
+        streams: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
         mcp: Default::default(),

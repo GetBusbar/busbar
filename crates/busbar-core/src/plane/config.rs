@@ -314,6 +314,32 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     }
 }
 
+/// THE `streams:` VOICE-PLANE SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] —
+/// the neutral seam the voice plane's `StreamsCfg` deserializes through, so `DeployCfg` names no
+/// `busbar_voice` type. Absent ⇒ the plane's `Default` (the empty `streams:`).
+///
+/// `streams` is a SINGULAR typed section (one live-voice posture per deployment), NOT a
+/// named-definition map, so it is keyed by the bare `"streams"` config-section literal rather than a
+/// `NamedMapSection` index — the generic seam resolves the voice decl by that config section. The
+/// plane compiled out (voice off, the default build) captures it RAW and refuses a present section at
+/// `resolve`, exactly as `tools:`/`agents:` are.
+#[derive(Debug)]
+pub struct StreamsSection(pub Box<dyn PlaneCfg>);
+
+impl Default for StreamsSection {
+    fn default() -> Self {
+        StreamsSection(default_plane_section("streams"))
+    }
+}
+impl<'de> serde::Deserialize<'de> for StreamsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section("streams", deserializer).map(StreamsSection)
+    }
+}
+
 /// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
 /// neutral seam the MCP plane's `McpCfg` deserializes through. Absent/null ⇒ `None` (not an MCP
 /// server), byte-identical to the pre-seam `Option<McpCfg>::default()`.
