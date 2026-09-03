@@ -94,8 +94,10 @@ fn repo_root() -> PathBuf {
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
 // Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
 // is installed, so this yields an empty set and the gate test below is vacuous (returns early).
+// The pushes are cfg-gated, so a plain `vec![]` literal cannot express them; the lint that would
+// prefer one does not apply.
+#[allow(clippy::vec_init_then_push, unused_mut)]
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
-    #[allow(unused_mut)]
     let mut v: Vec<(&'static str, &'static PlaneDecl)> = Vec::new();
     #[cfg(feature = "proto-llm")]
     v.push(("llm", &busbar_llm::PLANE_DECL));
