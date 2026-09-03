@@ -2173,7 +2173,7 @@ fn sign_bedrock_request(
     (auth, headers)
 }
 
-/// Build a `Request` with the given Authorization + signed headers (for `verify_bedrock_sigv4`).
+/// Build a `Request` with the given Authorization + signed headers (for `verify_sigv4_ingress_credential`).
 fn bedrock_request(path: &str, auth: &str, headers: &[(String, String)]) -> Request<Body> {
     let mut b = Request::builder()
         .method("POST")
@@ -2205,7 +2205,7 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_roundtrip_admits_with_govctx() {
+fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     // A request signed with the key's REAL secret verifies and yields the owning (enabled) key.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
@@ -2218,7 +2218,7 @@ fn test_verify_bedrock_sigv4_roundtrip_admits_with_govctx() {
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
     let req = bedrock_request(path, &auth, &headers);
     let key =
-        verify_bedrock_sigv4(&gov, &req, b"").expect("a correctly-signed request must verify");
+        verify_sigv4_ingress_credential(&gov, &req, b"").expect("a correctly-signed request must verify");
     // Behavioral: the function resolved the SPECIFIC owning key (not just "some enabled key").
     // Tying to the key's identity (name) is a stronger statement than `key.enabled`, which merely
     // restates an input property. The owning key here is the one `gov_with_aws_key` created.
@@ -2229,7 +2229,7 @@ fn test_verify_bedrock_sigv4_roundtrip_admits_with_govctx() {
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_roundtrip_with_escaped_query_param_admits() {
+fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admits() {
     // Regression for the query-string double-encoding bug: `canonical_query_string` must NOT
     // re-URI-encode the wire query string, which arrives already percent-encoded once by the
     // client. A real SigV4 client signs a CanonicalQueryString built from ONE encoding pass over
@@ -2277,13 +2277,13 @@ fn test_verify_bedrock_sigv4_roundtrip_with_escaped_query_param_admits() {
     );
     let full_path = format!("{path}?{wire_query}");
     let req = bedrock_request(&full_path, &auth, &headers);
-    let key = verify_bedrock_sigv4(&gov, &req, b"")
+    let key = verify_sigv4_ingress_credential(&gov, &req, b"")
         .expect("a correctly-signed request with an escaped query param must verify");
     assert_eq!(key.name, "bedrock");
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_wrong_secret_rejected() {
+fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
@@ -2299,20 +2299,20 @@ fn test_verify_bedrock_sigv4_wrong_secret_rejected() {
         &a,
     );
     let req = bedrock_request(path, &auth, &headers);
-    // `verify_bedrock_sigv4` collapses every failure to the SAME opaque `Err(())` (no
+    // `verify_sigv4_ingress_credential` collapses every failure to the SAME opaque `Err(())` (no
     // enumeration oracle). Assert that exact value, not just `is_err()`. The variant-level
     // distinction — that a wrong secret is a `SignatureMismatch`, NOT a distinct key-not-found
     // variant — is pinned one layer down in `sigv4::verify_inbound_sigv4`'s tests (a real-secret
     // signature verified against the dummy secret yields `SignatureMismatch`).
     assert_eq!(
-        verify_bedrock_sigv4(&gov, &req, b""),
+        verify_sigv4_ingress_credential(&gov, &req, b""),
         Err(()),
         "a wrong-secret signature must be rejected with the opaque Err(())"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_unknown_access_key_id_rejected() {
+fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
     crate::metrics::init();
     let (gov, _akid, secret) = gov_with_aws_key();
     let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
@@ -2332,14 +2332,14 @@ fn test_verify_bedrock_sigv4_unknown_access_key_id_rejected() {
     // verified against a dummy secret precisely so it is indistinguishable from a bad signature
     // (no AccessKeyId-enumeration oracle). Assert the exact value, not just `is_err()`.
     assert_eq!(
-        verify_bedrock_sigv4(&gov, &req, b""),
+        verify_sigv4_ingress_credential(&gov, &req, b""),
         Err(()),
         "unknown AccessKeyId must be rejected with the SAME opaque Err(()) as a bad signature"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_expired_date_rejected() {
+fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
@@ -2350,13 +2350,13 @@ fn test_verify_bedrock_sigv4_expired_date_rejected() {
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &a);
     let req = bedrock_request(path, &auth, &headers);
     assert!(
-        verify_bedrock_sigv4(&gov, &req, b"").is_err(),
+        verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
         "an expired x-amz-date must be rejected"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_missing_authorization_rejected() {
+fn test_verify_sigv4_ingress_credential_missing_authorization_rejected() {
     crate::metrics::init();
     let (gov, _akid, _secret) = gov_with_aws_key();
     // No Authorization header at all.
@@ -2365,11 +2365,11 @@ fn test_verify_bedrock_sigv4_missing_authorization_rejected() {
         .uri("/model/anthropic.claude/converse")
         .body(Body::empty())
         .unwrap();
-    assert!(verify_bedrock_sigv4(&gov, &req, b"").is_err());
+    assert!(verify_sigv4_ingress_credential(&gov, &req, b"").is_err());
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_disabled_key_rejected() {
+fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
     crate::metrics::init();
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
@@ -2394,13 +2394,13 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &a);
     let req = bedrock_request(path, &auth, &headers);
     assert!(
-        verify_bedrock_sigv4(&gov, &req, b"").is_err(),
+        verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
         "a correctly-signed request for a DISABLED key must be rejected"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_revoked_key_rejected() {
+fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
     // A dual-credential key minted with
     // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
     // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
@@ -2436,7 +2436,7 @@ fn test_verify_bedrock_sigv4_revoked_key_rejected() {
     let (auth, headers) =
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
     let req = bedrock_request(path, &auth, &headers);
-    let admitted = verify_bedrock_sigv4(&gov, &req, b"")
+    let admitted = verify_sigv4_ingress_credential(&gov, &req, b"")
         .expect("a non-revoked dual-credential key must admit via SigV4");
     assert_eq!(admitted.name, "dual");
 
@@ -2455,14 +2455,14 @@ fn test_verify_bedrock_sigv4_revoked_key_rejected() {
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate2);
     let req2 = bedrock_request(path, &auth2, &headers2);
     assert_eq!(
-        verify_bedrock_sigv4(&gov, &req2, b""),
+        verify_sigv4_ingress_credential(&gov, &req2, b""),
         Err(()),
         "a correctly-signed SigV4 request for a REVOKED (denylisted) key must be rejected"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_body_matches_signed_hash_admits() {
+fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     // (a) A non-empty body whose bytes hash to the signed `x-amz-content-sha256` is accepted.
     // This exercises the body-integrity bind on a real payload (the roundtrip test signs an empty
     // body): the verifier must re-hash THESE bytes and find they match the signed digest.
@@ -2474,13 +2474,13 @@ fn test_verify_bedrock_sigv4_body_matches_signed_hash_admits() {
     let (auth, headers) =
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, body, &a);
     let req = bedrock_request(path, &auth, &headers);
-    let key = verify_bedrock_sigv4(&gov, &req, body)
+    let key = verify_sigv4_ingress_credential(&gov, &req, body)
         .expect("a correctly-signed request whose body matches the signed hash must verify");
     assert_eq!(key.name, "bedrock");
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_tampered_body_rejected() {
+fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     // (b) THE core fix: a VALID signature (signed over the original body) but the body bytes
     // actually delivered are DIFFERENT (a MitM tampered them in transit). The signature still
     // verifies against the declared `x-amz-content-sha256`, but the bytes no longer hash to it, so
@@ -2505,14 +2505,14 @@ fn test_verify_bedrock_sigv4_tampered_body_rejected() {
     let req = bedrock_request(path, &auth, &headers);
     // ...but feed the verifier the TAMPERED bytes (what the middleware would have buffered).
     assert_eq!(
-        verify_bedrock_sigv4(&gov, &req, tampered_body),
+        verify_sigv4_ingress_credential(&gov, &req, tampered_body),
         Err(()),
         "a body whose bytes don't match the signed x-amz-content-sha256 must fail-closed"
     );
 }
 
 #[test]
-fn test_verify_bedrock_sigv4_unsigned_payload_rejected() {
+fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     // (c) `UNSIGNED-PAYLOAD` is rejected for this governed ingress: we require a signed payload, so
     // a client declaring it did not hash its body cannot authenticate. Sign a request normally,
     // then overwrite the x-amz-content-sha256 header with the sentinel; the body-integrity gate
@@ -2531,7 +2531,7 @@ fn test_verify_bedrock_sigv4_unsigned_payload_rejected() {
     }
     let req = bedrock_request(path, &auth, &headers);
     assert_eq!(
-        verify_bedrock_sigv4(&gov, &req, body),
+        verify_sigv4_ingress_credential(&gov, &req, body),
         Err(()),
         "UNSIGNED-PAYLOAD must be rejected for governed Bedrock ingress"
     );
