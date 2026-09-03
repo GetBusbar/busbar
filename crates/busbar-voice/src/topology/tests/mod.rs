@@ -12,15 +12,26 @@ use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
 use crate::runtime::VoiceRuntime;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
-use crate::topology::{dial_provider, SessionBudget};
-use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
-use busbar_substrate::ingress::duplex_ws as ws_ingress;
-use busbar_substrate::net_guard::GuardPolicy;
+use crate::topology::SessionBudget;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane_host::MeteringHost;
 use futures::channel::mpsc::unbounded;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::sync::Arc;
+// Test-support-only: the guarded provider-dial battery (dial_provider through the net-guard) and its
+// loopback EchoProvider. These symbols are used ONLY by the `#[cfg(feature = "test-support")]` dial
+// tests, so gate the imports to match — otherwise a `runtime`-without-`test-support` build (the
+// workspace clippy default now that voice ships default-on) sees them as unused.
+#[cfg(feature = "test-support")]
+use crate::topology::dial_provider;
+#[cfg(feature = "test-support")]
+use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
+#[cfg(feature = "test-support")]
+use busbar_substrate::ingress::duplex_ws as ws_ingress;
+#[cfg(feature = "test-support")]
+use busbar_substrate::net_guard::GuardPolicy;
+#[cfg(feature = "test-support")]
+use futures::SinkExt;
 
 fn runtime() -> VoiceRuntime {
     // The PRODUCTION money hop: a host lease + host pricing over the mock host (prices every reserved
@@ -109,9 +120,12 @@ async fn telephony_proxy_relays_both_directions() {
 // ── The provider WSS dials THROUGH the neutral guarded transport (HARD RULE 3) ───────────────────
 
 /// A loopback echo "provider" served over the neutral WS ingress acceptor — stands in for the Realtime
-/// upstream so the plane's `dial_provider` can be driven end to end without a network.
+/// upstream so the plane's `dial_provider` can be driven end to end without a network. Test-support-only
+/// (the guarded-dial battery it feeds is `#[cfg(feature = "test-support")]`).
+#[cfg(feature = "test-support")]
 struct EchoProvider;
 
+#[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl DuplexPlane for EchoProvider {
     fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
@@ -122,6 +136,7 @@ impl DuplexPlane for EchoProvider {
     }
 }
 
+#[cfg(feature = "test-support")]
 async fn spawn_echo_provider() -> std::net::SocketAddr {
     async fn route(upgrade: axum::extract::ws::WebSocketUpgrade) -> axum::response::Response {
         ws_ingress::serve(upgrade, Arc::new(EchoProvider))

@@ -8,10 +8,17 @@
 //! (governed, but the live serving leg is the deployment's to compose).
 
 use super::{
-    voice_admission, voice_build, voice_claims, voice_hydrate, voice_routes, voice_start, Ingress,
+    voice_admission, voice_build, voice_claims, voice_hydrate, voice_routes, voice_start,
     MOUNT_PATH,
 };
 use crate::ir::codec::OpenAiRealtimeCodec;
+// Test-support-only: the governed-open battery (`governed_open` + its denied-destination test) drives
+// `open_governed` over `Ingress`; both are used ONLY under `#[cfg(feature = "test-support")]`, so gate
+// the imports to keep a `runtime`-without-`test-support` build (the workspace clippy default now that
+// voice ships default-on) clean.
+#[cfg(feature = "test-support")]
+use super::Ingress;
+#[cfg(feature = "test-support")]
 use crate::mount::open_governed;
 use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRuntime};

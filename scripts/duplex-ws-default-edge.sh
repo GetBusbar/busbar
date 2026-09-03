@@ -14,12 +14,15 @@
 #   breaks it; this gate fails RED the moment it does.
 #
 # WHAT IT ASSERTS (feature-resolved, via `cargo tree`, not a lockfile presence scan):
+#   THE MONEY PATH (busbar-core, the LLM completion codepath) carries NO WS edge, in any config:
 #   1. busbar-core, DEFAULT features            → NO tokio-tungstenite
 #   2. busbar-core, --no-default-features       → NO tokio-tungstenite
-#   3. busbar (shipped binary), DEFAULT features→ NO tokio-tungstenite
-#   4. busbar (shipped binary), --no-default    → NO tokio-tungstenite
+#   VOICE IS ARMED DEFAULT-ON + DELETABLE: the shipped binary ships the edge WITH the voice plane, and
+#   removing the plane (`--no-default`) removes the whole edge (strong-form deletable):
+#   3. busbar (shipped binary), DEFAULT features→ tokio-tungstenite IS present (voice armed default-on)
+#   4. busbar (shipped binary), --no-default    → NO tokio-tungstenite (the edge disappears with voice)
 #   POSITIVE CONTROL:
-#   5. busbar --features plane-voice            → tokio-tungstenite IS present (the edge exists, gated)
+#   5. busbar --features plane-voice            → tokio-tungstenite IS present (the edge is the voice plane's)
 #
 # No deps beyond bash + cargo — the bare-runner posture of the sibling lints.
 set -uo pipefail
@@ -58,11 +61,11 @@ assert_present() {
 }
 
 printf '\n== duplex-ws default-edge gate: the money-path build carries no WS edge ==\n'
-assert_absent "busbar-core (default)"          -p busbar-core
-assert_absent "busbar-core (--no-default)"     -p busbar-core --no-default-features
-assert_absent "busbar (default / shipped)"     -p busbar
-assert_absent "busbar (--no-default)"          -p busbar --no-default-features
-assert_present "busbar (--features plane-voice)" -p busbar --features plane-voice
+assert_absent "busbar-core (default, money path)"   -p busbar-core
+assert_absent "busbar-core (--no-default)"           -p busbar-core --no-default-features
+assert_present "busbar (default / shipped, voice armed default-on)" -p busbar
+assert_absent "busbar (--no-default, voice removed)" -p busbar --no-default-features
+assert_present "busbar (--features plane-voice)"     -p busbar --features plane-voice
 
 printf '\n== verdict ==\n'
 if [ "$fail" -eq 0 ]; then

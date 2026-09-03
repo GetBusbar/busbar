@@ -40,8 +40,11 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
-# `plane-voice`, and NOT in `default` — voice is dev-only until DoD, so the shipped binary is
-# byte-unchanged. The `busbar-voice/runtime` edge is carried by the feature (below), not here.
+# `plane-voice`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
+# plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
+# edge); the shipped binary gains the voice plane + its WS transport, and `--no-default` proves the
+# whole edge disappears with the crate (strong-form deletable). The `busbar-voice/runtime` edge is
+# carried by the feature (below), not here.
 busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
@@ -72,7 +75,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. The binary keeps the SAME default
 # set the monolithic crate had, so `cargo build -p busbar` builds the same artifact as before.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be

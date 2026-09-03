@@ -1006,3 +1006,13 @@ mod metrics_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sdp_tests.rs"]
 mod sdp_tests;
+
+// AUDIT-CHAIN + GOVERNANCE-BUDGET capability cells, re-homed to a gate-valid `/tests/` path (the
+// equality gate rejects `runtime/tests.rs`). Runtime-gated so the durable engine / D2 lease compile;
+// no `test-support` needed — they drive the durable session chain and the host metering lease only.
+#[cfg(all(test, feature = "runtime"))]
+#[path = "tests/audit_chain_tests.rs"]
+mod audit_chain_tests;
+#[cfg(all(test, feature = "runtime"))]
+#[path = "tests/governance_budget_tests.rs"]
+mod governance_budget_tests;

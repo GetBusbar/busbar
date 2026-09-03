@@ -80,6 +80,7 @@ const PLANE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("llm", &["llm"]),
     ("mcp", &["mcp-client", "mcp-server"]),
     ("a2a", &["a2a-client", "a2a-server"]),
+    ("voice", &["voice-client", "voice-server"]),
 ];
 
 fn repo_root() -> PathBuf {
@@ -105,6 +106,8 @@ fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     v.push(("mcp", &busbar_mcp::PLANE_DECL));
     #[cfg(feature = "plane-a2a")]
     v.push(("a2a", &busbar_a2a::PLANE_DECL));
+    #[cfg(feature = "plane-voice")]
+    v.push(("voice", &busbar_voice::PLANE_DECL));
     v
 }
 
@@ -355,11 +358,11 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
-    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs).
+    // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
     let keys: Vec<&str> = PLANE_LEDGER_COLUMNS.iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys,
-        vec!["llm", "mcp", "a2a"],
+        vec!["llm", "mcp", "a2a", "voice"],
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change"
     );
 }

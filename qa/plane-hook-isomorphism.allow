@@ -20,21 +20,227 @@
     "gate + the ledger's voice pin, not by this reflection — see the test header."
   ],
   "asymmetries": [
-    { "field": "routes",            "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM plane is the fallback data-plane: it answers on the neutral completion ingress, not plane-mounted routes, so it declares no route hook" },
-    { "field": "admin_routes",      "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM `pools:` section is not a 1.5.3 named-definition-map, so the plane has no per-registration admin surface to mount" },
-    { "field": "openapi",           "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM plane contributes no plane-owned OpenAPI path document; its surface is the core completion API, not a plane fragment" },
-    { "field": "hydrate",           "planes_none": ["llm"],        "capability": "disposition",   "reason": "the LLM plane holds no durable per-registration state to restore on boot; there is nothing to hydrate" },
-    { "field": "start",             "planes_none": ["llm", "mcp"], "capability": "disposition",   "reason": "neither the LLM nor MCP plane runs a long-lived start-time task; only the A2A server plane starts a background loop" },
-    { "field": "config_validate",   "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM `pools:` grammar is validated by core's pool config path, not by a plane-owned config_validate hook" },
-    { "field": "registry_contains", "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM plane keeps no named-registration registry to answer containment on; its pools are core-owned config" },
-    { "field": "reresolve_gates",   "planes_none": ["llm"],        "capability": "trust-pinning", "reason": "the LLM plane pins no per-peer artifact, so there are no container gates to re-resolve on a swap" },
-    { "field": "retain_verify_gates","planes_none": ["llm"],       "capability": "trust-pinning", "reason": "the LLM plane retains no verify gates because it holds no pinned peer artifacts across generations" },
-    { "field": "default_section",   "planes_none": ["llm"],        "capability": "catalogue",     "reason": "the LLM `pools:` section is core-owned config today, so the plane supplies no default section object" },
-    { "field": "on_swap",           "planes_none": ["llm", "a2a"], "capability": "trust-pinning", "reason": "endpoint hot-swap on generation change is an MCP-endpoint concern; the LLM and A2A planes swap no per-endpoint object" },
-    { "field": "parse_endpoint",    "planes_none": ["llm", "a2a"], "capability": "egress-auth",   "reason": "the parse-endpoint hook lowers the MCP client-endpoint config grammar; the LLM and A2A planes have no such endpoint section" },
-    { "field": "lower_endpoint",    "planes_none": ["llm", "a2a"], "capability": "egress-auth",   "reason": "the lower-endpoint hook is the MCP client-endpoint lowering; the LLM and A2A planes lower no endpoint config" },
-    { "field": "build_runtime",     "planes_none": ["a2a"],        "capability": "catalogue",     "reason": "the A2A plane is delegation-only today and builds no per-generation runtime object; LLM and MCP each build one" },
-    { "field": "card_signing_domain","planes_none": ["llm", "mcp"],"capability": "trust-pinning", "reason": "agent-card signing identity is an A2A-only capability; the LLM and MCP planes issue no signed card" },
-    { "field": "card_kid_prefix",   "planes_none": ["llm", "mcp"], "capability": "trust-pinning", "reason": "the card key-id prefix is part of A2A-only agent-card signing; the LLM and MCP planes mint no card key" }
+    {
+      "field": "routes",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM plane is the fallback data-plane: it answers on the neutral completion ingress, not plane-mounted routes, so it declares no route hook"
+    },
+    {
+      "field": "admin_routes",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM `pools:` section is not a 1.5.3 named-definition-map, so the plane has no per-registration admin surface to mount"
+    },
+    {
+      "field": "openapi",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM plane contributes no plane-owned OpenAPI path document; its surface is the core completion API, not a plane fragment"
+    },
+    {
+      "field": "hydrate",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "disposition",
+      "reason": "the LLM plane holds no durable per-registration state to restore on boot; there is nothing to hydrate"
+    },
+    {
+      "field": "start",
+      "planes_none": [
+        "llm",
+        "mcp"
+      ],
+      "capability": "disposition",
+      "reason": "neither the LLM nor MCP plane runs a long-lived start-time task; only the A2A server plane starts a background loop"
+    },
+    {
+      "field": "config_validate",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM `pools:` grammar is validated by core's pool config path, not by a plane-owned config_validate hook"
+    },
+    {
+      "field": "registry_contains",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM plane keeps no named-registration registry to answer containment on; its pools are core-owned config"
+    },
+    {
+      "field": "reresolve_gates",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the LLM plane pins no per-peer artifact, so there are no container gates to re-resolve on a swap"
+    },
+    {
+      "field": "retain_verify_gates",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the LLM plane retains no verify gates because it holds no pinned peer artifacts across generations"
+    },
+    {
+      "field": "default_section",
+      "planes_none": [
+        "llm"
+      ],
+      "capability": "catalogue",
+      "reason": "the LLM `pools:` section is core-owned config today, so the plane supplies no default section object"
+    },
+    {
+      "field": "on_swap",
+      "planes_none": [
+        "llm",
+        "a2a"
+      ],
+      "capability": "trust-pinning",
+      "reason": "endpoint hot-swap on generation change is an MCP-endpoint concern; the LLM and A2A planes swap no per-endpoint object"
+    },
+    {
+      "field": "parse_endpoint",
+      "planes_none": [
+        "llm",
+        "a2a"
+      ],
+      "capability": "egress-auth",
+      "reason": "the parse-endpoint hook lowers the MCP client-endpoint config grammar; the LLM and A2A planes have no such endpoint section"
+    },
+    {
+      "field": "lower_endpoint",
+      "planes_none": [
+        "llm",
+        "a2a"
+      ],
+      "capability": "egress-auth",
+      "reason": "the lower-endpoint hook is the MCP client-endpoint lowering; the LLM and A2A planes lower no endpoint config"
+    },
+    {
+      "field": "build_runtime",
+      "planes_none": [
+        "a2a"
+      ],
+      "capability": "catalogue",
+      "reason": "the A2A plane is delegation-only today and builds no per-generation runtime object; LLM and MCP each build one"
+    },
+    {
+      "field": "card_signing_domain",
+      "planes_none": [
+        "llm",
+        "mcp"
+      ],
+      "capability": "trust-pinning",
+      "reason": "agent-card signing identity is an A2A-only capability; the LLM and MCP planes issue no signed card"
+    },
+    {
+      "field": "card_kid_prefix",
+      "planes_none": [
+        "llm",
+        "mcp"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the card key-id prefix is part of A2A-only agent-card signing; the LLM and MCP planes mint no card key"
+    },
+    {
+      "field": "admin_routes",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "catalogue",
+      "reason": "the voice plane's streams: is a singular section, not a named-definition map, so it has no per-registration admin surface to mount"
+    },
+    {
+      "field": "openapi",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "catalogue",
+      "reason": "the voice plane contributes no plane-owned OpenAPI path document; its duplex session ingress is not described as an OpenAPI fragment"
+    },
+    {
+      "field": "config_validate",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "catalogue",
+      "reason": "the voice streams: grammar is validated through parse_section/default_section, not a separate plane-owned config_validate hook"
+    },
+    {
+      "field": "registry_contains",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "catalogue",
+      "reason": "the voice plane keeps no named-registration registry to answer containment on; streams: is a singular section with no named stream defs"
+    },
+    {
+      "field": "reresolve_gates",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the voice plane pins no per-peer artifact (providers are operator-declared endpoints), so there are no container gates to re-resolve on a swap"
+    },
+    {
+      "field": "retain_verify_gates",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the voice plane retains no verify gates because it holds no pinned peer artifacts across generations"
+    },
+    {
+      "field": "on_swap",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "trust-pinning",
+      "reason": "endpoint hot-swap on generation change is an MCP-endpoint concern; the voice plane swaps no per-endpoint object, dialing an operator-configured provider socket"
+    },
+    {
+      "field": "parse_endpoint",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "egress-auth",
+      "reason": "the parse-endpoint hook lowers the MCP client-endpoint config grammar; the voice plane has no such per-endpoint config section"
+    },
+    {
+      "field": "lower_endpoint",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "egress-auth",
+      "reason": "the lower-endpoint hook is the MCP client-endpoint lowering; the voice plane lowers no endpoint config, dialing an operator-configured provider"
+    },
+    {
+      "field": "card_signing_domain",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "trust-pinning",
+      "reason": "agent-card signing identity is an A2A-only capability; the voice plane issues no signed card for a peer to verify"
+    },
+    {
+      "field": "card_kid_prefix",
+      "planes_none": [
+        "voice"
+      ],
+      "capability": "trust-pinning",
+      "reason": "the card key-id prefix is part of A2A-only agent-card signing; the voice plane mints no card key"
+    }
   ]
 }
