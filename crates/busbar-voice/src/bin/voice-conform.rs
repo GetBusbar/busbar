@@ -14,6 +14,7 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
+use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
 use busbar_voice::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
@@ -22,7 +23,6 @@ use busbar_voice::runtime::{
     Carrier, EchoToolExecutor, HostMeteringPort, LeaseState, LocalMeteringPort, MeteringPort,
     SessionCore,
 };
-use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;

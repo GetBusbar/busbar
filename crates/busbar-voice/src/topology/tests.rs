@@ -10,7 +10,6 @@ use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
 use crate::runtime::VoiceRuntime;
-use busbar_substrate::plane_host::MeteringHost;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
 use crate::topology::{dial_provider, SessionBudget};
@@ -18,6 +17,7 @@ use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane}
 use busbar_substrate::ingress::duplex_ws as ws_ingress;
 use busbar_substrate::net_guard::GuardPolicy;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
+use busbar_substrate::plane_host::MeteringHost;
 use futures::channel::mpsc::unbounded;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -275,7 +275,10 @@ fn begin_session_refuses_a_denied_destination_before_any_charge() {
         1,
     );
     assert!(
-        matches!(started, Err(crate::topology::StartError::DestinationRefused)),
+        matches!(
+            started,
+            Err(crate::topology::StartError::DestinationRefused)
+        ),
         "a denied destination is refused at the open-pass gate"
     );
     // The refusal landed BEFORE any charge: NO lease was ever minted (open_lease never ran).
@@ -344,14 +347,18 @@ fn abnormal_close_releases_the_reserve_via_the_by_value_guard() {
         1,
     )
     .expect("session begins");
-    assert_eq!(host.closed_ids(), Vec::<u64>::new(), "no close before teardown");
+    assert_eq!(
+        host.closed_ids(),
+        Vec::<u64>::new(),
+        "no close before teardown"
+    );
 
     // Pin an `Arc<SessionCore>` clone — the parked-handler stand-in holding the settle handle (`HostLease`),
     // whose refcount-gated `Drop` close therefore CANNOT fire while the clone lives.
     let pinned = Arc::clone(&core);
     drop(core); // the run() frame's own core ref goes away…
-    // …yet the reserve is NOT released: the pinned clone still gates the settle handle's close. THIS is the
-    // leak (red state) the guard exists to fix — without a guard, teardown would end here with 0 closes.
+                // …yet the reserve is NOT released: the pinned clone still gates the settle handle's close. THIS is the
+                // leak (red state) the guard exists to fix — without a guard, teardown would end here with 0 closes.
     assert_eq!(
         host.closed_ids(),
         Vec::<u64>::new(),

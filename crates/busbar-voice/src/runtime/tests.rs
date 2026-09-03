@@ -98,9 +98,16 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
         Some(11),
         "cached folds onto `cache_read`"
     );
-    assert_eq!(usage.usage_units.len(), 3, "only the three touched reserved keys");
+    assert_eq!(
+        usage.usage_units.len(),
+        3,
+        "only the three touched reserved keys"
+    );
     // An empty turn keys nothing (no zero components ever price).
-    assert!(IrDuplexUsage::default().to_billing_usage().usage_units.is_empty());
+    assert!(IrDuplexUsage::default()
+        .to_billing_usage()
+        .usage_units
+        .is_empty());
 }
 
 #[test]
@@ -109,14 +116,18 @@ fn host_prices_usage_then_settles_the_priced_increment() {
     // (audio_out 3, text_out 4) folds to output=7 and prices to 7 nanos, settled against the lease.
     let host = Arc::new(MockMeteringHost::default());
     let port = HostMeteringPort::new(Arc::clone(&host) as Arc<dyn MeteringHost>);
-    let lease = port.reserve(0, 0, Some(100)).expect("uncapped-enough opens");
+    let lease = port
+        .reserve(0, 0, Some(100))
+        .expect("uncapped-enough opens");
     let u = IrDuplexUsage {
         audio_out: 3,
         text_out: 4,
         ..IrDuplexUsage::default()
     };
     let usage = u.to_billing_usage();
-    let nanos = lease.price_usage("gpt-realtime", &usage).expect("model is priced");
+    let nanos = lease
+        .price_usage("gpt-realtime", &usage)
+        .expect("model is priced");
     assert_eq!(nanos, 7, "output 3+4 priced at 1 nano each = 7");
     assert_eq!(lease.settle(nanos), LeaseState::Live);
     assert_eq!(lease.settled_nanos(), 7);

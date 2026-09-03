@@ -97,7 +97,10 @@ impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StartError::DestinationRefused => {
-                write!(f, "voice session destination refused at the open-pass gate (fail closed)")
+                write!(
+                    f,
+                    "voice session destination refused at the open-pass gate (fail closed)"
+                )
             }
             StartError::BudgetRefused => write!(f, "voice session budget refused (fail closed)"),
             StartError::Durable(e) => write!(f, "voice session durable open failed: {e:?}"),
@@ -136,7 +139,9 @@ impl GauntletPlane for SessionGauntlet {
         // Never reached on the session path (the opener runs only the admission gate). Fail closed.
         axum::response::Response::builder()
             .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body(axum::body::Body::from("session gauntlet never drives a one-shot response"))
+            .body(axum::body::Body::from(
+                "session gauntlet never drives a one-shot response",
+            ))
             .expect("static fault response builds")
     }
 }

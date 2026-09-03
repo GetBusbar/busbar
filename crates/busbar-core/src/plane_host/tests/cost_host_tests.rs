@@ -221,7 +221,11 @@ fn close_lease_applies_the_refund_of_the_unspent_reserve() {
     over.settle_partial(CostAmount(400));
     let s = over.finalize();
     assert_eq!(s.ledgered_total, CostAmount(400), "ledgers the true charge");
-    assert_eq!(s.refund, CostAmount(0), "an over-settle refunds zero, never negative");
+    assert_eq!(
+        s.refund,
+        CostAmount(0),
+        "an over-settle refunds zero, never negative"
+    );
     // A second close is a harmless None (the removal is the double-refund guard).
     assert_eq!(close_lease(id), None, "no double refund on a second close");
 }

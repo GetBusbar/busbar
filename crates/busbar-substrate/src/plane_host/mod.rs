@@ -1332,7 +1332,10 @@ mod gauntlet_session_tests {
         )
         .await;
         assert_eq!(resp.status(), 200, "proceed drives the one-shot path");
-        assert!(drove_rg.load(Ordering::SeqCst), "run_gauntlet drove on proceed");
+        assert!(
+            drove_rg.load(Ordering::SeqCst),
+            "run_gauntlet drove on proceed"
+        );
 
         let drove_rgs = Arc::new(AtomicBool::new(false));
         let admitted = run_gauntlet_session(
@@ -1363,7 +1366,11 @@ mod gauntlet_session_tests {
             }),
         )
         .await;
-        assert_eq!(resp.status(), 429, "refuse returns the plane's refusal verbatim");
+        assert_eq!(
+            resp.status(),
+            429,
+            "refuse returns the plane's refusal verbatim"
+        );
         assert!(
             !drove_rg_r.load(Ordering::SeqCst),
             "refuse never drives (run_gauntlet)"

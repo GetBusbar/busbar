@@ -361,7 +361,12 @@ impl MockMeteringHost {
 
     /// The reserved (estimate+fee) recorded for lease `id`, if still open (for reserve-audit asserts).
     pub(crate) fn reserved_of(&self, id: u64) -> Option<u128> {
-        self.inner.lock().unwrap().leases.get(&id).map(|l| l.reserved)
+        self.inner
+            .lock()
+            .unwrap()
+            .leases
+            .get(&id)
+            .map(|l| l.reserved)
     }
 
     /// Forget every open lease host-side — simulate the host dropping a lease out from under a handle.

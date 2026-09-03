@@ -545,11 +545,7 @@ impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
         cost_host::close_lease(lease.0)
     }
 
-    fn price_usage(
-        &self,
-        model: &str,
-        usage: &busbar_substrate::billing::Usage,
-    ) -> Option<u128> {
+    fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {
         // Price against the BOUND snapshot's resolved `CostModel` — the SAME rate card + arithmetic the
         // LLM enforcement/derive path prices with (a new reader, not a new pricer), so a live voice
         // carrier meters against the deployment's real rates while staying plane-neutral.
