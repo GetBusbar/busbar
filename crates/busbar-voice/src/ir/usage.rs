@@ -12,7 +12,9 @@
 /// `CostBreakdown` whose top-level components sum to `total` (the one invariant core enforces), with
 /// audio/text as labeled opaque components core never interprets.
 ///
-/// SKELETON: a plain token-class tally; the `CostBreakdown` fold is future work.
+/// A plain token-class tally, folded (5→4 reserved keys, see [`Self::to_billing_usage`]) onto the
+/// neutral [`busbar_substrate::billing::Usage`] the host prices via the D2 lease's `price_usage`
+/// (`runtime::metering::MeteringPort::price_usage`) and settled through `cost_settle`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IrDuplexUsage {
     /// Audio input tokens consumed this turn.

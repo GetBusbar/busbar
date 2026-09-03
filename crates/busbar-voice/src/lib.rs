@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! busbar-voice — the DUPLEX / LIVE-VOICE plane (Plane 4), as ONE plugin crate. SKELETON.
+//! busbar-voice — the DUPLEX / LIVE-VOICE plane (Plane 4), as ONE plugin crate.
 //!
-//! WHAT THIS CRATE HOLDS TODAY. The plane's DECLARATIONS — [`PLANE_DECL`] (a
+//! WHAT THIS CRATE HOLDS. The plane's DECLARATIONS — [`PLANE_DECL`] (a
 //! [`busbar_substrate::plane::registry::PlaneDecl`]) and [`DECLS`] (a
-//! [`busbar_substrate::proto::ProtocolDecl`] with `codec: None`, one dialect `openai_realtime`) — plus
-//! the plane's OWN four-layer duplex/session IR as TYPE STUBS ([`ir`]). There is no pump, no
-//! reader/writer body, no session store yet: this is the skeleton the P2 build (see
-//! `docs/design/plane4-duplex-session.md` §8) fills in.
+//! [`busbar_substrate::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
+//! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
+//! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
+//! (see `docs/design/plane4-duplex-session.md` §8). Boot-mounting that runtime into the composition
+//! root (route / admission / handler wiring) is separate, tracked work — see [`PLANE_DECL`].
 //!
 //! ONE PLUGIN PER PROTOCOL, the same rule `busbar-mcp` / `busbar-a2a` state: nothing in `busbar-core`
 //! names this crate. Everything the plane consumes from the engine comes through the neutral
@@ -17,16 +18,19 @@
 //! do NOT change to accept it, and the crate is strong-form DELETABLE (`git rm -r crates/busbar-voice`
 //! leaves the neutral crates compiling) — proven by `scripts/plane-delete-test.sh voice`.
 //!
-//! `codec: None` (`plane4-duplex-session.md` §1.4): while OpenAI Realtime is the ONLY dialect the plane earns no cross-dialect
-//! superset IR — its IR is its OWN, a busbar-owned mirror. The superset is earned at the SECOND dialect
-//! (Gemini Live), exactly as A2A earns one at its second wire format and not before.
+//! THE SUPERSET IR, EARNED (`plane4-duplex-session.md` §1.4). With TWO dialects — OpenAI Realtime and
+//! Gemini Live — the plane earns a cross-dialect superset IR: a neutral vocabulary both codecs read and
+//! write, so `Plane::has_superset_ir("voice")` is true — DERIVED from the length-2 `VOICE_WIRE_FORMATS`
+//! (the A2A rule: a plane earns a superset at its SECOND wire format and not before). The plane realizes
+//! that superset as its OWN shared IR types ([`ir`]), not the LLM-style `DialectCodec` facade, so
+//! [`DECLS`] stays `codec: None` exactly as MCP / A2A do.
 
 pub mod ir;
 
 /// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and
 /// its `parse_section` / `default_section` seam hooks. UNCONDITIONAL (outside the `runtime` gate):
-/// the plane DECLARES and PARSES `streams:` even in the skeleton build, so config validation reaches
-/// the owned grammar whether or not the live session pump is compiled in.
+/// the plane DECLARES and PARSES `streams:` even in the default feature-off build, so config validation
+/// reaches the owned grammar whether or not the live session pump is compiled in.
 pub mod config;
 
 pub mod diagnostics;
@@ -40,17 +44,18 @@ pub mod diagnostics;
 pub use diagnostics::DIAGNOSTICS;
 
 // THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
-// HARD RULE 4). The default / prod build compiles the skeleton IR + declarations only; turning the
-// feature on compiles the duplex session pump, the D2 metering lease, the durable `SessionScope`
-// binding, and the browser-sideband / telephony topologies. Voice stays dev-only until DoD.
+// HARD RULE 4). The default / prod build compiles the IR + declarations only (no async runtime pulled
+// in); turning the feature on compiles the duplex session pump, the D2 metering lease, the durable
+// `SessionScope` binding, and the browser-sideband / telephony topologies — all feature-gated OFF by
+// default (HARD RULE 4), not because the code is incomplete.
 #[cfg(feature = "runtime")]
 pub mod runtime;
 #[cfg(feature = "runtime")]
 pub mod topology;
 
 /// THE `PLANE_DECL.build_runtime` VALUE — wired to the real runtime constructor
-/// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` in the default skeleton build so
-/// the prod `PLANE_DECL` is byte-unchanged (voice stays dev-only until DoD). Split by `cfg` because the
+/// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` when the feature is off so the
+/// default `PLANE_DECL` is byte-unchanged. Split by `cfg` because the
 /// `runtime` module (and its constructor) only exist behind the feature.
 // `type_complexity`: this fn-pointer is the mirror of the frozen `PlaneDecl::build_runtime` field type
 // (`busbar_substrate::plane::registry`), which carries the SAME `#[allow(clippy::type_complexity)]` — the
@@ -73,20 +78,26 @@ const VOICE_BUILD_RUNTIME: Option<
 > = None;
 
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
-/// here; it is the [`DECLS`] registry key and the plane's sole [`PLANE_DECL`] wire format (one
-/// dialect ⇒ no superset IR yet).
+/// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_DECL`] wire formats.
 pub const OPENAI_REALTIME: &str = "openai_realtime";
 
-/// THE ONE WIRE FORMAT this plane translates today: just the one dialect. Its length (== 1) is what
-/// denies this plane a superset IR (`Plane::has_superset_ir` is DERIVED from this list's length), the
-/// A2A discipline — a plane earns a superset at its SECOND wire format and not before.
-const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME];
+/// THE SECOND DIALECT this plane speaks — Google's Gemini Live `BidiGenerateContent` API. Its codec is
+/// [`ir::GeminiLiveCodec`]; adding it to `VOICE_WIRE_FORMATS` is what EARNS the plane its superset IR
+/// (the A2A discipline — a plane earns a superset at its SECOND wire format and not before).
+pub const GEMINI_LIVE: &str = "gemini_live";
+
+/// THE TWO WIRE FORMATS this plane translates: OpenAI Realtime and Gemini Live. Its length (== 2) is
+/// what EARNS this plane a superset IR (`Plane::has_superset_ir` is DERIVED from this list's length),
+/// the A2A discipline — a plane earns a superset at its SECOND wire format and not before.
+const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 
 /// THE VOICE PLANE'S DECLARATION — a `&'static PlaneDecl` the composition root installs at boot so the
-/// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). SKELETON: it declares the plane's
-/// identity (key, config section, audit kind, wire format) and returns EMPTY/`None` from every runtime
-/// hook — it mounts nothing, admits no one, and builds no runtime object yet. The neutral registry
-/// unions this without naming it (the MCP/A2A precedent).
+/// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). It declares the plane's identity
+/// (key, config section, audit kind, wire formats) and — at M5 — is INSTALLED at boot behind the
+/// `plane-voice` feature, with `build_runtime` wired to the real runtime constructor. The remaining
+/// boot-mounting hooks (`claims` / `admission` / `build` / `routes` / handler) still return EMPTY/`None`:
+/// route-mounting the feature-gated topology entry into the composition root is follow-on work. The
+/// neutral registry unions this without naming it (the MCP/A2A precedent).
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "voice",
@@ -105,10 +116,11 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         subject_noun: "voice session",
         admin_noun: "voice-session",
         audit_kind: "voice_session",
-        // ONE dialect ⇒ no superset IR (see VOICE_WIRE_FORMATS).
+        // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
         wire_format_names: || VOICE_WIRE_FORMATS,
-        // SKELETON: the plane mounts nothing, admits no one, and builds no runtime object yet — the
-        // pump / session-open through `run_gauntlet_session` is the P2 build (`plane4-duplex-session.md` §8).
+        // NOT YET MOUNTED: the runtime engine exists (`crate::runtime`, behind the `runtime` feature),
+        // but this decl still mounts nothing and admits no one at boot — route-mounting the pump /
+        // session-open through `run_gauntlet_session` is follow-on work (`plane4-duplex-session.md` §8).
         claims: |_slot| Vec::new(),
         admission: |_slot| None,
         build: |_ctx| None,
@@ -130,15 +142,15 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // config-seam: voice PARSES its owned `streams:` section through its own typed `StreamsCfg`,
         // so `DeployCfg` names no `busbar_voice` type (the MCP `mcp_parse_section` / A2A
         // `a2a_parse_section` pattern). UNCONDITIONAL — the hook lives outside the `runtime` gate so
-        // the skeleton build validates `streams:` too.
+        // the default feature-off build validates `streams:` too.
         parse_section: Some(config::streams_parse_section),
         parse_endpoint: None,
         lower_endpoint: None,
         // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
-        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` in the default skeleton build so the prod build
-        // is byte-unchanged. The remaining runtime hooks (`build` / `hydrate` / `start` /
-        // `parse_section` / `default_section`) stay `None`: they need the plane's config-section grammar
-        // and the host metering-lease seam, both outside this crate's scope (see the T2 report).
+        // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
+        // byte-unchanged. The remaining boot-mounting hooks (`build` / `hydrate` / `start`) stay `None`:
+        // route-mounting the topology entry needs the host route/admission seam, follow-on work outside
+        // this crate's scope (see the T2 report).
         build_runtime: VOICE_BUILD_RUNTIME,
         viewer: None,
         retain_verify_gates: None,
@@ -153,21 +165,25 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         owned_config_sections: &["streams"],
     };
 
-/// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None` and ONE dialect
-/// (`openai_realtime`), re-exported at the crate root so the `busbar` binary names one stable path
-/// (`busbar_voice::DECLS`). Like MCP, it declares NO codec: its IR is its own (the [`ir`] module),
-/// there is no cross-dialect translation into or out of it while it speaks one dialect.
+/// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None`, re-exported at the
+/// crate root so the `busbar` binary names one stable path (`busbar_voice::DECLS`). Like MCP / A2A, it
+/// declares NO codec even though the plane now speaks TWO dialects: the plane realizes its cross-dialect
+/// superset as its OWN shared IR types (the [`ir`] module's `DuplexReader` / `DuplexWriter` pair, one
+/// per dialect), not the LLM-style `DialectCodec` facade the `codec` field carries.
 ///
-/// SKELETON: `handler: None` and `verbs: &[]` — the duplex handler / gauntlet-session entry is the P2
-/// build. Every other field carries the neutral default a codec-less protocol declares (the MCP
-/// `DECL` shape).
+/// NOT YET MOUNTED: `handler: None` and `verbs: &[]` — route-mounting the duplex handler /
+/// gauntlet-session entry is follow-on work. Every other field carries the neutral default a codec-less
+/// protocol declares (the MCP `DECL` shape).
 pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto::ProtocolDecl {
     name: OPENAI_REALTIME,
-    // ITS IR IS ITS OWN (`plane4-duplex-session.md` §1.4): no cross-dialect codec while one dialect is spoken.
+    // THE SUPERSET IS ITS OWN IR (`plane4-duplex-session.md` §1.4): the two dialects meet in the plane's
+    // shared IR types, not a `DialectCodec` facade — so this field stays `None`, the MCP/A2A precedent.
     codec: None,
-    // SKELETON: no request handler yet — the duplex pump / session entry is P2.
+    // NOT YET MOUNTED: no request handler wired here yet — the duplex pump exists in `crate::runtime`;
+    // route-mounting its entry point is follow-on work.
     handler: None,
-    // SKELETON: no verbs declared yet (the long-lived Subscribe/Control shapes arrive with the pump).
+    // NOT YET MOUNTED: no verbs declared yet (the long-lived Subscribe/Control shapes arrive with the
+    // boot-mounting pass).
     verbs: &[],
     head_keys: &[],
     streaming_content_type: None,

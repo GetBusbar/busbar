@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE T2 VOICE SESSION RUNTIME — the live duplex engine (design `plane4-duplex-session.md` §8, the P2 build). Behind the
-//! `runtime` cargo feature (OFF by default): the default / prod build compiles the skeleton IR +
-//! declarations only, so the workspace is unaffected and voice stays dev-only until DoD.
+//! THE T2 VOICE SESSION RUNTIME — the live duplex engine (design `plane4-duplex-session.md` §8). Behind the
+//! `runtime` cargo feature (OFF by default, HARD RULE 4): the default / prod build compiles the IR +
+//! declarations only, so the workspace is unaffected regardless of this module's state.
 //!
 //! The runtime binds the neutral byte-duplex pump (`serve_messages`), the codec's
 //! `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the D2 metering lease into one
@@ -135,16 +135,18 @@ impl VoiceRuntime {
 /// THE `PLANE_DECL.build_runtime` HOOK BODY — builds the plane's per-generation runtime object
 /// (type-erased as `Arc<dyn Any + Send + Sync>`), the seam the composition root composes the voice
 /// runtime slot through (see `crate::PLANE_DECL`). Wired behind the `runtime` feature; the default
-/// skeleton build leaves the hook `None`.
+/// (feature-off) build leaves the hook `None`.
 ///
-/// DEV DEFAULTS (reported). It builds from DEV defaults — a fresh durable engine, the [`LocalLease`]
-/// metering port (which prices at 0: the dev stand-in carries no rate card), and the
-/// [`EchoToolExecutor`] — because deriving the real dependencies from config needs the plane's
-/// config-section grammar (`PLANE_DECL.parse_section` /
-/// `default_section`), which touches the frozen config snapshot and is a SEPARATE slice. The first
-/// argument (the plane's own config section) and `prior` (carry-over) are therefore ignored today; the
-/// signature is the real one so binding the config-derived dependencies is a body change, not an ABI
-/// change. Voice is dev-only until DoD, so a dev-default runtime object is the honest interim.
+/// WHAT IS WIRED, AND WHAT REMAINS A DEV DEFAULT. This entry reads the REAL `streams:` config (session
+/// posture / ceilings, via `with_streams`) and binds the [`LocalMeteringPort`] — the faithful in-process
+/// metering stand-in the runtime/topology tests and the conformance governance leg drive. Turn PRICING
+/// is REAL, not deferred: the production composition root calls [`build_runtime_hosted`] instead, binding
+/// the host lease that prices each turn against the deployment rate card (`MeteringHost::price_usage`);
+/// only the DEV/TEST path here prices at zero (HARD RULE 4). What is still a dev default is the durable
+/// engine (a fresh [`DurableHandleEngine`]) and the tool executor ([`EchoToolExecutor`]): deriving the
+/// config-driven engine/tool set is a SEPARATE, tracked slice. `prior` (carry-over) is ignored today; the
+/// signature is the real one so binding those config-derived dependencies is a body change, not an ABI
+/// change.
 pub fn build_runtime(
     section: &dyn std::any::Any,
     _prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,

@@ -1,13 +1,16 @@
-# busbar-voice — THE DUPLEX / LIVE-VOICE PLANE CRATE (Plane 4). SKELETON.
+# busbar-voice — THE DUPLEX / LIVE-VOICE PLANE CRATE (Plane 4).
 #
 # The fourth plane KIND — long-lived, bidirectional, per-frame-governed — added as a NEW crate that
 # owns 100% of its protocol vocabulary (see docs/design/plane4-duplex-session.md §7). Core / substrate
 # / api never learn the word "audio": this crate declares its own `PlaneDecl` and a `ProtocolDecl`
-# with `codec: None` (one dialect, OpenAI Realtime) exactly as `busbar-mcp` does, and the neutral
-# registry unions whatever it declares without naming it.
+# with `codec: None` exactly as `busbar-mcp` does (the two dialects meet in the plane's own shared IR
+# types, not a `DialectCodec` facade), and the neutral registry unions whatever it declares without
+# naming it.
 #
-# STATUS: SKELETON ONLY. The four-layer duplex/session IR (`plane4-duplex-session.md` §2) is present as TYPE STUBS with no pump,
-# no reader/writer bodies, no session store. It compiles, registers, and is strong-form deletable.
+# STATUS: the four-layer duplex/session IR (`plane4-duplex-session.md` §2), both dialect codecs (OpenAI
+# Realtime + Gemini Live), the T2 session pump, and both topologies are implemented behind the "runtime"
+# feature. Boot-mounting into the composition root (PLANE_DECL's build / admission / routes hooks) is
+# separate, tracked work. It compiles, registers, and is strong-form deletable.
 #
 # DEPENDENCY POSTURE mirrors `busbar-mcp`: `busbar-substrate` is the neutral shared surface the plugin
 # names instead of `busbar-core`; `busbar-core` is an OPTIONAL dep pulled ONLY by `test-support` (the
@@ -19,7 +22,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
-description = "The duplex / live-voice plane for busbar (Plane 4): the OpenAI Realtime dialect and the four-layer session IR, as one removable plugin. Skeleton — no audio/pump logic yet."
+description = "The duplex / live-voice plane for busbar (Plane 4): the OpenAI Realtime and Gemini Live dialects and the four-layer session IR, as one removable plugin."
 license = "Apache-2.0"
 
 [lib]
@@ -30,8 +33,8 @@ path = "src/lib.rs"
 # out to. It reuses THIS crate's codecs (`OpenAiRealtimeCodec` / `GeminiLiveCodec`) and the T2 runtime
 # (`SessionCore` / `LocalLease` hard-close) to decode/encode the captured fixtures and diff — the legs
 # never reimplement a codec in shell. Gated on `runtime` (the D2 governance probe needs the async
-# session engine + tokio); the default / prod build never compiles it, so voice stays dev-only until
-# DoD exactly as the rest of the crate does.
+# session engine + tokio); the default / prod build never compiles it — it's gated behind the "runtime"
+# feature like the rest of the async surface.
 [[bin]]
 name = "voice-conform"
 path = "src/bin/voice-conform.rs"
@@ -66,24 +69,24 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # THE `streams:` CONFIG-SECTION reader (`config.rs`): `PLANE_DECL.parse_section` deserializes the
 # owned section from a `serde_yaml::Value` through the plane's own typed `StreamsCfg`, exactly as the
-# MCP/A2A `parse_section` hooks do. UNCONDITIONAL (config parse/validate is needed in the skeleton
-# build too), so it is a plain dep rather than a `runtime`-gated one.
+# MCP/A2A `parse_section` hooks do. UNCONDITIONAL (config parse/validate is needed in the default
+# feature-off build too), so it is a plain dep rather than a `runtime`-gated one.
 serde_yaml = { workspace = true }
 
 # ── THE T2 RUNTIME's async surface — OPTIONAL, pulled ONLY by the `runtime` feature (OFF by default).
 # The default / prod `cargo build -p busbar-voice` compiles with NONE of these in its closure: the
-# skeleton IR + declarations need no async runtime. The live duplex session pump (`session.rs`), the
+# IR + declarations need no async runtime. The live duplex session pump (`session.rs`), the
 # metering lease, and the two topologies name `async_trait`, the `futures` Stream/Sink vocabulary the
 # neutral `serve_messages` pump is generic over, and `tokio` sync/task primitives — so each is an
-# OPTIONAL dep the `runtime` feature turns on, keeping voice dev-only until DoD (HARD RULE 4).
+# OPTIONAL dep the `runtime` feature turns on (HARD RULE 4: the async surface stays feature-gated, not compiled into the default build).
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optional = true }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
-# lease + both topologies). OFF by default: voice is dev-only until DoD, so the default workspace build
-# is UNAFFECTED and the crate still compiles with the flag off (the skeleton). Turning it on pulls the
+# lease + both topologies). OFF by default (HARD RULE 4): the default workspace build is UNAFFECTED and
+# the crate still compiles with the flag off (IR + declarations only, no async runtime pulled in). Turning it on pulls the
 # async closure (`async-trait` / `futures` / `tokio`) and compiles `session`/`topology`.
 # `busbar-substrate/runtime` ARMS the neutral full-duplex WS transport (the ingress acceptor + the
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
@@ -92,7 +95,7 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optiona
 runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
-# `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The skeleton
+# `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
 # contributes no schemas (the field is `None`), so no `schemars` dep is pulled.
 openapi-schema = ["busbar-substrate/openapi-schema"]
 # Pulls busbar-core (the optional dep). The plane's future `&App`-typed test helpers / dual-compile

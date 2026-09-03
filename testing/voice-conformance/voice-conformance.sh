@@ -3,9 +3,9 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # VOICE (4th-plane) CONFORMANCE BATTERY — the runner, at structural parity with the MCP and A2A
-# batteries, but in an HONEST SCAFFOLD state: the voice runtime does not exist yet, so no leg can
-# assert real conformance. This file exists so that the SHAPE lands green and stays enforced, and so
-# that filling a leg later is a drop-in rather than a rebuild.
+# batteries. The voice runtime now exists and all four legs are LEG_STATUS=ready, so the legs assert
+# real conformance. This file (and its PENDING/ready machinery below) stays in place so a future leg or
+# slice can still land as a drop-in rather than a rebuild, exercised by --selftest.
 #
 # WHY A SCAFFOLD IS A LEGITIMATE GREEN, AND WHERE THE LINE IS.
 #
@@ -13,9 +13,10 @@
 #   the runtime EXISTS: a disarmed subject leg renders as the identical green tick a leg that judged
 #   busbar and passed would produce, and that false green is the whole disease those batteries treat.
 #
-#   Here the runtime does NOT exist yet. A voice leg cannot be "armed and vacuous", because there is
-#   nothing to arm it against. So the honest report is PENDING — stated loudly, per leg, and never
-#   dressed up as a conformance pass. The scaffold's job is to make the transition from PENDING to a
+#   The runtime now exists and every shipped leg is armed (LEG_STATUS=ready): "armed and vacuous" is
+#   exactly the failure mode the ready-leg anti-vacuity check below guards against. The PENDING path
+#   stays live for any future leg/slice that isn't armed yet — stated loudly, per leg, and never
+#   dressed up as a conformance pass. The self-test's job is to keep the transition from PENDING to a
 #   real, armed-or-red leg a DROP-IN, and to prove — via `--selftest` — that the moment a leg claims
 #   to be READY it is held to exactly the anti-vacuity discipline the other batteries use: a ready
 #   leg that produces no result is RED, not green.
@@ -26,7 +27,7 @@
 # THE TWO-LEG RULE, inherited unchanged and enforced the day the legs light up:
 #
 #   CONTROL runs ALWAYS. A battery that cannot judge a known-good third-party dialect peer cannot be
-#   trusted to judge busbar. (Scaffolded: the control side of each leg is PENDING today.)
+#   trusted to judge busbar.
 #
 #   SUBJECT IS ARMED OR RED. Once a leg is READY, an armed run that executed nothing is RED. The
 #   `--selftest` drives that transition in both directions so the rule is one somebody has watched
@@ -334,7 +335,8 @@ selftest() {
 
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
 
-  # And finally: the REAL legs on disk must load and account cleanly, all-pending, right now.
+  # And finally: the REAL legs on disk must load and account cleanly right now (whatever mix of
+  # ready/pending they currently declare).
   say ""
   say "-- the shipped legs, accounted for --"
   local shipped; shipped="$(declared_legs | paste -sd' ' -)"

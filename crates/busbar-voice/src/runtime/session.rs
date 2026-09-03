@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LIVE DUPLEX SESSION RUNTIME — the pump body the skeleton in `lib.rs` left `todo!()`.
+//! THE LIVE DUPLEX SESSION RUNTIME — the pump body, behind the `runtime` feature.
 //!
 //! Binds the neutral byte-duplex pump (`busbar_substrate::ingress::byte_duplex::serve_messages`), the
 //! codec's `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the D2 metering lease
