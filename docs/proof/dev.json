@@ -3,12 +3,12 @@
   "release": {
     "version": "dev",
     "tag": "dev",
-    "qa_sha": "768f12d5df94161964d6dd023e5064f510e6adfe",
+    "qa_sha": "8b6871d2501eab4d9836643f7e35767ec68d0f0b",
     "staging_tag": null,
     "digest": null,
-    "run_id": "33659650570",
-    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33659650570",
-    "recorded_at": "2026-09-02T17:35:49Z"
+    "run_id": "33708210840",
+    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33708210840",
+    "recorded_at": "2026-09-03T02:51:37Z"
   },
   "verdicts": [
     {
@@ -399,14 +399,14 @@
           "id": "plane-grep-gate",
           "kind": "gate",
           "status": "report-only",
-          "count": 40,
+          "count": 188,
           "breakdown": {
-            "openai": 6,
-            "gemini": 2,
+            "openai": 66,
+            "gemini": 86,
             "anthropic": 1,
             "bedrock": 2,
             "cohere": 0,
-            "responses": 0,
+            "responses": 4,
             "mcp": 20,
             "a2a": 9
           },
@@ -582,7 +582,7 @@
     }
   ],
   "provenance": {
-    "content_digest": "sha256:7c1deb530f3c1c1019c2812c7a2e99e84eea51b7e2efa16ed99d7df51c8aa81a",
+    "content_digest": "sha256:13b27d114735ec5689b1a189a3a1840453f2d81375d2e7ac0389aac30f731b3a",
     "collator": "scripts/proof-manifest.py"
   }
 }
