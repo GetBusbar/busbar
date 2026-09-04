@@ -104,7 +104,7 @@ fn an_open<'a>(rt: &'a VoiceRuntime, host: Arc<dyn EngineHost>) -> GovernedOpen<
         ingress: Ingress::Mint,
         owner: "acct".to_string(),
         call_id: "call-gate".to_string(),
-        key: None,
+        vkey: None,
         body: axum::body::Bytes::new(),
         headers: axum::http::HeaderMap::new(),
         now: 1,

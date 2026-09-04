@@ -64,8 +64,17 @@ async fn telephony_proxy_relays_both_directions() {
         cfg.output_audio_format,
         Some(crate::ir::media::AudioFormat::G711Ulaw)
     );
-    let proxy = begin_telephony(&rt, OpenAiRealtimeCodec, "acct-1", "call-9", cfg, budget, 1)
-        .expect("telephony begins");
+    let proxy = begin_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-9",
+        cfg,
+        budget,
+        None,
+        1,
+    )
+    .expect("telephony begins");
 
     let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
     let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
@@ -249,6 +258,7 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
         "call-42",
         locked,
         budget,
+        None,
         1,
     )
     .await
@@ -303,6 +313,7 @@ fn begin_session_refuses_a_denied_destination_before_any_charge() {
         Some(locked),
         Carrier::sideband(),
         budget,
+        None,
         1,
     );
     assert!(
@@ -332,6 +343,7 @@ fn begin_session_refuses_a_denied_destination_before_any_charge() {
         Some(ok_cfg),
         Carrier::sideband(),
         budget,
+        None,
         1,
     )
     .expect("an allowed destination opens the session");
@@ -375,6 +387,7 @@ fn abnormal_close_releases_the_reserve_via_the_by_value_guard() {
         None,
         Carrier::sideband(),
         budget,
+        None,
         1,
     )
     .expect("session begins");
@@ -467,6 +480,7 @@ async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
         "call-denied",
         locked,
         budget,
+        None,
         1,
     )
     .await;
@@ -502,6 +516,7 @@ async fn webrtc_attach_fails_closed_when_mint_fails() {
         "call-x",
         SessionConfig::default(),
         budget,
+        None,
         1,
     )
     .await;

@@ -21,7 +21,7 @@ use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::MeteringLease;
+use crate::runtime::metering::{MeteringLease, TurnMeter};
 use crate::runtime::tools::ToolExecutor;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -74,6 +74,10 @@ pub struct SessionCore<C> {
     /// re-applies; a client `session.update` is a HINT reconciled against this, never trusted blind.
     locked_config: Option<SessionConfig>,
     lease: Box<dyn MeteringLease>,
+    /// The presenting-key attribution each turn's usage is landed on through the CORE Meter seam
+    /// (`host.meter_ledger` + `host.meter_series`). `None` on an ungoverned deployment. Voice keeps
+    /// NO meter of its own — this IS the metering step, the same one every plane traverses.
+    meter: Option<TurnMeter>,
     tools: Arc<dyn ToolExecutor>,
     /// The upstream MODEL id this session prices against (from the locked `session` config; empty when
     /// the dialect carries it server-side and none was locked). Handed to the lease's `price_usage` so
@@ -91,6 +95,7 @@ where
     pub fn new(
         codec: C,
         lease: Box<dyn MeteringLease>,
+        meter: Option<TurnMeter>,
         tools: Arc<dyn ToolExecutor>,
         carrier: Carrier,
         locked_config: Option<SessionConfig>,
@@ -106,6 +111,7 @@ where
             inner: Mutex::new(Inner::default()),
             locked_config,
             lease,
+            meter,
             tools,
             model,
             carrier,
@@ -149,6 +155,12 @@ where
                         // already-priced increment. A missing rate (`None`) fails CLOSED — the turn cannot
                         // meter as free — exactly as an exhaustion would.
                         let usage = u.to_billing_usage();
+                        // METER THE TURN through the CORE seam — land this turn's usage on the ONE
+                        // ledger, attributed to the presenting key (the voice twin of the LLM plane's
+                        // `ledger_and_meter`). Voice keeps no meter of its own; THIS is the Meter step.
+                        if let Some(meter) = &self.meter {
+                            meter.record_turn(&self.model, &usage);
+                        }
                         let close = match self.lease.price_usage(&self.model, &usage) {
                             Some(nanos) => self.lease.settle(nanos).must_close(),
                             None => true,

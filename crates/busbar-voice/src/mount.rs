@@ -362,7 +362,9 @@ pub(crate) struct GovernedOpen<'a> {
     pub ingress: Ingress,
     pub owner: String,
     pub call_id: String,
-    pub key: Option<(String, String)>,
+    /// The resolved presenting virtual key (audience-checked key chain), or `None` ungoverned. The
+    /// hook gate reads its `(id, name)`; the Meter step lands each turn's usage on this key's ledger.
+    pub vkey: Option<busbar_api::VirtualKey>,
     pub body: Bytes,
     pub headers: axum::http::HeaderMap,
     pub now: u64,
@@ -396,11 +398,23 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
         ingress,
         owner,
         call_id,
-        key,
+        vkey,
         body,
         headers,
         now,
     } = req;
+    // The `(id, name)` the hook gate reads — derived from the resolved key (or `None` ungoverned).
+    let key = vkey.as_ref().map(|k| (k.id.clone(), k.name.clone()));
+    // THE METER STEP's attribution: land each turn's usage on the presenting key's ledger through the
+    // core seam (the same seam every plane meters through). `None` ungoverned — nothing to attribute.
+    let meter = vkey.as_ref().map(|k| {
+        crate::runtime::metering::TurnMeter::new(
+            Arc::clone(&host),
+            k.clone(),
+            FRONT_DOOR_POOL,
+            crate::OPENAI_REALTIME,
+        )
+    });
     // A coarse structural budget: an over-estimate the in-process lease reserves, no flat fee, uncapped.
     let budget = SessionBudget {
         estimate_nanos: 1_000,
@@ -436,6 +450,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             call_id,
             session_cfg,
             budget,
+            meter,
             now,
         ) {
             Ok(_proxy) => sideband_pending(),
@@ -449,6 +464,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             Some(session_cfg.clone()),
             Carrier::sideband(),
             budget,
+            meter,
             now,
         ) {
             // (4) THE SERVING LEG, past a clean governed open.
@@ -804,12 +820,9 @@ async fn serve(
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| format!("voice-{}", unix_secs()));
-    // The caller `(id, name)` the hook gate reads — the middleware-resolved key, or `None` ungoverned.
-    let key = ctx
-        .gov
-        .as_ref()
-        .and_then(|g| g.key())
-        .map(|k| (k.id.clone(), k.name.clone()));
+    // The resolved presenting virtual key (the middleware-resolved, audience-checked key), or `None`
+    // ungoverned. The hook gate reads its `(id, name)`; the Meter step lands usage on its ledger.
+    let vkey = ctx.gov.as_ref().and_then(|g| g.key()).cloned();
     open_governed(GovernedOpen {
         rt: &mount.runtime,
         host: Arc::clone(&ctx.host),
@@ -817,7 +830,7 @@ async fn serve(
         ingress,
         owner,
         call_id,
-        key,
+        vkey,
         body: ctx.body.clone(),
         headers: ctx.headers.clone(),
         now: unix_secs(),
@@ -929,6 +942,22 @@ pub(crate) async fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::res
         fee_nanos: 0,
         cap_nanos: None,
     };
+    // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
+    // landed on through the core seam. Built from the resolved key (or `None` ungoverned) and moved
+    // into the post-upgrade open below, exactly as `open_governed` does for the one-shot passes.
+    let meter = arrival
+        .gov
+        .as_ref()
+        .and_then(|g| g.key())
+        .cloned()
+        .map(|k| {
+            crate::runtime::metering::TurnMeter::new(
+                Arc::clone(&host),
+                k,
+                FRONT_DOOR_POOL,
+                crate::OPENAI_REALTIME,
+            )
+        });
     accept_gauntlet(
         arrival.upgrade,
         gauntlet_req,
@@ -952,6 +981,7 @@ pub(crate) async fn ws_accept(arrival: WsArrival, ingress: Ingress) -> axum::res
                 Some(session_cfg),
                 carrier,
                 budget,
+                meter,
                 now,
             ) {
                 // Serve the CLIENT socket over the neutral pump with the leg's client-facing plane;

@@ -896,6 +896,7 @@ fn core_with_downlink(
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
         lease,
+        None,
         Arc::new(EchoToolExecutor),
         carrier,
         None,

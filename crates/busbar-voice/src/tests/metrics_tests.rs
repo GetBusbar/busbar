@@ -37,7 +37,7 @@ async fn a_voice_session_open_increments_the_plane_labelled_counter() {
         ingress: Ingress::Sideband,
         owner: "acct".to_string(),
         call_id: "call-metrics".to_string(),
-        key: None,
+        vkey: None,
         body: axum::body::Bytes::new(),
         headers: axum::http::HeaderMap::new(),
         now: 1,

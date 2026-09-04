@@ -66,6 +66,7 @@ pub struct TelephonyProxy<C> {
 /// BEGIN a telephony proxy: lock the `g711`-based config, open the governed session (lease + durable
 /// handle), and build the two planes + the funnels between them. The provider/client sockets are bound
 /// later by [`TelephonyProxy::run`].
+#[allow(clippy::too_many_arguments)]
 pub fn begin_telephony<C>(
     rt: &VoiceRuntime,
     codec: C,
@@ -73,6 +74,7 @@ pub fn begin_telephony<C>(
     call_id: impl Into<String>,
     locked_config: SessionConfig,
     budget: SessionBudget,
+    meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<TelephonyProxy<C>, StartError>
 where
@@ -90,6 +92,7 @@ where
         Some(locked_config),
         carrier,
         budget,
+        meter,
         now,
     )?;
 

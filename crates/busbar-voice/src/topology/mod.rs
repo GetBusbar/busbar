@@ -266,6 +266,7 @@ pub fn begin_session<C>(
     locked_config: Option<SessionConfig>,
     carrier: Carrier,
     budget: SessionBudget,
+    meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
 where
@@ -306,6 +307,7 @@ where
         locked_config,
         carrier,
         budget,
+        meter,
         now,
     )
 }
@@ -326,6 +328,7 @@ pub(crate) fn open_admitted_session<C>(
     locked_config: Option<SessionConfig>,
     carrier: Carrier,
     budget: SessionBudget,
+    meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
 where
@@ -345,6 +348,7 @@ where
     let core = Arc::new(SessionCore::new(
         codec,
         lease,
+        meter,
         Arc::clone(&rt.tools),
         carrier,
         locked_config,

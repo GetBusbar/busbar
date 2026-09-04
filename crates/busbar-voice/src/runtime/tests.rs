@@ -44,6 +44,7 @@ fn core_with_downlink(
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
         lease,
+        None,
         Arc::new(crate::runtime::tools::EchoToolExecutor),
         carrier,
         None,

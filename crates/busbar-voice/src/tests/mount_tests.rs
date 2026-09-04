@@ -266,7 +266,7 @@ fn governed_open<'a>(
         ingress,
         owner: "acct".to_string(),
         call_id: call_id.to_string(),
-        key: None,
+        vkey: None,
         body: axum::body::Bytes::new(),
         headers: axum::http::HeaderMap::new(),
         now: 1,
@@ -395,6 +395,7 @@ async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
         "call-x",
         g711_config(),
         budget,
+        None,
         1,
     )
     .expect("the open-pass gauntlet admits and the session opens");

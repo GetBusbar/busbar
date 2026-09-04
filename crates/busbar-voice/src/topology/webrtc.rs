@@ -110,6 +110,7 @@ pub async fn attach<C, M>(
     call_id: impl Into<String>,
     locked_config: SessionConfig,
     budget: SessionBudget,
+    meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<Attached<C>, AttachError>
 where
@@ -130,6 +131,7 @@ where
         Some(locked_config.clone()),
         carrier,
         budget,
+        meter,
         now,
     )
     .map_err(AttachError::Start)?;
