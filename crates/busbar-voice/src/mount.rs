@@ -1046,3 +1046,11 @@ mod audit_chain_tests;
 #[cfg(all(test, feature = "runtime"))]
 #[path = "tests/governance_budget_tests.rs"]
 mod governance_budget_tests;
+
+// BEHAVIORAL billing proof: drive a voice turn's usage through the SHIPPED Meter seam over a REAL
+// governed `App` host and read the spend back off the one ledger (`GovState::usage_for`) — the
+// ledger-level twin of the LLM plane's crossproto_delivery_billing oracle. Needs `test-support` for
+// the real `App`/`engine_host` and `runtime` for the session metering types.
+#[cfg(all(test, feature = "runtime", feature = "test-support"))]
+#[path = "tests/billing_ledger_tests.rs"]
+mod billing_ledger_tests;
