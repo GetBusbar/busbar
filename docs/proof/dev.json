@@ -3,12 +3,12 @@
   "release": {
     "version": "dev",
     "tag": "dev",
-    "qa_sha": "985b44e81c88ac28a8871881b08341baac2a8d84",
+    "qa_sha": "938ef4a218409407dba1175a2b2566cb327deaa0",
     "staging_tag": null,
     "digest": null,
-    "run_id": "33809995600",
-    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33809995600",
-    "recorded_at": "2026-09-03T22:06:16Z"
+    "run_id": "33827565253",
+    "run_url": "https://github.com/GetBusbar/busbar/actions/runs/33827565253",
+    "recorded_at": "2026-09-04T02:10:31Z"
   },
   "verdicts": [
     {
@@ -401,10 +401,10 @@
           "status": "report-only",
           "count": 198,
           "breakdown": {
-            "openai": 70,
+            "openai": 72,
             "gemini": 88,
             "anthropic": 1,
-            "bedrock": 2,
+            "bedrock": 0,
             "cohere": 0,
             "responses": 4,
             "mcp": 22,
@@ -582,7 +582,7 @@
     }
   ],
   "provenance": {
-    "content_digest": "sha256:40eb51fac2a24ac867e9cc5752722af7a6bf5285013ad20fef9955c078322d32",
+    "content_digest": "sha256:ed5308ff61430ad5157af60f334a486fac71ebe168b238e933bff79be1a74ebb",
     "collator": "scripts/proof-manifest.py"
   }
 }
