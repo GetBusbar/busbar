@@ -6,7 +6,7 @@
 //! carries chat's cross-protocol prep + write, keyed by the peer PROTOCOL STRING: the handle writes
 //! ITSELF onto the target dialect via `super::proto_codec::protocol_for(proto).writer()` — no
 //! downcast. The `prepare_for_egress`/`prepare_for_ingress` bodies are lifted VERBATIM from the
-//! former `IrReq::Chat`/`IrResp::Chat` arms (only `crate::` -> `busbar_core::` re-pathing); the
+//! former `IrReq::Chat`/`IrResp::Chat` arms (only `crate::` -> core re-pathing); the
 //! warn strings and their order are unchanged.
 
 use crate::ir::{IrRequest, IrResponse};

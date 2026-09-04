@@ -8,8 +8,8 @@
 //! the neutral seams (`DialectCodec`, `ArrayStreamFramer`, `SigningContext`, the registry-aggregate
 //! fns) and re-includes THIS file under `crate::proto::codec` via `#[path]` for its test/`test-support`
 //! build so the pre-extraction fixture surface (`Protocol::anthropic()`, `protocol_for(p).reader()`,
-//! …) keeps resolving. Same dual-compile mechanism as the dialects; `busbar_core::` addresses core
-//! (the `extern crate self as busbar_core` alias resolves it), `crate::ir::` is the concrete IR (this
+//! …) keeps resolving. Same dual-compile mechanism as the dialects; core is addressed by its crate name
+//! (the `extern crate self` alias resolves it), `crate::ir::` is the concrete IR (this
 //! crate's own; core nets it at its root). Byte-identical to the pre-move definitions — path prefixes
 //! only.
 

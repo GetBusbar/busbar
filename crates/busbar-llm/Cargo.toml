@@ -31,26 +31,30 @@ name = "busbar_llm"
 path = "src/lib.rs"
 
 [features]
-# Pass-through so a dependent (and this crate's own gated round-trip codec helpers) can ask for the
-# test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
-# The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
-test-support = ["busbar-core/test-support"]
+# Pass-through so a dependent (busbar-core's own test binary, which folds this plane's dialects and
+# testkit) and this crate's own gated round-trip codec helpers can ask for the test surface — the same
+# shape `busbar-mcp` exposes. Forwards ONLY to the substrate's test seams (`register_test_protocols`
+# and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
+# to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
+test-support = ["busbar-substrate/test-support"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
 # `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
 # `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
 timing = ["busbar-timing/timing"]
-# Passthrough to `busbar-core`'s built-in admin-tokens auth plugin, mirroring `busbar-core`'s feature:
-# a relocated money-path test (`forward_pool_integration_tests`) gates an admin-token assertion on
-# `#[cfg(feature = "auth-admin-tokens")]`, so this flag must resolve in lock-step with core's.
-auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
+# Mirrors `busbar-core`'s admin-tokens feature: a relocated money-path test
+# (`forward_pool_integration_tests`) gates an admin-token assertion on
+# `#[cfg(feature = "auth-admin-tokens")]`. Nothing in this plane's production build reaches that
+# plugin (it is core's), so this forwards nowhere; in this crate's own test binary the busbar-core
+# DEV-dependency below is built with core's default features, which already include the plugin.
+auth-admin-tokens = []
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
-# this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS through
-# `busbar-core/openapi-schema` (which forwards to substrate) — the plugin carries no `schemars` derive
-# of its own (the LLM plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]`
-# to agree with substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
-openapi-schema = ["busbar-core/openapi-schema"]
+# this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS straight
+# to `busbar-substrate/openapi-schema` — the plugin carries no `schemars` derive of its own (the LLM
+# plane contributes `openapi_schemas: None`), it only needs the field-site `#[cfg]` to agree with
+# substrate's. The binary's `openapi-schema` forwards `busbar-llm?/openapi-schema`.
+openapi-schema = ["busbar-substrate/openapi-schema"]
 # T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
 # The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
 # UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
@@ -63,19 +67,20 @@ openapi-schema = ["busbar-core/openapi-schema"]
 webhook-receiver = ["dep:busbar-plugin"]
 
 [dependencies]
-# The engine's public surface. `default-features = false` for the same reason the binary does it: the
-# feature decisions are the composition root's. Historically this was "the ONLY busbar crate this
-# plugin may name", but the plane-extraction (docs/design/plane-extraction-design.md §2.1/§6.2) makes
+# NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
+# it and core is the substrate's ports (`busbar_substrate::plane_host::*`) and the installable seams,
+# plus the contract crate. The plane-extraction design (docs/design/plane-extraction-design.md) makes
 # the NEUTRAL ABI — busbar-substrate / busbar-api — the surface a plane names; a plane MUST NOT reach
-# back into `busbar_core::` implementation. So the neutral utilities this plugin consumes (breaker
-# signals, the IR facts/handle types, the codec-cell matrix, wire body types, the billing usage type,
-# the operation enum, …) are now named at their canonical `busbar_substrate::` / `busbar_api::` home,
-# and `busbar-core` remains only for the residual engine items not yet relocated to the ABI.
-busbar-core = { path = "../busbar-core", default-features = false }
-# The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY and names them
-# instead of reaching through `busbar_core::` (the reverse-edge rule). `busbar-
-# core` re-exports these same items, so a repoint from `busbar_core::X` to `busbar_substrate::X` /
-# `busbar_api::X` is by-identity (the very same type/const), i.e. byte-identical behaviour.
+# back into core's implementation. Historically `busbar-core` sat here as "the ONLY busbar crate this
+# plugin may name"; every item the plugin consumes (breaker signals, the IR facts/handle types, the
+# codec-cell matrix, wire body types, the billing usage type, the operation enum, the clock, the
+# engine host, …) is now named at its canonical `busbar_substrate::` / `busbar_api::` home. Core is a
+# DEV-dependency only (the money-path test fixture), so `cargo build -p busbar-llm` proves the edge is
+# gone: the production build does not link core at all.
+#
+# The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY. `busbar-core`
+# re-exports these same items, so every historical repoint from a core path to `busbar_substrate::X` /
+# `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
 busbar-substrate = { path = "../busbar-substrate", default-features = false }
 busbar-api = { path = "../api" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect

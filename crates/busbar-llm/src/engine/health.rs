@@ -28,7 +28,7 @@ use busbar_substrate::store::{now, BreakerCfg};
 use crate::engine::NativeRuntime;
 
 /// This host snapshot's LLM data-plane runtime slot, type-erased — the seam the prober reads its
-/// `Lane` / `ProbeSchedule` / egress `client` tables through WITHOUT naming `busbar_core::state::App`.
+/// `Lane` / `ProbeSchedule` / egress `client` tables through WITHOUT naming core's `state::App`.
 /// `None` when the bound snapshot carries no LLM runtime (the featureless zero-plane boot), in which
 /// case there is nothing to probe. The returned `Arc` MUST be held while the downcast borrow is live.
 fn host_runtime_slot(host: &dyn EngineHost) -> Option<Arc<dyn std::any::Any + Send + Sync>> {

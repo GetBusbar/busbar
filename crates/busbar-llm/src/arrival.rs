@@ -8,7 +8,7 @@
 //! reach the `App`/`GovCtx`/`CallerToken`-bound core pipeline through the neutral
 //! [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, crossing those core handles as the opaque
 //! [`ArrivalCtx`] and the neutral `Operation`/`Response`/`HeaderMap`/`Bytes` directly. So this crate
-//! names no `busbar_core::` item and core names no dialect — byte-identical to the arms these replaced.
+//! names no core item and core names no dialect — byte-identical to the arms these replaced.
 //!
 //! The composition root registers these two through [`crate::PATH_INGRESS`] beside [`crate::DECLS`].
 

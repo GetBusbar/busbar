@@ -8,8 +8,8 @@
 //! [`hooks`]), the active-probe health loop ([`health`]) and the native fallback plane now live in the
 //! plane crate. Core is a plane-agnostic router: it reaches these only through the neutral
 //! `busbar_substrate::plane_host::EngineTablesView` seam and the fallback plane decl's `build_runtime`
-//! / `viewer` fn-pointers. This engine calls DOWN into core (`busbar_core::…`) — the allowed plane→core
-//! edge.
+//! / `viewer` fn-pointers. This engine calls DOWN into core only through the neutral ABI (the substrate's
+//! ports) — the allowed plane→core edge.
 
 // THE ENGINE PRELUDE — the successor to core `proxy/mod.rs`'s top-level `use` block. Every engine
 // submodule opens with `use super::*`, and (Rust's descendant-visibility rule) inherits these
@@ -39,7 +39,7 @@ use busbar_substrate::breaker::{
 };
 use busbar_substrate::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_substrate::proto::convert_headers;
-// App-retype WEDGE 3 (THE FLIP): the engine no longer names `busbar_core::state::App`. The forward
+// App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
 // the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach
 // flipped to the host seam (`host.X()`) or the runtime tables (`EngineTables::new(rt)`).
@@ -85,7 +85,7 @@ pub(crate) use busbar_substrate::proxy::{
 
 // NEUTRAL egress-engine primitives the pipeline drives. Named at their TRUE substrate home
 // (`busbar_substrate::egress::engine`) — core merely re-exports these verbatim, so the plane names the
-// neutral ABI crate directly rather than reaching backwards through `busbar_core::proxy`. The
+// neutral ABI crate directly rather than reaching backwards through core's `proxy`. The
 // historical `EgressClientSpec`/`EgressError` short names are preserved via the same aliases core used.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_substrate::egress::engine::{

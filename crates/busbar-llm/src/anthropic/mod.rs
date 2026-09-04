@@ -11,7 +11,7 @@
 //! `busbar-core`'s public surface; nothing in `busbar-core` names this crate
 //! (`git grep busbar_proto crates/busbar-core/src` is pinned at zero) — the `busbar` BINARY, the
 //! composition root, links it and hands [`DECL`] to
-//! `busbar_core::proto::registry::install_protocols` at boot. Delete the dependency edge and
+//! core's `proto::registry::install_protocols` at boot. Delete the dependency edge and
 //! busbar still builds, boots, refuses `protocol: anthropic` config with the unknown-protocol
 //! refusal, and serves the remaining dialects — that build is a gate, not a thought experiment.
 //!
@@ -20,7 +20,7 @@
 //! `extern crate self as busbar_core`), so the pre-extraction test fixture surface — hundreds of
 //! `Protocol::anthropic()` fixtures and `protocol: anthropic` configs across the core suite —
 //! keeps proving what it always proved without core's PRODUCTION build knowing this dialect
-//! exists. That is why every core reference in these files is spelled `busbar_core::` and every
+//! exists. That is why every core reference in these files is spelled with core's crate name and every
 //! self reference is relative.
 
 pub mod handler;

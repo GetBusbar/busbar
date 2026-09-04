@@ -609,7 +609,7 @@ pub(crate) use busbar_substrate::proxy::max_upstream_buffered_bytes;
 /// COUPLED with the inbound request-body limit so any completion the gateway would accept inbound
 /// can also be buffered for translation, while still bounding the per-response allocation. ONE knob
 /// (`limits.request_body_max_bytes`) drives BOTH the inbound `DefaultBodyLimit` and this egress cap
-/// (`busbar_core::limits::translate_body_max_bytes` returns the same value), so they can never diverge.
+/// (core's `limits::translate_body_max_bytes` returns the same value), so they can never diverge.
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
 /// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
 pub(crate) fn max_translated_body_bytes() -> usize {

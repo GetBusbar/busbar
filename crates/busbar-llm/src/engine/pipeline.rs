@@ -83,9 +83,10 @@ impl EgressSendError {
 /// [`forward_with_pool_keyed`]; this bytes-only, key-less form survives solely for the many tests
 /// that construct a request from raw bytes.
 // App-retype WEDGE 3 (THE FLIP): the two bytes-in, key-less/keyed TEST-ONLY convenience entries live
-// in a `#[cfg(test)] mod` so they keep taking a `&Arc<busbar_core::state::App>` (the ~81 test call
-// sites are unchanged) WITHOUT that `App` name reddening the neutral-purity scanner — the scanner
-// exempts `#[cfg(test)] mod` scope. Each mints the neutral `host`/`rt` the production forward path
+// in a `#[cfg(test)] mod` so they keep taking a `&Arc<App>` from core (the ~81 test call sites are
+// unchanged; core is a dev-dependency of this plane) WITHOUT that `App` name reddening the
+// neutral-purity scanner — the scanner exempts `#[cfg(test)] mod` scope. Each mints the neutral
+// `host`/`rt` the production forward path
 // threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot read) and delegates to the
 // production `forward_with_pool_parsed`. Production ingress never routes through here (it holds a host
 // already and calls `forward_with_pool_parsed` directly), so nothing ships this mint.
@@ -849,7 +850,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // A request's identity is (operation, protocol): `ingress_protocol` is the wire language,
     // `op` is the kind of work. Everything below is the engine carrying that pair through pool
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
-    // spec, never its identity; `busbar_core::handlers::CHAT` reproduces today's behavior byte-for-byte.
+    // spec, never its identity; core's `handlers::CHAT` reproduces today's behavior byte-for-byte.
     op: busbar_substrate::handlers::Op,
     usage_sink: Option<UsageSink>,
     // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
