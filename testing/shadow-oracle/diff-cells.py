@@ -164,6 +164,8 @@ def first_diff_text(classes, detail) -> str:
         return ""
     k = classes[0]
     d = detail.get(k)
+    if d is None and detail.get("accepted.transform"):
+        return f"{k}: identical after the accepted rewrite {detail['accepted.transform']}"
     if k == "status":
         return f"status {d['golden']} -> {d['candidate']}"
     if k == "headers":
@@ -202,11 +204,20 @@ def main() -> int:
     ap.add_argument("--family", default="")
     ap.add_argument("--accepted", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "accepted-differences.json"))
     a = ap.parse_args()
-    accepted = []
+    accepted, transforms = [], []
     if os.path.exists(a.accepted):
         for e in json.load(open(a.accepted, encoding="utf-8")).get("accepted", []):
-            accepted.append({"rx": re.compile(e["cells"]), "classes": set(e.get("classes", [])), "kind": e.get("kind", "improvement"),
-                             "id": e.get("id", e["cells"]), "rationale": e.get("rationale", ""), "by": e.get("by", "")})
+            base = {"rx": re.compile(e.get("cells", ".")), "classes": set(e.get("classes", [])), "kind": e.get("kind", "improvement"),
+                    "id": e.get("id", e.get("cells", "?")), "rationale": e.get("rationale", ""), "by": e.get("by", "")}
+            if "transform" in e:
+                # a LINE-PRECISE acceptance: the candidate's text is rewritten by these regexes before the
+                # diff, so ONLY the accepted token (a diagnostic code, a renamed line) is forgiven and any
+                # other change on the same line / cell still shows. Fires visibly: an identical-after-rewrite
+                # cell reports ACCEPTED with this id, never PASS.
+                base["transform"] = [(re.compile(rx, re.M), repl) for rx, repl in e["transform"]["candidate"]]
+                transforms.append(base)
+            else:
+                accepted.append(base)
     os.makedirs(a.out, exist_ok=True)
 
     with open(a.cells, encoding="utf-8") as f:
@@ -234,19 +245,56 @@ def main() -> int:
         fam = family_of(c)
         g = load_cell(a.golden, cid)
         cc = load_cell(a.candidate, cid)
+        pre_acc = None
         if g is None:
             classes, detail = ["missing.golden"], {"missing.golden": "golden ledger PASS but cell file absent"}
         elif cc is None:
             classes, detail = ["missing.candidate"], {"missing.candidate": cl.get(cid, ("MISSING", "no candidate ledger row"))[1]}
         else:
-            classes, detail = compare(g, cc)
+            fired = []
+            if transforms and isinstance(cc, dict) and "__corrupt__" not in cc:
+                cc_t = json.loads(json.dumps(cc))
+                body_changed = False
+                for t in transforms:
+                    if not t["rx"].search(cid):
+                        continue
+                    hit = False
+                    eff = cc_t.get("effects", {})
+                    if isinstance(eff.get("stderr"), str):
+                        for rx, repl in t["transform"]:
+                            new = rx.sub(repl, eff["stderr"])
+                            if new != eff["stderr"]:
+                                hit = True; eff["stderr"] = new
+                    body = cc_t.get("body")
+                    if isinstance(body, dict) and isinstance(body.get("text"), str):
+                        for rx, repl in t["transform"]:
+                            new = rx.sub(repl, body["text"])
+                            if new != body["text"]:
+                                hit = True; body_changed = True; body["text"] = new
+                    if hit:
+                        fired.append(t)
+                if fired:
+                    if body_changed:
+                        # a rewritten body cannot keep 1.5.5's byte length; the length header is the
+                        # accepted change's shadow, not a second divergence
+                        for side in (g, cc_t):
+                            side.get("headers", {}).pop("content-length", None)
+                    classes_raw, _ = compare(g, cc)
+                    classes, detail = compare(g, cc_t)
+                    if not classes and classes_raw:
+                        classes, detail = classes_raw, {"accepted.transform": [t["id"] for t in fired]}
+                        pre_acc = fired[0]
+                else:
+                    classes, detail = compare(g, cc)
+            else:
+                classes, detail = compare(g, cc)
             only = c.get("compare")  # a cell with inherently random output names the classes that ARE its contract
             if only:
                 classes = [k for k in classes if k in only or k.startswith("missing.")]
                 detail = {k: v for k, v in detail.items() if k in classes}
         # owner-accepted differences: the cell reports ACCEPTED (its own column), never a silent pass
-        acc = None
-        if classes:
+        acc = pre_acc if classes and detail.get("accepted.transform") else None
+        if classes and acc is None:
             for e in accepted:
                 if e["rx"].search(cid) and (not e["classes"] or set(classes) <= e["classes"]):
                     acc = e; break

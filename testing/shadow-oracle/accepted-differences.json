@@ -6,7 +6,98 @@
     "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
     "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
     "divergence classes (a status or usage change on an 'improvement' entry is still red).",
-    "Zero UNACCEPTED divergences is the ship gate."
+    "Zero UNACCEPTED divergences is the ship gate.",
+    "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS."
   ],
-  "accepted": []
+  "accepted": [
+    {
+      "id": "D-1 diagnostic codes",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "rationale": "1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
+      "transform": {
+        "candidate": [
+          [
+            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
+            "\\1 "
+          ],
+          [
+            " diag=BUSBAR-\\d{4}",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "id": "D-2 jemalloc line is info",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "rationale": "On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
+      "transform": {
+        "candidate": [
+          [
+            "^\\[info\\] jemalloc background purge thread unavailable on this target \\((.*?)\\) — EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge fallback keeps RSS returning to idle after a load burst$",
+            "[warn] could not enable jemalloc background purge thread (\\1); enabling busbar's idle purge fallback so RSS still returns to idle after a load burst"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "O-1 new metering series",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^ops\\.scrape\\|metrics\\|",
+      "rationale": "One additive /metrics series on a 1.5.5 config: busbar_metering_pending_coalesced_total (write-behind overflow sentinel). No 1.5.5 series changed.",
+      "transform": {
+        "candidate": [
+          [
+            "^(# (HELP|TYPE) )?busbar_metering_pending_coalesced_total[^\\n]*\\n?",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "id": "F-011 additive admin views",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks|GetOpenapiJson)\\|ok$|^hooks\\|admin-list$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged."
+    },
+    {
+      "id": "F-013 validation wording",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^boot\\.refusal\\|BOOT-(P01|P20|P29|P30|P07|P09|020|043b)\\|validate$",
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "expected-one-of lists include the plane keys and the new token limit metrics; reserved-name / credential-mode / unknown-member sentences rephrased; protocol list reordered. Same refusal, same exit code."
+    },
+    {
+      "id": "F-013 download error wording",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^boot\\.refusal\\|BOOT-141\\|boot$",
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "rationale": "The plugin download failure quotes the HTTP client's newer error text (connect error) for the same refusal."
+    },
+    {
+      "id": "F-003 CLI text",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^cli\\|(--help|-h|--version|-V)$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "--help documents the new -c/--providers flags; --version prints a second build-profile line."
+    }
+  ]
 }
