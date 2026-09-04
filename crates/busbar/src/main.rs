@@ -63,7 +63,7 @@ use busbar_core::{admin, config, config_validate, export, metrics, observability
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
@@ -225,6 +225,8 @@ CONFIG INPUTS:
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
                         -c/--config)
+    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
+                        default: providers.yaml next to the resolved config.yaml)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
@@ -859,11 +861,19 @@ fn main() {
     // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
-    // `advanced.worker_threads` in config.yaml is the home for this knob (config.yaml; else the standard
-    // `TOKIO_WORKER_THREADS`; else one-per-core). The `BUSBAR_WORKER_THREADS` env var was deprecated in
-    // 1.5.3 and removed in 1.6.0 — it no longer has any effect. The config read is a best-effort early
-    // parse (the real load + error reporting happens in `run()` after the runtime is up).
-    let worker_threads = worker_threads_from_config()
+    // `advanced.worker_threads` in config.yaml is the home for this knob. The deprecated
+    // `BUSBAR_WORKER_THREADS` env var still works (deprecation-warned when it parses) and wins when
+    // set, so an existing pin is honored across the upgrade; else config.yaml; else the standard
+    // `TOKIO_WORKER_THREADS`; else one-per-core. The config read is a best-effort early parse (the
+    // real load + error reporting happens in `run()` after the runtime is up).
+    let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
+        .inspect(|_| {
+            eprintln!(
+                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
+                 config.yaml instead (it is honored for now)."
+            )
+        })
+        .or_else(worker_threads_from_config)
         .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
         .unwrap_or_else(|| {
             // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
@@ -1391,6 +1401,14 @@ fn serve_thread_per_core(
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
+    // Validate the TLS material ONCE, here on the control thread, before any worker exists: every
+    // worker builds the same server config from the same files, so a bad cert or key must be
+    // reported exactly once and stop the boot (workers racing to `die` would each print it).
+    if let Some(tls) = tls_cfg.as_ref() {
+        tls::install_crypto_provider();
+        let _ = tls::build_server_config(tls, &secret_resolver)
+            .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
+    }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
         (0..n).map(|i| core_ids.get(i).copied()).collect();
@@ -1835,12 +1853,29 @@ fn config_path_flag() -> Option<String> {
     value_flag(std::env::args().skip(1), "--config", Some("-c"))
 }
 
-/// The `--providers <path>` flag value from the process args, as the override handed to
-/// [`load_config_from_disk`] (`None` ⇒ not passed, so the catalog resolves from `providers_file:` or
-/// the default next to config.yaml). 1.6.0 replaced the removed `BUSBAR_PROVIDERS` env var: providers
-/// precedence is now `--providers` flag > `providers_file:` config key > `providers.yaml` default.
+/// The providers-catalog override handed to [`load_config_from_disk`]: the `--providers <path>` flag
+/// value, else the deprecated `BUSBAR_PROVIDERS` env var (`None` ⇒ neither, so the catalog resolves
+/// from `providers_file:` or the default next to config.yaml). Precedence is `--providers` flag >
+/// `BUSBAR_PROVIDERS` env > `providers_file:` config key > `providers.yaml` default.
 fn providers_override() -> Option<std::path::PathBuf> {
-    value_flag(std::env::args().skip(1), "--providers", None).map(std::path::PathBuf::from)
+    value_flag(std::env::args().skip(1), "--providers", None)
+        .map(std::path::PathBuf::from)
+        .or_else(providers_override_from_env)
+}
+
+/// Resolve the DEPRECATED `BUSBAR_PROVIDERS` override, warning once when it is set. `None` ⇒ unset
+/// or empty. Kept so an operator's existing pin keeps working across the upgrade to the
+/// `providers_file:` config key. Pre-subscriber (it runs before tracing is installed under
+/// `--validate` and at boot alike), so the warning goes to stderr like the other boot diagnostics.
+fn providers_override_from_env() -> Option<std::path::PathBuf> {
+    let v = std::env::var(ENV_PROVIDERS)
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    eprintln!(
+        "[warn] {ENV_PROVIDERS} is DEPRECATED; set `providers_file:` in config.yaml instead (it is \
+         honored for now)."
+    );
+    Some(std::path::PathBuf::from(v))
 }
 
 /// The config-path override notice (1.6.0): `Some(msg)` when BOTH the `--config` flag and the

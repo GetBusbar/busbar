@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
-    diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
-    OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
-    PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
-    STORE_SECRET_REF_UNRESOLVED,
+    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
+    GOVERNANCE_STORE_EPHEMERAL, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED,
+    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
@@ -43,6 +43,33 @@ use busbar_substrate::plane_host::{
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
+
+/// DEPRECATED (1.5.3) environment variable name for the providers.yaml path — migrated to the
+/// top-level `providers_file:` key in config.yaml. Still honored, with a deprecation warning, so an
+/// operator's existing pin keeps working across the upgrade.
+pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
+
+/// DEPRECATED (1.5.3) environment variable name for the config-overlay backend path — migrated to
+/// `config.overlay.file` in config.yaml. Still honored, with a deprecation warning, only when
+/// `config.overlay` is unset.
+pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
+
+/// DEPRECATED (1.5.3) environment variable that forces HTTP/2 prior-knowledge for cleartext
+/// upstreams — migrated to `advanced.upstream_h2_prior_knowledge`. Still honored, with a warning.
+pub const ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE: &str = "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE";
+
+/// DEPRECATED (1.5.3) environment variable that pins the shared upstream client to HTTP/1.1 —
+/// migrated to `advanced.upstream_http1_only`. Still honored, with a warning.
+pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
+
+/// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
+/// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
+fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+    match env {
+        Some(v) => v != "0" && !v.is_empty(),
+        None => config_val,
+    }
+}
 
 /// Default path to the deployment config file.
 ///
@@ -325,7 +352,7 @@ pub fn load_config_from_disk(
     };
     let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
         format!(
-            "cannot read providers file '{}': {e} (pass `--providers <path>`, or set `providers_file:` in config.yaml)",
+            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",
             providers_path.display()
         )
     })?;
@@ -336,12 +363,21 @@ pub fn load_config_from_disk(
         .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
     // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
-    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The writability probe runs at
-    // boot/reload (Strict) but not under `--validate` (Lenient), which must stay side-effect-free.
-    // (The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 and removed in 1.6.0 — use
-    // `config.overlay.file`.)
+    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
+    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
+    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
+    // side-effect-free.
+    let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
     let probe_fs = matches!(env_mode, config::EnvSubst::Strict);
-    let resolution = config::overlay::resolve_backend(&deploy.config, config_path, probe_fs)?;
+    let resolution = config::overlay::resolve_backend_with_env(
+        &deploy.config,
+        config_path,
+        env_overlay.as_deref(),
+        probe_fs,
+    )?;
     let overlay_path = resolution.path;
     let config_locked = resolution.locked;
     let config_read_only = resolution.read_only_backend;
@@ -847,13 +883,41 @@ pub fn build_app_from_config(
     // other builder input is a compile-time constant, so this snapshot is exhaustive over what the
     // client build reads from config. The plane's `build_runtime` reuses the prior warm client iff
     // its own copy of these scalars is unchanged.
-    let new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
+    // The upstream protocol posture comes from `advanced.upstream_h2_prior_knowledge` /
+    // `advanced.upstream_http1_only` in config.yaml (carried on `cfg.limits`). The deprecated
+    // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars still override
+    // those values so an existing pin keeps working across the upgrade; each is read here, at
+    // client-build time, and the deprecation warning fires once, on the first build (a reload that
+    // reuses the warm client does not repeat it). If both are set, http1-only wins because the
+    // plane's client builder applies it last.
+    let h2_env = std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE);
+    if h2_env.is_some() && prior.is_none() {
+        diag_warn!(
+            DEPRECATED_ENV_VAR_HONORED,
+            "{ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE} is DEPRECATED; set \
+             `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
+        );
+    }
+    let h2_prior_knowledge =
+        upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
+    let http1_env = std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY);
+    if http1_env.is_some() && prior.is_none() {
+        diag_warn!(
+            DEPRECATED_ENV_VAR_HONORED,
+            "{ENV_UPSTREAM_HTTP1_ONLY} is DEPRECATED; set `advanced.upstream_http1_only` in \
+             config.yaml (honored for now)."
+        );
+    }
+    let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
+    let mut new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
+    new_client_settings.upstream_h2_prior_knowledge = h2_prior_knowledge;
+    new_client_settings.upstream_http1_only = http1_only;
     let llm_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
-        http1_only: cfg.limits.upstream_http1_only,
-        h2_prior_knowledge: cfg.limits.upstream_h2_prior_knowledge,
+        http1_only,
+        h2_prior_knowledge,
     };
 
     // The hook plugin-resolution environment: the validated registry + shared projectors. Every hook
