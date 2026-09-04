@@ -187,7 +187,7 @@ subst_placeholders() {  # <cell-json> -> cell-json
   jq -c --arg ok "$ORACLE_KEY_OK" --arg broke "$ORACLE_KEY_BROKE" --arg noscope "$ORACLE_KEY_NOSCOPE" \
         --arg tmp "$WORK/tmp" --arg work "$WORK" --arg la "127.0.0.1:${LISTEN_PORT}" --arg aa "127.0.0.1:${ADMIN_PORT}" \
         --arg mock "http://127.0.0.1:${MOCK_PORT}" --arg triple "$ORACLE_TRIPLE" \
-        --arg b64_webrequest "$(base64 <"$(bash "${here}/fetch-plugin.sh" webrequest-hook)" | tr -d '\n')" '
+        --rawfile b64_webrequest "$WORK/tmp/webrequest.b64" '
     def sub: if type == "string" then
         gsub("\\{KEY_OK\\}"; $ok) | gsub("\\{KEY_BROKE\\}"; $broke) | gsub("\\{KEY_NOSCOPE\\}"; $noscope)
         | gsub("\\{TMP\\}"; $tmp) | gsub("\\{WORK\\}"; $work) | gsub("\\{LISTEN_ADDR\\}"; $la)
@@ -199,6 +199,8 @@ subst_placeholders() {  # <cell-json> -> cell-json
     sub' <<<"$1"
 }
 mkdir -p "$WORK/tmp"
+# a plugin tarball as base64 is ~1.5 MB: far past the argv limit, so it rides in as a --rawfile
+base64 <"$(bash "${here}/fetch-plugin.sh" webrequest-hook)" | tr -d '\n' >"$WORK/tmp/webrequest.b64"
 case "$(uname -sm)" in "Darwin arm64") ORACLE_TRIPLE=aarch64-apple-darwin ;; "Darwin x86_64") ORACLE_TRIPLE=x86_64-apple-darwin ;; "Linux aarch64"|"Linux arm64") ORACLE_TRIPLE=aarch64-unknown-linux-gnu ;; *) ORACLE_TRIPLE=x86_64-unknown-linux-gnu ;; esac
 
 run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> — unrecorded setup call
