@@ -27,6 +27,9 @@ What is normalized (each rule is a named entry in `applied`):
   keys.order          admin key listings (`items[]` whose ids are `vk_…`) are in creation-id order,
                       which is per-run -> sorted by name
   id.wire also maps minted bearer secrets `bbk_…` -> "bbk_<TOKEN>" (so no secret enters a golden)
+  metrics.shape       a /metrics exposition body keeps its SHAPE (names, types, labels, counts):
+                      latency samples (quantiles, _sum, _bucket, raw _seconds) are DROPPED, blank
+                      separators dropped, and lines sorted (registry order is per-binary, not a contract)
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
 
@@ -66,6 +69,7 @@ TIMING_KEYS = {"latency_ms"}
 VERSION_RX = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 POOL_LINE = re.compile(r"^\s+pool /\S+ = ")
 ERROR_BULLET = re.compile(r"^  - ")
+EXPO_TIMING = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*(_seconds_sum|_seconds|_bucket)(\{|\s)|quantile=")
 
 
 def norm_headers(h: dict, applied: set) -> dict:
@@ -155,6 +159,10 @@ def sort_pool_lines(lines: list, applied: set) -> list:
 
 def norm_text(text: str, applied: set) -> str:
     lines = text.split("\n")
+    if lines and lines[0].startswith(("# HELP ", "# TYPE ")):
+        applied.add("metrics.shape")
+        keep = [ln for ln in lines if ln and not EXPO_TIMING.search(ln)]
+        return "\n".join(sorted(keep))
     if len(lines) > 1 and lines[0].startswith("HTTP/"):
         # a raw response dump (HEAD cells): header lines get the header rules
         lines = ["" if ln.split(":", 1)[0].lower().strip() in HDR_STRIP and applied.add("hdr.date") is None else ln for ln in lines]
