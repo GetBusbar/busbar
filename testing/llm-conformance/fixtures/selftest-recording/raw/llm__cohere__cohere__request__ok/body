@@ -1,0 +1,1 @@
+{"finish_reason":"COMPLETE","id":"cohere-oracle","message":{"content":[{"text":"oracle-marker","type":"text"}],"role":"assistant"},"usage":{"billed_units":{"input_tokens":11,"output_tokens":7},"tokens":{"input_tokens":11,"output_tokens":7}}}

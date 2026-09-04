@@ -1,0 +1,33 @@
+# spec	format	sha256	url
+# The providers' PUBLIC machine-readable specifications the LLM-plane conformance gate validates
+# busbar's wire output against. vendor.sh fetches each URL with curl, digests it, and REFUSES
+# (exit 3, download deleted) if the digest is not byte-for-byte what this file pins — the same
+# rule testing/shadow-oracle/golden-digests.tsv applies to the 1.5.5 reference binary.
+#
+# format
+#   raw             sha256 of the bytes as served (GitHub raw at a pinned commit: immutable)
+#   json-canonical  sha256 of the JSON re-serialized with sorted keys and no whitespace. Google
+#                   serves the discovery document with a per-request key order (verified: two
+#                   fetches, identical content, different bytes), so the raw bytes cannot be pinned.
+#
+# Pinned 2026-09-04. To re-pin after a provider publishes a new revision: run
+#   testing/llm-conformance/vendor.sh --repin <spec>
+# which prints the new row; paste it here and review what changed in the report before trusting it.
+#
+# openai      github.com/openai/openai-openapi, branch main @ 91cc0564f0e7ea0c53890061f1847162cf93cea7
+#             covers /chat/completions (CreateChatCompletionRequest/Response/StreamResponse) and
+#             /responses (CreateResponse, Response, ResponseStreamEvent) — one file, two dialects.
+# anthropic   the OpenAPI document Anthropic publishes through Stainless; its URL is the one the
+#             official SDK pins in anthropic-sdk-python/.stats.yml (openapi_spec_url) and is
+#             content-addressed (the hash is in the file name). Covers /v1/messages: CreateMessageParams,
+#             Message, MessageStreamEvent, ErrorResponse.
+# gemini      the generativelanguage v1beta discovery document (revision 20260904 when pinned).
+# bedrock     botocore's service model for bedrock-runtime (Converse, ConverseStream and the
+#             ConverseStreamOutput event union), github.com/boto/botocore, develop @ e5c8122617a2c5c7e40bd364a835d5e38fd6e038
+# cohere      github.com/cohere-ai/cohere-developer-experience, main @ b5d0e3bc0b64e5d9ad3c05b5c364641822593c94
+#             (/v2/chat: request, ChatResponseV2, StreamedChatResponseV2, per-status error bodies)
+openai	raw	5f2358ee412d4220e5673068c02fc34c36653cdc60e18f72bddc707caec587ae	https://raw.githubusercontent.com/openai/openai-openapi/91cc0564f0e7ea0c53890061f1847162cf93cea7/openapi.yaml
+anthropic	raw	d1d189d791d1b551b33edebe9a60d63836d167070863ef366969e0df1e9c4f55	https://storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-e50cf35b74cc0471a2b5af7ea03765aa81c035f82588e9a1ba1b29aeaa17d064.yml
+gemini	json-canonical	836bf6eaceb61900c88221187f7e0f5cae4d1af4e4b51a1c4a5a0a7db43ede1d	https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta
+bedrock	raw	618bf3a6f4cb6e4987a01bd8ea2ce1f070e854991c750c67babf03520315dead	https://raw.githubusercontent.com/boto/botocore/e5c8122617a2c5c7e40bd364a835d5e38fd6e038/botocore/data/bedrock-runtime/2023-09-30/service-2.json
+cohere	raw	6f64ec87c66df5857f14283d43c816da5d6a729ca98edd25f23807cd4989a599	https://raw.githubusercontent.com/cohere-ai/cohere-developer-experience/b5d0e3bc0b64e5d9ad3c05b5c364641822593c94/cohere-openapi.yaml

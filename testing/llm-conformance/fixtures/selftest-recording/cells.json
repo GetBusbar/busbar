@@ -1,0 +1,40 @@
+{
+ "cells": [
+  {
+   "cross_protocol": false,
+   "egress_dialect": "cohere",
+   "family": "llm.wire",
+   "id": "llm|cohere|cohere|request|ok",
+   "ingress_dialect": "cohere",
+   "op": "chat",
+   "outcome": "ok",
+   "plane": "llm",
+   "transport": "http",
+   "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "cohere",
+   "family": "llm.wire",
+   "id": "llm|cohere|cohere|request|ok_stream",
+   "ingress_dialect": "cohere",
+   "op": "chat",
+   "outcome": "ok_stream",
+   "plane": "llm",
+   "transport": "http",
+   "why": "happy path, streamed response (SSE / frames)"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|ok",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "ok",
+   "plane": "llm",
+   "transport": "http",
+   "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+  }
+ ]
+}
