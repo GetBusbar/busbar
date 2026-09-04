@@ -73,9 +73,14 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     ORACLE_VARIANT="$variant" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 3
     CUR_VARIANT="$variant"
   fi
-  oracle_env "$BIN" >>"$WORK/busbar.log" 2>&1 &
-  BUSBAR_PID=$!; track_pid "$BUSBAR_PID"
-  wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30 || return 1
+  BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
+  # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second)
+  local w=0; while [ $w -lt 800 ]; do
+    curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${LISTEN_PORT}/healthz" 2>/dev/null && break
+    kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
+    sleep 0.025; w=$((w+1))
+  done
+  [ $w -lt 800 ] || return 1
   oracle_mint_keys "$ADMIN_PORT" || return 2
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
@@ -87,6 +92,8 @@ stop_busbar() {  # stop the current busbar and wait until the listen port is fre
   [ -n "$BUSBAR_PID" ] || return 0
   kill "$BUSBAR_PID" 2>/dev/null || true; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
   local i=0; while [ $i -lt 50 ] && ! assert_port_free "$LISTEN_PORT"; do sleep 0.1; i=$((i+1)); done
+  # a port still answering after the kill means the OLD process survived: refuse to continue on it
+  assert_port_free "$LISTEN_PORT" || { echo "record.sh: port ${LISTEN_PORT} still answers after stopping busbar ${BUSBAR_PID:-?}; refusing to record against a stale process" >&2; exit 1; }
 }
 boot_busbar; rc=$?
 [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)"; fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log"; }

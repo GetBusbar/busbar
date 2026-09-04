@@ -165,6 +165,17 @@ oracle_env() {  # run "$@" with the oracle's busbar environment
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG="${RUST_LOG:-warn}" "$@"
 }
 
+# Spawn busbar in the background so that `$!` IS busbar's pid. `oracle_env "$BIN" &` backgrounds a
+# SUBSHELL running the function; killing that subshell orphans busbar, which keeps its listen port,
+# the next boot fails to bind, and every later cell is silently served by the OLD process (the
+# isolation the recorder promises would be a lie). `exec` in the subshell makes the pid the binary's.
+oracle_spawn() {  # <log-file> <bin> [args...]
+  local log="$1"; shift
+  ( exec env BUSBAR_CONFIG="${WORK}/config.yaml" BUSBAR_PROVIDERS="${WORK}/providers.yaml" \
+      ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG="${RUST_LOG:-warn}" "$@" ) >>"$log" 2>&1 &
+  echo $!
+}
+
 _oracle_mint() {  # <admin_port> <json-body>  -> prints "id token akid secret"
   local out
   out="$(curl -fsS -X POST "http://127.0.0.1:$1/api/v1/admin/keys" \
