@@ -24,24 +24,17 @@ fn supported_abi_auth_floor_admits_v1() {
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
 }
 
-/// THE 1.7.0 FLOOR. The store payload schema bumped 2→3 in 1.6.0 (the fourteen protocol-named
-/// durable ops deleted for the eight neutral kind-tagged verbs), then 3→4 in 1.7.0 when the four
-/// protocol-named durable record structs (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`)
-/// were relocated out of `busbar-api` into their owning plane crates — the WIRE is unchanged (still
-/// the eight kind-tagged neutral `PlaneRecord` variants) but a plugin built against the 1.6 typed
-/// contract can no longer be built against 1.7, so it is a REAL breaking bump on the source contract.
-/// So the store range is a single point at the current `ABI_VERSION` (=4): floor == max == 4. A v2
-/// (or v3) artifact is below the floor and out of range.
+/// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin
+/// (sqlite/postgres/mysql/valkey) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
+/// changed what a plugin is COMPILED against, not a byte the engine exchanges with a built artifact:
+/// every variant the 1.5.x engine sent still exists unchanged, and the eight neutral plane-record
+/// verbs added since are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore`
+/// already treats as inert. So the range is `[2, ABI_VERSION]` = `[2, 4]`; v1 (whose AWS-only
+/// credential variants no longer exist) is the only store schema this binary cannot speak.
 #[test]
-fn supported_abi_store_floor_is_v4() {
+fn supported_abi_store_floor_admits_v2() {
     let range = supported_abi("store");
-    assert_eq!(
-        range,
-        &[
-            busbar_plugin::cold::ABI_VERSION,
-            busbar_plugin::cold::ABI_VERSION
-        ]
-    );
+    assert_eq!(range, &[STORE_ABI_FLOOR, busbar_plugin::cold::ABI_VERSION]);
     assert_eq!(
         busbar_plugin::cold::ABI_VERSION,
         4,
@@ -49,50 +42,87 @@ fn supported_abi_store_floor_is_v4() {
     );
     let (floor, max) = (range[0], range[1]);
     assert_eq!(
-        floor, 4,
-        "the floor MUST be 4 — a v2/v3 named-or-typed artifact is refused"
+        floor, 2,
+        "the floor MUST be 2 — every published 1.5.x store plugin declares abi_version 2"
     );
-    assert!(!(floor <= 2 && 2 <= max), "abi_version 2 is NOT in range");
-    assert!(!(floor <= 3 && 3 <= max), "abi_version 3 is NOT in range");
+    assert!(!(floor <= 1 && 1 <= max), "abi_version 1 is NOT in range");
+    assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
+    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
     assert!(floor <= 4 && 4 <= max, "abi_version 4 is in range");
 }
 
-/// FAIL-CLOSED, the C4 safety property: a signed, otherwise-valid store artifact whose manifest
-/// declares `abi_version: 2` (the old named-only wire) is REFUSED at load under the v4 floor — a
-/// HARD structural INVALID naming the file and the reason, never a partial registry and never
-/// answered from a default. A stale plugin that would silently drop every durable write fails LOUD
-/// instead. The trust signature is valid on purpose: the rejection is the ANTI-DOWNGRADE ABI floor,
-/// not a trust failure.
+/// PARITY WITH 1.5.5: a signed, otherwise-valid store artifact whose manifest declares
+/// `abi_version: 2` (what every published store plugin ships) LOADS — it enters the registry and
+/// resolves by name and alias, exactly as it did under the 1.5.5 binary. Refusing it here was the
+/// bug that made 1.6.0 reject the entire published store catalogue at boot.
 #[test]
-fn a_v2_named_only_store_artifact_is_refused_at_load_under_the_v4_floor() {
+fn a_v2_store_artifact_is_accepted_at_load() {
     let release = key(1);
-    let dir = tmpdir("v2-refused");
+    let dir = tmpdir("v2-accepted");
     let mut m = manifest("busbar-store-legacy", "legacy", "busbar");
-    m.abi_version = 2; // the OLD named-only store wire, below the v4 floor
+    m.abi_version = 2; // the 1.5.x store wire every published plugin was built against
     let m = sign(&release, m, b"legacy lib");
     write_tarball(&dir, "legacy.tar.gz", &m, b"legacy lib");
 
-    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-    assert_eq!(errs.len(), 1, "one artifact, one hard rejection: {errs:?}");
+    let reg = scan_and_validate(&dir, &policy(&release))
+        .unwrap_or_else(|e| panic!("a v2 store artifact must load: {e:?}"));
+    assert_eq!(reg.loadable().len(), 1);
+    assert!(reg.skipped().is_empty(), "nothing skipped: {reg:?}");
+    let p = reg
+        .resolve("legacy")
+        .expect("resolves by alias, like any current-schema store");
+    assert_eq!(p.manifest.name, "busbar-store-legacy");
+    assert_eq!(p.manifest.abi_version, 2);
     assert!(
-        errs[0].contains("legacy.tar.gz"),
-        "names the file: {}",
-        errs[0]
-    );
-    assert!(
-        errs[0].contains("abi_version 2 is not supported"),
-        "rejected by the ABI floor, not trust: {}",
-        errs[0]
-    );
-    assert!(errs[0].contains("store"), "names the kind: {}", errs[0]);
-
-    // And it never resolves — there is no partial registry the engine could still open it from.
-    let reg = scan_and_validate(&dir, &policy(&release));
-    assert!(
-        reg.is_err(),
-        "the WHOLE scan fails; no v2 store is loadable"
+        reg.resolve("busbar-store-legacy").is_some(),
+        "resolves by name"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE RANGE EDGES, both ways. The store range is `v2..=v4`: a v2 manifest is accepted (above),
+/// while v1 (below the floor) and v5 (above what this binary speaks) are each a HARD structural
+/// INVALID that names the file, the kind, the offending version AND the range — so an operator
+/// reading the line knows exactly what this binary will take. The signatures are valid on purpose:
+/// both rejections are the ABI range, not trust.
+#[test]
+fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
+    let release = key(1);
+    for (tag, version) in [("v1", 1u32), ("v5", 5u32)] {
+        let dir = tmpdir(&format!("range-{tag}"));
+        let mut m = manifest("busbar-store-edge", "edge", "busbar");
+        m.abi_version = version;
+        let m = sign(&release, m, b"edge lib");
+        write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
+
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert_eq!(
+            errs.len(),
+            1,
+            "{tag}: one artifact, one hard rejection: {errs:?}"
+        );
+        assert!(
+            errs[0].contains("edge.tar.gz"),
+            "{tag}: names the file: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains(&format!("abi_version {version} is not supported")),
+            "{tag}: rejected by the ABI range, not trust: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("'store'"),
+            "{tag}: names the kind: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("supported range v2..=v4"),
+            "{tag}: names the range this binary speaks: {}",
+            errs[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {

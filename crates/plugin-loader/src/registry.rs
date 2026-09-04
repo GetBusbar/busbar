@@ -30,20 +30,29 @@ use busbar_plugin_sign::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// The OLDEST store payload schema this binary still speaks: v2, the 1.5.x credentials-generalized
+/// wire. v1 is genuinely unspeakable (its AWS-specific credential variants no longer exist), so the
+/// floor cannot go lower; see [`supported_abi`] for why it must not go higher.
+pub const STORE_ABI_FLOOR: u32 = 2;
+
 /// The per-kind PAYLOAD schema versions this binary supports — a CONTIGUOUS `[floor, max]` inclusive
 /// range of manifest `abi_version` values the engine can speak for `kind` (empty = unknown/unsupported
 /// kind, rejected at scan). This is the PAYLOAD axis (the manifest `abi_version`), NOT the transport
 /// axis: every kind exports the SAME six kind-neutral C symbols at `busbar_abi() == TRANSPORT_VERSION`;
 /// `kind` only selects which payload schema (and engine seam) the cdylib speaks. The range is its
 /// endpoints; contiguity is the contract (every value between is speakable), so an additive schema
-/// bump stays in range and an old plugin of the same kind keeps loading. Store's PAYLOAD starts at
-/// `[1, 1]` (1.5.0 is the first release to carry it) until an additive bump widens the floor.
+/// bump stays in range and an old plugin of the same kind keeps loading.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
-        "store" => &[
-            busbar_plugin::cold::ABI_VERSION,
-            busbar_plugin::cold::ABI_VERSION,
-        ],
+        // A `kind: store` plugin speaks payload schema v2 (the 1.5.x wire every published first-party
+        // store — sqlite/postgres/mysql/valkey — was built against) up to the current `ABI_VERSION`.
+        // THE FLOOR MUST STAY 2: every request variant the 1.5.x engine sent still exists unchanged,
+        // and the only additions since are the eight neutral plane-record verbs, which `DynStore`
+        // already treats as inert when the plugin answers `STATUS_UNSUPPORTED` (exactly what the
+        // 1.5.x SDK returns for a variant it cannot decode). v3 and v4 changed the source contract a
+        // plugin is COMPILED against, not a byte on the wire, so a v2 artifact keeps behaving exactly
+        // as it did under 1.5.5. Raising this floor refuses every published store plugin at load.
+        "store" => &[STORE_ABI_FLOOR, busbar_plugin::cold::ABI_VERSION],
         // A `kind: secret` plugin resolves a secret reference's settings to bytes.
         "secret" => &[
             busbar_plugin::cold::SECRET_ABI_VERSION,

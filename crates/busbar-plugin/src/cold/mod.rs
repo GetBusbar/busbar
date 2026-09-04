@@ -131,19 +131,25 @@ pub mod kind {
 /// (`Task`/`Tasks`/`TaskEvents`/`McpCalls`/`McpCallPrincipals`/`McpDemotions`/`Redeemed`) are
 /// REMOVED in favor of the eight kind-tagged neutral variants (`UpsertPlaneRecord`/…/
 /// `RedeemPlaneToken`, with `PlaneRecord`/`PlaneRecords`/`PlaneRecordParents`/`Redeemed` responses).
-/// This is a REAL breaking bump, not the additive churn the earlier 1.6.0 work rode: a v2 plugin
-/// that speaks only the named variants can no longer be called, so the engine's `supported_abi`
-/// FLOOR is raised to 3 and an old named-only artifact is REFUSED at load (fail-closed) rather than
-/// answered from a default — a stale plugin fails loud, it never silently drops a durable write.
+/// Those fourteen only ever existed during 1.6.0 development — no RELEASED engine sent them and no
+/// PUBLISHED plugin implemented them — so relative to the v2 wire a released 1.5.x plugin speaks,
+/// v3 is purely ADDITIVE: every variant the 1.5.x engine sent is still here, byte for byte, and the
+/// eight new verbs are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore` treats
+/// as "this plugin has no durable plane" (inert), the same way 1.5.5 treated a missing denylist.
 ///
 /// v3 -> v4 (1.7.0, plane record-type relocation): the four protocol-named durable record structs
 /// (`McpCallRecord`/`McpDemotionRow`/`TaskRow`/`TaskEventRow`) are REMOVED from `busbar-api` and
 /// relocated into their owning plane crates (busbar-mcp / busbar-a2a). The WIRE is unchanged — still
 /// the eight kind-tagged neutral `PlaneRecord` variants carrying opaque bodies — but a plugin built
 /// against the 1.6 typed `busbar-api` contract can no longer be built against 1.7, since the record
-/// types it linked against no longer live in `busbar-api`. That is a real breaking bump on the
-/// source contract, so the engine's `supported_abi` FLOOR is raised to 4 and a stale 1.6 artifact is
-/// REFUSED at load (fail-closed) rather than mis-linking against types that have moved.
+/// types it linked against no longer live in `busbar-api`. That is a break on the SOURCE contract a
+/// plugin author compiles against, not on the bytes the engine exchanges with an already-built
+/// artifact.
+///
+/// Because v3 and v4 never changed what a v2 artifact is asked or how it answers, the engine's
+/// `supported_abi` range for `store` is `[2, ABI_VERSION]` (see `plugin-loader`'s
+/// `STORE_ABI_FLOOR`): every published first-party store plugin (sqlite/postgres/mysql/valkey,
+/// all `abi_version: 2`) keeps loading and behaves exactly as it did under 1.5.5. Only v1 is refused.
 pub const ABI_VERSION: u32 = 4;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
