@@ -44,7 +44,7 @@ fn test_finish_emits_request_metrics() {
         "openai",
         "mypool",
         Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
         resp,
     );
     // finish must pass the response through unchanged.
@@ -124,7 +124,8 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -309,7 +310,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
         &headers,
         Bytes::from_static(b"{ this is not valid json"),
         "openai",
-        busbar_core::operation::Operation::CHAT,
+        busbar_api::operation::Operation::CHAT,
         None,
     ));
     assert_eq!(
@@ -338,7 +339,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
         "anthropic",
         "p2",
         Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
         resp,
     );
     assert!(
@@ -358,7 +359,8 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_substrate::governance::NewKeySpec;
     busbar_core::metrics::init();
 
     let store = std::sync::Arc::new(MemoryStore::new());
@@ -392,7 +394,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     let day_window = charged_at / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         day_window,
-        busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -429,7 +431,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "non-2xx refund must land in the charged_at window (net 0)"
     );
     let in_today = gov
-        .usage_for(&cost, &key.id, busbar_core::store::now())
+        .usage_for(&cost, &key.id, busbar_substrate::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -454,14 +456,15 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 #[tokio::test]
 async fn test_admit_check_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
+    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_substrate::governance::NewKeySpec;
     busbar_core::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
     let past_window = past_day / SECS_PER_DAY * SECS_PER_DAY;
     assert_ne!(
         past_window,
-        busbar_core::store::now() / SECS_PER_DAY * SECS_PER_DAY,
+        busbar_substrate::store::now() / SECS_PER_DAY * SECS_PER_DAY,
         "test precondition: charged_at must be a different day than now"
     );
 
@@ -540,7 +543,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
 
     // Sanity: today's window is empty, so a gate keyed off the wall clock (the OLD behaviour)
     // would have WRONGLY admitted. This proves the bug was real and the pin fixes it.
-    let admitted_today = admit_check(&app, &govctx, "openai", "", busbar_core::store::now());
+    let admitted_today = admit_check(&app, &govctx, "openai", "", busbar_substrate::store::now());
     assert!(
         admitted_today.is_ok(),
         "today's window is empty; the old clock-based gate would have admitted here"
@@ -566,7 +569,7 @@ use std::sync::Arc as StdArc;
 
 /// Spin up the real router over a loopback listener; returns (addr, abort-handle).
 async fn serve(app: StdArc<App>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1725,7 +1728,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1804,7 +1807,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -2055,7 +2058,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     );
     let dur_before = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_before = metric_sum(
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
 
@@ -2075,7 +2078,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     );
     let dur_after = metric_sum(&dur_count, &[("pool", POOL)]);
     let att_after = metric_sum(
-        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         &[("pool", POOL), ("lane", MODEL)],
     );
     assert!(
@@ -2772,7 +2775,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
                 .provider("zai"),
         )
         .pool("foo", &[(0, 1)])
-        .upstream_creds(busbar_core::auth::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -3252,7 +3255,8 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -3296,7 +3300,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
         "openai",
         "denied-pool",
         Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
     )
     .expect_err("a disallowed pool must be rejected by the governance guard");
     assert_eq!(
@@ -3344,7 +3348,7 @@ async fn test_governance_guard_passes_when_allowed() {
         "openai",
         "allowed-only",
         Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
     );
     assert!(
         matches!(passed, Ok((Some(_), _))),
@@ -3429,7 +3433,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let gov2 = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
-    let resp = admit_check(&app2, &gov2, "openai", "", busbar_core::store::now())
+    let resp = admit_check(&app2, &gov2, "openai", "", busbar_substrate::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -3441,8 +3445,14 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let gov2b = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
-    let resp = admit_check(&app2b, &gov2b, "bedrock", "", busbar_core::store::now())
-        .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
+    let resp = admit_check(
+        &app2b,
+        &gov2b,
+        "bedrock",
+        "",
+        busbar_substrate::store::now(),
+    )
+    .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_string(*resp).await;
     assert!(
@@ -3457,7 +3467,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let gov3 = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
-    let resp = admit_check(&app3, &gov3, "openai", "", busbar_core::store::now())
+    let resp = admit_check(&app3, &gov3, "openai", "", busbar_substrate::store::now())
         .expect_err("requests=0 group ⇒ 429 response");
     let resp = *resp;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -3498,7 +3508,8 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -3543,7 +3554,8 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -4184,7 +4196,7 @@ fn sse_frames(body: &str) -> Vec<(String, String)> {
             }
         }
         if let Some(d) = data {
-            if d == busbar_core::proto::SSE_DONE_SENTINEL {
+            if d == busbar_substrate::proto::SSE_DONE_SENTINEL {
                 continue;
             }
             out.push((event_name, d));
@@ -4769,7 +4781,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_substrate::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4792,7 +4804,7 @@ async fn test_real_failover_serves_second_member_after_first_5xx() {
          dispatched by the real retry loop, not a mock/short-circuit); got {body}"
     );
 
-    let err_after = app.store.snapshot(0, busbar_core::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_substrate::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -4856,7 +4868,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app.clone()).await;
 
-    let err_before = app.store.snapshot(0, busbar_core::store::now()).err;
+    let err_before = app.store.snapshot(0, busbar_substrate::store::now()).err;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
@@ -4904,7 +4916,7 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
         "the in-band terminal frame must be OpenAI's native error envelope; got {v}"
     );
 
-    let err_after = app.store.snapshot(0, busbar_core::store::now()).err;
+    let err_after = app.store.snapshot(0, busbar_substrate::store::now()).err;
     assert_eq!(
         err_after,
         err_before + 1,
@@ -5786,7 +5798,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_core::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_substrate::proto::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -6248,7 +6260,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
     assert!(
             app_for_inspect
                 .store
-                .cooldown_remaining_in("", 0, busbar_core::store::now())
+                .cooldown_remaining_in("", 0, busbar_substrate::store::now())
                 > 0,
             "by_model forwards must record breaker state on the lane-default \"\" OperationHandler (the OperationHandler \
              /<model>/v1/messages selects against); a 0 cooldown means the failure was tracked under \
@@ -6265,7 +6277,8 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
@@ -6316,7 +6329,7 @@ async fn test_group_blocked_429_names_the_budget_group() {
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_core::store::now();
+    let at = busbar_substrate::store::now();
     let resp = admit_check(&app, &gov, "openai", "", at)
         .expect_err("a zero-cap group blocks the whole chain");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -6353,7 +6366,7 @@ async fn test_missing_group_fails_closed_at_ingress() {
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
-    let resp = admit_check(&app, &gov, "openai", "", busbar_core::store::now())
+    let resp = admit_check(&app, &gov, "openai", "", busbar_substrate::store::now())
         .expect_err("a missing group must fail closed");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
@@ -6371,7 +6384,8 @@ async fn test_missing_group_fails_closed_at_ingress() {
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
@@ -6412,7 +6426,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "mystery-model",
         std::time::Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
     )
     .expect_err("an unpriced passthrough model must be rejected pre-forward");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -6429,7 +6443,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "openai",
         "m",
         std::time::Instant::now(),
-        busbar_core::store::now(),
+        busbar_substrate::store::now(),
     );
     assert!(ok.is_ok(), "a priced configured lane admits");
 }
@@ -6442,7 +6456,8 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
 ) -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
@@ -6500,7 +6515,7 @@ async fn test_budget_exhaustion_downgrades_pool() {
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_core::store::now();
+    let at = busbar_substrate::store::now();
     // fee=10, cap=25: two frontier admissions spend 20; the 3rd would reach 30 > 25.
     for i in 0..2 {
         let (grant, effective) = admit_check(&app, &gov, "openai", "frontier", at)
@@ -6529,7 +6544,8 @@ async fn test_budget_exhaustion_downgrades_pool() {
 #[tokio::test]
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
@@ -6603,7 +6619,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_core::store::now();
+    let at = busbar_substrate::store::now();
     // a's single-request budget admits once (no downgrade needed yet).
     let (grant, effective) =
         admit_check(&app, &gov, "openai", "a", at).expect("first admission under a's cap");
@@ -6648,7 +6664,7 @@ async fn test_downgrade_never_bypasses_pool_acl() {
     let gov = busbar_core::governance::GovCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
-    let at = busbar_core::store::now();
+    let at = busbar_substrate::store::now();
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
     let resp = admit_check(&app, &gov, "openai", "frontier", at)

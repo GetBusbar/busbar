@@ -139,6 +139,9 @@ metrics = { workspace = true }
 # under `openapi-schema`, and the relocated response-schema attach helper (`api::set_response_schema`)
 # is compiled only under it — the same CI-only OpenAPI derive core and the plane crates gate on.
 schemars = { workspace = true, optional = true }
+# The neutral `testkit::warn_capture::WarnCapture` tracing layer (a `tracing_subscriber::Layer`) the
+# plane crates' tests assert diagnostics through; test-surface only, so optional under `test-support`.
+tracing-subscriber = { workspace = true, optional = true }
 
 # The relocated `governance::signing` known-answer tests hex-encode the derived subkey seeds they pin
 # and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
@@ -217,4 +220,4 @@ openapi-schema = ["dep:schemars"]
 # The `egress::fixtures` module (rustls fixture servers for the egress differential harness) rides
 # this feature too, so the crates whose test binaries link this one (core's differential harness)
 # can spawn the same fixture servers this crate's own engine tests drive.
-test-support = ["dep:rcgen", "dep:reqwest"]
+test-support = ["dep:rcgen", "dep:reqwest", "dep:tracing-subscriber"]

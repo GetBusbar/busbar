@@ -10,7 +10,7 @@
 //! documented drop+warn+test (per the owner ruling: ZERO waivers), never silently and never waived.
 
 use super::*;
-use busbar_core::test_support::warn_capture::WarnCapture;
+use busbar_substrate::testkit::warn_capture::WarnCapture;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 // ─────────────────────────────────────── helpers ───────────────────────────────────────

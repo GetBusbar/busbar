@@ -12,9 +12,10 @@
 # feature. Boot-mounting into the composition root (PLANE_DECL's build / admission / routes hooks) is
 # separate, tracked work. It compiles, registers, and is strong-form deletable.
 #
-# DEPENDENCY POSTURE mirrors `busbar-mcp`: `busbar-substrate` is the neutral shared surface the plugin
-# names instead of `busbar-core`; `busbar-core` is an OPTIONAL dep pulled ONLY by `test-support` (the
-# dual-compile / `&App`-typed test surface), never in a shipped build.
+# DEPENDENCY POSTURE: `busbar-substrate` is the neutral shared surface the plugin names instead of
+# `busbar-core` — in production AND in its tests. Nothing in this crate's closure, under any feature,
+# names or links `busbar-core`: the host-driving tests run over the substrate's in-memory fixture host
+# (`busbar_substrate::testkit`), reached through the same plane-host seam the production path uses.
 [package]
 name = "busbar-voice"
 version = "1.6.0"
@@ -41,13 +42,9 @@ path = "src/bin/voice-conform.rs"
 required-features = ["runtime"]
 
 [dependencies]
-# THE SEAL (mirrors busbar-mcp): busbar-core is NOT a production dependency of this plugin. The default
-# build compiles with NO busbar-core in its closure — the neutral surface the plane names is
-# `busbar-substrate` (+ `busbar-api`). busbar-core stays an OPTIONAL dep, pulled ONLY by the
-# `test-support` feature, for the plane's future `&App`-typed test helpers / dual-compile into core's
-# own test binary. (Optional rather than a dev-dependency because a feature cannot reference a
-# dev-dep-only crate.)
-busbar-core = { path = "../busbar-core", default-features = false, optional = true }
+# THE SEAL: busbar-core is NOT a dependency of this plugin at all — not in the shipped build and not in
+# its test build. Every build compiles with NO busbar-core in its closure; the neutral surface the
+# plane names is `busbar-substrate` (+ `busbar-api`), and its tests drive the substrate's fixture host.
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the plane
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
@@ -120,13 +117,11 @@ runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
 # contributes no schemas (the field is `None`), so no `schemars` dep is pulled.
 openapi-schema = ["busbar-substrate/openapi-schema"]
-# Pulls busbar-core (the optional dep). The plane's future `&App`-typed test helpers / dual-compile
-# plane tests name `busbar_core::…`, so this feature is the one edge that puts busbar-core in the
-# closure — the default/prod build has none.
-test-support = ["dep:busbar-core", "busbar-core/test-support"]
+# THE HOST-DRIVING TEST SURFACE: reveals the substrate's `testkit` (the in-memory fixture host, the
+# loopback HTTP provider, the metrics capture) to the cells that drive a plane-host seam — the breaker,
+# hook-gate/tap, metrics, SDP-broker and billing-ledger batteries. Pulls NO busbar-core: the fixture
+# host is a substrate double reached through the same seam production uses.
+test-support = ["busbar-substrate/test-support"]
 
 [dev-dependencies]
-# TEST MACHINERY ONLY: the hooks-gate / hooks-tap acceptance batteries name `busbar_plugin_sign::HookNeeds`
-# to load the hermetic `busbar-hook-test-plugin` cdylib through the real scan/trust/load pipeline (the
-# SAME harness the MCP/A2A hook batteries use). Absent from every shipped build.
-busbar-plugin-sign = { path = "../plugin-sign" }
+# None beyond the workspace crates above: the test surface is the `test-support` feature.

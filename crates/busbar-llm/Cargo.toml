@@ -124,8 +124,15 @@ base64 = { workspace = true }
 busbar-plugin = { path = "../busbar-plugin", optional = true }
 
 [dev-dependencies]
-# The dialects' own tests drive the codecs through core vocabulary (breaker signals, IR types) and
-# core's test_support (warn-capture), which core exposes to dependents behind this feature only.
+# THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
+# through, the warn-capture layer, the fixture seams), named explicitly here so this crate's test build
+# turns the substrate's test surface on in its own right — not as a side effect of core's dev-edge.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# THE MONEY-PATH FIXTURE (`TestApp`/`MockServer`/`LaneSpec`, the governance/cost/config types that
+# configure it, the metrics recorder): core's `test_support`, which core exposes behind this feature
+# only. The fixture constructs core's `App`, so it lives in core and this dev-edge stays until the
+# fixture (and the config/governance/cost vocabulary that configures it) has a neutral home; the tests
+# reach the BUILT App only through `busbar_substrate::testkit::BuiltAppSeam`, which core implements.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
 # THE MCP PROTOCOL crate, dev-only: ONE relocated registry test asserts core's handling of a
 # codec-LESS registered protocol using the real MCP declaration (`busbar_mcp::PROTO_DECL`), which the

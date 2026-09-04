@@ -3,9 +3,12 @@
 
 //! THE HOOKS-GATE CELL — `hooks-gate × {voice-client, voice-server}` (one wiring, both directions).
 //! `streams.hooks: [reject-all]` is attached, a session-open is driven through the governed choke
-//! point, and it is REFUSED before any lease / mint / dial. The gate is the SAME real `dlopen`ed
-//! cdylib the MCP/A2A hook batteries drive, and it fires through the neutral `host.gate_decide` seam
-//! (the Seam-B inversion — this plane names no core hook symbol).
+//! point, and it is REFUSED before any lease / mint / dial. The gate fires through the neutral
+//! `host.gate_decide` seam (the Seam-B inversion — this plane names no core hook symbol): the host is
+//! the substrate's in-memory fixture host carrying a scripted gate under the plane's own decl key and
+//! `streams` container, so the plane's `gate_attached` / `gate_decide` legs run exactly as they do over
+//! a configured deployment. (The same verdict over the real loaded hook plugin is the engine's own
+//! hook battery to prove; this plane's tests do not link the engine.)
 //!
 //! The control makes the refusal falsifiable: the identical open with NOTHING attached proceeds past
 //! the gate (the byte-identical-when-unconfigured guarantee, exercised).
@@ -14,49 +17,27 @@
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
-use busbar_core::test_support::TestApp;
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_substrate::plane_host::{EngineHost, GateOutcome};
+use busbar_substrate::testkit::fixture_host::{FixtureHost, GateScript};
 use std::sync::Arc;
 
-/// A `kind: gate` on the hermetic test cdylib whose `raw_decide_reply` drives its verdict verbatim.
-fn gate(settings: serde_json::Value) -> HookCfg {
-    HookCfg {
-        kind: HookKind::Gate,
-        plugin: "test-hook".to_string(),
-        // Not the 1ms default: these assert the VERDICT, not the deadline (which under parallel-suite
-        // load fires on scheduling delay alone and `on_error: weighted` maps to PROCEED).
-        timeout_ms: 10_000,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::Ro,
-        user: UserAccess::Ro,
-        priority: 0,
-        settings: settings.as_object().cloned().unwrap_or_default(),
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
-}
+/// The `streams:` container the voice plane files its operator hooks under.
+const GATE_CONTAINER: &str = "streams";
 
-/// The env that loads the test cdylib under the alias `test-hook`. ABSENCE IS A HARD FAILURE (never a
-/// skip): with no gate to load every assertion below is vacuous. The panic names the fix.
-fn hook_env() -> busbar_core::hooks::HookEnv {
-    busbar_core::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
+/// A gate whose `raw_decide_reply` drives its verdict verbatim — the same reply shape the hermetic
+/// test hook plugin reads off its settings: `{"reject": {"status", "message"}}` refuses, anything
+/// else proceeds.
+fn gate(settings: serde_json::Value) -> GateScript {
+    let reply = settings["raw_decide_reply"].clone();
+    Arc::new(move |_args_json: &[u8]| match reply.get("reject") {
+        Some(reject) => GateOutcome::Reject {
+            status: reject["status"].as_u64().unwrap_or(403) as u16,
+            message: reject["message"].as_str().unwrap_or_default().to_string(),
+            hook: "test-hook".to_string(),
         },
-    )
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the voice half of the \
-         release's hooks-gate acceptance test and it CANNOT be skipped. Build it: \
-         `cargo build -p busbar-hook-test-plugin`.",
-    )
+        None => GateOutcome::Proceed,
+    })
 }
 
 fn runtime() -> VoiceRuntime {
@@ -67,29 +48,19 @@ fn runtime() -> VoiceRuntime {
     )
 }
 
-/// Build a host whose `voice`/`streams` container carries the attached gate, resolved the way
-/// production resolves it. The voice plane is registered in the test registry so the neutral
-/// [`busbar_substrate::plane_host::ContainerGateSink`] files the gate map under the plane's own decl
-/// key (`build()` itself resolves only the `tools:`/`agents:` sections). The `App` is returned so it
-/// outlives the borrowed host.
-fn gated_host(
-    hook_name: &'static str,
-    cfg: HookCfg,
-) -> (Arc<busbar_core::state::App>, Arc<dyn EngineHost>) {
-    use busbar_substrate::plane_host::ContainerGateSink;
-    busbar_core::plane::registry::register_test_plane(&crate::PLANE_DECL);
-    let mut app = TestApp::new()
-        .hook(hook_name, cfg)
-        .hook_env(hook_env())
-        .build();
-    {
-        let app_mut = Arc::get_mut(&mut app).expect("a freshly built test app is sole-owned");
-        let hooks = vec![hook_name.to_string()];
-        let containers: [(&str, &[String]); 1] = [("streams", hooks.as_slice())];
-        app_mut.reresolve_container_gates("voice", &containers, &[]);
-    }
-    let host = busbar_core::plane_host::engine_host(&app);
-    (app, host)
+/// A host with nothing attached: the open proceeds past the gate untouched.
+fn ungated_host() -> Arc<dyn EngineHost> {
+    FixtureHost::new().into_host()
+}
+
+/// Build a host whose `voice`/`streams` container carries the attached gate, filed under the plane's
+/// own decl key exactly where production's resolved gate map puts it, so `gate_attached` answers true
+/// and `gate_decide` runs the gate. `hook_name` is the operator's name for the hook (it only labels
+/// the attachment here).
+fn gated_host(_hook_name: &'static str, script: GateScript) -> Arc<dyn EngineHost> {
+    FixtureHost::new()
+        .attach_gate(crate::PLANE_DECL.key, GATE_CONTAINER, script)
+        .into_host()
 }
 
 fn an_open<'a>(rt: &'a VoiceRuntime, host: Arc<dyn EngineHost>) -> GovernedOpen<'a> {
@@ -116,8 +87,7 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
     let rt = runtime();
 
     // ── THE CONTROL: nothing attached ⇒ the open proceeds PAST the gate (byte-identical, no gate hop).
-    let ungated = busbar_core::plane_host::engine_host(&TestApp::new().build());
-    let control = open_governed(an_open(&rt, ungated)).await;
+    let control = open_governed(an_open(&rt, ungated_host())).await;
     assert_eq!(
         control.status(),
         axum::http::StatusCode::NOT_IMPLEMENTED,
@@ -125,7 +95,7 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
     );
 
     // ── THE TEST: `streams.hooks: [reject-all]`, same open, REFUSED before any lease/mint/dial. ──────
-    let (_app, host) = gated_host(
+    let host = gated_host(
         "reject-all",
         gate(serde_json::json!({
             "raw_decide_reply": {"reject": {"status": 403, "message": "no voice session today"}}
@@ -222,13 +192,12 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
 /// upgrades (101), making the refusal falsifiable.
 #[tokio::test]
 async fn a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade() {
-    let ungated = busbar_core::plane_host::engine_host(&TestApp::new().build());
     assert!(
-        ws_accept_handshake(ungated).await.is_ok(),
+        ws_accept_handshake(ungated_host()).await.is_ok(),
         "with no gate attached the telephony WS-accept proceeds past the gate and upgrades (101)"
     );
 
-    let (_app, host) = gated_host(
+    let host = gated_host(
         "reject-all",
         gate(serde_json::json!({
             "raw_decide_reply": {"reject": {"status": 403, "message": "no voice session today"}}

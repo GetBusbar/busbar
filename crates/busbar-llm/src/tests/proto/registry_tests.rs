@@ -10,9 +10,9 @@
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
 use busbar_api::operation::Operation;
-use busbar_core::proto::registry::{IngressAuth, ProtocolDecl, Registry};
 use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
+use busbar_substrate::proto::{IngressAuth, ProtocolDecl, Registry};
 use busbar_substrate::wire::{EgressCtx, WireBody};
 use bytes::Bytes;
 
@@ -46,7 +46,7 @@ fn builtins() -> Registry {
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     crate::ensure_test_protocols_registered();
     assert_eq!(
-        busbar_core::proto::known_protocols(),
+        busbar_substrate::proto::known_protocols(),
         &[
             "anthropic",
             "gemini",
@@ -71,7 +71,7 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 fn the_derived_protocol_list_is_not_empty() {
     crate::ensure_test_protocols_registered();
     assert!(
-        !busbar_core::proto::known_protocols().is_empty(),
+        !busbar_substrate::proto::known_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
          table stopped being read, and every operator config would be refused with no cause named"
     );
@@ -123,7 +123,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
         // OTHER protocol declared is caught the same as one serving its own undeclared verb.
         let mut candidates: Vec<Operation> = Operation::ALL
             .iter()
-            .chain(busbar_core::proto::registry::declared_verbs())
+            .chain(busbar_substrate::proto::declared_verbs())
             .copied()
             .collect();
         // ALL and the declared half share the shape verbs (MCP declares `invoke`/`subscribe`);
@@ -168,7 +168,7 @@ fn every_declared_verb_has_a_serving_handler() {
     // The whole declared vocabulary — the registry's own answer to "which operations exist", folded
     // from the declarations at boot. Non-empty or the registry has forgotten the LLM/plane verbs.
     assert!(
-        !busbar_core::proto::registry::declared_verbs().is_empty(),
+        !busbar_substrate::proto::declared_verbs().is_empty(),
         "the registry must declare at least the LLM/plane verbs"
     );
     for decl in builtins().decls() {
@@ -204,7 +204,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         "no codec means no cross-dialect translation into or out of it"
     );
     assert!(
-        !busbar_core::proto::known_protocols().contains(&"mcp"),
+        !busbar_substrate::proto::known_protocols().contains(&"mcp"),
         "a provider lane cannot name a protocol that has no wire codec"
     );
 }
@@ -266,18 +266,18 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_substrate::proxy::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
-        busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: None,
     claims: None,
     residual_claims: None,
@@ -479,18 +479,18 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         ingress_is_eventstream: false,
         emits_sse_done_terminator: false,
         max_citations_per_delta: None,
-        egress_user_agent: busbar_core::proxy::EGRESS_UA_DEFAULT,
+        egress_user_agent: busbar_substrate::proxy::EGRESS_UA_DEFAULT,
         has_model_in_url: false,
         auth_failure_status_and_kind: (
             axum::http::StatusCode::UNAUTHORIZED,
-            busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+            busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
         ),
         ingress_relays_amzn_headers: false,
         ingress_relayed_response_header_names: &[],
         auth_failure_message: "authentication failed",
         uses_array_stream_shim: false,
         has_native_path_not_found: false,
-        egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
+        egress_stream_accept: busbar_substrate::proxy::TEXT_EVENT_STREAM,
         models_list_envelope: None,
         claims: None,
         residual_claims: None,
@@ -564,7 +564,7 @@ fn installed_declarations_are_folded_ahead_of_the_builtins() {
     static BUILTIN_A: ProtocolDecl = named_decl("builtin-a");
     static BUILTIN_B: ProtocolDecl = named_decl("builtin-b");
     let merged =
-        busbar_core::proto::registry::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
+        busbar_substrate::proto::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
     let names: Vec<&str> = merged.iter().map(|d| d.name).collect();
     assert_eq!(
         names,
@@ -585,10 +585,8 @@ fn a_later_registration_of_a_declared_name_is_skipped_keeping_the_first() {
     static INSTALLED_COPY: ProtocolDecl = named_decl("anthro-like");
     static BUILTIN_COPY: ProtocolDecl = named_decl("anthro-like");
     static OTHER: ProtocolDecl = named_decl("other");
-    let merged = busbar_core::proto::registry::merged_boot_decls(
-        &[&INSTALLED_COPY],
-        &[&BUILTIN_COPY, &OTHER],
-    );
+    let merged =
+        busbar_substrate::proto::merged_boot_decls(&[&INSTALLED_COPY], &[&BUILTIN_COPY, &OTHER]);
     assert_eq!(merged.len(), 2, "one entry per name");
     assert!(
         std::ptr::eq(merged[0], &INSTALLED_COPY),
@@ -633,7 +631,7 @@ fn two_declarations_of_one_name_refuse_to_boot() {
 fn a_registry_with_no_declarations_reports_no_protocols_at_all() {
     // The boot fold with nothing installed AND nothing built in — a build with every protocol edge
     // removed. Not a hand-written empty slice: the function the process registry initializes with.
-    let decls = busbar_core::proto::registry::merged_boot_decls(&[], &[]);
+    let decls = busbar_substrate::proto::merged_boot_decls(&[], &[]);
     assert!(decls.is_empty(), "no declarations in, no declarations out");
 
     let empty = Registry::new(decls);
@@ -669,14 +667,14 @@ fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
 
     // RED: the URL-model protocol declared, but no arrival registered → the guard names it.
     assert_eq!(
-        busbar_core::proto::registry::first_path_model_without_arrival(decls, &[]),
+        busbar_substrate::proto::first_path_model_without_arrival(decls, &[]),
         Some("telex"),
         "a has_model_in_url decl with no arrival must be reported by name"
     );
 
     // GREEN: register the arrival by the SAME name → the guard is satisfied.
     assert_eq!(
-        busbar_core::proto::registry::first_path_model_without_arrival(decls, &["telex"]),
+        busbar_substrate::proto::first_path_model_without_arrival(decls, &["telex"]),
         None,
         "once its arrival is registered under the same name, the parity rule holds"
     );
@@ -684,7 +682,7 @@ fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
     // A body-model protocol (has_model_in_url == false) needs no arrival and is never reported.
     let body_model: &[&'static ProtocolDecl] = &[&TELEX_DECL];
     assert_eq!(
-        busbar_core::proto::registry::first_path_model_without_arrival(body_model, &[]),
+        busbar_substrate::proto::first_path_model_without_arrival(body_model, &[]),
         None,
         "a body-model protocol declares no URL model, so it needs no arrival"
     );

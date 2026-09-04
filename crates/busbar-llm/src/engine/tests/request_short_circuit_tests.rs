@@ -5,7 +5,10 @@ use serde_json::json;
 
 // Build a single-lane App whose one lane speaks `proto` with the given `lane_model`. The lane
 // base_url is unused (the short-circuit never dispatches). `i == 0` is the lane index.
-fn app_with_lane(proto: &'static str, lane_model: &str) -> std::sync::Arc<busbar_core::state::App> {
+fn app_with_lane(
+    proto: &'static str,
+    lane_model: &str,
+) -> std::sync::Arc<impl busbar_substrate::testkit::BuiltAppSeam> {
     TestApp::new()
         .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
         .build()

@@ -2,7 +2,7 @@ use super::{
     client_fault_kind, extract_error_message, is_streaming_content_type, mid_stream_error_bytes,
     strip_router_shim_keys, strip_same_protocol_model_shim, MID_STREAM_GENERIC_DETAIL,
 };
-use busbar_core::proto::StatusClass;
+use busbar_substrate::breaker::StatusClass;
 use serde_json::{json, Value};
 
 /// The gemini-declared never-native array shim key, reached through the NEUTRAL registry accessor

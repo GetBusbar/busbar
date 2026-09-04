@@ -1357,7 +1357,7 @@ fn read_request_preserves_sampling_params_in_extra() {
 /// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -4965,7 +4965,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 /// is the default and must NOT warn (it is not information loss).
 #[test]
 fn image_detail_warns_on_drop_except_auto() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body_high = serde_json::json!({
@@ -5225,7 +5225,7 @@ fn response_blank_tool_call_id_is_synthesized() {
 // response has no thinking output field. That drop must be OBSERVABLE (a `warn!`), not silent.
 #[test]
 fn openai_write_drops_thinking_observably() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let resp = crate::ir::IrResponse {
@@ -5305,7 +5305,7 @@ fn response_object_tool_arguments_preserved() {
 // dropped — but OBSERVABLY (a `warn!`), not silently.
 #[test]
 fn response_array_content_image_drop_warns() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

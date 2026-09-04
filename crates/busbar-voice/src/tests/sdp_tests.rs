@@ -14,6 +14,7 @@ use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint};
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
+use busbar_substrate::testkit::fixture_host::FixtureHost;
 use std::sync::{Arc, Mutex};
 
 const RTC_CALL_ID: &str = "rtc_correlated_call_9f8e7d";
@@ -59,8 +60,7 @@ async fn spawn_calls_broker(seen: Arc<Mutex<Option<String>>>) -> std::net::Socke
 async fn the_sdp_broker_correlates_the_rtc_call_id_from_the_location_header_onto_the_row() {
     let seen_auth: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let addr = spawn_calls_broker(Arc::clone(&seen_auth)).await;
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = FixtureHost::new().into_host();
 
     let engine = Arc::new(DurableHandleEngine::new());
     let rt = VoiceRuntime::new(

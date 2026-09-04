@@ -113,7 +113,7 @@ async fn a_governed_deployment(
         .pool("A", &[(0, 1)])
         .pool("B", &[(1, 1)])
         .build();
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -216,7 +216,7 @@ async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_tha
     // No `governance(..)`: nothing resolves a key, and the request is refused for want of a route.
     // The refusal is the point — this is the path that had no evidence of any kind.
     let app = TestApp::new().build();
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

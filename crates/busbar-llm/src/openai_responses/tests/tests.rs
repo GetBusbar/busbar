@@ -6,7 +6,7 @@ use super::*;
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
 #[test]
 fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -3345,7 +3345,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     let (_, payload) = writer
         .write_response_event(&IrStreamEvent::Error(IrError {
             class: StatusClass::ServerError,
-            provider_signal: Some(busbar_core::proto::STREAM_ABORT_DETAIL.to_string()),
+            provider_signal: Some(busbar_substrate::proto::STREAM_ABORT_DETAIL.to_string()),
             retry_after: None,
         }))
         .expect("emit");
@@ -3361,7 +3361,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
     assert_eq!(
         error.get("message").and_then(|m| m.as_str()),
-        Some(busbar_core::proto::STREAM_ABORT_DETAIL),
+        Some(busbar_substrate::proto::STREAM_ABORT_DETAIL),
         "the human text stays in `message`"
     );
 
@@ -6876,7 +6876,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
 #[test]
 fn mid_conversation_developer_item_is_flagged() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -6915,7 +6915,7 @@ fn mid_conversation_developer_item_is_flagged() {
 /// the ordinary shape and must NOT warn.
 #[test]
 fn leading_developer_item_does_not_warn() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

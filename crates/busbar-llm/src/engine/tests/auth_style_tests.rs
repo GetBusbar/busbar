@@ -1,18 +1,18 @@
 use super::lane_auth_headers;
 use crate::engine::Lane;
-use busbar_core::proto::SigningContext;
+use busbar_substrate::proto::SigningContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 fn lane_with_auth(auth: Option<&str>) -> Lane {
     let resolved_auth = auth.map(|a| match a {
-        "api-key" => busbar_core::config::ProviderAuth::ApiKey,
-        "bearer" => busbar_core::config::ProviderAuth::Bearer,
+        "api-key" => busbar_substrate::config::ProviderAuth::ApiKey,
+        "bearer" => busbar_substrate::config::ProviderAuth::Bearer,
         other => panic!("unexpected test auth style: {other}"),
     });
     Lane {
         prebuilt_auth: None,
-        credential: busbar_core::egress_auth::resolve("openai", resolved_auth),
+        credential: busbar_substrate::egress_auth::resolve("openai", resolved_auth),
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
@@ -42,7 +42,7 @@ fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
         canonical_uri: "/openai/deployments/gpt-4o/chat/completions",
         body,
         timestamp_epoch: 0,
-        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
     }
 }
 

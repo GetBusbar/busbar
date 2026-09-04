@@ -10,7 +10,7 @@ use crate::test_support::{
 };
 use axum::http::StatusCode;
 use busbar_core::config::{HealthCfg, HealthMode};
-use busbar_core::store::BreakerState;
+use busbar_substrate::store::BreakerState;
 use std::sync::Arc;
 
 fn health_active() -> HealthCfg {
@@ -40,7 +40,7 @@ async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockSe
         .pool("p", &[(0, 1)])
         .build();
     probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -74,7 +74,7 @@ async fn test_probe_sends_native_user_agent_and_accept_headers() {
         .pool("p", &[(0, 1)])
         .build();
     probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -181,7 +181,7 @@ async fn test_probe_skips_lane_without_key() {
         .pool("p", &[(0, 1)])
         .build();
     probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(1),
     )
@@ -224,7 +224,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             body: serde_json::json!({ "ok": true }),
         });
         probe_lane(
-            busbar_core::plane_host::engine_host(&app).as_ref(),
+            busbar_substrate::testkit::engine_host(&app).as_ref(),
             0,
             Duration::from_secs(5),
         )
@@ -238,7 +238,7 @@ async fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
             body: serde_json::json!({ "error": "upstream down" }),
         });
         probe_lane(
-            busbar_core::plane_host::engine_host(&app).as_ref(),
+            busbar_substrate::testkit::engine_host(&app).as_ref(),
             0,
             Duration::from_secs(5),
         )
@@ -292,7 +292,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
         body: serde_json::json!({ "ok": true }),
     });
     probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -306,7 +306,7 @@ async fn test_probe_success_recorded_even_on_healthy_lane() {
             body: serde_json::json!({ "error": "upstream down" }),
         });
         probe_lane(
-            busbar_core::plane_host::engine_host(&app).as_ref(),
+            busbar_substrate::testkit::engine_host(&app).as_ref(),
             0,
             Duration::from_secs(5),
         )
@@ -359,7 +359,7 @@ async fn test_probe_success_bumps_lane_ok_once_not_per_cell() {
             body: serde_json::json!({ "ok": true }),
         });
         probe_lane(
-            busbar_core::plane_host::engine_host(&app).as_ref(),
+            busbar_substrate::testkit::engine_host(&app).as_ref(),
             0,
             Duration::from_secs(5),
         )
@@ -402,7 +402,7 @@ async fn test_probe_uses_upstream_model_override() {
         .pool("p", &[(0, 1)])
         .build();
     probe_lane(
-        busbar_core::plane_host::engine_host(&app).as_ref(),
+        busbar_substrate::testkit::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -445,7 +445,7 @@ async fn test_spawn_probers_retains_no_strong_host_ref() {
         .pool("p", &[(0, 1)])
         .build();
     // The composition root owns this generation's host; the prober must hold only a `Weak` to it.
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = busbar_substrate::testkit::engine_host(&app);
     let weak_host = Arc::downgrade(&host);
     let weak_app = Arc::downgrade(&app);
     spawn_probers(&host);
@@ -528,7 +528,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
 
     // Each generation re-anchors on the composition root's host over the SAME snapshot (an unchanged
     // lane set carries one probe schedule), so every spawn shares the one schedule under test.
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = busbar_substrate::testkit::engine_host(&app);
     spawn_probers(&host);
     let first = app.engine_tables().probe_schedule().deadlines[0]
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -587,9 +587,9 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
     // mock's base URL and an active health block at `interval`, and one model routes to it.
     let make_cfg = |interval: u64| {
-        let mut c = crate::test_support::cfg_with_provider_api_key(
-            busbar_core::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT"),
-        );
+        let mut c = crate::test_support::cfg_with_provider_api_key(busbar_api::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_HEALTH_INHERIT",
+        ));
         let p = c.providers.get_mut("acme").expect("the sole provider");
         p.base_url = server.base_url();
         p.health = Some(HealthCfg {
@@ -617,7 +617,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // `App::clone`: the probe schedule rides the opaque plane runtime slot now, and it is the apply's
     // carry-over — not a field clone — that shares it across generations.
     let app = Arc::new(build_once(make_cfg(3600), None).expect("boot"));
-    spawn_probers(&busbar_core::plane_host::engine_host(&app));
+    spawn_probers(&busbar_substrate::testkit::engine_host(&app));
     let far = app.engine_tables().probe_schedule().deadlines[0]
         .load(std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -638,7 +638,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
         "an unchanged lane set must carry the probe schedule across the apply — the Arc-sharing the \
          inherited-schedule clamp depends on"
     );
-    spawn_probers(&busbar_core::plane_host::engine_host(&app2));
+    spawn_probers(&busbar_substrate::testkit::engine_host(&app2));
 
     assert!(
         app.engine_tables().probe_schedule().deadlines[0]

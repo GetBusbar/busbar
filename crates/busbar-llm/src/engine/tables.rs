@@ -335,10 +335,9 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
 /// App-retype WEDGE 3 (THE FLIP): production no longer reaches the tables through `&App` — the engine
 /// threads `host: &Arc<dyn EngineHost>` + resolves `rt` via [`native_runtime_arc`] and builds
 /// [`EngineTables::new`]. This `&App` extension survives ONLY for the many tests that hold a `TestApp`
-/// and read `app.engine_tables()`, so the trait AND its `impl … for` core's `App` (the only remaining
-/// structural core name on this path) are `cfg(test)`-ONLY — core is a DEV-dependency of this plane,
-/// present in nothing but this crate's own test binary, and the impl lives in a `#[cfg(test)] mod` so
-/// the neutral-purity scanner (which exempts that scope) never counts it.
+/// and read `app.engine_tables()`, so the trait is `cfg(test)`-ONLY, and its impl is BLANKET over the
+/// neutral built-app seam (`busbar_substrate::testkit::BuiltAppSeam`) rather than over core's `App`,
+/// so even this crate's test scope names no core type.
 #[cfg(test)]
 pub(crate) trait AppEngineExt {
     /// Borrow this snapshot's LLM data-plane routing tables through the [`EngineTables`] seam.
@@ -356,9 +355,10 @@ pub(crate) trait AppEngineExt {
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime;
 }
 
-// The `impl … for` core's `App` lives inside a `#[cfg(test)] mod` so the neutral-purity scanner
-// (which treats a `#[cfg(test)] mod` as test scope) never counts that core `App` name — the reach is
-// test-only (core is a dev-dependency here), so it must not appear on the enforced neutral surface.
+// The impl is BLANKET over the neutral built-app seam (`busbar_substrate::testkit::BuiltAppSeam`,
+// which core implements for its `App`), so this file names no core type even in test scope: the
+// tests hold whatever `Arc<A>` the fixture's `build()` handed back and read `app.engine_tables()` /
+// `app.llm_runtime_mut()` through the trait, exactly as before.
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use app_engine_ext_impl::test_host_rt;
@@ -366,25 +366,26 @@ pub(crate) use app_engine_ext_impl::test_host_rt;
 #[cfg(test)]
 mod app_engine_ext_impl {
     use super::*;
+    use busbar_substrate::testkit::BuiltAppSeam;
 
-    /// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over a `TestApp`'s
-    /// `Arc<App>` — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
+    /// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over the built
+    /// test App — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
     /// `decide_policy_order`, `forward_with_pool_parsed_inner`, …) hands it the SAME host/runtime seam
-    /// production does. Lives in this `#[cfg(test)] mod` so its reaches into core stay off the neutral
-    /// surface (scanner-exempt test scope). Byte-identical to what the arrival path builds.
+    /// production does. Generic over the neutral built-app seam, so it names no core type. Byte-identical
+    /// to what the arrival path builds.
     #[allow(dead_code)]
-    pub(crate) fn test_host_rt(
-        app: &Arc<busbar_core::state::App>,
+    pub(crate) fn test_host_rt<A: BuiltAppSeam + ?Sized>(
+        app: &Arc<A>,
     ) -> (
         Arc<dyn busbar_substrate::plane_host::EngineHost>,
         Arc<NativeRuntime>,
     ) {
-        let host = busbar_core::plane_host::engine_host(app);
+        let host = busbar_substrate::testkit::engine_host(app);
         let rt = super::native_runtime_arc(host.as_ref());
         (host, rt)
     }
 
-    impl AppEngineExt for busbar_core::state::App {
+    impl<A: BuiltAppSeam + ?Sized> AppEngineExt for A {
         #[allow(dead_code)]
         fn engine_tables(&self) -> EngineTables<'_> {
             EngineTables {
@@ -393,12 +394,12 @@ mod app_engine_ext_impl {
         }
         #[allow(dead_code)]
         fn llm_runtime(&self) -> &NativeRuntime {
-            // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored in
-            // `App::llm_runtime_key` at build (`runtime_slot_key(fallback_key())`, which resolves to THIS
-            // plane's `"llm"` key in every production and core-`cfg(test)` build), so this reads the same
-            // slot the deleted inherent `App::llm_runtime` did.
+            // `runtime_slot_key(<this plane's key>)` is exactly the interned key core stored at build
+            // (`runtime_slot_key(fallback_key())`, which resolves to THIS plane's `"llm"` key in every
+            // production and core-`cfg(test)` build), so this reads the same slot the deleted inherent
+            // `App::llm_runtime` did — through the neutral `PlaneSlots` read the production callbacks use.
             match self
-                .plane_slot(self.llm_runtime_key())
+                .plane_slot(llm_runtime_slot_key())
                 .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
             {
                 Some(rt) => rt,
@@ -408,9 +409,8 @@ mod app_engine_ext_impl {
         #[allow(dead_code)]
         #[cfg(any(test, feature = "test-support"))]
         fn llm_runtime_mut(&mut self) -> &mut NativeRuntime {
-            let key = self.llm_runtime_key();
             std::sync::Arc::get_mut(
-                self.plane_slot_mut(key)
+                self.plane_slot_mut(llm_runtime_slot_key())
                     .expect("fallback-plane runtime slot present for in-place test mutation"),
             )
             .expect("fallback-plane runtime slot uniquely owned for in-place test mutation")

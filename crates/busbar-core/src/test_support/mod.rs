@@ -2434,3 +2434,39 @@ impl busbar_substrate::testkit::TestAppSeam for TestApp {
         TestApp::set_plane_defs_any(self, plane_key, defs);
     }
 }
+
+// ── THE NEUTRAL BUILT-APP SEAM (busbar_substrate::testkit::BuiltAppSeam) ────────────────────────────
+// The second half of the fixture doorway: what a plane's tests drive on the `Arc<App>` that came OUT
+// of `TestApp::build()`. Each method is a thin delegate to the very fn the plane's tests used to name
+// directly (`plane_host::engine_host`, `build_router`, `App::plane_slot_mut`,
+// `metrics::refresh_scrape_gauges`), so a plane's money-path tests forward a request / mount the real
+// router / mutate their runtime slot through the trait, generic over `A: BuiltAppSeam`, naming no
+// `busbar_core::` item.
+impl busbar_substrate::testkit::BuiltAppSeam for crate::state::App {
+    fn engine_host_of(
+        app: &std::sync::Arc<Self>,
+    ) -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
+        crate::plane_host::engine_host(app)
+    }
+
+    fn engine_host_value_of(
+        app: std::sync::Arc<Self>,
+    ) -> impl busbar_substrate::plane_host::EngineHost + 'static {
+        crate::plane_host::engine_host_value(&app)
+    }
+
+    fn router_of(app: std::sync::Arc<Self>) -> axum::Router {
+        crate::build_router(app)
+    }
+
+    fn plane_slot_mut(
+        &mut self,
+        key: &str,
+    ) -> Option<&mut std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        crate::state::App::plane_slot_mut(self, key)
+    }
+
+    fn refresh_scrape_gauges(&self) {
+        crate::metrics::refresh_scrape_gauges(self);
+    }
+}

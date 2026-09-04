@@ -14,7 +14,7 @@ async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
     let resp = ingress_reject_response(
         "openai",
         &busbar_substrate::handlers::IngressReject::UnsupportedSubOp {
-            op: busbar_core::operation::Operation::IMAGE,
+            op: busbar_api::operation::Operation::IMAGE,
             model: "dall-e-2".into(),
         },
     );

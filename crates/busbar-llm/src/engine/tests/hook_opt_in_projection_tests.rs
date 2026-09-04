@@ -24,7 +24,7 @@ fn facts(v: &Value, proto: &str) -> HookFacts {
         &[],
         APPLICATION_JSON,
         proto,
-        Some(busbar_core::operation::Operation::CHAT),
+        Some(busbar_api::operation::Operation::CHAT),
     ) {
         Ok(f) => f,
         Err(HookIrRejected) => {
@@ -144,7 +144,7 @@ fn prompt_projection_keeps_empty_entries_aligned() {
         &[],
         APPLICATION_JSON,
         "openai",
-        Some(busbar_core::operation::Operation::CHAT)
+        Some(busbar_api::operation::Operation::CHAT)
     )
     .is_err());
 }

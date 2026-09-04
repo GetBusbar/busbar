@@ -8,66 +8,30 @@
 //! response stream completes."
 //!
 //! It drives a voice turn's usage through the SHIPPED path — `SessionCore`'s per-turn metering, which
-//! calls `TurnMeter::record_turn` → `host.meter_ledger`/`host.meter_series` — over a REAL governed
-//! `App` host (not a mock), then reads the key's derived usage back off `GovState::usage_for`. A voice
-//! session that "bills nobody" (the pre-fix state) reads back zero tokens; a fixed one reads the turn.
+//! calls `TurnMeter::record_turn` → `host.meter_ledger`/`host.meter_series` — over a GOVERNED host,
+//! then reads the key's usage back off the host's ledger. A voice session that "bills nobody" (the
+//! pre-fix state) reads back zero tokens; a fixed one reads the turn.
+//!
+//! The host is the substrate's in-memory fixture host with governance ON: its `meter_ledger` seam is
+//! the one ledger this test reads back (`ledger_usage(key)`), keyed by the presenting key exactly as
+//! the engine's `usage_for(key)` is. Whether the engine's own ledger accrues what its seam is handed
+//! is the engine's money-path suite to prove; this plane's tests do not link the engine.
 
 use crate::runtime::metering::TurnMeter;
-use busbar_core::cost::CostModel;
-use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_substrate::testkit::fixture_host::FixtureHost;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A governed fixture: a `GovState` + a virtual key bound to a loose day-budget group (so
-/// `usage_for(key)` materialises the key's token bucket), a `CostModel` over that group, and an `App`
-/// whose governance/cost ARE those objects — so the host `meter_ledger` seam the voice session drives
-/// writes to the very ledger this test reads back.
-fn governed_fixture() -> (
-    Arc<busbar_core::state::App>,
-    Arc<GovState>,
-    Arc<CostModel>,
-    busbar_api::VirtualKey,
-) {
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let groups = BTreeMap::from([(
-        "g".to_string(),
-        busbar_core::config::GroupCfg {
-            parent: None,
-            enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
-                amount: 1_000_000_000,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
-                scope: None,
-                on_exhaust: None,
-                downgrade_to: None,
-            }],
-            ..Default::default()
-        },
-    )]);
-    let cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
-    let (key, _secret) = gov
-        .create_key(
-            NewKeySpec {
-                name: "voice-caller".to_string(),
-                allowed_pools: None,
-                group: Some("g".to_string()),
-                labels: Default::default(),
-                ..Default::default()
-            },
-            1_700_000_000,
-        )
-        .expect("create key");
-    // The App's governance + cost ARE the fixture's, so `host.governance()`/`host.cost()` (which
-    // `TurnMeter::record_turn` reads) resolve to the ledger this test reads back.
-    let app = busbar_core::test_support::TestApp::new()
-        .governance(Arc::clone(&gov))
-        // A fresh, equivalent rate card for the App (CostModel isn't Clone; `resolve_parts` is
-        // deterministic, so the App's card and the `cost` we read spend against are identical).
-        .cost(CostModel::resolve_parts(None, 0, &groups))
-        .build();
-    (app, gov, cost, key)
+/// A governed fixture: a host with governance ON and a virtual key presenting to it — so the host
+/// `meter_ledger` seam the voice session drives writes to the very ledger this test reads back.
+fn governed_fixture() -> (Arc<FixtureHost>, busbar_api::VirtualKey) {
+    let host = Arc::new(FixtureHost::new().governed());
+    let key = busbar_api::VirtualKey {
+        id: "vk-voice-caller".to_string(),
+        name: "voice-caller".to_string(),
+        ..Default::default()
+    };
+    (host, key)
 }
 
 /// A voice turn's usage carrier — the same neutral `billing::Usage` `to_billing_usage()` produces,
@@ -85,28 +49,30 @@ fn turn_usage(input: u64, output: u64) -> busbar_substrate::billing::Usage {
 
 #[test]
 fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
-    let (app, gov, cost, key) = governed_fixture();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let (host, key) = governed_fixture();
 
     // Before: the key has metered nothing.
-    let before = gov
-        .usage_for(&cost, &key.id, busbar_core::store::now())
-        .expect("usage read")
+    let before = host
+        .ledger_usage(&key.id)
         .map(|u| (u.tokens, u.requests))
         .unwrap_or((0, 0));
     assert_eq!(before, (0, 0), "a fresh key has no ledgered usage");
 
     // Drive ONE voice turn's usage through the SHIPPED Meter seam — the exact call `SessionCore`
     // makes per turn (`TurnMeter::record_turn` → `host.meter_ledger` + `host.meter_series`).
-    let meter = TurnMeter::new(host, key.clone(), "voice-server", crate::OPENAI_REALTIME);
+    let meter = TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        key.clone(),
+        "voice-server",
+        crate::OPENAI_REALTIME,
+    );
     meter.record_turn("voice-model", &turn_usage(300, 120));
 
     // After: the turn's tokens (300 + 120) landed on the presenting key's ledger — voice now bills
     // the caller through the ONE ledger, exactly like a model call or a tool call. THIS is the proof
     // that the Meter step works end-to-end at the ledger, not just at the wiring.
-    let after = gov
-        .usage_for(&cost, &key.id, busbar_core::store::now())
-        .expect("usage read")
+    let after = host
+        .ledger_usage(&key.id)
         .expect("the key now has a materialised bucket");
     assert_eq!(
         after.tokens, 420,
@@ -126,8 +92,7 @@ fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
 fn an_ungoverned_voice_turn_meters_nobody_without_panicking() {
     // No governance configured: `host.governance()` is `None`, so `record_turn` no-ops cleanly (a
     // voice session on an ungoverned deployment opens and runs, it simply attributes to no ledger).
-    let app = busbar_core::test_support::TestApp::new().build();
-    let host = busbar_core::plane_host::engine_host(&app);
+    let host = FixtureHost::new().into_host();
     let key = busbar_api::VirtualKey {
         id: "anon".to_string(),
         ..Default::default()

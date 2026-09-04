@@ -40,23 +40,26 @@ pub(crate) use crate::gemini::{GeminiJsonArrayFramer, GeminiReader, GeminiWriter
 pub(crate) use crate::openai_chat::{OpenAiReader, OpenAiWriter};
 pub(crate) use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 
-// The NEUTRAL registry accessors + proto atoms the suites reach bare via `super::*` — reached
-// through `busbar-core`'s public (`test-support`-widened) surface, NOT a second witnessed copy (a
-// glob of `busbar_core::proto::*` would collide with `crate::proto_codec::*` on `Protocol` &c.).
-pub(crate) use busbar_core::proto::{
-    array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, decl_for,
-    find_frame_terminator, known_protocols, lane_protocol_name, parse_sse_frame, sse_event_type,
-    streaming_content_types, strip_top_level_usage_member, write_sse_frame, IrError,
-    BASE62_ALPHABET, DEFAULT_MAX_TOKENS, HDR_AUTHORIZATION, PROTO_ANTHROPIC, PROTO_BEDROCK,
-    PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
+// The NEUTRAL proto atoms the suites reach bare via `super::*` — named at their canonical
+// `busbar_substrate::proto` home (core merely re-exports each by identity), NOT a second witnessed
+// copy (a glob of `busbar_substrate::proto::*` would collide with `crate::proto_codec::*` on
+// `Protocol` &c.).
+pub(crate) use busbar_substrate::proto::{
+    array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, bearer_error_code,
+    find_frame_terminator, known_protocols, lane_protocol_name, openai_context_length_prose_scan,
+    parse_sse_frame, sse_event_type, streaming_content_types, strip_top_level_usage_member,
+    write_sse_frame, IrError, BASE62_ALPHABET, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
     SSE_DONE_SENTINEL,
 };
-pub(crate) use busbar_core::proto::{openai_family, registry};
-// `openai_family_tests.rs` was `mod tests` inside `openai_family.rs`, so its `super::` reached these
-// two free fns; re-exported here so that `super::` (now this prelude) still resolves them.
-pub(crate) use busbar_core::proto::openai_family::{
-    bearer_error_code, openai_context_length_prose_scan,
+// The registry LOOKUP against the boot-installed registry (`decl_for`, the `registry` accessor
+// module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
+// (`PROTO_*`) and the translation-boundary `max_tokens` fallback. These are core's own items (not
+// re-exports), so they are the one reach this prelude keeps into core.
+pub(crate) use busbar_core::proto::{
+    decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
+    PROTO_OPENAI, PROTO_RESPONSES,
 };
+pub(crate) use busbar_core::proto::{openai_family, registry};
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
 pub(crate) use busbar_substrate::breaker::{CanonicalSignal, StatusClass};

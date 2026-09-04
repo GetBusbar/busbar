@@ -4325,7 +4325,7 @@ fn test_gemini_protocol_resolves() {
         writer.upstream_path_for("gemini-pro"),
         "/v1beta/models/gemini-pro:generateContent"
     );
-    let headers = busbar_core::egress_auth::api_key_headers("x-goog-api-key", "test-key");
+    let headers = busbar_substrate::egress_auth::api_key_headers("x-goog-api-key", "test-key");
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
 
@@ -4362,7 +4362,7 @@ fn test_bedrock_and_responses_register() {
     let responses = Protocol::responses();
     assert_eq!(responses.name(), "responses");
     assert_eq!(responses.writer().upstream_path(), "/v1/responses");
-    let headers = busbar_core::proto::bearer_auth_headers("responses", "sk-test");
+    let headers = busbar_substrate::proto::bearer_auth_headers("responses", "sk-test");
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "authorization");
     assert_eq!(headers[0].1.to_str().unwrap(), "Bearer sk-test");

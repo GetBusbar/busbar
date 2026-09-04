@@ -6,7 +6,7 @@
 
 use crate::engine::AppEngineExt as _;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_core::auth::UpstreamCreds;
+use busbar_api::UpstreamCreds;
 
 /// COMMON config (no pool sets `upstream_credentials:`): the flag is `false`, so the accessor takes
 /// the fast path — every pool name (known, unknown, empty) resolves to the ALL-POOLS default.

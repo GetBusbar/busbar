@@ -64,8 +64,8 @@ fn collect(pairs: &[(&'static str, &str)]) -> Vec<(HeaderName, HeaderValue)> {
     )
 }
 
-async fn drive(
-    app: &Arc<busbar_core::state::App>,
+async fn drive<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+    app: &Arc<A>,
     ingress_protocol: &'static str,
     client_fwd: Vec<(HeaderName, HeaderValue)>,
 ) {

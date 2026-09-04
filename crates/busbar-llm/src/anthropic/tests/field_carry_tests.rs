@@ -532,7 +532,7 @@ fn anthropic_stream_ping_same_proto_carry() {
 // a `dropped_egress_controls` entry — not silently as before (the writer never referenced them).
 #[test]
 fn anthropic_drops_penalties_seed_n_observably() {
-    use busbar_core::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = crate::ir::IrRequest {

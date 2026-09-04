@@ -66,10 +66,10 @@ why = """The same reach from test code. Tests that name core internals pin the p
 private shape just as surely as production code does; they are reported separately so both \
 counts can trend to zero at their own pace."""
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 875
+busbar-llm = 565
 busbar-mcp = 360
 busbar-a2a = 120
-busbar-voice = 47
+busbar-voice = 0
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]

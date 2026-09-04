@@ -46,8 +46,8 @@
 
 use super::*;
 use crate::ir::IrRequest;
-use busbar_core::proto::known_protocols;
 use busbar_substrate::ir::facts::IrFacts;
+use busbar_substrate::proto::known_protocols;
 use serde_json::Value;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

@@ -19,8 +19,81 @@
 
 use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
+use crate::plane_host::{EngineHost, PlaneSlots};
 use std::any::Any;
 use std::sync::Arc;
+
+/// The neutral warn-capture tracing layer a plane's tests assert diagnostics through (see the module
+/// docs) — the fixture that used to be reachable only as `busbar_core::test_support::warn_capture`.
+pub mod warn_capture;
+
+/// The in-memory [`EngineHost`] a plane's tests drive when no engine `App` is in their closure at all
+/// (see the module docs): scripted hook gates/rewrites, breaker cells and a per-key ledger behind the
+/// same seam production reaches.
+pub mod fixture_host;
+
+/// A loopback HTTP provider that records what it was dialed with, for a plane's egress legs.
+pub mod loopback_http;
+
+/// An in-memory `metrics` recorder + exposition render, for asserting a plane's counter emits.
+pub mod metrics_capture;
+
+/// THE BUILT-APP SEAM — the second half of the fixture doorway. [`TestAppSeam`] is what a plane drives
+/// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
+/// `build()`, so a plane's money-path tests forward a request, mount the real HTTP router and mutate
+/// their own runtime slot in place WITHOUT naming `busbar_core::state::App`,
+/// `busbar_core::plane_host::engine_host` or `busbar_core::build_router`. Core implements it for its
+/// `App` (thin delegates to those very fns), and a plane's test helpers are generic over `A:
+/// BuiltAppSeam`, taking the `Arc<A>` the fixture's `build()` hands back. Every signature names only
+/// neutral ABI types (the `EngineHost` seam, axum's `Router`, an opaque `Arc<dyn Any>` slot).
+///
+/// A `PlaneSlots` (the neutral slot-READ seam core's `App` already implements), so a plane reads its
+/// own runtime off the built App through the same method its production `PlaneDecl` callbacks use.
+pub trait BuiltAppSeam: PlaneSlots {
+    /// Mint the neutral engine host over this built App — the SAME `(host, …)` the production
+    /// ingress path threads into the engine, so a test that drives an engine fn hands it the seam
+    /// production does.
+    fn engine_host_of(app: &Arc<Self>) -> Arc<dyn EngineHost>;
+
+    /// The alloc-free BORROWED host carrier over this built App (an owned `EngineHost` value the
+    /// caller keeps on its stack and coerces to `&dyn EngineHost`): the engine hot path's shape, for a
+    /// test that must not pay the `Arc::new` of [`Self::engine_host_of`]. Takes the `Arc` by value
+    /// (one refcount bump at the call site) so the returned value borrows nothing.
+    fn engine_host_value_of(app: Arc<Self>) -> impl EngineHost + 'static;
+
+    /// The full HTTP router over this built App — every ingress route behind the REAL auth /
+    /// governance guards, exactly as the composition root mounts it — for a test that drives the
+    /// plane through `tower::ServiceExt::oneshot` instead of an engine fn.
+    fn router_of(app: Arc<Self>) -> axum::Router;
+
+    /// MUTABLE access to this App's type-erased plane slot under `key`, for IN-PLACE test mutation of
+    /// a plane's own runtime (`Arc::get_mut(slot).downcast_mut::<TheirRuntime>()`, sole-owner test
+    /// App). The `&mut` twin of the [`PlaneSlots::plane_slot`] read.
+    fn plane_slot_mut(&mut self, key: &str) -> Option<&mut Arc<dyn Any + Send + Sync>>;
+
+    /// Fold this App's live state into the scrape-time gauges, exactly as a `/metrics` scrape does
+    /// before rendering — so a test can assert a gauge the engine only publishes at scrape time.
+    fn refresh_scrape_gauges(&self);
+}
+
+/// Free-fn sugar over [`BuiltAppSeam::engine_host_of`], so a test reads
+/// `testkit::engine_host(&app)` where it used to read `busbar_core::plane_host::engine_host(&app)`.
+pub fn engine_host<A: BuiltAppSeam + ?Sized>(app: &Arc<A>) -> Arc<dyn EngineHost> {
+    A::engine_host_of(app)
+}
+
+/// Free-fn sugar over [`BuiltAppSeam::engine_host_value_of`] (the borrowed, alloc-free carrier).
+pub fn engine_host_value<A: BuiltAppSeam + ?Sized>(
+    app: &Arc<A>,
+) -> impl EngineHost + 'static + use<A> {
+    A::engine_host_value_of(Arc::clone(app))
+}
+
+/// Free-fn sugar over [`BuiltAppSeam::router_of`], so a test reads `testkit::build_router(app)` where
+/// it used to read `busbar_core::build_router(app)`.
+pub fn build_router<A: BuiltAppSeam + ?Sized>(app: Arc<A>) -> axum::Router {
+    A::router_of(app)
+}
 
 /// THE OBJECT-SAFE FIXTURE SEAM core implements for its `TestApp`. Every method is a neutral verb the
 /// plane test-kits already drove on the concrete fixture; the signatures name only neutral ABI types

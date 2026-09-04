@@ -149,7 +149,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
     // `pick_among` reads (it passes `state::now()` to `ready_in`/SWRR), so the lane is not
     // breaker-ready. No test clock here — everything uses the real clock consistently.
     app.store
-        .force_open_in("p", 2, busbar_core::state::now() + 1_000_000);
+        .force_open_in("p", 2, busbar_substrate::store::now() + 1_000_000);
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) =
@@ -186,7 +186,7 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
     let app = three_lane_app();
     let (host, rt) = crate::engine::test_host_rt(&app);
     app.store
-        .force_open_in("p", 2, busbar_core::state::now() + 1_000_000); // the only ranked lane is tripped
+        .force_open_in("p", 2, busbar_substrate::store::now() + 1_000_000); // the only ranked lane is tripped
     let mut rc = RequestCtx::new(60, 1);
     let order = [2usize]; // ranked subset of one, now unhealthy
     let (idx, _permit, _probe_epoch) =
@@ -230,7 +230,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     // (b) Health filter: trip lane 0 Open — SWRR must never dispatch to it, always picking a healthy
     // sibling (1 or 2). A broken filter that ignores health would eventually return the tripped lane.
     app.store
-        .force_open_in("p", 0, busbar_core::state::now() + 1_000_000);
+        .force_open_in("p", 0, busbar_substrate::store::now() + 1_000_000);
     for _ in 0..9 {
         let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
@@ -352,7 +352,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
 #[tokio::test]
 async fn excluded_reasons_records_at_capacity() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::Unavailable;
+    use busbar_substrate::store::Unavailable;
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -391,7 +391,7 @@ async fn excluded_reasons_records_at_capacity() {
 #[tokio::test]
 async fn sticky_fall_through_records_reason() {
     crate::testkit::install_test_seams();
-    use busbar_core::store::Unavailable;
+    use busbar_substrate::store::Unavailable;
     let app = TestApp::new()
         .lane(
             LaneSpec::new(

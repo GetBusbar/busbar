@@ -95,10 +95,10 @@ fn sign_bedrock_request(
 }
 
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
-async fn dp_serve(
-    app: std::sync::Arc<busbar_core::state::App>,
+async fn dp_serve<A: busbar_substrate::testkit::BuiltAppSeam>(
+    app: std::sync::Arc<A>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -107,7 +107,8 @@ async fn dp_serve(
 
 /// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
 fn dp_gov_with_key() -> (std::sync::Arc<busbar_core::governance::GovState>, String) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -196,7 +197,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -365,7 +366,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -497,7 +498,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -620,7 +621,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
         .governance(gov.clone())
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -721,7 +722,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -807,11 +808,11 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
         )
         .pool("pa", &[(0, 1)])
         // Empty chain = open relay (the old `mode: none`).
-        .upstream_creds(busbar_core::auth::UpstreamCreds::Own)
+        .upstream_creds(busbar_api::UpstreamCreds::Own)
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -903,7 +904,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -962,7 +963,8 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use busbar_api::{Store, VirtualKey};
+    use busbar_core::governance::{GovState, MemoryStore};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1032,7 +1034,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1144,7 +1146,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
         .governance(gov)
         .build();
 
-    let router = busbar_core::build_router(app);
+    let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1282,7 +1284,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
     let cost = busbar_core::cost::CostModel::flat(1);
     let spend = gov
-        .usage_for(&cost, &key_id, busbar_core::store::now())
+        .usage_for(&cost, &key_id, busbar_substrate::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -1384,7 +1386,8 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_substrate::governance::NewKeySpec;
     busbar_core::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1408,7 +1411,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            busbar_core::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
 
@@ -1427,7 +1430,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     let body = serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
         .to_string();
     let amzdate = {
-        let (a, _d) = busbar_substrate::sigv4::format_amz_time(busbar_core::store::now());
+        let (a, _d) = busbar_substrate::sigv4::format_amz_time(busbar_substrate::store::now());
         a
     };
     let (auth, headers) = sign_bedrock_request(

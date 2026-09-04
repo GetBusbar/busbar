@@ -161,7 +161,7 @@ fn synth_anthropic_request_id_msd_is_uniform() {
         let bytes = token.as_bytes();
         for &msd in &[bytes[0], bytes[12]] {
             total += 1;
-            if busbar_core::proto::BASE62_ALPHABET[..29].contains(&msd) {
+            if busbar_substrate::proto::BASE62_ALPHABET[..29].contains(&msd) {
                 low += 1;
             }
         }
@@ -1411,11 +1411,11 @@ fn write_sse_frame_pins_both_framings_byte_for_byte() {
     let data = serde_json::json!({"a": 1});
 
     let mut out = Vec::new();
-    busbar_core::proto::write_sse_frame(&mut out, "x", &data);
+    busbar_substrate::proto::write_sse_frame(&mut out, "x", &data);
     assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
 
     let mut out = Vec::new();
-    busbar_core::proto::write_sse_frame(&mut out, "", &data);
+    busbar_substrate::proto::write_sse_frame(&mut out, "", &data);
     assert_eq!(out, b"data: {\"a\":1}\n\n");
 }
 
@@ -2448,7 +2448,7 @@ mod ir_property_tests {
     #[test]
     fn test_openai_write_response_event_error() {
         let writer = OpenAiWriter;
-        let err = busbar_core::proto::IrError {
+        let err = busbar_substrate::proto::IrError {
             class: busbar_substrate::breaker::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
@@ -2474,7 +2474,7 @@ mod ir_property_tests {
     // Re-parse both sides and assert JSON equality with `usage` gone, plus assert the raw output has no
     // top-level `usage` key. Parsing both proves the splice stayed well-formed.
     fn assert_stripped_ok(input: &str) -> String {
-        let out = busbar_core::proto::strip_top_level_usage_member(input)
+        let out = busbar_substrate::proto::strip_top_level_usage_member(input)
             .unwrap_or_else(|| panic!("expected a byte-level strip for: {input}"));
         let parsed: serde_json::Value = serde_json::from_str(&out)
             .unwrap_or_else(|e| panic!("stripped output invalid: {e}: {out}"));
@@ -2544,7 +2544,7 @@ mod ir_property_tests {
         let input =
             r#"{"id":"x","choices":[{"delta":{"content":"the json \"usage\":null tell"}}]}"#;
         assert!(
-            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_substrate::proto::strip_top_level_usage_member(input).is_none(),
             "must not match `usage` inside a string value"
         );
     }
@@ -2569,7 +2569,7 @@ mod ir_property_tests {
         // and with no TOP-LEVEL usage it returns None.
         let input = r#"{"id":"x","meta":{"usage":null},"choices":[]}"#;
         assert!(
-            busbar_core::proto::strip_top_level_usage_member(input).is_none(),
+            busbar_substrate::proto::strip_top_level_usage_member(input).is_none(),
             "nested usage must not be treated as the top-level member"
         );
     }
@@ -2578,6 +2578,6 @@ mod ir_property_tests {
     fn strip_usage_no_usage_key_returns_none() {
         // A content chunk with no `usage` key at all - nothing to do.
         let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#;
-        assert!(busbar_core::proto::strip_top_level_usage_member(input).is_none());
+        assert!(busbar_substrate::proto::strip_top_level_usage_member(input).is_none());
     }
 }

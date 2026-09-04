@@ -16,7 +16,8 @@
 
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
-use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_core::governance::{GovState, MemoryStore};
+use busbar_substrate::governance::NewKeySpec;
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
@@ -105,7 +106,7 @@ async fn drive(
         charged_at: 1_700_000_000,
         admit: None,
     });
-    let breaker = busbar_core::store::BreakerCfg::default();
+    let breaker = busbar_substrate::store::BreakerCfg::default();
 
     // The headers-time budget unit the buffered path spends before it buffers the body (the unit the
     // guard refunds on a non-delivery return). 5 -> 4.
@@ -165,7 +166,7 @@ async fn drive(
             &breaker,
             upstream,
             tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-            busbar_core::store::Permit::Unbounded,
+            busbar_substrate::store::Permit::Unbounded,
             &mut guard,
             sink,
             axum::http::StatusCode::OK,
@@ -181,7 +182,7 @@ async fn drive(
     };
 
     let ledger_tokens = gov
-        .usage_for(&cost, &key.id, busbar_core::store::now())
+        .usage_for(&cost, &key.id, busbar_substrate::store::now())
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -236,7 +237,7 @@ async fn ingress_unsupported_404_does_not_charge() {
     let out = drive(
         busbar_substrate::handlers::op_for(
             "openai",
-            busbar_core::operation::Operation::EMBEDDINGS,
+            busbar_api::operation::Operation::EMBEDDINGS,
             busbar_substrate::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
@@ -275,7 +276,7 @@ async fn untranslatable_500_does_not_charge() {
     let out = drive(
         busbar_substrate::handlers::op_for(
             "openai",
-            busbar_core::operation::Operation::SPEECH,
+            busbar_api::operation::Operation::SPEECH,
             busbar_substrate::transport::Transport::Http,
         )
         .expect("openai serves speech"),

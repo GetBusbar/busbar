@@ -83,13 +83,13 @@ impl EgressSendError {
 /// [`forward_with_pool_keyed`]; this bytes-only, key-less form survives solely for the many tests
 /// that construct a request from raw bytes.
 // App-retype WEDGE 3 (THE FLIP): the two bytes-in, key-less/keyed TEST-ONLY convenience entries live
-// in a `#[cfg(test)] mod` so they keep taking a `&Arc<App>` from core (the ~81 test call sites are
-// unchanged; core is a dev-dependency of this plane) WITHOUT that `App` name reddening the
-// neutral-purity scanner — the scanner exempts `#[cfg(test)] mod` scope. Each mints the neutral
-// `host`/`rt` the production forward path
-// threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot read) and delegates to the
-// production `forward_with_pool_parsed`. Production ingress never routes through here (it holds a host
-// already and calls `forward_with_pool_parsed` directly), so nothing ships this mint.
+// in a `#[cfg(test)] mod` and take the built test App GENERICALLY, through the neutral built-app seam
+// (`busbar_substrate::testkit::BuiltAppSeam`, which core implements for its `App`) — so the ~81 test
+// call sites are unchanged and nothing here names a core type. Each mints the neutral `host`/`rt` the
+// production forward path threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot
+// read) and delegates to the production `forward_with_pool_parsed`. Production ingress never routes
+// through here (it holds a host already and calls `forward_with_pool_parsed` directly), so nothing
+// ships this mint.
 #[cfg(test)]
 pub(crate) use test_forward_entry::{forward_with_pool, forward_with_pool_keyed};
 
@@ -97,9 +97,11 @@ pub(crate) use test_forward_entry::{forward_with_pool, forward_with_pool_keyed};
 mod test_forward_entry {
     use super::*;
 
+    use busbar_substrate::testkit::BuiltAppSeam;
+
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn forward_with_pool(
-        app: &Arc<busbar_core::state::App>,
+    pub(crate) async fn forward_with_pool<A: BuiltAppSeam + ?Sized>(
+        app: &Arc<A>,
         cands: Vec<WeightedLane>,
         body: Bytes,
         caller_token: Option<&str>,
@@ -130,8 +132,8 @@ mod test_forward_entry {
     /// [`forward_with_pool`] plus the caller's pre-resolved governance key (`GovCtx.key`), so a
     /// GROUP/SSO principal still projects `rate_headroom` / `identity` into a pool's routing policy.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn forward_with_pool_keyed(
-        app: &Arc<busbar_core::state::App>,
+    pub(crate) async fn forward_with_pool_keyed<A: BuiltAppSeam + ?Sized>(
+        app: &Arc<A>,
         cands: Vec<WeightedLane>,
         body: Bytes,
         caller_token: Option<&str>,
@@ -146,7 +148,7 @@ mod test_forward_entry {
         client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
-        let host = busbar_core::plane_host::engine_host(app);
+        let host = busbar_substrate::testkit::engine_host(app);
         let rt = crate::engine::native_runtime_arc(host.as_ref());
         // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the
         // production entry — identical `LazyBody::parse` guard + parser).
