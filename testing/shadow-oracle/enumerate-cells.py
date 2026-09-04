@@ -281,10 +281,11 @@ def admin_cells() -> list[dict]:
         if op.get("restart"):
             # PostRestart ends the process; recorded as its own cell (fresh boot, expect 202 then exit)
             pass
+        variant = op.get("variant")
         if op.get("ok"):
             c = http(f"admin.ops|{opid}|ok", F, op["method"], _path_of(op, op["ok"]),
                      auth="admin", listener="admin", headers=op["ok"].get("headers") or {},
-                     body=_req_of(op, op["ok"])["body"], why=why)
+                     body=_req_of(op, op["ok"])["body"], why=why, **({"config_variant": variant} if variant else {}))
             pre = pre_chain(opid)
             if pre:
                 c["request"]["pre"] = pre
@@ -426,12 +427,28 @@ def billing_cells() -> list[dict]:
     return cells
 
 
+def hooks_cells() -> list[dict]:
+    """The published headroom gate (prompt: rw, on_error: nothing) attached to pool oracle-hooked:
+    the request is rewritten (compressed) before egress; the response, the usage and the hook
+    scrape are the contract (PB-6/46/84/95/98; hook ABI 1)."""
+    F = "hooks"; V = "hooks"
+    body = lambda stream=False: json.dumps({"model": "oracle-hooked", "messages": [{"role": "user", "content": "ping " * 40}], **({"stream": True} if stream else {})}, separators=(",", ":"), sort_keys=True)
+    return [
+        http("hooks|hooked-pool|ok", F, "POST", "/v1/chat/completions", body=body(), why="gate + rewrite in 1.5.5 order; served 200", config_variant=V),
+        http("hooks|hooked-pool|ok_stream", F, "POST", "/v1/chat/completions", body=body(True), why="streamed through the gate", config_variant=V),
+        http("hooks|hooked-pool|unauth", F, "POST", "/v1/chat/completions", auth="none", body=body(), why="refused before any hook", config_variant=V),
+        http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition (PB-43)", config_variant=V),
+        http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook", config_variant=V),
+        http("hooks|unhooked-pool|ok", F, "POST", "/v1/chat/completions", body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]}), why="a pool without the hook is untouched", config_variant=V),
+    ]
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
-                   + plugin_cells() + billing_cells(),
+                   + plugin_cells() + billing_cells() + hooks_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"

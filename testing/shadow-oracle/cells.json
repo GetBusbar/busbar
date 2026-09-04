@@ -39,21 +39,22 @@
     }
   ],
   "counts": {
-    "total": 2187,
+    "total": 2199,
     "by_plane": {
       "a2a": 468,
-      "core": 681,
+      "core": 693,
       "llm": 126,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 221,
+      "admin.ops": 227,
       "billing": 11,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
       "config.migrate": 138,
+      "hooks": 6,
       "http.crosscut": 20,
       "llm.wire": 126,
       "mcp": 912,
@@ -5452,6 +5453,44 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|DeleteHooksName|if-match-malformed",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "If-Match": "garbage"
+        },
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match malformed: [400] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.ops|DeleteHooksName|if-match-stale",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "If-Match": "\"0\""
+        },
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match stale: [409] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
       "id": "admin.ops|DeleteHooksName|not-found",
       "plane": "core",
       "family": "admin.ops",
@@ -5475,14 +5514,14 @@
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/hooks/{name}",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks (published",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|DeleteHooksName|unauth",
@@ -5492,7 +5531,7 @@
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/hooks/{name}",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -5848,14 +5887,14 @@
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/plugins/{file}",
+        "path": "/api/v1/admin/plugins/busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks (published he",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|DeletePluginsFile|unauth",
@@ -5865,7 +5904,7 @@
       "outcome": "ok",
       "request": {
         "method": "DELETE",
-        "path": "/api/v1/admin/plugins/{file}",
+        "path": "/api/v1/admin/plugins/busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6389,14 +6428,14 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/health",
+        "path": "/api/v1/admin/hooks/busbar-headroom/health",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetHooksNameHealth|unauth",
@@ -6406,7 +6445,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/health",
+        "path": "/api/v1/admin/hooks/busbar-headroom/health",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6438,14 +6477,14 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/schema",
+        "path": "/api/v1/admin/hooks/busbar-headroom/schema",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetHooksNameSchema|unauth",
@@ -6455,7 +6494,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/schema",
+        "path": "/api/v1/admin/hooks/busbar-headroom/schema",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6487,14 +6526,14 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/status",
+        "path": "/api/v1/admin/hooks/busbar-headroom/status",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetHooksNameStatus|unauth",
@@ -6504,7 +6543,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}/status",
+        "path": "/api/v1/admin/hooks/busbar-headroom/status",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6536,14 +6575,14 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest load",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetHooksName|unauth",
@@ -6553,7 +6592,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/hooks/{name}",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6575,7 +6614,8 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block)."
+      "why": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block).",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetHooks|unauth",
@@ -6921,14 +6961,14 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/plugins/{file}/schema",
+        "path": "/api/v1/admin/plugins/busbar-headroom-2.0.7-{TRIPLE}.tar.gz/schema",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks (published headroom + webrequest loaded)",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetPluginsFileSchema|unauth",
@@ -6938,7 +6978,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/plugins/{file}/schema",
+        "path": "/api/v1/admin/plugins/busbar-headroom-2.0.7-{TRIPLE}.tar.gz/schema",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6960,7 +7000,8 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)"
+      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|GetPlugins|unauth",
@@ -7422,7 +7463,7 @@
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/{name}/settings",
+        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
         "headers": {
           "Content-Type": "application/json"
         },
@@ -7433,6 +7474,46 @@
       "why": "expect [400]"
     },
     {
+      "id": "admin.ops|PatchHooksNameSettings|if-match-malformed",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "garbage"
+        },
+        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match malformed: [400] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.ops|PatchHooksNameSettings|if-match-stale",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "\"0\""
+        },
+        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match stale: [409] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
       "id": "admin.ops|PatchHooksNameSettings|not-found",
       "plane": "core",
       "family": "admin.ops",
@@ -7441,8 +7522,10 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/admin/hooks/does-not-exist/settings",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
         "auth": "admin",
         "listener": "admin"
       },
@@ -7456,14 +7539,16 @@
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/{name}/settings",
-        "headers": {},
-        "body": null,
+        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409.",
-      "needs_fixture": true
+      "why": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: va",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PatchHooksNameSettings|unauth",
@@ -7473,9 +7558,11 @@
       "outcome": "ok",
       "request": {
         "method": "PATCH",
-        "path": "/api/v1/admin/hooks/{name}/settings",
-        "headers": {},
-        "body": null,
+        "path": "/api/v1/admin/hooks/busbar-headroom/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.6}}",
         "auth": "none",
         "listener": "admin"
       },
@@ -8464,13 +8551,15 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins/inspect",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; ",
-      "needs_fixture": true
+      "why": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; ",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PostPluginsInspect|unauth",
@@ -8481,8 +8570,10 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins/inspect",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -8598,13 +8689,15 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
-      "needs_fixture": true
+      "why": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untr",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PostPlugins|unauth",
@@ -8615,8 +8708,10 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/plugins",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"file\":\"busbar-webrequest-1.0.6-{TRIPLE}.tar.gz\",\"tarball_b64\":\"{TARBALL_B64:webrequest-hook}\"}",
         "auth": "none",
         "listener": "admin"
       },
@@ -9156,7 +9251,7 @@
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/{name}",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
         "headers": {
           "Content-Type": "application/json"
         },
@@ -9167,6 +9262,46 @@
       "why": "expect [400]"
     },
     {
+      "id": "admin.ops|PutHooksName|if-match-malformed",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "garbage"
+        },
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match malformed: [400] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.ops|PutHooksName|if-match-stale",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "Content-Type": "application/json",
+          "If-Match": "\"0\""
+        },
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "If-Match stale: [409] (PB-100)",
+      "config_variant": "hooks"
+    },
+    {
       "id": "admin.ops|PutHooksName|not-found",
       "plane": "core",
       "family": "admin.ops",
@@ -9175,8 +9310,10 @@
       "request": {
         "method": "PUT",
         "path": "/api/v1/admin/hooks/does-not-exist",
-        "headers": {},
-        "body": null,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
         "auth": "admin",
         "listener": "admin"
       },
@@ -9190,14 +9327,16 @@
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/{name}",
-        "headers": {},
-        "body": null,
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "needs fixture: ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are",
-      "needs_fixture": true
+      "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are",
+      "config_variant": "hooks"
     },
     {
       "id": "admin.ops|PutHooksName|unauth",
@@ -9207,9 +9346,11 @@
       "outcome": "ok",
       "request": {
         "method": "PUT",
-        "path": "/api/v1/admin/hooks/{name}",
-        "headers": {},
-        "body": null,
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"config\":{\"kind\":\"gate\",\"module\":\"busbar-headroom\",\"on_error\":\"nothing\",\"prompt\":\"rw\",\"settings\":{\"min_savings_pct\":10,\"target_ratio\":0.5},\"timeout_ms\":60}}",
         "auth": "none",
         "listener": "admin"
       },
@@ -16064,6 +16205,108 @@
         "env": {}
       },
       "why": "the migrated document under --validate"
+    },
+    {
+      "id": "hooks|admin-list",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/hooks",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "registry with the loaded hook",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|hooked-pool|ok",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping \",\"role\":\"user\"}],\"model\":\"oracle-hooked\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "gate + rewrite in 1.5.5 order; served 200",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|hooked-pool|ok_stream",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping \",\"role\":\"user\"}],\"model\":\"oracle-hooked\",\"stream\":true}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "streamed through the gate",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|hooked-pool|unauth",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"messages\":[{\"content\":\"ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping ping \",\"role\":\"user\"}],\"model\":\"oracle-hooked\"}",
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "refused before any hook",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|metrics-hooks",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/metrics/hooks",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "the hook's own scrape exposition (PB-43)",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "hooks|unhooked-pool|ok",
+      "plane": "core",
+      "family": "hooks",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": {},
+        "body": "{\"model\": \"m-openai-chat\", \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}]}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "a pool without the hook is untouched",
+      "config_variant": "hooks"
     },
     {
       "id": "http.crosscut|413|anthropic",
