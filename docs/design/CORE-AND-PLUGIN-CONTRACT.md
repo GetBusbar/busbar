@@ -90,6 +90,14 @@ CANONICAL — the ONE path (7 verbs). The site today names 6; the missing verb i
 
 ## Part 3 — PLUGIN TYPES (job · what it does · dependency rule · how it does billing)
 
+> DOCTRINE (from the vetted site `docs/architecture.md`, authoritative for intent):
+> *"One admission decision … the same budget and the same rate limits in the same step. **There is
+> no separate MCP meter and no separate MCP budget.**"* and *"the token counts land on the ledger
+> when the response stream completes; spend itself is never stored — it is derived at read time."*
+> ⇒ A plane has **no meter and no budget of its own.** It lands usage on the ONE ledger through the
+> seam and admits against the ONE budget. Voice's private `MeteringPort`/lease/`cap_nanos` is the
+> violation — the fix is to remove the separate meter, not to wire a second one.
+
 ### 3.1 Plane plugins  (protocol planes)
 - **Job:** own one protocol's wire vocabulary (its dialects), both inbound and outbound.
 - **What it does:** translate the protocol ↔ the neutral IR; nothing else it does is its own.
