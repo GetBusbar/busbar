@@ -73,8 +73,11 @@ The gaps that exist today:
 
 Known spec-vs-docs discrepancy, reported as FAIL on purpose: Anthropic's published
 `MessageStreamEvent` union has no `ping` member although the docs say `ping` events may occur.
-1.5.5 emits `event: ping` in cross-protocol streams and the row fails the published union. Decide
-that one deliberately; do not paper over it in the validator.
+1.5.5 emits `event: ping` in cross-protocol streams and the row fails the published union.
+Decided 2026-09-04: `ping` stays — it is a documented event that real Anthropic streams carry, and
+a client that cannot take it is not an Anthropic client. The row is a NAMED GAP of the published
+spec (recorded here, not special-cased in the validator); it is re-judged whenever the pinned
+spec is re-pinned, and disappears the day the union gains the member.
 
 ## Running it
 
