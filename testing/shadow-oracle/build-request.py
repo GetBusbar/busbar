@@ -24,10 +24,19 @@ import sys
 
 PING = "ping"
 
+# qa/field-inventory.json names the OpenAI dialects `openai` / `responses`; the oracle config
+# (oracle-config.sh ORACLE_DIALECTS) and this builder use the fuller `openai-chat` / `openai-responses`.
+# One map, applied to both axes, so a cell id never silently targets a model that does not exist.
+DIALECT_ALIAS = {"openai": "openai-chat", "responses": "openai-responses"}
+
+
+def canon(d: str) -> str:
+    return DIALECT_ALIAS.get(d, d)
+
 
 def request_for(cell: dict) -> dict:
-    ing = cell["ingress_dialect"]
-    model = f"m-{cell['egress_dialect']}"
+    ing = canon(cell["ingress_dialect"])
+    model = f"m-{canon(cell['egress_dialect'])}"
     oc = cell["outcome"]
     stream = oc == "ok_stream"
     hdr = {"Content-Type": "application/json"}

@@ -56,12 +56,18 @@ def llm_cells(inv: dict) -> list[dict]:
     streams = {f["dialect"] for f in inv["fields"] if f.get("streaming")}
 
     def cell(i: str, e: str, oc: str, why: str) -> dict:
-        return {
+        c = {
             "id": f"llm|{i}|{e}|request|{oc}",
-            "plane": "llm", "ingress_dialect": i, "egress_dialect": e,
+            "plane": "llm", "family": "llm.wire", "ingress_dialect": i, "egress_dialect": e,
             "cross_protocol": i != e, "transport": "http", "op": "chat",
             "outcome": oc, "why": why,
         }
+        # A 5xx from the upstream parks the lane's breaker; a later cell on that lane would then
+        # record "overloaded" instead of its own outcome. `fresh` = the recorder boots a NEW busbar
+        # (re-mints, re-primes) before this cell, so every cell is "from a fresh boot, do X".
+        if oc == "upstream_down":
+            c["fresh"] = True
+        return c
 
     cells = []
     for d in dialects:

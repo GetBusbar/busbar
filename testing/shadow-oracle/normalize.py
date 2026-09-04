@@ -15,6 +15,9 @@ What is normalized (each rule is a named entry in `applied`):
   ts.unix             `created`/`timestamp`/`ts`/`at` integer unix seconds/millis -> 0
   audit.hash          audit-chain hashes / seals (hex >= 32) -> "<HASH>"; sealed timestamps -> 0
   metrics.absolute    metrics are captured as DELTAS by the recorder; absolutes never enter a golden
+  metrics.timing      duration _sum / quantile / histogram-bucket samples DROPPED (the _count stays)
+  hdr.retry-after     Retry-After value -> "<RETRY>" (presence is the contract; the value is clock/jitter)
+  id.wire also maps v4 UUIDs -> "<UUID>"; header values get the same id rules as bodies
   key.id              the minted key id (differs per run) -> "<KEY>"  (recorder passes the real id)
 
 Anything NOT listed is preserved byte-for-byte. Body JSON is re-serialized canonically (sorted keys,
@@ -32,13 +35,17 @@ import sys
 
 HDR_STRIP = {"date", "server", "x-request-id", "traceparent", "tracestate", "x-trace-id"}
 HDR_TIMING = {"server-timing"}  # busbar;dur=... carries a per-request latency; keep the KEY, blank the value
+# Retry-After is a contract (present or absent, PB-4) but its VALUE is wall-clock / jitter dependent
+# (seconds to the next window; breaker cooldown ±10 %). Keep the key, blank the value.
+HDR_RETRY = {"retry-after"}
 
 ID_RULES = [
-    (re.compile(r"\b(req|resp|msg|run|call|task|sess|rtc)_[0-9a-fA-F]{8,}\b"), r"\1_<ID>"),
+    (re.compile(r"\b(req|resp|msg|run|call|task|sess|rtc)_[0-9A-Za-z]{8,}\b"), r"\1_<ID>"),  # hex OR base62 (1.5.5 synthesizes req_01<24 base62>)
     (re.compile(r"\bchatcmpl-[0-9A-Za-z]{8,}\b"), "chatcmpl-<ID>"),
     (re.compile(r"\b[0-9a-fA-F]{32,}\b"), "<HASH>"),  # sha/hex seals, request ids as raw hex
+    (re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"), "<UUID>"),  # v4 ids busbar synthesizes (cohere `id`, x-amzn-requestid)
 ]
-TS_KEYS = {"created", "timestamp", "ts", "at", "sealed_at", "opened_at", "closed_at", "time"}
+TS_KEYS = {"created", "timestamp", "ts", "at", "sealed_at", "opened_at", "closed_at", "time", "as_of", "expires_at", "created_at", "updated_at", "last_used_at"}
 
 
 def norm_headers(h: dict, applied: set) -> dict:
@@ -49,7 +56,10 @@ def norm_headers(h: dict, applied: set) -> dict:
             applied.add("hdr.date"); continue
         if lk in HDR_TIMING:
             applied.add("hdr.date"); out[lk] = "<TIMING>"; continue
-        out[lk] = v
+        if lk in HDR_RETRY:
+            applied.add("hdr.retry-after"); out[lk] = "<RETRY>"; continue
+        # header VALUES carry synthesized ids too (request-id: req_01<base62>): same id rules as bodies
+        out[lk] = norm_scalar_str(v, applied)
     return dict(sorted(out.items()))
 
 
@@ -61,12 +71,19 @@ def norm_scalar_str(s: str, applied: set) -> str:
     return s
 
 
+METRIC_TIMING = re.compile(r"(_seconds_sum(\{|$))|(_seconds\{[^}]*quantile=)|(_bucket\{)|(_seconds$)")
+
+
 def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
     if isinstance(v, dict):
         out = {}
         for k, x in v.items():
             if k in TS_KEYS and isinstance(x, (int, float)):
                 applied.add("ts.unix"); out[k] = 0; continue
+            if parent_key == "metrics" and METRIC_TIMING.search(k):
+                # a latency SUM / quantile sample is a measurement, never a contract, and a summary
+                # emits its quantiles only once its window has samples — DROP the key; the COUNT stays
+                applied.add("metrics.timing"); continue
             out[k] = norm_json(x, applied, key_id, k)
         return dict(sorted(out.items()))
     if isinstance(v, list):

@@ -64,10 +64,26 @@ wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream di
 # ── busbar under the oracle config ──────────────────────────────────────────────────────────────
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
 oracle_env "$BIN" --validate >"$WORK/validate.log" 2>&1 || fail_setup "busbar rejected the oracle config (run selftest.sh)" "$(tail -c 400 "$WORK/validate.log")"
-oracle_env "$BIN" >"$WORK/busbar.log" 2>&1 &
-track_pid $!
-wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30 || fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)"
-oracle_mint_keys "$ADMIN_PORT" || fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log"
+
+BUSBAR_PID=""
+boot_busbar() {  # start busbar, wait for /healthz, mint the three keys, prime the BROKE key
+  oracle_env "$BIN" >>"$WORK/busbar.log" 2>&1 &
+  BUSBAR_PID=$!; track_pid "$BUSBAR_PID"
+  wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30 || return 1
+  oracle_mint_keys "$ADMIN_PORT" || return 2
+  # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
+  # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
+  curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
+    -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
+}
+stop_busbar() {  # stop the current busbar and wait until the listen port is free again
+  [ -n "$BUSBAR_PID" ] || return 0
+  kill "$BUSBAR_PID" 2>/dev/null || true; wait "$BUSBAR_PID" 2>/dev/null || true; BUSBAR_PID=""
+  local i=0; while [ $i -lt 50 ] && ! assert_port_free "$LISTEN_PORT"; do sleep 0.1; i=$((i+1)); done
+}
+boot_busbar; rc=$?
+[ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)"; fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log"; }
 
 # ── effect snapshots ────────────────────────────────────────────────────────────────────────────
 snapshot() {  # snapshot <dir> <key-id>
@@ -76,8 +92,9 @@ snapshot() {  # snapshot <dir> <key-id>
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" -o "$d/usage.json" 2>/dev/null || rm -f "$d/usage.json"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/audit?limit=1000" -o "$d/audit.json" 2>/dev/null || rm -f "$d/audit.json"
-  curl -fsS -m 5 "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
-    || curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
+  # /metrics on the data listener is key-authed in 1.5.5 (RouteAuth::Key): present the OK client key.
+  curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
+    || curl -fsS -m 5 "http://127.0.0.1:${LISTEN_PORT}/metrics" -o "$d/metrics.txt" 2>/dev/null \
     || rm -f "$d/metrics.txt"
 }
 
@@ -88,6 +105,11 @@ while IFS= read -r cell; do
   [ -z "$FILTER" ] || [[ "$id" =~ $FILTER ]] || continue
   outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
+  # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
+  if [ "$(jq -r '.fresh // false' <<<"$cell")" = true ]; then
+    stop_busbar
+    boot_busbar || { record "$id" FAIL "fresh boot before cell failed" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
+  fi
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
 
   req="$(python3 "${here}/build-request.py" --cell "$cell")" || { record "$id" FAIL "build-request failed" "$req"; continue; }
@@ -119,6 +141,7 @@ while IFS= read -r cell; do
   snapshot "$raw/after" "$kid"
   rm -f "$CONTROL"
   printf '%s\n' "$status" >"$raw/status"
+  printf '%s\n' "$kid" >"$raw/key-id"
 
   if [ "$status" = "000" ]; then
     record "$id" FAIL "no HTTP response (curl)" "$(tr '\n' ' ' <"$raw/curl.err" | tail -c 300)"; continue
@@ -137,6 +160,7 @@ done < <(jq -c --arg p "$PLANE" '.cells[] | select(.plane == $p)' "${here}/cells
 jq -n --arg ver "$VER" --arg bin "$BIN" --argjson recorded "$n" \
   '{binary: $bin, version: $ver, recorded: $recorded, at: (now | todate)}' >"$OUT/meta.json"
 cp "$WORK/busbar.log" "$OUT/busbar.log" 2>/dev/null || true
+cp "$WORK/mock.log" "$OUT/mock.log" 2>/dev/null || true
 
 echo
 echo "recorded ${n} cells for ${VER} -> ${OUT}"

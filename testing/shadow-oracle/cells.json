@@ -5198,6 +5198,7 @@
     {
       "id": "llm|anthropic|anthropic|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5209,6 +5210,7 @@
     {
       "id": "llm|anthropic|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5220,6 +5222,7 @@
     {
       "id": "llm|anthropic|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5231,6 +5234,7 @@
     {
       "id": "llm|anthropic|anthropic|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5242,6 +5246,7 @@
     {
       "id": "llm|anthropic|anthropic|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5253,6 +5258,7 @@
     {
       "id": "llm|anthropic|anthropic|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
@@ -5264,17 +5270,20 @@
     {
       "id": "llm|anthropic|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "anthropic",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|anthropic|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5286,6 +5295,7 @@
     {
       "id": "llm|anthropic|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5297,17 +5307,20 @@
     {
       "id": "llm|anthropic|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|anthropic|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5319,6 +5332,7 @@
     {
       "id": "llm|anthropic|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5330,17 +5344,20 @@
     {
       "id": "llm|anthropic|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "cohere",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|anthropic|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "gemini",
       "cross_protocol": true,
@@ -5352,17 +5369,20 @@
     {
       "id": "llm|anthropic|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "gemini",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|anthropic|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5374,6 +5394,7 @@
     {
       "id": "llm|anthropic|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5385,17 +5406,20 @@
     {
       "id": "llm|anthropic|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "openai",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|anthropic|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5407,6 +5431,7 @@
     {
       "id": "llm|anthropic|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5418,17 +5443,20 @@
     {
       "id": "llm|anthropic|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "anthropic",
       "egress_dialect": "responses",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5440,6 +5468,7 @@
     {
       "id": "llm|bedrock|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5451,17 +5480,20 @@
     {
       "id": "llm|bedrock|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|bedrock|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5473,6 +5505,7 @@
     {
       "id": "llm|bedrock|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5484,6 +5517,7 @@
     {
       "id": "llm|bedrock|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5495,6 +5529,7 @@
     {
       "id": "llm|bedrock|bedrock|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5506,6 +5541,7 @@
     {
       "id": "llm|bedrock|bedrock|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5517,6 +5553,7 @@
     {
       "id": "llm|bedrock|bedrock|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
@@ -5528,17 +5565,20 @@
     {
       "id": "llm|bedrock|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "bedrock",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5550,6 +5590,7 @@
     {
       "id": "llm|bedrock|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5561,17 +5602,20 @@
     {
       "id": "llm|bedrock|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "cohere",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "gemini",
       "cross_protocol": true,
@@ -5583,17 +5627,20 @@
     {
       "id": "llm|bedrock|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "gemini",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5605,6 +5652,7 @@
     {
       "id": "llm|bedrock|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5616,17 +5664,20 @@
     {
       "id": "llm|bedrock|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "openai",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|bedrock|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5638,6 +5689,7 @@
     {
       "id": "llm|bedrock|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5649,17 +5701,20 @@
     {
       "id": "llm|bedrock|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "bedrock",
       "egress_dialect": "responses",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5671,6 +5726,7 @@
     {
       "id": "llm|cohere|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5682,17 +5738,20 @@
     {
       "id": "llm|cohere|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5704,6 +5763,7 @@
     {
       "id": "llm|cohere|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5715,17 +5775,20 @@
     {
       "id": "llm|cohere|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|cohere|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5737,6 +5800,7 @@
     {
       "id": "llm|cohere|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5748,6 +5812,7 @@
     {
       "id": "llm|cohere|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5759,6 +5824,7 @@
     {
       "id": "llm|cohere|cohere|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5770,6 +5836,7 @@
     {
       "id": "llm|cohere|cohere|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5781,6 +5848,7 @@
     {
       "id": "llm|cohere|cohere|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
@@ -5792,17 +5860,20 @@
     {
       "id": "llm|cohere|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "cohere",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "gemini",
       "cross_protocol": true,
@@ -5814,17 +5885,20 @@
     {
       "id": "llm|cohere|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "gemini",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5836,6 +5910,7 @@
     {
       "id": "llm|cohere|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -5847,17 +5922,20 @@
     {
       "id": "llm|cohere|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "openai",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|cohere|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5869,6 +5947,7 @@
     {
       "id": "llm|cohere|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -5880,17 +5959,20 @@
     {
       "id": "llm|cohere|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "cohere",
       "egress_dialect": "responses",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5902,6 +5984,7 @@
     {
       "id": "llm|gemini|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -5913,17 +5996,20 @@
     {
       "id": "llm|gemini|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5935,6 +6021,7 @@
     {
       "id": "llm|gemini|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -5946,17 +6033,20 @@
     {
       "id": "llm|gemini|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5968,6 +6058,7 @@
     {
       "id": "llm|gemini|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -5979,17 +6070,20 @@
     {
       "id": "llm|gemini|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "cohere",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|gemini|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
@@ -6001,6 +6095,7 @@
     {
       "id": "llm|gemini|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
@@ -6012,6 +6107,7 @@
     {
       "id": "llm|gemini|gemini|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
@@ -6023,6 +6119,7 @@
     {
       "id": "llm|gemini|gemini|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
@@ -6034,6 +6131,7 @@
     {
       "id": "llm|gemini|gemini|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
@@ -6045,17 +6143,20 @@
     {
       "id": "llm|gemini|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "gemini",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -6067,6 +6168,7 @@
     {
       "id": "llm|gemini|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -6078,17 +6180,20 @@
     {
       "id": "llm|gemini|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "openai",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|gemini|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -6100,6 +6205,7 @@
     {
       "id": "llm|gemini|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -6111,17 +6217,20 @@
     {
       "id": "llm|gemini|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "gemini",
       "egress_dialect": "responses",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -6133,6 +6242,7 @@
     {
       "id": "llm|openai|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -6144,17 +6254,20 @@
     {
       "id": "llm|openai|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -6166,6 +6279,7 @@
     {
       "id": "llm|openai|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -6177,17 +6291,20 @@
     {
       "id": "llm|openai|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -6199,6 +6316,7 @@
     {
       "id": "llm|openai|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -6210,17 +6328,20 @@
     {
       "id": "llm|openai|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "cohere",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "gemini",
       "cross_protocol": true,
@@ -6232,17 +6353,20 @@
     {
       "id": "llm|openai|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "gemini",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|openai|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6254,6 +6378,7 @@
     {
       "id": "llm|openai|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6265,6 +6390,7 @@
     {
       "id": "llm|openai|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6276,6 +6402,7 @@
     {
       "id": "llm|openai|openai|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6287,6 +6414,7 @@
     {
       "id": "llm|openai|openai|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6298,6 +6426,7 @@
     {
       "id": "llm|openai|openai|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
@@ -6309,17 +6438,20 @@
     {
       "id": "llm|openai|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "openai",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|openai|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -6331,6 +6463,7 @@
     {
       "id": "llm|openai|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "responses",
       "cross_protocol": true,
@@ -6342,17 +6475,20 @@
     {
       "id": "llm|openai|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "openai",
       "egress_dialect": "responses",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|anthropic|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -6364,6 +6500,7 @@
     {
       "id": "llm|responses|anthropic|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
@@ -6375,17 +6512,20 @@
     {
       "id": "llm|responses|anthropic|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "anthropic",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|bedrock|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -6397,6 +6537,7 @@
     {
       "id": "llm|responses|bedrock|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
@@ -6408,17 +6549,20 @@
     {
       "id": "llm|responses|bedrock|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "bedrock",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|cohere|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -6430,6 +6574,7 @@
     {
       "id": "llm|responses|cohere|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "cohere",
       "cross_protocol": true,
@@ -6441,17 +6586,20 @@
     {
       "id": "llm|responses|cohere|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "cohere",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|gemini|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "gemini",
       "cross_protocol": true,
@@ -6463,17 +6611,20 @@
     {
       "id": "llm|responses|gemini|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "gemini",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|openai|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -6485,6 +6636,7 @@
     {
       "id": "llm|responses|openai|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "openai",
       "cross_protocol": true,
@@ -6496,17 +6648,20 @@
     {
       "id": "llm|responses|openai|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "openai",
       "cross_protocol": true,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "llm|responses|responses|request|malformed",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6518,6 +6673,7 @@
     {
       "id": "llm|responses|responses|request|ok",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6529,6 +6685,7 @@
     {
       "id": "llm|responses|responses|request|ok_stream",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6540,6 +6697,7 @@
     {
       "id": "llm|responses|responses|request|out_of_scope",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6551,6 +6709,7 @@
     {
       "id": "llm|responses|responses|request|over_budget",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6562,6 +6721,7 @@
     {
       "id": "llm|responses|responses|request|unauthenticated",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
@@ -6573,13 +6733,15 @@
     {
       "id": "llm|responses|responses|request|upstream_down",
       "plane": "llm",
+      "family": "llm.wire",
       "ingress_dialect": "responses",
       "egress_dialect": "responses",
       "cross_protocol": false,
       "transport": "http",
       "op": "chat",
       "outcome": "upstream_down",
-      "why": "upstream refuses/times out -> Route failover / native upstream error"
+      "why": "upstream refuses/times out -> Route failover / native upstream error",
+      "fresh": true
     },
     {
       "id": "mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed",

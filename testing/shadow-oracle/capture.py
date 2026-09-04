@@ -101,6 +101,11 @@ def main() -> int:
         body = "base64:" + base64.b64encode(raw).decode()
 
     ub, ua = load_json(before, "usage.json"), load_json(after, "usage.json")
+    # `as_of` is the snapshot's own wall clock: its delta is 0 or 1 depending on the second boundary,
+    # never a fact about the request. Drop it before the delta so its presence cannot flap.
+    for snap in (ub, ua):
+        if isinstance(snap, dict):
+            snap.pop("as_of", None)
     usage = num_delta(ub, ua) if ua is not None else {"unavailable": True}
     ab, aa = load_json(before, "audit.json"), load_json(after, "audit.json")
 

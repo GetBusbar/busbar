@@ -12,8 +12,8 @@
 #           request whose ingress dialect != the target model's provider dialect is a CROSS-PROTOCOL
 #           cell (the LLM plane's defining feature) and the diagonal is the codec's own round trip;
 #         - governance ON (keys auth chain), admin API on a token, prometheus export for /metrics;
-#         - two budget groups: `oracle` (loose) and `broke` (a 1-cent/day budget) so an over-budget
-#           refusal is a REAL 429 at Admit, not a stub.
+#         - two budget groups: `oracle` (loose) and `broke` (requests: 1/day + a 1-cent/day budget) so
+#           after the recorder's one PRIMING request the over-budget refusal is a REAL 429 at Admit.
 #   oracle_mint_keys <admin_port>
 #       mints the three principals every outcome class needs and exports:
 #         ORACLE_TOKEN_OK / ORACLE_KEY_OK         normal key, group `oracle`
@@ -75,6 +75,7 @@ groups:
       - { budget: 1000000, per: day }
   broke:
     limits:
+      - { requests: 1, per: day }
       - { budget: 1, per: day }
 providers:
 EOF

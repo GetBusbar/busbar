@@ -28,6 +28,7 @@ Usage: mock-upstream.py <port> [marker]
 import json
 import os
 import sys
+from urllib.parse import unquote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 MARKER = "oracle-marker"
@@ -142,6 +143,12 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        # Readiness only (fleet-fixtures wait_for_http probes with GET /). Every dialect is POST.
+        if self.path.split("?", 1)[0] == "/":
+            return self._send(200, j({"ok": True, "mock": "oracle-upstream"}))
+        return self._send(404, j({"error": f"oracle mock: no GET route {self.path}"}))
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
@@ -165,7 +172,8 @@ class H(BaseHTTPRequestHandler):
         if ctl in ("down", "slow"):
             return self._send(503, j({"error": {"type": "upstream_unavailable", "message": "oracle: upstream down"}}))
 
-        p = self.path.split("?", 1)[0]
+        # busbar percent-encodes the gemini `:generateContent` colon on egress; decode before matching.
+        p = unquote(self.path.split("?", 1)[0])
         want_stream = bool(req.get("stream"))
         if p == "/v1/messages":
             body = anthropic_stream(model, marker) if want_stream else anthropic(model, marker)
