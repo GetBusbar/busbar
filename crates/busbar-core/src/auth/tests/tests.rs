@@ -2217,8 +2217,8 @@ fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     let (auth, headers) =
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
     let req = bedrock_request(path, &auth, &headers);
-    let key =
-        verify_sigv4_ingress_credential(&gov, &req, b"").expect("a correctly-signed request must verify");
+    let key = verify_sigv4_ingress_credential(&gov, &req, b"")
+        .expect("a correctly-signed request must verify");
     // Behavioral: the function resolved the SPECIFIC owning key (not just "some enabled key").
     // Tying to the key's identity (name) is a stronger statement than `key.enabled`, which merely
     // restates an input property. The owning key here is the one `gov_with_aws_key` created.

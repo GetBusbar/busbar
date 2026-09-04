@@ -169,7 +169,12 @@ fn ungated_ws_accept_serve_wrappers_have_no_production_caller() {
         };
         for (lineno, line) in src.lines().enumerate() {
             if has_ungated_ws_wrapper_call(line) {
-                offenders.push(format!("{}:{}: {}", path.display(), lineno + 1, line.trim()));
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    lineno + 1,
+                    line.trim()
+                ));
             }
         }
     }

@@ -26,12 +26,7 @@ use std::path::{Path, PathBuf};
 
 /// Every plane that performs billable work and therefore MUST reach the core Meter seam. Keyed by
 /// the plane's crate directory name under `crates/`.
-const BILLING_PLANE_CRATES: &[&str] = &[
-    "busbar-llm",
-    "busbar-mcp",
-    "busbar-a2a",
-    "busbar-voice",
-];
+const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
 
 /// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
 /// counts as reaching the one billing path.
@@ -68,9 +63,8 @@ fn production_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
             production_rs_files(&path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             let p = path.to_string_lossy().replace('\\', "/");
-            let is_test = p.ends_with("_tests.rs")
-                || p.ends_with("/tests.rs")
-                || p.contains("/test_support");
+            let is_test =
+                p.ends_with("_tests.rs") || p.ends_with("/tests.rs") || p.contains("/test_support");
             if !is_test {
                 out.push(path);
             }
