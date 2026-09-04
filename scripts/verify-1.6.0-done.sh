@@ -26,6 +26,10 @@
 #   parity           testing/shadow-oracle: this build vs the PUBLISHED 1.5.5 binary, 0 divergences
 #                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
 #                    failover, plugins); golden gaps are named, never passes.
+#   design           scripts/design-bindings.sh --check --strict: every ARCHITECTURE.md Appendix B
+#                    binding is mapped to a check that still exists in the tree (test, oracle cell,
+#                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
+#                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -220,6 +224,19 @@ if [ -x testing/shadow-oracle/replay.sh ]; then
   step "replay: candidate vs golden" bash testing/shadow-oracle/replay.sh --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
 else
   absent_step "shadow oracle" "testing/shadow-oracle/replay.sh"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "DESIGN — every ARCHITECTURE.md Appendix B binding is mapped to a check that exists"
+# The design bindings ledger (qa/design-bindings.json) maps each parity binding to the tests, oracle
+# cells, lints and gates that prove it. Plain --check reports gaps; --strict owes EVERY binding to the
+# verdict so an unmapped binding is red. DONE means the design is fully bound, not partly.
+if [ -f scripts/design-bindings.sh ]; then
+  step "design-bindings --selftest"        bash scripts/design-bindings.sh --selftest
+  step "design-bindings --check --strict"  bash scripts/design-bindings.sh --check --strict
+else
+  absent_step "design bindings gate" "scripts/design-bindings.sh"
 fi
 end_group
 

@@ -112,3 +112,19 @@ UTC host** — which every CI runner is. `tz-is-load-bearing.sh` re-runs the con
 requires the pinned baseline to break, so that setting cannot quietly become decoration.
 
 Licences of everything fetched at run time: `a2a-tck/LICENSING.md`.
+
+## Design bindings: is the build compliant with the design?
+
+`docs/design/ARCHITECTURE.md` Appendix B is the one part of the design written as testable rules
+(the parity bindings, PB-0 and one table row per binding). `qa/design-bindings.json` maps each
+binding to the checks that prove it today, and `scripts/design-bindings.sh --check` proves those
+checks still exist (one ledger row per binding through `fleet-fixtures/lib.sh`, decided by
+`fleet-fixtures/verdict.sh`; zero rows is red). `--check --strict` makes an unmapped binding red and
+is what `scripts/verify-1.6.0-done.sh` runs. `--write` regenerates the JSON and
+`qa/DESIGN-BINDINGS.md`, keeping hand-added checks.
+
+Existence only: the gate never executes a referenced test. A slower tier can run the mapped kinds
+later: `test` refs with `cargo test`, `oracle-cell` / `oracle-family` refs through
+`shadow-oracle/record.sh` + `replay.sh` against the pinned 1.5.5 golden, `gate` / `lint` refs by
+running the script (its `--selftest` first). `qa/DESIGN-BINDINGS.md` lists the unmapped bindings
+with the check that would prove each one, and the bindings a green test currently contradicts.
