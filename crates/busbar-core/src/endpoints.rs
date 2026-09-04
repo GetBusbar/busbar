@@ -106,6 +106,10 @@ pub(crate) async fn stats(
                 "model": snap.model,
                 "provider": snap.provider,
                 "max_concurrent": snap.max_concurrent,
+                // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
+                // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
+                // lane reports the semaphore's max permit count, a bounded lane its configured cap.
+                "limit": snap.max_concurrent,
                 "inflight": snap.inflight,
                 "free_slots": snap.free_slots,
                 // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
