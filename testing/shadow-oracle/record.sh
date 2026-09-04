@@ -221,12 +221,6 @@ while IFS= read -r cell; do
   [ -z "$FILTER" ] || [[ "$id" =~ $FILTER ]] || continue
   outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
-  # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
-  variant="$(jq -r '.config_variant // empty' <<<"$cell")"
-  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
-    stop_busbar
-    boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
-  fi
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
   driver="$(jq -r '.driver // "llm"' <<<"$cell")"
   if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
@@ -254,6 +248,12 @@ while IFS= read -r cell; do
     record "$id" PASS "script ${sname}: status ${st}" ""; n=$((n + 1)); continue
   fi
 
+  # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
+  variant="$(jq -r '.config_variant // empty' <<<"$cell")"
+  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
+    stop_busbar
+    boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
+  fi
   if [ "$driver" = http ]; then
     # An explicit request: {method, path, headers, body, auth: ok|broke|noscope|admin|none, listener,
     # pre: [requests run UNRECORDED first, same boot], repeat: N (record the LAST response)}.
