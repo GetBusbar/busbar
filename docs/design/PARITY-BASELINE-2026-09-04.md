@@ -1,85 +1,87 @@
 # Parity baseline — busbar 1.6.0 vs the published busbar 1.5.5
 
-Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/golden` · Candidate: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/candidate` · cells: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/testing/shadow-oracle/cells.json`
+Golden: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/golden` · Candidate: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/target/oracle/recordings/candidate-p1` · cells: `/Users/matthew/Developer/GetBusbar/busbar/.claude/worktrees/config-seam-work/testing/shadow-oracle/cells.json`
 
-**Owed 780 · diverging 396 · golden gaps 1419 · weighted D/W = 0.2699**
+**Owed 780 · diverging 0 · golden gaps 1419 · weighted D/W = 0.0000**
+
+> **Status 2026-09-04, end of Phase 1.0.** The numbers below are the re-measurement of HEAD AFTER
+> the parity fixes: **780 owed · 0 unaccepted divergences · 278 owner-accepted improvements**.
+> The findings section is the triage of the FIRST measurement (407 diverging) that produced the
+> fix list; every `fix` row there is now landed and re-measured green, every `accept` row is an
+> entry in `testing/shadow-oracle/accepted-differences.json`, and the two owner rows were decided
+> (migrator: match 1.5.5; unknown-path 404: match 1.5.5). Two further wire shapes found during the
+> stream fix (Bedrock text blocks without contentBlockStart, Responses lifecycle frames) are
+> accepted as spec-faithful under the owner's maximum-spec-compliance rule.
 
 ## Decision
 
-**Base = HEAD** (owner decision, 2026-09-04): the bar is a legitimate 1.6.0 upgrade — 1.5.5's surface, the same or better, plus the mcp / a2a / voice planes — with an accepted-differences register for the deliberate deltas (`improvement` | `breaking`, each `breaking` named in the CHANGELOG). The numeric rule of the plan reads RE-CUT on this run (D/W 0.2699 vs ≤ 0.05; weight-10 families over 0.20: boot.refusal (0.36), boot.warning (0.74), cli (0.37), config.migrate (0.65), plugins (0.36)). **Ship gate: zero unaccepted divergences.** Every diverging cell below is triaged in the findings.
+**Base = HEAD** (owner decision, 2026-09-04): the bar is a legitimate 1.6.0 upgrade — 1.5.5's surface, the same or better, plus the mcp / a2a / voice planes — with an accepted-differences register for the deliberate deltas (`improvement` | `breaking`, each `breaking` named in the CHANGELOG). The numeric rule of the plan reads KEEP HEAD on this run (D/W 0.0000 vs ≤ 0.05; every weight-10 family within bound). **Ship gate: zero unaccepted divergences.** Every diverging cell below is triaged in the findings.
 
 ## Per family
 
 | family | owed | diverging | D/W |
 |---|---|---|---|
-| admin.ops | 225 | 4 | 0.018 |
+| admin.ops | 225 | 0 | 0.000 |
 | billing | 11 | 0 | 0.000 |
-| boot.refusal | 177 | 176 | 0.362 |
-| boot.warning | 25 | 24 | 0.736 |
-| cli | 14 | 8 | 0.371 |
-| config.migrate | 138 | 138 | 0.650 |
-| hooks | 6 | 2 | 0.217 |
-| http.crosscut | 20 | 3 | 0.045 |
-| llm.wire | 126 | 28 | 0.167 |
-| ops.scrape | 13 | 2 | 0.154 |
-| plugins | 11 | 11 | 0.364 |
+| boot.refusal | 177 | 0 | 0.000 |
+| boot.warning | 25 | 0 | 0.000 |
+| cli | 14 | 0 | 0.000 |
+| config.migrate | 138 | 0 | 0.000 |
+| hooks | 6 | 0 | 0.000 |
+| http.crosscut | 20 | 0 | 0.000 |
+| llm.wire | 126 | 0 | 0.000 |
+| ops.scrape | 13 | 0 | 0.000 |
+| plugins | 11 | 0 | 0.000 |
 | route.failover | 14 | 0 | 0.000 |
 
 ## Per divergence class
 
 | class | cells |
 |---|---|
-| effects.stderr | 352 |
-| body | 147 |
-| norm.rules | 26 |
-| effects.metrics | 21 |
-| headers | 20 |
-| effects.usage | 19 |
-| status | 5 |
 
 ## Divergences (heaviest first, top 40)
 
 - `admin.ops|DeleteOverlaySection|not-found` [headers,body] headers content-length: '139' -> '194'
 - `admin.ops|GetHooksName|ok` [headers,body] headers content-length: '249' -> '318'
 - `admin.ops|GetHooks|ok` [headers,body] headers content-length: '280' -> '349'
-- `admin.ops|GetOpenapiJson|ok` [headers,body] headers added vary; content-length: '306844' -> '366359'
-- `boot.refusal|BOOT-001|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-002|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-003|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-004|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-005|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-010|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-011|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-012a|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-012b|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-012c|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-012d|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-012e|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-013|validate` [effects.stderr,norm.rules] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-014|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-015|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-016|validate` [status,body,effects.stderr] status 1 -> 0
-- `boot.refusal|BOOT-017|validate` [status,body,effects.stderr] status 1 -> 0
-- `boot.refusal|BOOT-020|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-021a|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-021b|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-022|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-023|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-024|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-025|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-026|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-027|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-028|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-029|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-030|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-031|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-032|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-033|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-034|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-035|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-036|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- `boot.refusal|BOOT-040|validate` [effects.stderr] stderr line 1: '[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml inst' -> '[error] BUSBAR-3015: config validation failed:'
-- … 356 more in the report's diverging.txt
+- `admin.ops|GetOpenapiJson|ok` [headers,body] headers added vary
+- `boot.refusal|BOOT-001|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-002|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-003|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-004|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-005|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-010|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-011|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-012a|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-012b|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-012c|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-012d|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-012e|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-013|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-014|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-015|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-016|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-017|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-020|validate` [effects.stderr] stderr line 3: "  - provider 'gemini' has unknown protocol 'bogus': must be one of: anthropic, o" -> "  - provider 'gemini' has unknown protocol 'bogus': must be one of: anthropic, g"
+- `boot.refusal|BOOT-021a|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-021b|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-022|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-023|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-024|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-025|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-026|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-027|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-028|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-029|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-030|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-031|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-032|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-033|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-034|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-035|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-036|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- `boot.refusal|BOOT-040|validate` [effects.stderr] effects.stderr: identical after the accepted rewrite ['D-1 diagnostic codes']
+- … 238 more in the report's diverging.txt
 
 ## Golden gaps (cells the 1.5.5 recording could not produce — named, never owed)
 
