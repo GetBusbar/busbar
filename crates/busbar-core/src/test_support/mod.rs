@@ -911,6 +911,16 @@ impl Default for TestApp {
 #[allow(dead_code)]
 impl TestApp {
     pub fn new() -> Self {
+        // THE TEST-SIDE BOOT BINDING. In production the composition root (`busbar`'s `main`) installs
+        // the core-backed hostless-egress driver once, before any plane dispatches. A plane's own test
+        // binary has no `main`, and a plane names no core type, so the fixture that stands in for the
+        // composition root does the same install here — idempotent (`OnceLock`, the first driver
+        // wins), and gated on the neutral egress-seam capability the driver itself lives behind, so a
+        // build with no plane that drives egress installs nothing.
+        #[cfg(feature = "egress-seam")]
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &crate::egress::seam::CoreHostlessEgress,
+        );
         Self {
             mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,

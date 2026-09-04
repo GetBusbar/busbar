@@ -18,10 +18,10 @@
 //! one, so a resource server's whole job stays a resource server's job — verify, never mint.
 //!
 //! busbar the PRODUCT does have an authorization server, and it is not a plugin surface and not
-//! deferred: [`busbar_core::oauth_as`] is a first-class in-core plane, off unless the `oauth_as:` block is
+//! deferred: core's `oauth_as` module is a first-class in-core plane, off unless the `oauth_as:` block is
 //! configured, serving all three of the `2026-07-28` registration mechanisms and issuing RFC 9068
 //! `at+jwt` access tokens whose `aud` is one of busbar's own protected resources
-//! ([`busbar_core::oauth_as::plane`], routes in [`busbar_core::oauth_as::routes`]). It exists because an
+//! (core's `oauth_as::plane`, routes in its `oauth_as::routes`). It exists because an
 //! enterprise identity team will not turn on RFC 7591 for Codex or Claude.ai, so "point at your IdP"
 //! is not an answer for the clients people actually run. The two planes compose rather than
 //! overlap: `oauth_as:` mints, `mcp:` verifies, and this module's audience check is the same check
@@ -200,23 +200,21 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 }
 
 /// THE MCP RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
-/// seam ([`busbar_core::state::App::plane_slot`]) and downcast back to [`McpResource`] HERE, inside the
-/// plane — so core OUTSIDE this module reaches the resource only as an opaque `Arc<dyn Any>` slot and
-/// names no `crate::mcp` type. `None` exactly when `mcp:` is not configured this generation (the
-/// plane contributed no slot — the same absence the deleted `App::mcp: None` used to encode). The
-/// downcast never fails: the mcp slot is always an `McpResource` (`PLANE_DECL::build`).
+/// seam ([`busbar_substrate::plane_host::PlaneSlots::plane_slot`]) and downcast back to
+/// [`McpResource`] HERE, inside the plane — so core OUTSIDE this module reaches the resource only as
+/// an opaque `Arc<dyn Any>` slot and names no `crate::mcp` type. `None` exactly when `mcp:` is not
+/// configured this generation (the plane contributed no slot — the same absence the deleted
+/// `App::mcp: None` used to encode). The downcast never fails: the mcp slot is always an
+/// `McpResource` (`PLANE_DECL::build`).
 ///
-/// `&App`-typed and named `busbar_core::state::App`, so it compiles ONLY where busbar-core is in the
-/// closure and reachable: the dual-compile into busbar-core's OWN test binary (`feature = "test-support"`
-/// under `test`, where its test fixtures call it) and a standalone `test-support` build (which pulls
-/// busbar-core as an optional dep). The default standalone build — where busbar-core is not a
-/// dependency at all — compiles it out entirely; production reaches the resource through the neutral
-/// `resource_of` twin below.
+/// Takes `&impl PlaneSlots` — the neutral slot-holder seam core implements for its engine snapshot —
+/// so this plane names no concrete snapshot type. A snapshot held behind an `Arc`, a load guard or a
+/// plain borrow satisfies the bound too (the substrate forwards `PlaneSlots` through any pointer to a
+/// slot holder), which is how a test's `&app` reaches here unchanged.
 ///
 /// It, and its `runtime` sibling, live in the [`test_app_reads`] module: both are TEST-SUPPORT reads
-/// off a concrete `&App` (production uses the neutral `resource_of` / `runtime_slots` twins), and the
-/// `&App` type is the plane's OWN test dependency, so the backwards `busbar_core::state::App` name
-/// stays inside a test-gated module and out of every shipped build.
+/// off a whole snapshot (production uses the `resource_of` / `runtime_slots` twins, which read off the
+/// bound host), so they are gated to the `test-support` surface and out of every shipped build.
 #[cfg(feature = "test-support")]
 pub use test_app_reads::resource;
 // `runtime` is read only by the plane's own tests, so a `test-support` lib build (which links none)
@@ -225,25 +223,26 @@ pub use test_app_reads::resource;
 #[cfg(feature = "test-support")]
 pub(crate) use test_app_reads::runtime;
 
-/// TEST-SUPPORT typed reads off a concrete `&busbar_core::state::App` — the `&App`-typed twins of the
-/// neutral `resource_of` / `runtime_slots` seams, kept here for the plane's own test fixtures (and the
-/// dual-compile into core's test binary). Gated on `test-support` so `busbar_core` is nameable, and a
-/// module so the backwards name is confined to test scope.
+/// TEST-SUPPORT typed reads off a whole snapshot (`&impl PlaneSlots`) — the snapshot-typed twins of
+/// the host-based `resource_of` / `runtime_slots` seams, kept here for the plane's own test fixtures
+/// and core's plane-integration tests. Gated on `test-support` because no shipped path reads a whole
+/// snapshot; the fixtures do.
 #[cfg_attr(not(test), allow(dead_code))]
 #[cfg(feature = "test-support")]
 mod test_app_reads {
     use super::{McpResource, McpRuntime, PLANE_DECL};
+    use busbar_substrate::plane_host::PlaneSlots;
 
-    /// See the module-level note: the `&App`-typed read of the config-conditional dispatch slot.
-    pub fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
+    /// See the module-level note: the snapshot-typed read of the config-conditional dispatch slot.
+    pub fn resource<S: PlaneSlots + ?Sized>(app: &S) -> Option<&McpResource> {
         app.plane_slot(PLANE_DECL.key).map(|slot| {
             slot.downcast_ref::<McpResource>()
                 .expect("the mcp plane's dispatch slot is an McpResource")
         })
     }
 
-    /// See the module-level note: the `&App`-typed read of the always-present runtime slot.
-    pub fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
+    /// See the module-level note: the snapshot-typed read of the always-present runtime slot.
+    pub fn runtime<S: PlaneSlots + ?Sized>(app: &S) -> &McpRuntime {
         app.plane_slot(busbar_substrate::plane_host::runtime_slot_key(
             PLANE_DECL.key,
         ))
@@ -269,7 +268,7 @@ pub(crate) fn resource_of(
 
 /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the objects the plane carries for one
 /// config generation, bundled into ONE mcp-owned struct so core's `App` names no `crate::mcp` type for
-/// any of them. It is carried in [`busbar_core::state::App::plane_slots`] behind `Arc<dyn Any>` under
+/// any of them. It is carried in the engine snapshot's type-erased `plane_slots` map behind `Arc<dyn Any>` under
 /// the always-present companion key [`runtime_slot_key`](busbar_substrate::plane_host::runtime_slot_key), and [`runtime`] downcasts
 /// it back HERE, inside the plane.
 ///
@@ -341,7 +340,7 @@ impl McpRuntime {
 /// THE NEUTRAL-SLOT twin of [`runtime`] — the plane's runtime object read through the
 /// [`busbar_substrate::plane_host::PlaneSlots`] seam rather than off `&App`, so the core-owned
 /// `PlaneDecl` callbacks the MCP plane fills (`on_swap`, `registry_contains`, `retain_verify_gates`)
-/// name no `busbar_core::state::App`. Same borrowed `&McpRuntime` and never-failing `.expect`s as
+/// name no concrete engine-snapshot type. Same borrowed `&McpRuntime` and never-failing `.expect`s as
 /// [`runtime`]; the slot key is the always-present runtime companion in the neutral substrate.
 pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> &McpRuntime {
     slots
@@ -394,7 +393,7 @@ pub(crate) fn runtime_live(
 /// `prior` is the prior generation's snapshot, read through the neutral
 /// [`busbar_substrate::plane_host::PlaneSlots`] seam (for the carry-over rules in
 /// [`McpRuntime::build`]) so this function, not `appbuild`, owns the downcast and the signature names
-/// no `busbar_core::state::App`.
+/// no concrete engine-snapshot type.
 pub(crate) fn build_runtime(
     tool_defs: &config::ToolsCfg,
     prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
@@ -1148,7 +1147,7 @@ fn split_absolute(uri: &str) -> Option<(&str, &str)> {
 }
 
 /// `/mcp/` -> `/mcp`, `` -> ``, `/` -> ``. The same normalisation
-/// [`busbar_core::plane::PlaneDispatch::mount`] applies, so the derived mount and the dispatch mount are
+/// core's plane dispatch applies to its mount path, so the derived mount and the dispatch mount are
 /// the same string by construction rather than by two functions agreeing.
 fn normalise_path(path: &str) -> String {
     let trimmed = path.trim_matches('/');

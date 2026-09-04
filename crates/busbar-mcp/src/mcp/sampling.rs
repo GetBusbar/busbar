@@ -38,7 +38,7 @@
 //! caller and every dispatch at once, because "how much may this server induce us to spend" is a
 //! statement about the server and none of the other three can make it. It is spent BEFORE the
 //! model leg is entered, so a refused completion costs nothing, and it is carried across config
-//! applies on [`busbar_core::state::App`] like the spent-approval ledger, because spend that happened is
+//! applies on the engine snapshot like the spent-approval ledger, because spend that happened is
 //! evidence, not intent, and an apply must not refill it.
 
 use std::collections::HashMap;

@@ -11,7 +11,7 @@
 //! `busbar-core` names this crate in production (`git grep busbar_mcp crates/busbar-core/src` is
 //! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp` and hands
 //! [`crate::PROTO_DECL`] (this module's [`DECL`]) to
-//! `busbar_core::proto::registry::install_protocols` at boot. Delete the dependency edge and busbar
+//! the substrate's protocol registry (`busbar_substrate::proto::install_protocols`) at boot. Delete the dependency edge and busbar
 //! still builds, boots, refuses `protocol: mcp` config with the unknown-protocol refusal, and
 //! serves the remaining dialects — that build is a gate, not a thought experiment.
 //!
@@ -44,7 +44,8 @@
 //! builds compile these same sources back in as `handlers::mcp` (via `extern crate self as
 //! busbar_core`), so the pre-extraction fixture surface keeps proving what it always proved without
 //! core's PRODUCTION build knowing this dialect exists. That is why every core reference in these
-//! files is spelled `busbar_core::` and every self reference is relative.
+//! files is spelled through the neutral crates (`busbar_substrate::` / `busbar_api::`) and every self
+//! reference is relative.
 
 pub mod handler;
 mod invoke;

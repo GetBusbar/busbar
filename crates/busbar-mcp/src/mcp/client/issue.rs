@@ -20,7 +20,7 @@
 //! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_substrate::egress_auth::gate` |
 //! | outbound credential, RFC 8693/8707 | the same planner, and NEVER the caller's busbar key |
 //! | the supervision breaker | inside the wire — a quarantined child refuses every verb, not just calls |
-//! | the durable per-call hash chain | `busbar_core::calllog::emit`, at every terminal |
+//! | the durable per-call hash chain | the host's `call_log_emit_hostless` (core's call-log chain), at every terminal |
 //! | JSON-RPC correlation | `super::jsonrpc::parse_response` with the id this call sent |
 //!
 //! ## The gate runs BEFORE any I/O, and the ordering is load-bearing
@@ -32,7 +32,7 @@
 //!
 //! ## WHAT IS RECORDED, and the one schema decision this file takes
 //!
-//! `busbar_core::calllog`'s header states that `prompts/get` and `resources/read` were NOT written to
+//! Core's call-log header states that `prompts/get` and `resources/read` were NOT written to
 //! the chain because `McpCallRecord.tool` is a TOOL ROUTING KEY and widening it to every capability
 //! is a schema decision rather than a wiring one. That decision is taken here, explicitly, and in the
 //! narrow direction: the record's `tool` field carries the METHOD NAME prefixed with `verb:` — for
@@ -100,7 +100,7 @@ pub(crate) async fn issue(
     // across its `.await`s, but the `EngineHost` seam is `Send + Sync` and safe to carry: it emits
     // through the HOSTLESS `call_log_emit_hostless` method (the durable-cleave twin the seam keeps for
     // exactly this site, which mints no `HostCtx`), so the leg reaches the chain without naming
-    // `busbar_core::calllog`.
+    // core's call-log module.
     let record = |outcome: &'static str, reason: String| {
         host.call_log_emit_hostless(
             &principal,

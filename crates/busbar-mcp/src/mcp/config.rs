@@ -90,7 +90,7 @@ pub(crate) const NAMESPACE_SEP: &str = "_";
 ///
 /// ## WHY THE `Mcp` PREFIX, and why it is on THIS one and not on A2A's
 ///
-/// [`busbar_core::a2a::config::PinMechanism`] is the same concept for the other plane and used to share
+/// The A2A plane's `PinMechanism` (`busbar_a2a::a2a::config`) is the same concept for the other plane and used to share
 /// this bare name. That was survivable only while the config-grammar fingerprint
 /// (`scripts/config-schema.py`) did not track this file. Its snapshot is a FLAT map keyed by the
 /// bare Rust ident with no module path, so two `PinMechanism`s occupy one key: the second file read
@@ -1171,14 +1171,14 @@ impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
 /// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is about
 /// a VALUE that is well-typed and still wrong. Boot calls it from the `Deserialize` above and the
 /// admin write path calls it from
-/// [`busbar_core::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
+/// core's named-map section parser (through this plane's `config_validate` declaration hook), so the two paths cannot drift into
 /// different grammars — the ONE GRAMMAR, TWO PATHS rule.
 /// THE OPERATOR'S MAX VERIFICATION STALENESS for one registration, lifted into the plane-neutral
 /// [`busbar_substrate::trust::reverify::Policy`] the verify-on-call gate consumes.
 ///
 /// Config in, policy out, no clock and no I/O — so the bound an operator wrote and the bound the
 /// decision uses are provably the same value rather than two parallel readings of it. Deliberately
-/// the same shape as [`busbar_core::a2a::config::policy_for`], because it feeds the same `due`.
+/// the same shape as the A2A plane's `policy_for` (`busbar_a2a::a2a::config`), because it feeds the same `due`.
 ///
 /// `recovery_backoff_ms` is **zero**, and that is a stated difference from the A2A plane rather than
 /// an oversight. The backoff exists to disbelieve a CLEAN answer for a while after a drift, and
@@ -1672,7 +1672,8 @@ impl PublishedName {
 /// silently moves an authorization decision. A boot refusal an operator reads is strictly better
 /// than a dispatch an hour later that reaches the wrong upstream.
 ///
-/// Called from [`busbar_core::config::resolve`], which is the ONE point every path converges on: boot,
+/// Called from core's config resolve, through this section's `validate_registry` (the substrate's
+/// plane-section seam) — the ONE point every path converges on: boot,
 /// `busbar --validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all
 /// run it over the EFFECTIVE registry (file base + applied overlay). Deliberately NOT called from
 /// `ToolsCfg`'s `Deserialize`: that sees only the file, so a server added through the API would

@@ -36,6 +36,9 @@ pub mod engine_view;
 // trust_anchor,spki}` paths.
 pub mod identity;
 pub mod scope;
+// `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
+// readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.
+pub mod slots_through;
 pub mod spki;
 pub mod trust_anchor;
 
