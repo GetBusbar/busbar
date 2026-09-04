@@ -1,2104 +1,2104 @@
 {
-  "_comment": [
-    "Shadow-oracle request material for busbar 1.5.5's admin API: one entry per operationId of fixtures/openapi-1.5.5.json (66 operations / 49 paths).",
-    "Sources: openapi-1.5.5.json (schemas, x-busbar-required-scope, If-Match params), docs/design/inventory/1.5.5-routes-admin.md (ADM-001..066), docs/design/inventory/1.5.5-config.md section 2 (config shapes), testing/shadow-oracle/oracle-config.sh (what exists at record time).",
-    "Auth: every request carries `Authorization: Bearer <ORACLE_ADMIN_TOKEN>` (the admin-tokens provider; x-admin-token is the equivalent header). Bodies are sent with Content-Type: application/json where `body` is non-null.",
-    "Placeholders substituted by the recorder: {KEY_OK} {KEY_BROKE} {KEY_NOSCOPE} (minted key ids), {TMP} (a writable temp dir), {WORK} (the oracle work dir holding signing.key), {LISTEN_ADDR} / {ADMIN_LISTEN_ADDR} (the oracle's `127.0.0.1:<port>` listen strings), {MOCK_URL} (`http://127.0.0.1:<mock_port>`). {GROUP} {HOOK} {EXPORT} {IDP} {PLUGIN_FILE} {SECTION} {V} are resolved to concrete names here (oracle-added / none / oracle-log,metrics / oracle-idp2,admin-tokens / none / root / 0).",
-    "Epochs: every op with mutating:false is recorded first (any order); ops in `order` run in the LAST epoch in exactly that sequence (create -> update -> delete; settings write -> overlay reset; key rotate/revoke/delete last because they kill the data-plane principals); `restart_epoch` runs alone at the very end and ends the process.",
-    "`ok: null` ops are recorded only through their bad_body / not_found probes: 1.5.5 cannot register a hook without a `kind: hook` plugin (config inventory CFG-220), and the plugin install/inspect/rollback/remove/schema ops need a published signed tarball. These are listed in `needs_fixture`.",
-    "Probes: `bad_body` is sent with the ok path (or the not_found path when ok is null) and expects 400; `not_found` is sent with no body and expects the listed status (upsert PUTs return 200 and CREATE the name; DeleteOverlaySection/limits returns 400 because `limits` is not a 1.5.5 overlay section). `if_match: true` ops are additionally replayed with a stale `If-Match: \"0\"` expecting 409 version_conflict and with `If-Match: garbage` expecting 400. `idempotent: true` ops are replayed with the same Idempotency-Key expecting the identical first response.",
-    "Rate classes: Config-class mutations (/config/*, /admin-auth, /overlay/*, /plugins/reload, /plugins/rollback, /restart, /identity-providers/*, /export/*) share ONE 10-per-minute window per principal, including the If-Match/bad_body probes; the recorder must pace them or it will record 429 rate_limited with Retry-After: 60.",
-    "Volatile response fields to normalise before diffing: audit seq/ts/hash, config version numbers/ETag, usage as_of/window, minted key ids/tokens, info build fields, openapi info.version."
-  ],
-  "stale_if_match": {
-    "header": "If-Match",
-    "stale": "\"0\"",
-    "malformed": "garbage",
-    "stale_expect": [
-      409
+ "_comment": [
+  "Shadow-oracle request material for busbar 1.5.5's admin API: one entry per operationId of fixtures/openapi-1.5.5.json (66 operations / 49 paths).",
+  "Sources: openapi-1.5.5.json (schemas, x-busbar-required-scope, If-Match params), docs/design/inventory/1.5.5-routes-admin.md (ADM-001..066), docs/design/inventory/1.5.5-config.md section 2 (config shapes), testing/shadow-oracle/oracle-config.sh (what exists at record time).",
+  "Auth: every request carries `Authorization: Bearer <ORACLE_ADMIN_TOKEN>` (the admin-tokens provider; x-admin-token is the equivalent header). Bodies are sent with Content-Type: application/json where `body` is non-null.",
+  "Placeholders substituted by the recorder: {KEY_OK} {KEY_BROKE} {KEY_NOSCOPE} (minted key ids), {TMP} (a writable temp dir), {WORK} (the oracle work dir holding signing.key), {LISTEN_ADDR} / {ADMIN_LISTEN_ADDR} (the oracle's `127.0.0.1:<port>` listen strings), {MOCK_URL} (`http://127.0.0.1:<mock_port>`). {GROUP} {HOOK} {EXPORT} {IDP} {PLUGIN_FILE} {SECTION} {V} are resolved to concrete names here (oracle-added / none / oracle-log,metrics / oracle-idp2,admin-tokens / none / root / 0).",
+  "Epochs: every op with mutating:false is recorded first (any order); ops in `order` run in the LAST epoch in exactly that sequence (create -> update -> delete; settings write -> overlay reset; key rotate/revoke/delete last because they kill the data-plane principals); `restart_epoch` runs alone at the very end and ends the process.",
+  "`ok: null` ops are recorded only through their bad_body / not_found probes: 1.5.5 cannot register a hook without a `kind: hook` plugin (config inventory CFG-220), and the plugin install/inspect/rollback/remove/schema ops need a published signed tarball. These are listed in `needs_fixture`.",
+  "Probes: `bad_body` is sent with the ok path (or the not_found path when ok is null) and expects 400; `not_found` is sent with no body and expects the listed status (upsert PUTs return 200 and CREATE the name; DeleteOverlaySection/limits returns 400 because `limits` is not a 1.5.5 overlay section). `if_match: true` ops are additionally replayed with a stale `If-Match: \"0\"` expecting 409 version_conflict and with `If-Match: garbage` expecting 400. `idempotent: true` ops are replayed with the same Idempotency-Key expecting the identical first response.",
+  "Rate classes: Config-class mutations (/config/*, /admin-auth, /overlay/*, /plugins/reload, /plugins/rollback, /restart, /identity-providers/*, /export/*) share ONE 10-per-minute window per principal, including the If-Match/bad_body probes; the recorder must pace them or it will record 429 rate_limited with Retry-After: 60.",
+  "Volatile response fields to normalise before diffing: audit seq/ts/hash, config version numbers/ETag, usage as_of/window, minted key ids/tokens, info build fields, openapi info.version."
+ ],
+ "needs_fixture": [
+  "PostHooks",
+  "DeleteHooksName",
+  "GetHooksName",
+  "PutHooksName",
+  "GetHooksNameHealth",
+  "GetHooksNameSchema",
+  "PatchHooksNameSettings",
+  "GetHooksNameStatus",
+  "PostPlugins",
+  "PostPluginsInspect",
+  "PostPluginsRollback",
+  "DeletePluginsFile",
+  "GetPluginsFileSchema"
+ ],
+ "ops": {
+  "DeleteExportName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
     ],
-    "malformed_expect": [
-      400
-    ]
+    "path": "/api/v1/admin/export/does-not-exist"
+   },
+   "notes": "204 no content; deletes the `oracle-log` instance created by PutExportName earlier in the epoch. Deleting a base-defined (config.yaml) instance such as `metrics` is 409 conflict (Cond::BaseDefined); still-referenced \u21d2 409. Stale If-Match 409 version_conflict.",
+   "ok": {
+    "body": null,
+    "expect": [
+     204
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/export/oracle-log"
+   },
+   "path": "/api/v1/admin/export/{name}",
+   "restart": false,
+   "scope": "full"
   },
-  "order": [
-    "PostKeys",
-    "PatchKeysId",
-    "PostGroups",
-    "PutGroupsName",
-    "PatchGroupsName",
-    "DeleteGroupsName",
-    "PutExportName",
-    "PatchExportNameSettings",
-    "DeleteExportName",
-    "PutIdentityProvidersName",
-    "PatchIdentityProvidersNameSettings",
-    "DeleteIdentityProvidersName",
-    "PutAdminAuth",
-    "PutConfigSettings",
-    "DeleteOverlaySection",
-    "PostConfigApply",
-    "PostConfigRollback",
-    "PostConfigReload",
-    "PostAuthCacheFlush",
-    "PostSigningKeyRotate",
-    "PostPluginsReload",
-    "PostKeysIdRotate",
-    "PostKeysIdRevoke",
-    "DeleteKeysId"
-  ],
-  "restart_epoch": [
-    "PostRestart"
-  ],
-  "needs_fixture": [
-    "PostHooks",
-    "DeleteHooksName",
-    "GetHooksName",
-    "PutHooksName",
-    "GetHooksNameHealth",
-    "GetHooksNameSchema",
-    "PatchHooksNameSettings",
-    "GetHooksNameStatus",
-    "PostPlugins",
-    "PostPluginsInspect",
-    "PostPluginsRollback",
-    "DeletePluginsFile",
-    "GetPluginsFileSchema"
-  ],
-  "ops": {
-    "GetAdminAuth": {
-      "method": "GET",
-      "path": "/api/v1/admin/admin-auth",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 AdminAuthView (the ordered admin chain); ETag carries the config version."
-    },
-    "PutAdminAuth": {
-      "method": "PUT",
-      "path": "/api/v1/admin/admin-auth",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "admin_auth": [
-            "admin-tokens"
-          ]
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "admin_auth": "admin-tokens"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 AdminAuthPutView; body is the oracle's existing chain so nothing changes. Traps: removing the caller's own provider is 400 Cond::LockoutSelf; an unknown module is 400; stale If-Match 409 version_conflict; rate class Config (10/min)."
-    },
-    "GetAudit": {
-      "method": "GET",
-      "path": "/api/v1/admin/audit",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "limit": "10"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 AuditPageView {items,next_cursor}, newest first. A malformed cursor is 400 invalid_request (Cond::MalformedCursor). Body diff is expected to vary by seq/ts/hash; the recorder should normalise those fields."
-    },
-    "GetAuth": {
-      "method": "GET",
-      "path": "/api/v1/admin/auth",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 AuthView (the data-plane auth chain: [keys])."
-    },
-    "PostAuthCacheFlush": {
-      "method": "POST",
-      "path": "/api/v1/admin/auth/cache/flush",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {},
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "module": 123
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 CacheFlushView; `{}` (or no body) flushes every partition. FlushCacheReq is NOT deny_unknown_fields, so only a wrong-typed `module` is 400; an unknown extra key is accepted."
-    },
-    "GetConfig": {
-      "method": "GET",
-      "path": "/api/v1/admin/config",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 EffectiveConfigView (secrets redacted); ETag \"<config_version>\"."
-    },
-    "PostConfigApply": {
-      "method": "POST",
-      "path": "/api/v1/admin/config/apply",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "config": {
-            "listen": "{LISTEN_ADDR}",
-            "admin_listen": "{ADMIN_LISTEN_ADDR}",
-            "identity-providers": {
-              "admin-tokens": {
-                "module": "admin-tokens",
-                "token": {
-                  "env": "BUSBAR_ADMIN_TOKEN"
-                }
-              }
-            },
-            "auth": {
-              "chain": [
-                "keys"
-              ],
-              "signing_key": {
-                "file": "{WORK}/signing.key"
-              },
-              "admin_auth": [
-                "admin-tokens"
-              ]
-            },
-            "export": {
-              "metrics": {
-                "module": "prometheus",
-                "settings": {
-                  "buffer_seconds": 60
-                }
-              }
-            },
-            "groups": {
-              "oracle": {
-                "limits": [
-                  {
-                    "budget": 1000000,
-                    "per": "day"
-                  }
-                ]
-              },
-              "broke": {
-                "limits": [
-                  {
-                    "requests": 1,
-                    "per": "day"
-                  },
-                  {
-                    "budget": 1,
-                    "per": "day"
-                  }
-                ]
-              }
-            },
-            "providers": {
-              "anthropic": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "openai-chat": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "openai-responses": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "gemini": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "bedrock": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "cohere": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              }
-            },
-            "models": {
-              "m-anthropic": {
-                "provider": "anthropic"
-              },
-              "m-openai-chat": {
-                "provider": "openai-chat"
-              },
-              "m-openai-responses": {
-                "provider": "openai-responses"
-              },
-              "m-gemini": {
-                "provider": "gemini"
-              },
-              "m-bedrock": {
-                "provider": "bedrock"
-              },
-              "m-cohere": {
-                "provider": "cohere"
-              }
-            },
-            "pools": {
-              "oracle-unused": {
-                "members": [
-                  {
-                    "model": "m-openai-chat"
-                  }
-                ]
-              }
-            },
-            "limits": {
-              "request_body_max_bytes": 33554432
-            }
-          },
-          "providers": {
-            "anthropic": {
-              "protocol": "anthropic",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-chat": {
-              "protocol": "openai",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-responses": {
-              "protocol": "responses",
-              "base_url": "{MOCK_URL}"
-            },
-            "gemini": {
-              "protocol": "gemini",
-              "base_url": "{MOCK_URL}"
-            },
-            "bedrock": {
-              "protocol": "bedrock",
-              "base_url": "{MOCK_URL}"
-            },
-            "cohere": {
-              "protocol": "cohere",
-              "base_url": "{MOCK_URL}"
-            }
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "providers": {
-            "anthropic": {
-              "protocol": "anthropic",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-chat": {
-              "protocol": "openai",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-responses": {
-              "protocol": "responses",
-              "base_url": "{MOCK_URL}"
-            },
-            "gemini": {
-              "protocol": "gemini",
-              "base_url": "{MOCK_URL}"
-            },
-            "bedrock": {
-              "protocol": "bedrock",
-              "base_url": "{MOCK_URL}"
-            },
-            "cohere": {
-              "protocol": "cohere",
-              "base_url": "{MOCK_URL}"
-            }
-          }
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 ConfigApplyView; body.config is the oracle's own config.yaml deploy block with limits.request_body_max_bytes pinned to the 32 MiB default (a no-op-equivalent change), body.providers is providers.yaml; `config` is required so bad_body omits it. Placeholders {LISTEN_ADDR} {ADMIN_LISTEN_ADDR} {WORK} {MOCK_URL} must be substituted. Stale If-Match 409 version_conflict, malformed If-Match 400, invalid config 400 'nothing changed'. Rate class Config (10/min): budget the whole mutating epoch under that ceiling."
-    },
-    "GetConfigDiff": {
-      "method": "GET",
-      "path": "/api/v1/admin/config/diff",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "from": "0",
-          "to": "0"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigDiffView (hook-surface diff between two retained versions). `from` and `to` are REQUIRED integers (missing \u21d2 400); an unknown version \u21d2 404. Version 0 is the boot snapshot re-seeded at every start."
-    },
-    "PostConfigReload": {
-      "method": "POST",
-      "path": "/api/v1/admin/config/reload",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigReloadView; re-reads the on-disk config.yaml/providers.yaml and swaps. No body. Rate class Config."
-    },
-    "PostConfigRollback": {
-      "method": "POST",
-      "path": "/api/v1/admin/config/rollback",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "version": 0
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "version": "zero"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 ConfigRollbackView; restores version 0's hook surface as a NEW version. No path param, but an unknown `version` in the body is 404 not_found (e.g. {\"version\": 999999}). Stale If-Match 409, malformed If-Match 400."
-    },
-    "GetConfigSettings": {
-      "method": "GET",
-      "path": "/api/v1/admin/config/settings",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigSettingsView; ETag \"<config_version>\"."
-    },
-    "PutConfigSettings": {
-      "method": "PUT",
-      "path": "/api/v1/admin/config/settings",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "limits": {
-            "request_body_max_bytes": 33554432
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "not-a-section": {}
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 ConfigSettingsView; durable by default (overlay `root`); a locked config refuses with 400. Every top-level key must be a known settings section (unknown \u21d2 400); `persist` is boolean-validated but ignored. Stale If-Match 409 version_conflict. Some fields are restart-to-apply (view carries the flag)."
-    },
-    "PostConfigValidate": {
-      "method": "POST",
-      "path": "/api/v1/admin/config/validate",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "config": {
-            "listen": "{LISTEN_ADDR}",
-            "admin_listen": "{ADMIN_LISTEN_ADDR}",
-            "identity-providers": {
-              "admin-tokens": {
-                "module": "admin-tokens",
-                "token": {
-                  "env": "BUSBAR_ADMIN_TOKEN"
-                }
-              }
-            },
-            "auth": {
-              "chain": [
-                "keys"
-              ],
-              "signing_key": {
-                "file": "{WORK}/signing.key"
-              },
-              "admin_auth": [
-                "admin-tokens"
-              ]
-            },
-            "export": {
-              "metrics": {
-                "module": "prometheus",
-                "settings": {
-                  "buffer_seconds": 60
-                }
-              }
-            },
-            "groups": {
-              "oracle": {
-                "limits": [
-                  {
-                    "budget": 1000000,
-                    "per": "day"
-                  }
-                ]
-              },
-              "broke": {
-                "limits": [
-                  {
-                    "requests": 1,
-                    "per": "day"
-                  },
-                  {
-                    "budget": 1,
-                    "per": "day"
-                  }
-                ]
-              }
-            },
-            "providers": {
-              "anthropic": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "openai-chat": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "openai-responses": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "gemini": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "bedrock": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              },
-              "cohere": {
-                "api_key": {
-                  "env": "ORACLE_UPSTREAM_KEY"
-                }
-              }
-            },
-            "models": {
-              "m-anthropic": {
-                "provider": "anthropic"
-              },
-              "m-openai-chat": {
-                "provider": "openai-chat"
-              },
-              "m-openai-responses": {
-                "provider": "openai-responses"
-              },
-              "m-gemini": {
-                "provider": "gemini"
-              },
-              "m-bedrock": {
-                "provider": "bedrock"
-              },
-              "m-cohere": {
-                "provider": "cohere"
-              }
-            },
-            "pools": {
-              "oracle-unused": {
-                "members": [
-                  {
-                    "model": "m-openai-chat"
-                  }
-                ]
-              }
-            },
-            "limits": {
-              "request_body_max_bytes": 33554432
-            }
-          },
-          "providers": {
-            "anthropic": {
-              "protocol": "anthropic",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-chat": {
-              "protocol": "openai",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-responses": {
-              "protocol": "responses",
-              "base_url": "{MOCK_URL}"
-            },
-            "gemini": {
-              "protocol": "gemini",
-              "base_url": "{MOCK_URL}"
-            },
-            "bedrock": {
-              "protocol": "bedrock",
-              "base_url": "{MOCK_URL}"
-            },
-            "cohere": {
-              "protocol": "cohere",
-              "base_url": "{MOCK_URL}"
-            }
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "providers": {
-            "anthropic": {
-              "protocol": "anthropic",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-chat": {
-              "protocol": "openai",
-              "base_url": "{MOCK_URL}"
-            },
-            "openai-responses": {
-              "protocol": "responses",
-              "base_url": "{MOCK_URL}"
-            },
-            "gemini": {
-              "protocol": "gemini",
-              "base_url": "{MOCK_URL}"
-            },
-            "bedrock": {
-              "protocol": "bedrock",
-              "base_url": "{MOCK_URL}"
-            },
-            "cohere": {
-              "protocol": "cohere",
-              "base_url": "{MOCK_URL}"
-            }
-          }
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigValidateView; pure validation, read-only scope (carved out of the Config rate class into Crud). Same body as PostConfigApply. Invalid config still returns 200 with the diagnostics in the view; a malformed body / missing `config` is 400."
-    },
-    "GetConfigVersions": {
-      "method": "GET",
-      "path": "/api/v1/admin/config/versions",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "limit": "10"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigVersionPageView {items,next_cursor}, newest first (VERSIONS_LIMIT_DEFAULT 100). ts/principal vary; normalise."
-    },
-    "GetConfigVersionsV": {
-      "method": "GET",
-      "path": "/api/v1/admin/config/versions/{v}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/config/versions/0",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/config/versions/999999",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 ConfigVersionDetailView for the boot snapshot (v=0). Unknown version 404; a non-numeric segment is 400 (Cond::NonNumericPath), e.g. /config/versions/abc."
-    },
-    "GetExport": {
-      "method": "GET",
-      "path": "/api/v1/admin/export",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_NamedDefView listing the oracle's single `metrics` (prometheus) instance; settings are served as keys / redacted."
-    },
-    "DeleteExportName": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/export/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/export/oracle-log",
-        "headers": {},
-        "body": null,
-        "expect": [
-          204
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/export/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "204 no content; deletes the `oracle-log` instance created by PutExportName earlier in the epoch. Deleting a base-defined (config.yaml) instance such as `metrics` is 409 conflict (Cond::BaseDefined); still-referenced \u21d2 409. Stale If-Match 409 version_conflict."
-    },
-    "GetExportName": {
-      "method": "GET",
-      "path": "/api/v1/admin/export/{name}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/export/metrics",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/export/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 NamedDefView for the base-defined `metrics` prometheus instance."
-    },
-    "PutExportName": {
-      "method": "PUT",
-      "path": "/api/v1/admin/export/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/export/oracle-log",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "module": "request-log-file",
-          "settings": {
-            "path": "{TMP}/oracle-request-log.jsonl"
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "module": "request-log-file",
-          "bogus": 1,
-          "settings": {
-            "path": "{TMP}/oracle-request-log.jsonl"
-          }
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/export/does-not-exist",
-        "expect": [
-          200
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op \u2014 the not_found probe is expected to return 200 and create `does-not-exist`; skip it or delete afterwards). ExportDefCfg is deny_unknown_fields \u21d2 bad_body's `bogus` is 400. `request-log-file` needs settings.path; a second `prometheus`/`otlp` instance is refused. Stale If-Match 409 version_conflict."
-    },
-    "PatchExportNameSettings": {
-      "method": "PATCH",
-      "path": "/api/v1/admin/export/{name}/settings",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/export/oracle-log/settings",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "settings": {
-            "path": "{TMP}/oracle-request-log.jsonl",
-            "rotate_mb": 1
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "settings": "not-an-object"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/export/does-not-exist/settings",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 NamedDefView; `settings` is REPLACED wholesale (never deep-merged) so `path` must be resent. Per-module settings are deny_unknown_fields (a typo inside is 400). Stale If-Match 409."
-    },
-    "GetGroups": {
-      "method": "GET",
-      "path": "/api/v1/admin/groups",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_GroupView: `oracle` and `broke` (plus `oracle-added` if recorded mid-epoch)."
-    },
-    "PostGroups": {
-      "method": "POST",
-      "path": "/api/v1/admin/groups",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "name": "oracle-added",
-          "config": {
-            "limits": [
-              {
-                "budget": 5,
-                "per": "day"
-              }
-            ]
-          }
-        },
-        "expect": [
-          200,
-          201
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "name": "oracle-bad"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "Creates the NEW group `oracle-added`. Inventory ADM-022: handler returns 200 GroupView although the spec also declares 201 \u2014 record whichever 1.5.5 emits. Re-creating an existing name is 409 conflict; a base-defined name is 409 (Cond::BaseDefined); a limit amount of 0 or an unknown metric is 400 (Cond::InvalidTree/InvalidConfig). `config` is required \u21d2 bad_body 400."
-    },
-    "DeleteGroupsName": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/groups/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/groups/oracle-added",
-        "headers": {},
-        "body": null,
-        "expect": [
-          204
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/groups/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "204 no content. A group with bound keys is 409 (Cond::BoundKeys); a group that is still a parent is 409 (Cond::StillParent); base-defined (`oracle`, `broke`) is 409. Must run AFTER PutGroupsName/PatchGroupsName."
-    },
-    "GetGroupsName": {
-      "method": "GET",
-      "path": "/api/v1/admin/groups/{name}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/groups/oracle",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/groups/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 GroupView for the base-defined `oracle` group."
-    },
-    "PatchGroupsName": {
-      "method": "PATCH",
-      "path": "/api/v1/admin/groups/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/groups/oracle-added",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "limits": [
-            {
-              "budget": 10,
-              "per": "day"
-            }
-          ]
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "bogus": 1
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/groups/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 GroupView; `limits` REPLACES the whole list. Body is deny_unknown_fields (additionalProperties:false) \u21d2 `bogus` 400. Patching a base-defined group is 409 (Cond::BaseDefined). Stale If-Match 409."
-    },
-    "PutGroupsName": {
-      "method": "PUT",
-      "path": "/api/v1/admin/groups/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/groups/oracle-added",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "config": {
-            "limits": [
-              {
-                "budget": 7,
-                "per": "day"
-              }
-            ]
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "limits": []
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/groups/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 GroupView (replace). `config` is required \u21d2 bad_body 400. Unlike the named-map PUTs this is NOT an upsert: unknown name is 404. Base-defined 409. Stale If-Match 409."
-    },
-    "GetGroupsNameUsage": {
-      "method": "GET",
-      "path": "/api/v1/admin/groups/{name}/usage",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/groups/oracle/usage",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/groups/does-not-exist/usage",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 GroupUsageView (metering read for `oracle`; totals depend on the data-plane epochs recorded before it)."
-    },
-    "GetHooks": {
-      "method": "GET",
-      "path": "/api/v1/admin/hooks",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block)."
-    },
-    "PostHooks": {
-      "method": "POST",
-      "path": "/api/v1/admin/hooks",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "name": "oracle-hook"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Base-defined / grant-change \u21d2 409; a hook whose plugin never acks \u21d2 Cond::HookNoAck. Stale If-Match 409."
-    },
-    "DeleteHooksName": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/hooks/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409."
-    },
-    "GetHooksName": {
-      "method": "GET",
-      "path": "/api/v1/admin/hooks/{name}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable."
-    },
-    "PutHooksName": {
-      "method": "PUT",
-      "path": "/api/v1/admin/hooks/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "bogus": 1
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Not an upsert: unknown name 404."
-    },
-    "GetHooksNameHealth": {
-      "method": "GET",
-      "path": "/api/v1/admin/hooks/{name}/health",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist/health",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable."
-    },
-    "GetHooksNameSchema": {
-      "method": "GET",
-      "path": "/api/v1/admin/hooks/{name}/schema",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist/schema",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable."
-    },
-    "PatchHooksNameSettings": {
-      "method": "PATCH",
-      "path": "/api/v1/admin/hooks/{name}/settings",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "settings": "not-an-object"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist/settings",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409."
-    },
-    "GetHooksNameStatus": {
-      "method": "GET",
-      "path": "/api/v1/admin/hooks/{name}/status",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/hooks/does-not-exist/status",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable."
-    },
-    "GetIdentityProviders": {
-      "method": "GET",
-      "path": "/api/v1/admin/identity-providers",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_NamedDefView: the oracle's `admin-tokens` provider (token redacted)."
-    },
-    "DeleteIdentityProvidersName": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/identity-providers/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/identity-providers/oracle-idp2",
-        "headers": {},
-        "body": null,
-        "expect": [
-          204
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/identity-providers/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "204; deletes `oracle-idp2` created earlier in the epoch. Deleting the base-defined `admin-tokens` (also the caller's own chain member) is 409 BaseDefined/StillReferenced. Stale If-Match 409."
-    },
-    "GetIdentityProvidersName": {
-      "method": "GET",
-      "path": "/api/v1/admin/identity-providers/{name}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/identity-providers/admin-tokens",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/identity-providers/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 NamedDefView for `admin-tokens`; `token` is never echoed."
-    },
-    "PutIdentityProvidersName": {
-      "method": "PUT",
-      "path": "/api/v1/admin/identity-providers/{name}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/identity-providers/oracle-idp2",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "module": "admin-tokens",
-          "token": {
-            "env": "BUSBAR_ADMIN_TOKEN"
-          }
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "module": "keys",
-          "token": {
-            "env": "BUSBAR_ADMIN_TOKEN"
-          }
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/identity-providers/does-not-exist",
-        "expect": [
-          200
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_found probe returns 200 (skip or delete afterwards). bad_body: `token:` on a module other than admin-tokens is refused (CFG-212) \u21d2 400; unknown keys are 400 (deny_unknown_fields); unknown module 400 Cond::UnknownModule. Stale If-Match 409."
-    },
-    "PatchIdentityProvidersNameSettings": {
-      "method": "PATCH",
-      "path": "/api/v1/admin/identity-providers/{name}/settings",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/identity-providers/oracle-idp2/settings",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "settings": {}
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "settings": []
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/identity-providers/does-not-exist/settings",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 NamedDefView; `settings` replaced wholesale (opaque to busbar for admin-tokens). Stale If-Match 409."
-    },
-    "GetInfo": {
-      "method": "GET",
-      "path": "/api/v1/admin/info",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 InfoView {BuildInfo, TopologyInfo,...}; version/build fields differ 1.5.5 vs 1.6.0 by design \u2014 normalise."
-    },
-    "GetKeys": {
-      "method": "GET",
-      "path": "/api/v1/admin/keys",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "limit": "100"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 KeyPageView {items,next_cursor}; metadata only, never secrets. Filters enabled/prefix/group/include=tombstoned; bad value 400."
-    },
-    "PostKeys": {
-      "method": "POST",
-      "path": "/api/v1/admin/keys",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json",
-          "Idempotency-Key": "oracle-idem-post-keys-1"
-        },
-        "body": {
-          "name": "oracle-minted",
-          "group": "oracle"
-        },
-        "expect": [
-          201
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "name": "oracle-bad",
-          "rpm_limit": 10
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": true,
-      "if_match": false,
-      "notes": "201 CreatedKeyView (secret shown once). Idempotency-Key keyed (actor, header), TTL 600 s: the replay returns the SAME 201 body verbatim with no marker header; a concurrent same-key request is 409 conflict 'a request with this Idempotency-Key is already in flight'. CreateKeyReq is deny_unknown_fields so the removed 1.4.x `rpm_limit` is 400; unknown `group` without `parent` is 400. Token/id in the body are per-run \u2014 normalise."
-    },
-    "DeleteKeysId": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/keys/{id}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_NOSCOPE}",
-        "headers": {},
-        "body": null,
-        "expect": [
-          204
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "204; tombstones {KEY_NOSCOPE} (revoke-AND-forget). Run LAST among key ops. An over-long id is 400."
-    },
-    "GetKeysId": {
-      "method": "GET",
-      "path": "/api/v1/admin/keys/{id}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_OK}",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 KeyView (metadata; no secret). Over-long id 400."
-    },
-    "PatchKeysId": {
-      "method": "PATCH",
-      "path": "/api/v1/admin/keys/{id}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_OK}",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "enabled": true
-        },
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "name": "renamed"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 KeyView; `enabled: true` is a no-op-equivalent on {KEY_OK}. `group` is three-state (absent/null/value); rebind to a missing group is 400 Cond::RebindTargetMissing. UpdateKeyReq is deny_unknown_fields \u21d2 `name` is 400. Stale If-Match 409."
-    },
-    "PostKeysIdRevoke": {
-      "method": "POST",
-      "path": "/api/v1/admin/keys/{id}/revoke",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_BROKE}/revoke",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/revoke",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off \u21d2 409."
-    },
-    "PostKeysIdRotate": {
-      "method": "POST",
-      "path": "/api/v1/admin/keys/{id}/rotate",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_OK}/rotate",
-        "headers": {
-          "Idempotency-Key": "oracle-idem-rotate-1"
-        },
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/rotate",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": true,
-      "if_match": false,
-      "notes": "200 RotatedKeyView (new secret shown once; old stops resolving \u2014 so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed (actor, 'rotate:{id}:{k}'), TTL 600 s, replay 200 verbatim, in-flight 409. No 400 declared."
-    },
-    "GetKeysIdUsage": {
-      "method": "GET",
-      "path": "/api/v1/admin/keys/{id}/usage",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/usage",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 KeyMeteringView for the current UTC-day bucket; governance off \u21d2 404."
-    },
-    "GetModels": {
-      "method": "GET",
-      "path": "/api/v1/admin/models",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_ModelView: the six m-<dialect> models."
-    },
-    "GetOpenapiJson": {
-      "method": "GET",
-      "path": "/api/v1/admin/openapi.json",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 the OpenAPI 3.1 document served verbatim; 1.5.5 info.version reads \"1.5.4\" (stale, per inventory). The document itself is the recorded artefact openapi-1.5.5.json."
-    },
-    "DeleteOverlaySection": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/overlay/{section}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/overlay/root",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/overlay/limits",
-        "expect": [
-          400
-        ]
-      },
-      "idempotent": false,
-      "if_match": true,
-      "notes": "200 OverlayResetView {changed,...}; section enum is groups|hooks|root|plugin_versions (spec + Cond::UnknownSection). The requested `limits` is NOT a 1.5.5 overlay section \u21d2 400 invalid_request, so it is recorded as the not_found probe (expect 400, never 404). `root` is the section PutConfigSettings writes, so run this AFTER PutConfigSettings to revert it. Already-empty section \u21d2 200 changed:false. Stale If-Match 409; ephemeral (no disk config) 400."
-    },
-    "GetPlugins": {
-      "method": "GET",
-      "path": "/api/v1/admin/plugins",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "type": "hooks"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400."
-    },
-    "PostPlugins": {
-      "method": "POST",
-      "path": "/api/v1/admin/plugins",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "file": "oracle-plugin.tar.gz"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untrusted upload 409 Cond::UntrustedUpload; name collision 409."
-    },
-    "PostPluginsInspect": {
-      "method": "POST",
-      "path": "/api/v1/admin/plugins/inspect",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "file": "oracle-plugin.tar.gz"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; a non-loadable artifact is 400 Cond::NotLoadable."
-    },
-    "PostPluginsReload": {
-      "method": "POST",
-      "path": "/api/v1/admin/plugins/reload",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 PluginReloadView (dlclose/dlopen cycle + swap). Oracle config has plugins disabled/no plugin dir: expect 200 with an empty reload or 400 \u2014 record whatever 1.5.5 emits. Rate class Config."
-    },
-    "PostPluginsRollback": {
-      "method": "POST",
-      "path": "/api/v1/admin/plugins/rollback",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "version": "1.0.0"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": true,
-      "notes": "ok: null \u2014 needs published plugin fixture. `file` required \u21d2 bad_body 400. Unknown file is 404 (no path param, so not_found is null); not loadable 409; stale If-Match 409; ephemeral 400."
-    },
-    "DeletePluginsFile": {
-      "method": "DELETE",
-      "path": "/api/v1/admin/plugins/{file}",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/plugins/does-not-exist.tar.gz",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op."
-    },
-    "GetPluginsFileSchema": {
-      "method": "GET",
-      "path": "/api/v1/admin/plugins/{file}/schema",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": null,
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/plugins/does-not-exist.tar.gz/schema",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404."
-    },
-    "GetPools": {
-      "method": "GET",
-      "path": "/api/v1/admin/pools",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "query": {
-          "detail": "true"
-        },
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_PoolView with live member status inlined (`oracle-unused`); a non-boolean `detail` is 400."
-    },
-    "GetPoolsName": {
-      "method": "GET",
-      "path": "/api/v1/admin/pools/{name}",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "path": "/api/v1/admin/pools/oracle-unused",
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": {
-        "path": "/api/v1/admin/pools/does-not-exist",
-        "expect": [
-          404
-        ]
-      },
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 PoolDetailView for `oracle-unused`."
-    },
-    "GetProviders": {
-      "method": "GET",
-      "path": "/api/v1/admin/providers",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 Page_ProviderView: the six dialect-named providers (api_key redacted)."
-    },
-    "PostRestart": {
-      "method": "POST",
-      "path": "/api/v1/admin/restart",
-      "scope": "full",
-      "mutating": true,
-      "restart": true,
-      "ok": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "confirm": true
-        },
-        "expect": [
-          202
-        ]
-      },
-      "bad_body": {
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": {
-          "confirm": "yes"
-        },
-        "expect": [
-          400
-        ]
-      },
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "202 RestartView {restarting, supervisor_detected, note}; drains BOTH listeners and exits \u2014 the process is gone afterwards, so this is its own final epoch. Without `confirm: true` and no detected supervisor \u21d2 409 Cond::NoSupervisor; no shutdown channel \u21d2 409 NotRestartable. RestartReq is additionalProperties:false \u21d2 unknown field / non-boolean 400. Rate class Config."
-    },
-    "PostSigningKeyRotate": {
-      "method": "POST",
-      "path": "/api/v1/admin/signing-key/rotate",
-      "scope": "full",
-      "mutating": true,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 SigningKeyRotateView \u2014 rotates NOTHING in 1.5.5: reports the current kid and instructs the operator (audit action `signing_key.report`). Governance off / no signing key \u21d2 409 (Cond::NothingToRotate / NoSigningKey). Marked mutating only because it writes an audit record."
-    },
-    "GetUsage": {
-      "method": "GET",
-      "path": "/api/v1/admin/usage",
-      "scope": "read-only",
-      "mutating": false,
-      "restart": false,
-      "ok": {
-        "headers": {},
-        "body": null,
-        "expect": [
-          200
-        ]
-      },
-      "bad_body": null,
-      "not_found": null,
-      "idempotent": false,
-      "if_match": false,
-      "notes": "200 UsageView for the current UTC-day bucket {window, as_of, currency, total, by_model, by_key}; `window` (a past bucket start epoch) is optional, invalid \u21d2 400. as_of varies \u2014 normalise."
+  "DeleteGroupsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/groups/does-not-exist"
+   },
+   "notes": "204 no content. A group with bound keys is 409 (Cond::BoundKeys); a group that is still a parent is 409 (Cond::StillParent); base-defined (`oracle`, `broke`) is 409. Must run AFTER PutGroupsName/PatchGroupsName.",
+   "ok": {
+    "body": null,
+    "expect": [
+     204
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/groups/oracle-added"
+   },
+   "path": "/api/v1/admin/groups/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "DeleteHooksName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist"
+   },
+   "notes": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "DeleteIdentityProvidersName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/identity-providers/does-not-exist"
+   },
+   "notes": "204; deletes `oracle-idp2` created earlier in the epoch. Deleting the base-defined `admin-tokens` (also the caller's own chain member) is 409 BaseDefined/StillReferenced. Stale If-Match 409.",
+   "ok": {
+    "body": null,
+    "expect": [
+     204
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/identity-providers/oracle-idp2"
+   },
+   "path": "/api/v1/admin/identity-providers/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "DeleteKeysId": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000"
+   },
+   "notes": "204; tombstones {KEY_NOSCOPE} (revoke-AND-forget). Run LAST among key ops. An over-long id is 400.",
+   "ok": {
+    "body": null,
+    "expect": [
+     204
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/keys/{KEY_NOSCOPE}"
+   },
+   "path": "/api/v1/admin/keys/{id}",
+   "restart": false,
+   "scope": "full"
+  },
+  "DeleteOverlaySection": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": true,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     400
+    ],
+    "path": "/api/v1/admin/overlay/limits"
+   },
+   "notes": "200 OverlayResetView {changed,...}; section enum is groups|hooks|root|plugin_versions (spec + Cond::UnknownSection). The requested `limits` is NOT a 1.5.5 overlay section \u21d2 400 invalid_request, so it is recorded as the not_found probe (expect 400, never 404). `root` is the section PutConfigSettings writes, so run this AFTER PutConfigSettings to revert it. Already-empty section \u21d2 200 changed:false. Stale If-Match 409; ephemeral (no disk config) 400.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/overlay/root"
+   },
+   "path": "/api/v1/admin/overlay/{section}",
+   "restart": false,
+   "scope": "full"
+  },
+  "DeletePluginsFile": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "DELETE",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/plugins/does-not-exist.tar.gz"
+   },
+   "notes": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op.",
+   "ok": null,
+   "path": "/api/v1/admin/plugins/{file}",
+   "restart": false,
+   "scope": "full"
+  },
+  "GetAdminAuth": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 AdminAuthView (the ordered admin chain); ETag carries the config version.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/admin-auth",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAudit": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 AuditPageView {items,next_cursor}, newest first. A malformed cursor is 400 invalid_request (Cond::MalformedCursor). Body diff is expected to vary by seq/ts/hash; the recorder should normalise those fields.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "limit": "10"
     }
+   },
+   "path": "/api/v1/admin/audit",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetAuth": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 AuthView (the data-plane auth chain: [keys]).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/auth",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetConfig": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 EffectiveConfigView (secrets redacted); ETag \"<config_version>\".",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/config",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetConfigDiff": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 ConfigDiffView (hook-surface diff between two retained versions). `from` and `to` are REQUIRED integers (missing \u21d2 400); an unknown version \u21d2 404. Version 0 is the boot snapshot re-seeded at every start. | oracle: from=0&to=0 (version 0 is always present)",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "from": "0",
+     "to": "0"
+    }
+   },
+   "path": "/api/v1/admin/config/diff",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetConfigSettings": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 ConfigSettingsView; ETag \"<config_version>\".",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/config/settings",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetConfigVersions": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 ConfigVersionPageView {items,next_cursor}, newest first (VERSIONS_LIMIT_DEFAULT 100). ts/principal vary; normalise.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "limit": "10"
+    }
+   },
+   "path": "/api/v1/admin/config/versions",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetConfigVersionsV": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/config/versions/999999"
+   },
+   "notes": "200 ConfigVersionDetailView for the boot snapshot (v=0). Unknown version 404; a non-numeric segment is 400 (Cond::NonNumericPath), e.g. /config/versions/abc.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/config/versions/0"
+   },
+   "path": "/api/v1/admin/config/versions/{v}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetExport": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_NamedDefView listing the oracle's single `metrics` (prometheus) instance; settings are served as keys / redacted.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/export",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetExportName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/export/does-not-exist"
+   },
+   "notes": "200 NamedDefView for the base-defined `metrics` prometheus instance.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/export/metrics"
+   },
+   "path": "/api/v1/admin/export/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetGroups": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_GroupView: `oracle` and `broke` (plus `oracle-added` if recorded mid-epoch).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/groups",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetGroupsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/groups/does-not-exist"
+   },
+   "notes": "200 GroupView for the base-defined `oracle` group.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/groups/oracle"
+   },
+   "path": "/api/v1/admin/groups/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetGroupsNameUsage": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/groups/does-not-exist/usage"
+   },
+   "notes": "200 GroupUsageView (metering read for `oracle`; totals depend on the data-plane epochs recorded before it).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/groups/oracle/usage"
+   },
+   "path": "/api/v1/admin/groups/{name}/usage",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetHooks": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_HookView \u2014 empty on the oracle config (no hooks: block).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/hooks",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetHooksName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist"
+   },
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetHooksNameHealth": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist/health"
+   },
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}/health",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetHooksNameSchema": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist/schema"
+   },
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}/schema",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetHooksNameStatus": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist/status"
+   },
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}/status",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetIdentityProviders": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_NamedDefView: the oracle's `admin-tokens` provider (token redacted).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/identity-providers",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetIdentityProvidersName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/identity-providers/does-not-exist"
+   },
+   "notes": "200 NamedDefView for `admin-tokens`; `token` is never echoed.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/identity-providers/admin-tokens"
+   },
+   "path": "/api/v1/admin/identity-providers/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetInfo": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 InfoView {BuildInfo, TopologyInfo,...}; version/build fields differ 1.5.5 vs 1.6.0 by design \u2014 normalise.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/info",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetKeys": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 KeyPageView {items,next_cursor}; metadata only, never secrets. Filters enabled/prefix/group/include=tombstoned; bad value 400.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "limit": "100"
+    }
+   },
+   "path": "/api/v1/admin/keys",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetKeysId": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000"
+   },
+   "notes": "200 KeyView (metadata; no secret). Over-long id 400.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/keys/{KEY_OK}"
+   },
+   "path": "/api/v1/admin/keys/{id}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetKeysIdUsage": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/usage"
+   },
+   "notes": "200 KeyMeteringView for the current UTC-day bucket; governance off \u21d2 404.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/keys/{KEY_OK}/usage"
+   },
+   "path": "/api/v1/admin/keys/{id}/usage",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetModels": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_ModelView: the six m-<dialect> models.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/models",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetOpenapiJson": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 the OpenAPI 3.1 document served verbatim; 1.5.5 info.version reads \"1.5.4\" (stale, per inventory). The document itself is the recorded artefact openapi-1.5.5.json.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/openapi.json",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetPlugins": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "type": "hook"
+    }
+   },
+   "path": "/api/v1/admin/plugins",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetPluginsFileSchema": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/plugins/does-not-exist.tar.gz/schema"
+   },
+   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404.",
+   "ok": null,
+   "path": "/api/v1/admin/plugins/{file}/schema",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetPools": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_PoolView with live member status inlined (`oracle-unused`); a non-boolean `detail` is 400.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "query": {
+     "detail": "true"
+    }
+   },
+   "path": "/api/v1/admin/pools",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetPoolsName": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/pools/does-not-exist"
+   },
+   "notes": "200 PoolDetailView for `oracle-unused`.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/pools/oracle-unused"
+   },
+   "path": "/api/v1/admin/pools/{name}",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetProviders": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 Page_ProviderView: the six dialect-named providers (api_key redacted).",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/providers",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetUsage": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 UsageView for the current UTC-day bucket {window, as_of, currency, total, by_model, by_key}; `window` (a past bucket start epoch) is optional, invalid \u21d2 400. as_of varies \u2014 normalise.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/usage",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "PatchExportNameSettings": {
+   "bad_body": {
+    "body": {
+     "settings": "not-an-object"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/export/does-not-exist/settings"
+   },
+   "notes": "200 NamedDefView; `settings` is REPLACED wholesale (never deep-merged) so `path` must be resent. Per-module settings are deny_unknown_fields (a typo inside is 400). Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "settings": {
+      "path": "{TMP}/oracle-request-log.jsonl",
+      "rotate_mb": 1
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/export/oracle-log/settings"
+   },
+   "path": "/api/v1/admin/export/{name}/settings",
+   "restart": false,
+   "scope": "full"
+  },
+  "PatchGroupsName": {
+   "bad_body": {
+    "body": {
+     "bogus": 1
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/groups/does-not-exist"
+   },
+   "notes": "200 GroupView; `limits` REPLACES the whole list. Body is deny_unknown_fields (additionalProperties:false) \u21d2 `bogus` 400. Patching a base-defined group is 409 (Cond::BaseDefined). Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "limits": [
+      {
+       "budget": 10,
+       "per": "day"
+      }
+     ]
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/groups/oracle-added"
+   },
+   "path": "/api/v1/admin/groups/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PatchHooksNameSettings": {
+   "bad_body": {
+    "body": {
+     "settings": "not-an-object"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist/settings"
+   },
+   "notes": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}/settings",
+   "restart": false,
+   "scope": "full"
+  },
+  "PatchIdentityProvidersNameSettings": {
+   "bad_body": {
+    "body": {
+     "settings": []
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/identity-providers/does-not-exist/settings"
+   },
+   "notes": "200 NamedDefView; `settings` replaced wholesale (opaque to busbar for admin-tokens). Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "settings": {}
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/identity-providers/oracle-idp2/settings"
+   },
+   "path": "/api/v1/admin/identity-providers/{name}/settings",
+   "restart": false,
+   "scope": "full"
+  },
+  "PatchKeysId": {
+   "bad_body": {
+    "body": {
+     "name": "renamed"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PATCH",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000"
+   },
+   "notes": "200 KeyView; `enabled: true` is a no-op-equivalent on {KEY_OK}. `group` is three-state (absent/null/value); rebind to a missing group is 400 Cond::RebindTargetMissing. UpdateKeyReq is deny_unknown_fields \u21d2 `name` is 400. Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "enabled": true
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/keys/{KEY_OK}"
+   },
+   "path": "/api/v1/admin/keys/{id}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostAuthCacheFlush": {
+   "bad_body": {
+    "body": {
+     "module": 123
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 CacheFlushView; `{}` (or no body) flushes every partition. FlushCacheReq is NOT deny_unknown_fields, so only a wrong-typed `module` is 400; an unknown extra key is accepted.",
+   "ok": {
+    "body": {},
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/auth/cache/flush",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostConfigApply": {
+   "bad_body": {
+    "body": {
+     "providers": {
+      "anthropic": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "anthropic"
+      },
+      "bedrock": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "bedrock"
+      },
+      "cohere": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "cohere"
+      },
+      "gemini": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "gemini"
+      },
+      "openai-chat": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "openai"
+      },
+      "openai-responses": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "responses"
+      }
+     }
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 ConfigApplyView; body.config is the oracle's own config.yaml deploy block with limits.request_body_max_bytes pinned to the 32 MiB default (a no-op-equivalent change), body.providers is providers.yaml; `config` is required so bad_body omits it. Placeholders {LISTEN_ADDR} {ADMIN_LISTEN_ADDR} {WORK} {MOCK_URL} must be substituted. Stale If-Match 409 version_conflict, malformed If-Match 400, invalid config 400 'nothing changed'. Rate class Config (10/min): budget the whole mutating epoch under that ceiling.",
+   "ok": {
+    "body": {
+     "config": {
+      "admin_listen": "{ADMIN_LISTEN_ADDR}",
+      "auth": {
+       "admin_auth": [
+        "admin-tokens"
+       ],
+       "chain": [
+        "keys"
+       ],
+       "signing_key": {
+        "file": "{WORK}/signing.key"
+       }
+      },
+      "export": {
+       "metrics": {
+        "module": "prometheus",
+        "settings": {
+         "buffer_seconds": 60
+        }
+       }
+      },
+      "groups": {
+       "broke": {
+        "limits": [
+         {
+          "per": "day",
+          "requests": 1
+         },
+         {
+          "budget": 1,
+          "per": "day"
+         }
+        ]
+       },
+       "oracle": {
+        "limits": [
+         {
+          "budget": 1000000,
+          "per": "day"
+         }
+        ]
+       }
+      },
+      "identity-providers": {
+       "admin-tokens": {
+        "module": "admin-tokens",
+        "token": {
+         "env": "BUSBAR_ADMIN_TOKEN"
+        }
+       }
+      },
+      "limits": {
+       "request_body_max_bytes": 33554432
+      },
+      "listen": "{LISTEN_ADDR}",
+      "models": {
+       "m-anthropic": {
+        "provider": "anthropic"
+       },
+       "m-bedrock": {
+        "provider": "bedrock"
+       },
+       "m-cohere": {
+        "provider": "cohere"
+       },
+       "m-gemini": {
+        "provider": "gemini"
+       },
+       "m-openai-chat": {
+        "provider": "openai-chat"
+       },
+       "m-openai-responses": {
+        "provider": "openai-responses"
+       }
+      },
+      "pools": {
+       "oracle-unused": {
+        "members": [
+         {
+          "model": "m-openai-chat"
+         }
+        ]
+       }
+      },
+      "providers": {
+       "anthropic": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "bedrock": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "cohere": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "gemini": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "openai-chat": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "openai-responses": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       }
+      }
+     },
+     "providers": {
+      "anthropic": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "anthropic"
+      },
+      "bedrock": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "bedrock"
+      },
+      "cohere": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "cohere"
+      },
+      "gemini": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "gemini"
+      },
+      "openai-chat": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "openai"
+      },
+      "openai-responses": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "responses"
+      }
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/config/apply",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostConfigReload": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 ConfigReloadView; re-reads the on-disk config.yaml/providers.yaml and swaps. No body. Rate class Config.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/config/reload",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostConfigRollback": {
+   "bad_body": {
+    "body": {
+     "version": "zero"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 ConfigRollbackView; restores version 0's hook surface as a NEW version. No path param, but an unknown `version` in the body is 404 not_found (e.g. {\"version\": 999999}). Stale If-Match 409, malformed If-Match 400.",
+   "ok": {
+    "body": {
+     "version": 0
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/config/rollback",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostConfigValidate": {
+   "bad_body": {
+    "body": {
+     "providers": {
+      "anthropic": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "anthropic"
+      },
+      "bedrock": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "bedrock"
+      },
+      "cohere": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "cohere"
+      },
+      "gemini": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "gemini"
+      },
+      "openai-chat": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "openai"
+      },
+      "openai-responses": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "responses"
+      }
+     }
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 ConfigValidateView; pure validation, read-only scope (carved out of the Config rate class into Crud). Same body as PostConfigApply. Invalid config still returns 200 with the diagnostics in the view; a malformed body / missing `config` is 400.",
+   "ok": {
+    "body": {
+     "config": {
+      "admin_listen": "{ADMIN_LISTEN_ADDR}",
+      "auth": {
+       "admin_auth": [
+        "admin-tokens"
+       ],
+       "chain": [
+        "keys"
+       ],
+       "signing_key": {
+        "file": "{WORK}/signing.key"
+       }
+      },
+      "export": {
+       "metrics": {
+        "module": "prometheus",
+        "settings": {
+         "buffer_seconds": 60
+        }
+       }
+      },
+      "groups": {
+       "broke": {
+        "limits": [
+         {
+          "per": "day",
+          "requests": 1
+         },
+         {
+          "budget": 1,
+          "per": "day"
+         }
+        ]
+       },
+       "oracle": {
+        "limits": [
+         {
+          "budget": 1000000,
+          "per": "day"
+         }
+        ]
+       }
+      },
+      "identity-providers": {
+       "admin-tokens": {
+        "module": "admin-tokens",
+        "token": {
+         "env": "BUSBAR_ADMIN_TOKEN"
+        }
+       }
+      },
+      "limits": {
+       "request_body_max_bytes": 33554432
+      },
+      "listen": "{LISTEN_ADDR}",
+      "models": {
+       "m-anthropic": {
+        "provider": "anthropic"
+       },
+       "m-bedrock": {
+        "provider": "bedrock"
+       },
+       "m-cohere": {
+        "provider": "cohere"
+       },
+       "m-gemini": {
+        "provider": "gemini"
+       },
+       "m-openai-chat": {
+        "provider": "openai-chat"
+       },
+       "m-openai-responses": {
+        "provider": "openai-responses"
+       }
+      },
+      "pools": {
+       "oracle-unused": {
+        "members": [
+         {
+          "model": "m-openai-chat"
+         }
+        ]
+       }
+      },
+      "providers": {
+       "anthropic": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "bedrock": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "cohere": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "gemini": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "openai-chat": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       },
+       "openai-responses": {
+        "api_key": {
+         "env": "ORACLE_UPSTREAM_KEY"
+        }
+       }
+      }
+     },
+     "providers": {
+      "anthropic": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "anthropic"
+      },
+      "bedrock": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "bedrock"
+      },
+      "cohere": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "cohere"
+      },
+      "gemini": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "gemini"
+      },
+      "openai-chat": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "openai"
+      },
+      "openai-responses": {
+       "base_url": "{MOCK_URL}",
+       "protocol": "responses"
+      }
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/config/validate",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "PostGroups": {
+   "bad_body": {
+    "body": {
+     "name": "oracle-bad"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Creates the NEW group `oracle-added`. Inventory ADM-022: handler returns 200 GroupView although the spec also declares 201 \u2014 record whichever 1.5.5 emits. Re-creating an existing name is 409 conflict; a base-defined name is 409 (Cond::BaseDefined); a limit amount of 0 or an unknown metric is 400 (Cond::InvalidTree/InvalidConfig). `config` is required \u21d2 bad_body 400.",
+   "ok": {
+    "body": {
+     "config": {
+      "limits": [
+       {
+        "budget": 5,
+        "per": "day"
+       }
+      ]
+     },
+     "name": "oracle-added"
+    },
+    "expect": [
+     200,
+     201
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/groups",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostHooks": {
+   "bad_body": {
+    "body": {
+     "name": "oracle-hook"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Base-defined / grant-change \u21d2 409; a hook whose plugin never acks \u21d2 Cond::HookNoAck. Stale If-Match 409.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostKeys": {
+   "bad_body": {
+    "body": {
+     "name": "oracle-bad",
+     "rpm_limit": 10
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": true,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "201 CreatedKeyView (secret shown once). Idempotency-Key keyed (actor, header), TTL 600 s: the replay returns the SAME 201 body verbatim with no marker header; a concurrent same-key request is 409 conflict 'a request with this Idempotency-Key is already in flight'. CreateKeyReq is deny_unknown_fields so the removed 1.4.x `rpm_limit` is 400; unknown `group` without `parent` is 400. Token/id in the body are per-run \u2014 normalise.",
+   "ok": {
+    "body": {
+     "group": "oracle",
+     "name": "oracle-minted"
+    },
+    "expect": [
+     201
+    ],
+    "headers": {
+     "Content-Type": "application/json",
+     "Idempotency-Key": "oracle-idem-post-keys-1"
+    }
+   },
+   "path": "/api/v1/admin/keys",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostKeysIdRevoke": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/revoke"
+   },
+   "notes": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off \u21d2 409.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/keys/{KEY_BROKE}/revoke"
+   },
+   "path": "/api/v1/admin/keys/{id}/revoke",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostKeysIdRotate": {
+   "bad_body": null,
+   "idempotent": true,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000/rotate"
+   },
+   "notes": "200 RotatedKeyView (new secret shown once; old stops resolving \u2014 so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed (actor, 'rotate:{id}:{k}'), TTL 600 s, replay 200 verbatim, in-flight 409. No 400 declared.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Idempotency-Key": "oracle-idem-rotate-1"
+    },
+    "path": "/api/v1/admin/keys/{KEY_OK}/rotate"
+   },
+   "path": "/api/v1/admin/keys/{id}/rotate",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostPlugins": {
+   "bad_body": {
+    "body": {
+     "file": "oracle-plugin.tar.gz"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untrusted upload 409 Cond::UntrustedUpload; name collision 409.",
+   "ok": null,
+   "path": "/api/v1/admin/plugins",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostPluginsInspect": {
+   "bad_body": {
+    "body": {
+     "file": "oracle-plugin.tar.gz"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": false,
+   "not_found": null,
+   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; a non-loadable artifact is 400 Cond::NotLoadable.",
+   "ok": null,
+   "path": "/api/v1/admin/plugins/inspect",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "PostPluginsReload": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 PluginReloadView (dlclose/dlopen cycle + swap). Oracle config has plugins disabled/no plugin dir: expect 200 with an empty reload or 400 \u2014 record whatever 1.5.5 emits. Rate class Config.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/plugins/reload",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostPluginsRollback": {
+   "bad_body": {
+    "body": {
+     "version": "1.0.0"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "ok: null \u2014 needs published plugin fixture. `file` required \u21d2 bad_body 400. Unknown file is 404 (no path param, so not_found is null); not loadable 409; stale If-Match 409; ephemeral 400.",
+   "ok": null,
+   "path": "/api/v1/admin/plugins/rollback",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostRestart": {
+   "bad_body": {
+    "body": {
+     "confirm": "yes"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "202 RestartView {restarting, supervisor_detected, note}; drains BOTH listeners and exits \u2014 the process is gone afterwards, so this is its own final epoch. Without `confirm: true` and no detected supervisor \u21d2 409 Cond::NoSupervisor; no shutdown channel \u21d2 409 NotRestartable. RestartReq is additionalProperties:false \u21d2 unknown field / non-boolean 400. Rate class Config.",
+   "ok": {
+    "body": {
+     "confirm": true
+    },
+    "expect": [
+     202
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/restart",
+   "restart": true,
+   "scope": "full"
+  },
+  "PostSigningKeyRotate": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 SigningKeyRotateView \u2014 rotates NOTHING in 1.5.5: reports the current kid and instructs the operator (audit action `signing_key.report`). Governance off / no signing key \u21d2 409 (Cond::NothingToRotate / NoSigningKey). Marked mutating only because it writes an audit record.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/signing-key/rotate",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutAdminAuth": {
+   "bad_body": {
+    "body": {
+     "admin_auth": "admin-tokens"
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 AdminAuthPutView; body is the oracle's existing chain so nothing changes. Traps: removing the caller's own provider is 400 Cond::LockoutSelf; an unknown module is 400; stale If-Match 409 version_conflict; rate class Config (10/min).",
+   "ok": {
+    "body": {
+     "admin_auth": [
+      "admin-tokens"
+     ]
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/admin-auth",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutConfigSettings": {
+   "bad_body": {
+    "body": {
+     "not-a-section": {}
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": null,
+   "notes": "200 ConfigSettingsView; durable by default (overlay `root`); a locked config refuses with 400. Every top-level key must be a known settings section (unknown \u21d2 400); `persist` is boolean-validated but ignored. Stale If-Match 409 version_conflict. Some fields are restart-to-apply (view carries the flag).",
+   "ok": {
+    "body": {
+     "limits": {
+      "request_body_max_bytes": 33554432
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/config/settings",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutExportName": {
+   "bad_body": {
+    "body": {
+     "bogus": 1,
+     "module": "request-log-file",
+     "settings": {
+      "path": "{TMP}/oracle-request-log.jsonl"
+     }
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     200
+    ],
+    "path": "/api/v1/admin/export/does-not-exist"
+   },
+   "notes": "200 NamedDefView (upsert: PUT on an unknown name CREATES it, so there is no 404 on this op \u2014 the not_found probe is expected to return 200 and create `does-not-exist`; skip it or delete afterwards). ExportDefCfg is deny_unknown_fields \u21d2 bad_body's `bogus` is 400. `request-log-file` needs settings.path; a second `prometheus`/`otlp` instance is refused. Stale If-Match 409 version_conflict.",
+   "ok": {
+    "body": {
+     "module": "request-log-file",
+     "settings": {
+      "path": "{TMP}/oracle-request-log.jsonl"
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/export/oracle-log"
+   },
+   "path": "/api/v1/admin/export/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutGroupsName": {
+   "bad_body": {
+    "body": {
+     "limits": []
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/groups/does-not-exist"
+   },
+   "notes": "200 GroupView (replace). `config` is required \u21d2 bad_body 400. Unlike the named-map PUTs this is NOT an upsert: unknown name is 404. Base-defined 409. Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "config": {
+      "limits": [
+       {
+        "budget": 7,
+        "per": "day"
+       }
+      ]
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/groups/oracle-added"
+   },
+   "path": "/api/v1/admin/groups/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutHooksName": {
+   "bad_body": {
+    "body": {
+     "bogus": 1
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     404
+    ],
+    "path": "/api/v1/admin/hooks/does-not-exist"
+   },
+   "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Not an upsert: unknown name 404.",
+   "ok": null,
+   "path": "/api/v1/admin/hooks/{name}",
+   "restart": false,
+   "scope": "full"
+  },
+  "PutIdentityProvidersName": {
+   "bad_body": {
+    "body": {
+     "module": "keys",
+     "token": {
+      "env": "BUSBAR_ADMIN_TOKEN"
+     }
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": true,
+   "method": "PUT",
+   "mutating": true,
+   "not_found": {
+    "expect": [
+     200
+    ],
+    "path": "/api/v1/admin/identity-providers/does-not-exist"
+   },
+   "notes": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_found probe returns 200 (skip or delete afterwards). bad_body: `token:` on a module other than admin-tokens is refused (CFG-212) \u21d2 400; unknown keys are 400 (deny_unknown_fields); unknown module 400 Cond::UnknownModule. Stale If-Match 409.",
+   "ok": {
+    "body": {
+     "module": "admin-tokens",
+     "token": {
+      "env": "BUSBAR_ADMIN_TOKEN"
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/identity-providers/oracle-idp2"
+   },
+   "path": "/api/v1/admin/identity-providers/{name}",
+   "restart": false,
+   "scope": "full"
   }
+ },
+ "order": [
+  "PostKeys",
+  "PatchKeysId",
+  "PostGroups",
+  "PutGroupsName",
+  "PatchGroupsName",
+  "DeleteGroupsName",
+  "PutExportName",
+  "PatchExportNameSettings",
+  "DeleteExportName",
+  "PutIdentityProvidersName",
+  "PatchIdentityProvidersNameSettings",
+  "DeleteIdentityProvidersName",
+  "PutAdminAuth",
+  "PutConfigSettings",
+  "DeleteOverlaySection",
+  "PostConfigApply",
+  "PostConfigRollback",
+  "PostConfigReload",
+  "PostAuthCacheFlush",
+  "PostSigningKeyRotate",
+  "PostPluginsReload",
+  "PostKeysIdRotate",
+  "PostKeysIdRevoke",
+  "DeleteKeysId"
+ ],
+ "restart_epoch": [
+  "PostRestart"
+ ],
+ "stale_if_match": {
+  "header": "If-Match",
+  "malformed": "garbage",
+  "malformed_expect": [
+   400
+  ],
+  "stale": "\"0\"",
+  "stale_expect": [
+   409
+  ]
+ }
 }

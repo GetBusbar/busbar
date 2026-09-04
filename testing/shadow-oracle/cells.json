@@ -5913,7 +5913,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/audit",
+        "path": "/api/v1/admin/audit?limit=10",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -5929,7 +5929,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/audit",
+        "path": "/api/v1/admin/audit?limit=10",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -5977,7 +5977,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/config/diff",
+        "path": "/api/v1/admin/config/diff?from=0&to=0",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -6005,7 +6005,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/config/diff",
+        "path": "/api/v1/admin/config/diff?from=0&to=0",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6101,7 +6101,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/config/versions",
+        "path": "/api/v1/admin/config/versions?limit=10",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -6117,7 +6117,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/config/versions",
+        "path": "/api/v1/admin/config/versions?limit=10",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6809,7 +6809,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/keys",
+        "path": "/api/v1/admin/keys?limit=100",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -6825,7 +6825,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/keys",
+        "path": "/api/v1/admin/keys?limit=100",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -6954,13 +6954,13 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/plugins",
+        "path": "/api/v1/admin/plugins?type=hook",
         "headers": {},
         "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400."
+      "why": "200 Page_PluginView; `type` query is REQUIRED (auth|hooks|store), missing/unknown \u21d2 400. | oracle: ?type=hook (the param is required)"
     },
     {
       "id": "admin.ops|GetPlugins|unauth",
@@ -6970,7 +6970,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/plugins",
+        "path": "/api/v1/admin/plugins?type=hook",
         "headers": {},
         "body": null,
         "auth": "none",
@@ -7034,7 +7034,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/pools",
+        "path": "/api/v1/admin/pools?detail=true",
         "headers": {},
         "body": null,
         "auth": "admin",
@@ -7050,7 +7050,7 @@
       "outcome": "ok",
       "request": {
         "method": "GET",
-        "path": "/api/v1/admin/pools",
+        "path": "/api/v1/admin/pools?detail=true",
         "headers": {},
         "body": null,
         "auth": "none",

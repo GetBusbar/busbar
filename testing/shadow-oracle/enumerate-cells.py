@@ -243,8 +243,16 @@ ADMIN_PRE = {
 }
 
 
+def _path_of(op: dict, variant: dict) -> str:
+    path = variant.get("path") or op["path"]
+    q = variant.get("query")
+    if q and "?" not in path:
+        path += "?" + "&".join(f"{k}={v}" for k, v in sorted(q.items()))
+    return path
+
+
 def _req_of(op: dict, variant: dict, *, auth="admin") -> dict:
-    return {"method": op["method"], "path": variant.get("path") or op["path"],
+    return {"method": op["method"], "path": _path_of(op, variant),
             "headers": variant.get("headers") or {}, "auth": auth, "listener": "admin",
             "body": (json.dumps(variant["body"], separators=(",", ":"), sort_keys=True)
                      if isinstance(variant.get("body"), (dict, list)) else variant.get("body"))}
@@ -274,7 +282,7 @@ def admin_cells() -> list[dict]:
             # PostRestart ends the process; recorded as its own cell (fresh boot, expect 202 then exit)
             pass
         if op.get("ok"):
-            c = http(f"admin.ops|{opid}|ok", F, op["method"], op["ok"].get("path") or base_path,
+            c = http(f"admin.ops|{opid}|ok", F, op["method"], _path_of(op, op["ok"]),
                      auth="admin", listener="admin", headers=op["ok"].get("headers") or {},
                      body=_req_of(op, op["ok"])["body"], why=why)
             pre = pre_chain(opid)
@@ -296,11 +304,11 @@ def admin_cells() -> list[dict]:
                               why="needs fixture: " + why, needs_fixture=True))
         # unauthenticated: same request, no credential
         v = op.get("ok") or {}
-        cells.append(http(f"admin.ops|{opid}|unauth", F, op["method"], v.get("path") or base_path, auth="none",
+        cells.append(http(f"admin.ops|{opid}|unauth", F, op["method"], _path_of(op, v) if v else base_path, auth="none",
                           listener="admin", headers={k: x for k, x in (v.get("headers") or {}).items() if k.lower() != "authorization"},
                           body=_req_of(op, v)["body"] if v else None, why="no credential -> 401 envelope"))
         if op.get("bad_body"):
-            cells.append(http(f"admin.ops|{opid}|bad-body", F, op["method"], op["bad_body"].get("path") or (v.get("path") or base_path),
+            cells.append(http(f"admin.ops|{opid}|bad-body", F, op["method"], op["bad_body"].get("path") or (_path_of(op, v) if v else base_path),
                               auth="admin", listener="admin", headers=op["bad_body"].get("headers") or {},
                               body=_req_of(op, op["bad_body"])["body"], why=f"expect {op['bad_body'].get('expect')}"))
         if op.get("not_found"):
