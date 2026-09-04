@@ -36,6 +36,19 @@ INVALID: manifest abi_version 2 is not supported for kind 'store' by this binary
   the 1.5.5 range for its kind (PB-11). Proof: `plugins.load|store-*` and `plugins.store-persist|store-sqlite`
   green on both binaries, and the plane conformance rigs green against the sqlite plugin (the shim
   path), so a 1.5.5 store deployment gains mcp/a2a without touching its store.
+- Code sites (mapped 2026-09-04): the window is enforced in exactly ONE place —
+  `crates/plugin-sign/src/lib.rs:607-624` `validate_structure` via `supported_abi` (`plugin-loader/src/registry.rs:41`,
+  `"store" => [ABI_VERSION, ABI_VERSION]`); `validate_plugin` and `wire_up_raw` never check the manifest
+  version. The 1.5.5 base wire (24 requests / 11 responses) is byte-identical on HEAD; the 1.6.0-only
+  surface is exactly 8 requests (`UpsertPlaneRecord` … `RedeemPlaneToken`) / 4 responses. `busbar_api::Store`
+  already DEFAULTS all eight inert (`crates/api/src/store.rs:1285-1343`); `DynStore` already routes them
+  through `call_with_legacy_default` (`plugin-loader/src/lib.rs:958-1048`) except `redeem_plane_token`
+  (`:1062-1101`, fails closed). `DynStore` does not carry the manifest `abi_version`; `open_login`
+  (`registry.rs:274-281`) is the precedent for returning it. Tests to invert: `registry_tests.rs:36`
+  (`supported_abi_store_floor_is_v4`) and `:68` (`a_v2_named_only_store_artifact_is_refused…`).
+  Today `store: memory` keeps NO durable plane state either (`store-memory` implements none of the eight),
+  so an ABI-2 store behaving like the memory store for plane records is parity with the only 1.5.5-shaped
+  deployment that exists, not a downgrade.
 
 ### N-001 · hook / auth / secret plugins "SKIPPED: this build embeds no busbar release key" — MEASUREMENT ARTIFACT, RESOLVED
 
