@@ -42,6 +42,8 @@ HDR_RETRY = {"retry-after"}
 ID_RULES = [
     (re.compile(r"\b(req|resp|msg|run|call|task|sess|rtc)_[0-9A-Za-z]{8,}\b"), r"\1_<ID>"),  # hex OR base62 (1.5.5 synthesizes req_01<24 base62>)
     (re.compile(r"\bchatcmpl-[0-9A-Za-z]{8,}\b"), "chatcmpl-<ID>"),
+    (re.compile(r"\bvk_[0-9a-f]{32}\b"), "vk_<KEY>"),  # every minted key id (audit resources, usage rows, labels)
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AKIA<KEY>"),  # minted AWS access key ids
     (re.compile(r"\b[0-9a-fA-F]{32,}\b"), "<HASH>"),  # sha/hex seals, request ids as raw hex
     (re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"), "<UUID>"),  # v4 ids busbar synthesizes (cohere `id`, x-amzn-requestid)
     (re.compile(r"-(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)"), "-<TRIPLE>"),  # plugin tarball names carry the host triple

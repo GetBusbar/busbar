@@ -141,6 +141,10 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
     *) record "$id" FAIL "unknown exec.config $cfg" ""; return ;;
   esac
   local providers="$WORK/providers.yaml"; [ -f "$xwork/providers.yaml" ] && providers="$xwork/providers.yaml"
+  # the providers catalog also sits BESIDE the config under test (its default location) so a cell
+  # about some other row is not decided by how the binary resolves BUSBAR_PROVIDERS — that env
+  # precedence has its own cells (cli|env|*)
+  [ -z "$cfgfile" ] || [ -f "$(dirname "$cfgfile")/providers.yaml" ] || cp "$providers" "$(dirname "$cfgfile")/providers.yaml" 2>/dev/null || true
   local -a envcmd=(env BUSBAR_PROVIDERS="$providers" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG=warn)
   [ -n "$cfgfile" ] && envcmd+=(BUSBAR_CONFIG="$cfgfile")
   [ "${#envs[@]}" -eq 0 ] || envcmd+=("${envs[@]}")
@@ -299,14 +303,16 @@ PY
     [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
     [ -s "$raw/request.body" ] && hdr_args+=(-H "Content-Type: application/json")
     port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
-    local_m=(-X "$method"); [ "$method" = HEAD ] && local_m=(--head)
+    local_m=(-X "$method" --data-binary "@$raw/request.body"); [ "$method" = HEAD ] && local_m=(--head)
     mc="$(jq -c '.mock_control // empty' <<<"$cell")"
     [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
-    snapshot "$raw/before" "$kid"
+    settle_then_snapshot "$raw/before" "$kid"
     k=1
     while [ "$k" -le "$repeat" ]; do
       status="$(curl -sS -m 30 -N "${local_m[@]}" "http://127.0.0.1:${port}${path}" "${hdr_args[@]}" \
-        --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")" || status="000"
+        -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")"; curl_rc=$?
+      # a cut mid-body (18/56) still carries the status line and the bytes that arrived: that IS the response
+      case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
       k=$((k+1))
     done
   else
@@ -338,9 +344,10 @@ PY
   [ "$auth" = sigv4-signed ] || [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
 
   [ "$outcome" != upstream_down ] || echo down >"$CONTROL"
-  snapshot "$raw/before" "$kid"
+  settle_then_snapshot "$raw/before" "$kid"
   status="$(curl -sS -m 20 -N -X POST "http://127.0.0.1:${LISTEN_PORT}${path}" "${hdr_args[@]}" \
-    --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")" || status="000"
+    --data-binary @"$raw/request.body" -D "$raw/headers" -o "$raw/body" -w '%{http_code}' 2>"$raw/curl.err")"; curl_rc=$?
+  case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
   fi
   settle_then_snapshot "$raw/after" "$kid"
   rm -f "$CONTROL"
