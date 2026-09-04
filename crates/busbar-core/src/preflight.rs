@@ -707,9 +707,15 @@ pub(crate) fn validate_secret_refs(
 /// asking `--validate` is asking a different question, and deserves the strict answer.
 ///
 /// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
+///
+/// Walks the references boot RESOLVES, not every reference the config can hold: an
+/// `identity-providers:` definition's `token:` is only read through the resolved auth chains, so a
+/// defined-but-unreferenced provider whose token env var is unset boots fine and must pass here too
+/// (see `boot_resolved_secret_refs`). The exhaustive walk stays in use for the structural and
+/// module-existence checks, which cost nothing to run over a reference boot never reads.
 pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
     let builtins = config::secret::SecretResolver::builtins_only();
-    for (what, r) in config_validate::secret_refs(cfg) {
+    for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
         if r.module != config::secret::SECRET_MODULE_ENV
             && r.module != config::secret::SECRET_MODULE_FILE
         {

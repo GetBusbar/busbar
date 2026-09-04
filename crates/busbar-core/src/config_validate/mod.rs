@@ -191,6 +191,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // governance bypass. Reject at boot rather than ship a silently-inaccessible / governance-
         // bypassing model. (`reserved_admin_name` derives the segment from the auth-middleware
         // `ADMIN_PATH`, so models/pools/providers all share one drift-proof rule.)
+        // `admin` has been refused as a model name since the reserved-name rule was introduced, and
+        // it stays refused: a config busbar accepted or rejected in an earlier release must get the
+        // same answer here, and operators were told that name is a management prefix off limits to
+        // lanes. Checked before the native-API root so the earlier message keeps its place.
+        if reserved_legacy_admin_name(model_name) {
+            errors.push(format!(
+                "model name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
+                model_name, model_name
+            ));
+        }
         if reserved_admin_name(model_name) {
             errors.push(format!(
                 "model name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a model reachable via /{}/v1/messages is unreachable to clients and bypasses per-model governance; rename it",
@@ -231,6 +241,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // / governance-bypassing pool. (`reserved_admin_name` DERIVES the segment from the
         // middleware's own `ADMIN_PATH`, so the check and the `is_admin` boundary cannot drift —
         // the previous copied `admin` literal is exactly how they drifted apart.)
+        // `admin` stays refused as a pool name for the same reason as on models: earlier releases
+        // refused it, and a config's verdict must not change between releases.
+        if reserved_legacy_admin_name(pool_name) {
+            errors.push(format!(
+                "pool name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
+                pool_name
+            ));
+        }
         if reserved_admin_name(pool_name) {
             errors.push(format!(
                 "pool name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a pool reachable via that path is unreachable to clients and bypasses per-pool governance; rename it",
@@ -250,6 +268,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // reachable via the adhoc route `POST /api/<model>/v1/messages`, whose first segment the auth
     // middleware intercepts as an admin request for the identical reason. Reject it symmetrically.
     for provider_name in cfg.providers.keys() {
+        // `admin` stays refused as a provider name, matching the model and pool rules above.
+        if reserved_legacy_admin_name(provider_name) {
+            errors.push(format!(
+                "provider name '{}' is reserved: 'admin' is a built-in management prefix (the auth middleware routes /admin and /admin/* to the operator admin surface), so a provider reachable via the adhoc /admin/<model> route is unreachable to clients; rename it",
+                provider_name
+            ));
+        }
         if reserved_admin_name(provider_name) {
             errors.push(format!(
                 "provider name '{}' is reserved: '{}' is the native-API root (the auth middleware routes /{} and /{}/* to the operator admin surface), so a provider reachable via the adhoc /{}/<model> route is unreachable to clients; rename it",
@@ -1622,6 +1647,19 @@ fn reserved_admin_name(name: &str) -> bool {
     name.split('/').next() == Some(admin_root_segment())
 }
 
+/// True when a pool / provider / model `name` is `admin`, or would put `admin` in the first path
+/// segment of its route (`admin/...`).
+///
+/// This is the rule earlier releases enforced verbatim, kept alongside [`reserved_admin_name`]
+/// rather than folded into it. The two guard different things: that one tracks the segment the auth
+/// middleware actually routes to the admin surface today (`api`), while this one preserves the
+/// long-standing promise that `admin` is a management name no lane may take. Dropping it would let a
+/// config an earlier release refused boot cleanly here, and the reverse-compatibility oracle checks
+/// exactly that. Same first-segment test as the sibling so `admin/x` cannot slip through either.
+fn reserved_legacy_admin_name(name: &str) -> bool {
+    name.split('/').next() == Some("admin")
+}
+
 /// Resolve the single `on_exhausted: fallback_pool:<name>` edge out of `pool_name`, if it has one.
 /// UNIFIED `pools:` GLOBAL-NAME VALIDATOR (1.6.0). The neutral `pools:` map infers a pool's kind
 /// from its members and resolves every member by NAME ALONE. That is sound only when names are
@@ -1803,7 +1841,7 @@ pub fn metadata_denylist_entries() -> Vec<String> {
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::secret_refs;
+pub(crate) use secret_refs::{boot_resolved_secret_refs, secret_refs};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way

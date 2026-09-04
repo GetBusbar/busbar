@@ -366,6 +366,94 @@ fn the_inventory_matches_what_secret_refs_actually_does() {
     );
 }
 
+/// The strict `--validate` resolve walks what BOOT resolves. A `token:` on an `identity-providers:`
+/// definition nothing references is still ENUMERATED (the coverage contract: no secret-bearing field
+/// is hidden from the structural and module-existence checks) but is NOT RESOLVED, because boot never
+/// reads it — an operator keeping a spare definition on file with its env var unset has a config
+/// that boots, and `--validate` must say so. The one token boot does read, the operator credential
+/// out of the resolved chains, is resolved and is the one named when it cannot be.
+#[test]
+fn unreferenced_identity_provider_token_is_enumerated_but_not_resolved_by_validate() {
+    // `oracle-keys` is defined but appears in neither chain; nothing on the running gateway ever
+    // reads its `token:`. `admin_auth` is explicitly open so there is no operator token to resolve.
+    let yaml = r#"
+listen: "127.0.0.1:8080"
+providers: {}
+models: {}
+identity-providers:
+  oracle-keys:
+    module: keys
+    token: { env: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN }
+auth:
+  chain: [keys]
+  admin_auth: []
+"#;
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("the fixture config must resolve");
+
+    let every: Vec<String> = super::secret_refs(&cfg)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        every.contains(&"identity-providers.oracle-keys.token".to_string()),
+        "the exhaustive walk must still enumerate the unreferenced token; got: {every:?}"
+    );
+    let boot: Vec<String> = super::boot_resolved_secret_refs(&cfg)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        !boot.iter().any(|p| p.ends_with(".token")),
+        "boot reads no identity-provider token from this config, so the boot-resolved walk must \
+         report none; got: {boot:?}"
+    );
+    crate::preflight::validate_builtin_secrets_resolve(&cfg).unwrap_or_else(|e| {
+        panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
+    });
+
+    // The operator credential IS read at boot, so it IS resolved at --validate — and it is reported
+    // once, from the resolved chain entry, not a second time from the definition.
+    let yaml = r#"
+listen: "127.0.0.1:8080"
+providers: {}
+models: {}
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN }
+  oracle-keys:
+    module: keys
+    token: { env: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+"#;
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("the fixture config must resolve");
+    let boot: Vec<String> = super::boot_resolved_secret_refs(&cfg)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    let tokens: Vec<&String> = boot.iter().filter(|p| p.ends_with(".token")).collect();
+    assert_eq!(
+        tokens,
+        vec![&"auth.admin_auth.admin-tokens.token".to_string()],
+        "exactly the operator credential boot resolves must be reported; got: {boot:?}"
+    );
+    let err = crate::preflight::validate_builtin_secrets_resolve(&cfg)
+        .expect_err("the referenced operator token cannot resolve and must be refused");
+    assert!(
+        err.starts_with("auth.admin_auth.admin-tokens.token: ")
+            && err.contains("BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN"),
+        "the refusal must name the operator token, not the unreferenced definition; got: {err}"
+    );
+}
+
 /// The behavioural half, at the level `--validate` actually asks: a config carrying a
 /// `browser_login.client_secret` yields that path from `secret_refs`. This is the reference the old
 /// hand-written list missed, and this test fails against the pre-fix function.
