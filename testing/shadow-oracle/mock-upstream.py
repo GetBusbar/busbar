@@ -137,6 +137,21 @@ class H(BaseHTTPRequestHandler):
     sys_version = ""
 
     def _send(self, status, body, ctype="application/json"):
+        if getattr(self.server, "cut", False) and status == 200:
+            # `cut`: headers + the first frame (or half the body), then the socket dies — the
+            # "upstream died mid-response" arm of the refund table (PB-27)
+            first = body.split(b"\n\n", 1)[0] + b"\n\n" if b"\n\n" in body else body[: max(1, len(body) // 2)]
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(first); self.wfile.flush()
+            try:
+                self.connection.shutdown(1)
+            except OSError:
+                pass
+            self.close_connection = True
+            return
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -162,18 +177,44 @@ class H(BaseHTTPRequestHandler):
         # Two outage controls: a header (handy for curl-by-hand) and a CONTROL FILE the recorder
         # writes per cell — busbar must never see a control header, so the file is the one the
         # oracle actually uses.
+        # busbar percent-encodes the gemini `:generateContent` colon on egress; decode before matching.
+        p = unquote(self.path.split("?", 1)[0])
+        # the egress model for path-addressed dialects (gemini / bedrock) lives in the path
+        path_model = None
+        if p.startswith("/v1beta/models/"):
+            path_model = p[len("/v1beta/models/"):].split(":", 1)[0]
+        elif p.startswith("/model/"):
+            path_model = p[len("/model/"):].split("/", 1)[0]
+        model = path_model or model
+
+        # Control: a header (handy for curl-by-hand) or the CONTROL FILE the recorder writes per cell.
+        # The file is either a bare verb (applies to every model) or JSON {"<model>": "<verb>"}.
+        # Verbs: down (503) | 429 (Retry-After: 7) | 5xx (500) | slow (sleep past busbar's attempt cap)
+        #        | cut (close the socket after the first streamed event / mid-body)
         ctl = (self.headers.get("X-Oracle-Upstream") or "").strip().lower()
         ctl_file = self.server.control_file  # type: ignore[attr-defined]
         if ctl_file and os.path.exists(ctl_file):
             try:
-                ctl = open(ctl_file).read().strip().lower() or ctl
-            except OSError:
+                raw_ctl = open(ctl_file).read().strip()
+                if raw_ctl.startswith("{"):
+                    ctl = (json.loads(raw_ctl).get(model) or json.loads(raw_ctl).get("*") or "").lower()
+                else:
+                    ctl = raw_ctl.lower() or ctl
+            except (OSError, ValueError):
                 pass
-        if ctl in ("down", "slow"):
+        if ctl == "down":
             return self._send(503, j({"error": {"type": "upstream_unavailable", "message": "oracle: upstream down"}}))
+        if ctl == "429":
+            self.send_response(429); self.send_header("Content-Type", "application/json"); self.send_header("Retry-After", "7")
+            body = j({"error": {"type": "rate_limit_error", "message": "oracle: upstream rate limited"}})
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if ctl == "5xx":
+            return self._send(500, j({"error": {"type": "server_error", "message": "oracle: upstream exploded"}}))
+        if ctl == "slow":
+            import time
+            time.sleep(float(os.environ.get("ORACLE_MOCK_SLOW_SECS", "8")))
+        self.server.cut = (ctl == "cut")  # type: ignore[attr-defined]
 
-        # busbar percent-encodes the gemini `:generateContent` colon on egress; decode before matching.
-        p = unquote(self.path.split("?", 1)[0])
         want_stream = bool(req.get("stream"))
         if p == "/v1/messages":
             body = anthropic_stream(model, marker) if want_stream else anthropic(model, marker)
@@ -208,6 +249,7 @@ def main():
     srv = HTTPServer(("127.0.0.1", port), H)
     srv.marker = marker  # type: ignore[attr-defined]
     srv.control_file = control_file  # type: ignore[attr-defined]
+    srv.cut = False  # type: ignore[attr-defined]
     srv.serve_forever()
 
 

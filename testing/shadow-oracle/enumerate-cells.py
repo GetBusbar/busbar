@@ -329,11 +329,73 @@ def boot_cells() -> list[dict]:
     return cells
 
 
+def failover_cells() -> list[dict]:
+    """The failover walk against pool oracle-fo (openai-chat w3 + anthropic w1, consecutive-1
+    breaker), the cross-pool hop (oracle-fb -> oracle-fo) and least_bad (oracle-lb). `mock_control`
+    is written to the mock's control file before the request: {"<egress model>": "<verb>"}."""
+    F = "route.failover"
+    body = lambda pool, stream=False: json.dumps({"model": pool, "messages": [{"role": "user", "content": "ping"}], **({"stream": True} if stream else {})}, separators=(",", ":"), sort_keys=True)
+    cells = []
+    def fo(id_, pool, ctl, why, stream=False, **extra):
+        c = http(f"route.failover|{id_}", F, "POST", "/v1/chat/completions", body=body(pool, stream), why=why, **extra)
+        c["mock_control"] = ctl
+        return c
+    cells += [
+        fo("fo|all-up", "oracle-fo", {}, "SWRR over two members, 3:1 (PB-5/57)"),
+        fo("fo|primary-down", "oracle-fo", {"m-openai-chat": "down"}, "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200 (PB-8/10)"),
+        fo("fo|primary-5xx", "oracle-fo", {"m-openai-chat": "5xx"}, "500 disposition -> failover"),
+        fo("fo|primary-429", "oracle-fo", {"m-openai-chat": "429"}, "upstream 429 with Retry-After 7: disposition + honor_retry_after floor (PB-80)"),
+        fo("fo|all-down", "oracle-fo", {"m-openai-chat": "down", "m-anthropic": "down"}, "every member fails -> on_exhausted default 503 + Retry-After (PB-4)"),
+        fo("fo|all-down-stream", "oracle-fo", {"m-openai-chat": "down", "m-anthropic": "down"}, "same, streamed request", stream=True),
+        fo("fo|primary-slow", "oracle-fo", {"m-openai-chat": "slow"}, "attempt exceeds upstream_request_timeout? (default 300 s: NOT cut; the mock sleeps 8 s then answers) — records the real 1.5.5 wait", ),
+        fo("fo|primary-cut-stream", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut after the first SSE frame: stream_failed, tokens 0, lane unit not refunded (PB-27)", stream=True),
+        fo("fo|primary-cut-body", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut mid-body on a buffered response: 502, fee refunded (PB-91)"),
+        fo("fb|member-down", "oracle-fb", {"m-cohere": "down"}, "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool (PB-47)"),
+        fo("fb|all-down", "oracle-fb", {"m-cohere": "down", "m-openai-chat": "down", "m-anthropic": "down"}, "hop exhausted too -> 503"),
+        fo("lb|member-down", "oracle-lb", {"m-gemini": "down"}, "least_bad: one breaker-bypassing attempt against the tripped member (PB-4)"),
+        fo("lb|up", "oracle-lb", {}, "least_bad pool healthy"),
+        fo("fo|second-request-after-trip", "oracle-fo", {"m-openai-chat": "down"}, "two requests in one boot: the second never tries the tripped member", pre_same=True),
+    ]
+    # the second-request cell needs a same-boot predecessor: an unrecorded identical request first
+    for c in cells:
+        if c.pop("pre_same", False):
+            c["request"]["pre"] = [{"method": "POST", "path": "/v1/chat/completions", "listener": "data", "auth": "ok",
+                                    "headers": {"Content-Type": "application/json"}, "body": body("oracle-fo")}]
+    return cells
+
+
+PLUGIN_DIGESTS = Path(__file__).resolve().parent / "plugin-digests.tsv"
+
+
+def plugin_cells() -> list[dict]:
+    """The PUBLISHED 1.5.5-era plugins (plugin-digests.tsv) under the binary under test:
+    `plugins.load|<name>` lists the plugin dir (kind, signature, status per plugin) and, for every
+    store, `plugins.store-persist|<name>` boots with it as `store:`, spends, restarts and reads back.
+    A 1.5.5 operator's plugin must load in 1.6.0 unchanged (PB-11/37/93)."""
+    if not PLUGIN_DIGESTS.exists():
+        return []
+    names = sorted({ln.split("\t")[0] for ln in PLUGIN_DIGESTS.read_text().splitlines() if ln and not ln.startswith("#")})
+    cells = []
+    for n in names:
+        cells.append({"id": f"plugins.load|{n}", "plane": "core", "family": "plugins", "driver": "script",
+                      "script": {"name": "plugin-list.sh", "args": [n]}, "outcome": "ok",
+                      "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line (PB-11)"})
+        if n.startswith("store-"):
+            needs = n in ("store-postgres", "store-mysql", "store-valkey")  # need a live backend service
+            cells.append({"id": f"plugins.store-persist|{n}", "plane": "core", "family": "plugins", "driver": "script",
+                          "script": {"name": "store-persist.sh", "args": [n]}, "outcome": "ok",
+                          "why": "validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)",
+                          **({"needs_fixture": True} if needs else {})})
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
-                   + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells(), key=lambda c: c["id"])
+                   + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
+                   + plugin_cells(),
+                   key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
     doc = {
