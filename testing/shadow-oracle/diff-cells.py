@@ -200,7 +200,13 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--cells", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "cells.json"))
     ap.add_argument("--family", default="")
+    ap.add_argument("--accepted", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "accepted-differences.json"))
     a = ap.parse_args()
+    accepted = []
+    if os.path.exists(a.accepted):
+        for e in json.load(open(a.accepted, encoding="utf-8")).get("accepted", []):
+            accepted.append({"rx": re.compile(e["cells"]), "classes": set(e.get("classes", [])), "kind": e.get("kind", "improvement"),
+                             "id": e.get("id", e["cells"]), "rationale": e.get("rationale", ""), "by": e.get("by", "")})
     os.makedirs(a.out, exist_ok=True)
 
     with open(a.cells, encoding="utf-8") as f:
@@ -238,6 +244,12 @@ def main() -> int:
             if only:
                 classes = [k for k in classes if k in only or k.startswith("missing.")]
                 detail = {k: v for k, v in detail.items() if k in classes}
+        # owner-accepted differences: the cell reports ACCEPTED (its own column), never a silent pass
+        acc = None
+        if classes:
+            for e in accepted:
+                if e["rx"].search(cid) and (not e["classes"] or set(classes) <= e["classes"]):
+                    acc = e; break
         wt = c.get("weight")
         if wt is None:
             wt = 10 if fam in BODY_IS_CONTRACT else max([CLASS_WEIGHT[k] for k in classes] or [0])
@@ -248,18 +260,21 @@ def main() -> int:
         W += owed_w
         fam_stats[fam]["owed"] += 1
         fam_stats[fam]["owed_w"] += owed_w
-        if classes:
+        if classes and acc is None:
             D += min(cell_w, owed_w)
             fam_stats[fam]["diverging"] += 1
             fam_stats[fam]["div_w"] += min(cell_w, owed_w)
             for k in classes:
                 class_counts[k] += 1
+        elif classes:
+            fam_stats[fam]["accepted"] += 1
         results.append({"id": cid, "family": fam, "plane": c.get("plane"), "weight": owed_w,
-                        "classes": classes, "first_diff": first_diff_text(classes, detail), "detail": detail if classes else {}})
+                        "classes": classes, "first_diff": first_diff_text(classes, detail), "detail": detail if classes else {},
+                        **({"accepted": {"id": acc["id"], "kind": acc["kind"], "rationale": acc["rationale"], "by": acc["by"]}} if acc else {})})
 
     fam_table = {}
     for fam, s in sorted(fam_stats.items()):
-        fam_table[fam] = {"owed": s["owed"], "diverging": s["diverging"], "owed_w": s["owed_w"], "div_w": s["div_w"],
+        fam_table[fam] = {"owed": s["owed"], "diverging": s["diverging"], "accepted": s["accepted"], "owed_w": s["owed_w"], "div_w": s["div_w"],
                           "ratio": (s["div_w"] / s["owed_w"]) if s["owed_w"] else 0.0}
     gv = (a.golden, os.path.join(a.golden, "meta.json"))
     cv = (a.candidate, os.path.join(a.candidate, "meta.json"))
@@ -274,7 +289,8 @@ def main() -> int:
         "meta": {"golden": a.golden, "candidate": a.candidate, "golden_version": meta(gv[1]).get("version"),
                  "candidate_version": meta(cv[1]).get("version"), "cells_json": a.cells, "family_filter": a.family},
         "totals": {"cells_in_scope": len(cells), "owed": len(owed), "gaps": len(gaps),
-                   "diverging": sum(1 for r in results if r["classes"]), "W": W, "D": D,
+                   "diverging": sum(1 for r in results if r["classes"] and "accepted" not in r),
+                   "accepted": sum(1 for r in results if "accepted" in r), "W": W, "D": D,
                    "ratio": (D / W) if W else 0.0},
         "by_family": fam_table, "by_class": dict(class_counts),
         "gaps": [{"id": i, "golden_status": s, "detail": d} for i, s, d in gaps],
@@ -294,12 +310,12 @@ def main() -> int:
 
     # report.md
     lines = [f"# Shadow-oracle replay: {report['meta'].get('golden_version')} (golden) vs {report['meta'].get('candidate_version')} (candidate)", "",
-             f"owed {len(owed)} · diverging {report['totals']['diverging']} · gaps {len(gaps)} · weighted D/W = {report['totals']['ratio']:.4f}", "",
-             "| family | owed | diverging | D/W |", "|---|---|---|---|"]
+             f"owed {len(owed)} · diverging {report['totals']['diverging']} · accepted {report['totals']['accepted']} · gaps {len(gaps)} · weighted D/W = {report['totals']['ratio']:.4f}", "",
+             "| family | owed | diverging | accepted | D/W |", "|---|---|---|---|---|"]
     for fam, s in fam_table.items():
-        lines.append(f"| {fam} | {s['owed']} | {s['diverging']} | {s['ratio']:.3f} |")
+        lines.append(f"| {fam} | {s['owed']} | {s['diverging']} | {s['accepted']} | {s['ratio']:.3f} |")
     lines += ["", "| class | cells |", "|---|---|"] + [f"| {k} | {v} |" for k, v in sorted(class_counts.items(), key=lambda kv: -kv[1])]
-    top = sorted((r for r in results if r["classes"]), key=lambda r: (-r["weight"], r["id"]))[:25]
+    top = sorted((r for r in results if r["classes"] and "accepted" not in r), key=lambda r: (-r["weight"], r["id"]))[:25]
     if top:
         lines += ["", "## Top divergences", ""]
         for r in top:
@@ -312,6 +328,9 @@ def main() -> int:
         f.write("\n".join(lines) + "\n")
 
     for r in results:
+        if "accepted" in r:
+            sys.stdout.write(f"{r['id']}\tPASS\tACCEPTED {r['accepted']['kind']} ({r['accepted']['id']}): {','.join(r['classes'])}\t{r['first_diff']}\n")
+            continue
         st = "FAIL" if r["classes"] else "PASS"
         sys.stdout.write(f"{r['id']}\t{st}\t{','.join(r['classes']) or 'identical'}\t{r['first_diff']}\n")
     return 0

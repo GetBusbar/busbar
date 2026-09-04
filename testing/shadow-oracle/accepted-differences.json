@@ -1,0 +1,12 @@
+{
+  "_comment": [
+    "Differences from the published 1.5.5 that the OWNER has accepted, each with a rationale and a kind:",
+    "  improvement  additive or strictly better; a 1.5.5 client/operator keeps working unchanged",
+    "  breaking     a deliberate change that MUST be named in the 1.6.0 CHANGELOG with a migration note",
+    "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
+    "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
+    "divergence classes (a status or usage change on an 'improvement' entry is still red).",
+    "Zero UNACCEPTED divergences is the ship gate."
+  ],
+  "accepted": []
+}
