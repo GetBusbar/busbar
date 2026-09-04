@@ -25,13 +25,17 @@ INVALID: manifest abi_version 2 is not supported for kind 'store' by this binary
 - Phase 1.0 ticket: ABI-2 store adapter in the loader (window `[2, 4]`, `call_with_legacy_default` for the
   four ops, node-local shim for 1.6.0-only ops), then this cell family green on both binaries.
 
-### N-001 · hook / auth / secret plugins "SKIPPED: this build embeds no busbar release key" — MEASUREMENT ARTIFACT
+### N-001 · hook / auth / secret plugins "SKIPPED: this build embeds no busbar release key" — MEASUREMENT ARTIFACT, RESOLVED
 
 `BUSBAR_RELEASE_PUBKEY` is an org VARIABLE the release pipeline exports at build time
 (`plugin-sign/src/lib.rs:84`, `build-artifact.yml:105`). A local `cargo build` has no key, so every
 first-party signature is unverifiable. The candidate is being rebuilt with the variable set; the
-plugin family is measured against that build. Secret (1), auth (2), hook (1) and export (2) ABI versions are unchanged between the tag and HEAD;
-only the store ABI moved (2 → 4), so F-001 is the only ABI-window regression.
+plugin family is measured against that build. Rebuilt with `BUSBAR_RELEASE_PUBKEY` set: github, ldap,
+oidc (auth), vault (secret), headroom and webrequest (hook) all list as `first-party ready` on HEAD;
+the four stores stay `INVALID`. Secret (1), auth (2), hook (1) and export (2) ABI versions are
+unchanged between the tag and HEAD; only the store ABI moved (2 → 4). **F-001 is the only plugin
+regression.** Rule for every later measurement: the candidate is built with the release key, exactly
+as `build-artifact.yml` builds it.
 
 ## Harness fixes made while recording the golden (none are busbar behaviour)
 

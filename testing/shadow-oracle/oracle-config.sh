@@ -128,25 +128,29 @@ EOF
 
 oracle_env() {  # run "$@" with the oracle's busbar environment
   BUSBAR_CONFIG="${WORK}/config.yaml" BUSBAR_PROVIDERS="${WORK}/providers.yaml" \
-    ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG=warn "$@"
+    ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" RUST_LOG="${RUST_LOG:-warn}" "$@"
 }
 
-_oracle_mint() {  # <admin_port> <json-body>  -> prints "id token"
+_oracle_mint() {  # <admin_port> <json-body>  -> prints "id token akid secret"
   local out
   out="$(curl -fsS -X POST "http://127.0.0.1:$1/api/v1/admin/keys" \
     -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" -H "Content-Type: application/json" \
     -d "$2" 2>/dev/null || true)"
-  printf '%s %s\n' "$(printf '%s' "$out" | jq -r '.id // empty')" "$(printf '%s' "$out" | jq -r '.token // empty')"
+  printf '%s %s %s %s\n' "$(printf '%s' "$out" | jq -r '.id // empty')" "$(printf '%s' "$out" | jq -r '.token // empty')" \
+    "$(printf '%s' "$out" | jq -r '.aws_access_key_id // "-"')" "$(printf '%s' "$out" | jq -r '.aws_secret_access_key // "-"')"
 }
 
 oracle_mint_keys() {  # <admin_port>
+  # Every principal also carries an AWS-style credential (issue_aws_credential) so the bedrock
+  # ingress door — inbound SigV4 — records the same outcome classes as the bearer doors.
   local a="$1" r
-  r="$(_oracle_mint "$a" '{"name":"oracle-ok","group":"oracle"}')"
-  ORACLE_KEY_OK="${r%% *}"; ORACLE_TOKEN_OK="${r#* }"
-  r="$(_oracle_mint "$a" '{"name":"oracle-broke","group":"broke"}')"
-  ORACLE_KEY_BROKE="${r%% *}"; ORACLE_TOKEN_BROKE="${r#* }"
-  r="$(_oracle_mint "$a" '{"name":"oracle-noscope","group":"oracle","allowed_pools":["oracle-unused"]}')"
-  ORACLE_KEY_NOSCOPE="${r%% *}"; ORACLE_TOKEN_NOSCOPE="${r#* }"
+  r="$(_oracle_mint "$a" '{"name":"oracle-ok","group":"oracle","issue_aws_credential":true}')"
+  set -- $r; ORACLE_KEY_OK="${1:-}"; ORACLE_TOKEN_OK="${2:-}"; ORACLE_AWS_AKID_OK="${3:-}"; ORACLE_AWS_SECRET_OK="${4:-}"
+  r="$(_oracle_mint "$a" '{"name":"oracle-broke","group":"broke","issue_aws_credential":true}')"
+  set -- $r; ORACLE_KEY_BROKE="${1:-}"; ORACLE_TOKEN_BROKE="${2:-}"; ORACLE_AWS_AKID_BROKE="${3:-}"; ORACLE_AWS_SECRET_BROKE="${4:-}"
+  r="$(_oracle_mint "$a" '{"name":"oracle-noscope","group":"oracle","allowed_pools":["oracle-unused"],"issue_aws_credential":true}')"
+  set -- $r; ORACLE_KEY_NOSCOPE="${1:-}"; ORACLE_TOKEN_NOSCOPE="${2:-}"; ORACLE_AWS_AKID_NOSCOPE="${3:-}"; ORACLE_AWS_SECRET_NOSCOPE="${4:-}"
   export ORACLE_KEY_OK ORACLE_TOKEN_OK ORACLE_KEY_BROKE ORACLE_TOKEN_BROKE ORACLE_KEY_NOSCOPE ORACLE_TOKEN_NOSCOPE
+  export ORACLE_AWS_AKID_OK ORACLE_AWS_SECRET_OK ORACLE_AWS_AKID_BROKE ORACLE_AWS_SECRET_BROKE ORACLE_AWS_AKID_NOSCOPE ORACLE_AWS_SECRET_NOSCOPE
   [ -n "$ORACLE_TOKEN_OK" ] && [ -n "$ORACLE_TOKEN_BROKE" ] && [ -n "$ORACLE_TOKEN_NOSCOPE" ]
 }

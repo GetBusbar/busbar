@@ -20,6 +20,7 @@ door), which a bearer key cannot satisfy. Such cells are emitted with auth="sigv
 records them as MOCK-UNSUPPORTED (a visible gap, never a silent pass) until a SigV4 signer is added.
 """
 import json
+import os
 import sys
 
 PING = "ping"
@@ -67,7 +68,7 @@ def request_for(cell: dict) -> dict:
         path = f"/model/{model}/{'converse-stream' if stream else 'converse'}"
         body = {"messages": [{"role": "user", "content": [{"text": PING}]}]}
         auth = "sigv4"
-        note = "bedrock ingress is SigV4-authenticated; needs a signer (named gap)"
+        note = "bedrock ingress is SigV4-authenticated: signed with the cell principal's AWS credential (issue_aws_credential)"
     elif ing == "cohere":
         path = "/v2/chat"
         body = {"model": model, "messages": [{"role": "user", "content": PING}]}
@@ -82,7 +83,45 @@ def request_for(cell: dict) -> dict:
     else:
         raw = json.dumps(body, separators=(",", ":"), sort_keys=True)
 
+    if auth == "sigv4":
+        akid, secret, host = os.environ.get("ORACLE_AWS_AKID", ""), os.environ.get("ORACLE_AWS_SECRET", ""), os.environ.get("ORACLE_HOST", "")
+        if oc == "unauthenticated" or not akid:
+            # unauthenticated: a well-formed SigV4 header for an UNKNOWN AccessKeyId (the constant-time
+            # DUMMY_SECRET reject path); an absent header would be the bearer arm's 401 instead
+            akid, secret = "AKIAORACLEUNKNOWN000", "not-the-secret"
+        hdr.update(sigv4_headers("POST", path, raw.encode(), host, akid, secret))
+        auth = "sigv4-signed"
+
     return {"method": "POST", "path": path, "headers": hdr, "body": raw, "auth": auth, "note": note}
+
+
+# ── inbound SigV4 (the Bedrock SDK's model): the verifier reads region/service from the Credential
+# scope, requires x-amz-date within its skew window, refuses UNSIGNED-PAYLOAD and checks the body
+# hash — so sign the real body with the current time.
+def sigv4_headers(method: str, path: str, body: bytes, host: str, akid: str, secret: str,
+                  region: str = "us-east-1", service: str = "bedrock") -> dict:
+    import datetime, hashlib, hmac
+    now = datetime.datetime.now(datetime.timezone.utc)
+    amzdate, datestamp = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+    payload_hash = hashlib.sha256(body).hexdigest()
+    signed = {"host": host, "x-amz-content-sha256": payload_hash, "x-amz-date": amzdate}
+    signed_headers = ";".join(sorted(signed))
+    canonical_headers = "".join(f"{k}:{signed[k].strip()}\n" for k in sorted(signed))
+    canonical = "\n".join([method, uri_encode_path(path), "", canonical_headers, signed_headers, payload_hash])
+    scope = f"{datestamp}/{region}/{service}/aws4_request"
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", amzdate, scope, hashlib.sha256(canonical.encode()).hexdigest()])
+    k = hmac.new(("AWS4" + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
+    for part in (region, service, "aws4_request"):
+        k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+    sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
+    return {"x-amz-date": amzdate, "x-amz-content-sha256": payload_hash,
+            "Authorization": f"AWS4-HMAC-SHA256 Credential={akid}/{scope}, SignedHeaders={signed_headers}, Signature={sig}"}
+
+
+def uri_encode_path(path: str) -> str:
+    # SigV4 canonical URI: each segment percent-encoded except unreserved chars; '/' kept
+    from urllib.parse import quote
+    return "/".join(quote(seg, safe="-_.~") for seg in path.split("/"))
 
 
 def main() -> int:

@@ -39,16 +39,17 @@
     }
   ],
   "counts": {
-    "total": 2176,
+    "total": 2187,
     "by_plane": {
       "a2a": 468,
-      "core": 670,
+      "core": 681,
       "llm": 126,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
       "admin.ops": 221,
+      "billing": 11,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
@@ -9323,6 +9324,345 @@
         "listener": "admin"
       },
       "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "billing|admin-usage|after-2",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "GET /admin/usage (all keys, today)"
+    },
+    {
+      "id": "billing|admin-usage|past-day",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage?day=2020-01-01",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "a past UTC day bucket: empty and byte-stable"
+    },
+    {
+      "id": "billing|group-usage|after-2",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/groups/oracle/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "the group view"
+    },
+    {
+      "id": "billing|group-usage|broke-after-prime",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/groups/broke/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": []
+      },
+      "why": "the primed broke group: 1 request already spent"
+    },
+    {
+      "id": "billing|key-usage|after-1",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "1 request: requests 1, tokens 18, spend_cents 250 (2.5 units)"
+    },
+    {
+      "id": "billing|key-usage|after-3",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "3 requests: 3 / 54 / 750 \u2014 no truncation drift across rows"
+    },
+    {
+      "id": "billing|key-usage|after-cross-protocol",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-anthropic\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-gemini\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "two lanes: per-lane rows folded into one view"
+    },
+    {
+      "id": "billing|key-usage|after-upstream-down",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}",
+            "mock_control": {
+              "m-openai-chat": "down"
+            }
+          }
+        ]
+      },
+      "why": "a 503: requests +1, billable refunded, spend 0 (PB-16/26/27)"
+    },
+    {
+      "id": "billing|key-usage|broke-after-429",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_BROKE}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "broke",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "a 429 at Admit charges nothing more"
+    },
+    {
+      "id": "billing|key-usage|fresh",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": []
+      },
+      "why": "a fresh key: zero everything; the exact field set and literals"
+    },
+    {
+      "id": "billing|key-usage|noscope-after-403",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_NOSCOPE}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "noscope",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "a 403 at Approve charges nothing"
     },
     {
       "id": "boot.refusal|BOOT-001|validate",

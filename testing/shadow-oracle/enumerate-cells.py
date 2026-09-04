@@ -389,12 +389,41 @@ def plugin_cells() -> list[dict]:
     return cells
 
 
+def billing_cells() -> list[dict]:
+    """Money as the user reads it: the key and group usage views after a known sequence of requests
+    (all priced 2.5 units each by the rate card: cents-truncation, per-request fee, refund on a
+    non-2xx, the `total` window) — PB-16/22/27/91/99."""
+    F = "billing"
+    chat = lambda auth="ok", model="m-openai-chat": {"method": "POST", "path": "/v1/chat/completions", "listener": "data", "auth": auth,
+                                                     "headers": {"Content-Type": "application/json"},
+                                                     "body": json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}]}, separators=(",", ":"))}
+    cells = []
+    def usage(id_, pre, why, path="/api/v1/admin/keys/{KEY_OK}/usage", auth="admin"):
+        c = http(f"billing|{id_}", F, "GET", path, auth=auth, listener="admin", why=why)
+        c["request"]["pre"] = pre
+        return c
+    cells += [
+        usage("key-usage|fresh", [], "a fresh key: zero everything; the exact field set and literals"),
+        usage("key-usage|after-1", [chat()], "1 request: requests 1, tokens 18, spend_cents 250 (2.5 units)"),
+        usage("key-usage|after-3", [chat(), chat(), chat()], "3 requests: 3 / 54 / 750 — no truncation drift across rows"),
+        usage("key-usage|after-cross-protocol", [chat(model="m-anthropic"), chat(model="m-gemini")], "two lanes: per-lane rows folded into one view"),
+        usage("key-usage|after-upstream-down", [{**chat(), "mock_control": {"m-openai-chat": "down"}}], "a 503: requests +1, billable refunded, spend 0 (PB-16/26/27)"),
+        usage("group-usage|after-2", [chat(), chat()], "the group view", path="/api/v1/admin/groups/oracle/usage"),
+        usage("group-usage|broke-after-prime", [], "the primed broke group: 1 request already spent", path="/api/v1/admin/groups/broke/usage"),
+        usage("admin-usage|after-2", [chat(), chat()], "GET /admin/usage (all keys, today)", path="/api/v1/admin/usage"),
+        usage("admin-usage|past-day", [chat()], "a past UTC day bucket: empty and byte-stable", path="/api/v1/admin/usage?day=2020-01-01"),
+        usage("key-usage|noscope-after-403", [chat(auth="noscope")], "a 403 at Approve charges nothing", path="/api/v1/admin/keys/{KEY_NOSCOPE}/usage"),
+        usage("key-usage|broke-after-429", [chat(auth="broke")], "a 429 at Admit charges nothing more", path="/api/v1/admin/keys/{KEY_BROKE}/usage"),
+    ]
+    return cells
+
+
 def main() -> int:
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
-                   + plugin_cells(),
+                   + plugin_cells() + billing_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "cell ids must be unique"
