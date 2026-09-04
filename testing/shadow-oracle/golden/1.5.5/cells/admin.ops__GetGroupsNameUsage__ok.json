@@ -1,0 +1,1 @@
+{"applied":["hdr.date","ts.unix"],"body":{"json":{"as_of":0,"buckets":[{"budget_cap":1000000,"budget_remaining_cents":1000000,"requests":0,"spend_cents":0,"tokens":0,"window":"day"}],"enabled":true,"group":"oracle"}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"175","content-type":"application/json"},"status":200}

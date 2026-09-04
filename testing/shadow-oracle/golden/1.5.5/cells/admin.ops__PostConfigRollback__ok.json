@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"config_version":2,"restored_version":0}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"41","content-type":"application/json","etag":"<ETAG>"},"status":200}

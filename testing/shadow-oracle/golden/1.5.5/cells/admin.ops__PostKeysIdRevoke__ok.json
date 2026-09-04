@@ -1,0 +1,1 @@
+{"applied":["audit.hash","hdr.date"],"body":{"json":{"revoked":"vk_<KEY>"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"49","content-type":"application/json"},"status":200}

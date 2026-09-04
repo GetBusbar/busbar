@@ -1,0 +1,1 @@
+{"applied":["audit.hash","hdr.date","ts.unix"],"body":{"json":{"as_of":0,"budget_period":"total","group":"broke","id":"vk_<KEY>","rate_headroom":0.0,"requests":1,"spend_cents":250,"tokens":18,"window_start":0}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"183","content-type":"application/json"},"status":200}

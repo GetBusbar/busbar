@@ -31,9 +31,13 @@ def main() -> int:
     out.append(f"# Parity baseline — {rep['meta'].get('candidate_version')} vs the published {rep['meta'].get('golden_version')}\n")
     out.append(f"Golden: `{rep['meta']['golden']}` · Candidate: `{rep['meta']['candidate']}` · cells: `{rep['meta']['cells_json']}`\n")
     out.append(f"**Owed {t['owed']} · diverging {t['diverging']} · golden gaps {t['gaps']} · weighted D/W = {overall:.4f}**\n")
-    out.append(f"## Decision\n\n**{'KEEP HEAD' if keep else 'RE-CUT FROM THE TAG'}** — rule: D/W ≤ 0.05 overall ({overall:.4f}) and ≤ 0.20 in every weight-10 family"
-               + (f"; violated by {', '.join(f'{f} ({s['ratio']:.2f})' for f, s in heavy_bad.items())}" if heavy_bad else "; every weight-10 family within bound")
-               + ". Every red cell below must be triaged to a Phase-1 ticket before the decision is final.\n")
+    out.append(f"## Decision\n\n**Base = HEAD** (owner decision, 2026-09-04): the bar is a legitimate 1.6.0 upgrade — 1.5.5's surface, "
+               "the same or better, plus the mcp / a2a / voice planes — with an accepted-differences register for the "
+               "deliberate deltas (`improvement` | `breaking`, each `breaking` named in the CHANGELOG). "
+               f"The numeric rule of the plan reads {'KEEP HEAD' if keep else 'RE-CUT'} on this run "
+               f"(D/W {overall:.4f} vs ≤ 0.05"
+               + (f"; weight-10 families over 0.20: {', '.join(f'{f} ({s['ratio']:.2f})' for f, s in heavy_bad.items())}" if heavy_bad else "; every weight-10 family within bound")
+               + "). **Ship gate: zero unaccepted divergences.** Every diverging cell below is triaged in the findings.\n")
     out.append("## Per family\n\n| family | owed | diverging | D/W |\n|---|---|---|---|")
     for f, s in sorted(fam.items()):
         out.append(f"| {f} | {s['owed']} | {s['diverging']} | {s['ratio']:.3f} |")

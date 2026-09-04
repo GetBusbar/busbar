@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.overlay: `true` names no backend \u2014 use `{ file: <path> }`, or `false` together with `config.locked: true` to run immutable.\n"},"headers":{},"status":1}

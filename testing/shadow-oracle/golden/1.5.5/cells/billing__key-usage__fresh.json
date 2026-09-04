@@ -1,0 +1,1 @@
+{"applied":["hdr.date","key.id","ts.unix"],"body":{"json":{"as_of":0,"budget_period":"total","group":"oracle","id":"<KEY>","rate_headroom":null,"requests":0,"spend_cents":0,"tokens":0,"window_start":0}},"effects":{"audit":{"added":0},"metrics":{},"usage":{}},"headers":{"content-length":"182","content-type":"application/json"},"status":200}

@@ -28,6 +28,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -d "$GOLDEN" ] && [ -d "$CAND" ] && [ -n "$OUT" ] || { echo "usage: $0 --golden <dir> --candidate <dir> --out <dir> [--cells f] [--family re]" >&2; exit 2; }
+# absolute paths: verdict.sh runs from the repo root, so a relative --out would make it read an empty
+# ledger and (correctly) call the run vacuous
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; GOLDEN="$(cd "$GOLDEN" && pwd)"; CAND="$(cd "$CAND" && pwd)"
 [ -s "${GOLDEN}/ledger.tsv" ] || { echo "replay: golden has no ledger.tsv — record it first" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "replay.sh needs python3" >&2; exit 2; }
 

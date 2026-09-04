@@ -1,0 +1,1 @@
+{"applied":["hdr.date","hdr.etag"],"body":{"json":{"enabled":true,"limits":[{"amount":5,"metric":"budget","per":"day"}],"name":"oracle-added"}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"92","content-type":"application/json","etag":"<ETAG>"},"status":200}

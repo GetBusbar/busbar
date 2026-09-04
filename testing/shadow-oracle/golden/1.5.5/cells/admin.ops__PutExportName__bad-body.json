@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"error":{"code":"invalid_request","message":"invalid `export.oracle-log` definition: unknown field `bogus`, expected one of `module`, `streams`, `fields`, `durable`, `settings`"}}},"effects":{"audit":{"added":1},"metrics":{},"usage":{}},"headers":{"content-length":"180","content-type":"application/json"},"status":400}
