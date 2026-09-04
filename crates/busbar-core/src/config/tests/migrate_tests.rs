@@ -193,15 +193,26 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["providers", "anthropic", "api_key", "env"]).as_str(),
         Some("ANTHROPIC_KEY")
     );
-    // target -> model; cost off members; alias renames. 1.6.0 unified pools then LIFTS a weight-1,
-    // capability-free member to the UNIFORM BARE NAME (`- claude`) — the rich object is gone, so
-    // `target`/`cost_per_mtok`/`model` no longer appear as member keys at all.
+    // target -> model; cost off members; alias renames. The member stays a rich object (the 1.5.5
+    // member grammar is the 1.6.0 grammar): `target` is renamed to `model` in place and
+    // `cost_per_mtok` is dropped, but nothing rewrites it to a bare name.
     let members = get(&["pools", "fast", "members"]);
+    let member = members.as_sequence().unwrap()[0]
+        .as_mapping()
+        .expect("the member is still a rich object");
     assert_eq!(
-        members.as_sequence().unwrap()[0].as_str(),
+        member
+            .get(serde_yaml::Value::from("model"))
+            .and_then(|v| v.as_str()),
         Some("claude"),
-        "the member is now a bare name under the unified `pools:` grammar"
+        "`target:` was renamed to `model:` in place"
     );
+    for retired in ["target", "cost_per_mtok"] {
+        assert!(
+            !member.contains_key(serde_yaml::Value::from(retired)),
+            "the retired member key `{retired}` is gone"
+        );
+    }
     assert_eq!(
         get(&["pools", "fast", "breaker", "trip", "window_secs"]).as_u64(),
         Some(30)
@@ -2448,11 +2459,12 @@ fn migrate_folds_tool_and_agent_pools_into_pools() {
     );
 }
 
-/// A rich, weight-only LLM member LIFTS to the uniform bare-name grammar with its non-default weight
-/// moved to a pool-level `weights:` map. A member carrying per-member CAPABILITIES stays rich (valid
-/// 1.6.0) with a todo, because flattening it would drop or collapse a per-member value.
+/// Rich LLM pool members (`{ model, weight, ... }`) are the 1.5.5 grammar AND the 1.6.0 grammar, so
+/// the migrator leaves them exactly as written: no bare-name rewrite, no lifted `weights:` map, no
+/// change line, no todo. This pins the byte-for-byte agreement with what the 1.5.5 binary emitted
+/// for the same input.
 #[test]
-fn migrate_lifts_weighted_members_and_leaves_capability_members_rich() {
+fn migrate_leaves_rich_pool_members_untouched() {
     let raw = "providers: {}\nmodels: {}\npools:\n  gpt4o:\n    members:\n\
                \x20     - { model: gpt4o-openai, weight: 3 }\n\
                \x20     - { model: gpt4o-azure, weight: 1 }\n\
@@ -2462,33 +2474,35 @@ fn migrate_lifts_weighted_members_and_leaves_capability_members_rich() {
         .unwrap()
         .as_sequence()
         .unwrap();
-    // The two weight-only members became bare names; the capability member stayed a mapping.
+    assert_eq!(members.len(), 3);
+    for m in members {
+        assert!(
+            m.is_mapping(),
+            "every rich member stays a rich member: {m:?}"
+        );
+    }
     assert_eq!(
-        members[0].as_str(),
-        Some("gpt4o-openai"),
-        "weight-only member is now bare"
-    );
-    assert_eq!(
-        members[1].as_str(),
-        Some("gpt4o-azure"),
-        "weight-1 member is now bare"
-    );
-    assert!(
-        members[2].is_mapping(),
-        "the tier-carrying member is left rich"
-    );
-    // The non-default weight moved to a pool-level `weights:` map; the weight-1 member is not listed
-    // (default is implicit).
-    assert_eq!(
-        dig(&doc, &["pools", "gpt4o", "weights", "gpt4o-openai"]).and_then(|v| v.as_u64()),
+        dig(&doc, &["pools", "gpt4o", "members"])
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s[0].get("weight"))
+            .and_then(|v| v.as_u64()),
         Some(3),
-        "the non-default weight lifted to `weights:`"
+        "the member-level weight is carried in place"
     );
     assert!(
-        out.todos
+        dig(&doc, &["pools", "gpt4o", "weights"]).is_none(),
+        "no pool-level `weights:` map is invented"
+    );
+    assert!(
+        !out.changes
             .iter()
-            .any(|t| t.contains("gpt4o-eu") && t.contains("capabilities")),
-        "the capability member is flagged for a hand flatten: {:?}",
+            .any(|c| c.contains("uniform") || c.contains("weights")),
+        "no member-shape change is announced: {:?}",
+        out.changes
+    );
+    assert!(
+        !out.todos.iter().any(|t| t.contains("capabilities")),
+        "no capability todo is raised: {:?}",
         out.todos
     );
 }
@@ -2518,11 +2532,12 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 
 /// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
 /// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, an LLM pool
-/// with RICH weight-only members, and the unreleased `tool_pools:`/`agent_pools:` sections — runs
-/// through `busbar --migrate-config` and the output (a) parses into the 1.6.0 `DeployCfg`, (b)
-/// `config::resolve` + `config_validate::validate` clean, and (c) contains NONE of the deprecated
-/// spellings. This migrate→validate round-trip on a full config is the only thing that proves the
-/// migrator is comprehensive: a code read of what it "thinks" it handles is not enough.
+/// with rich weighted members (still the 1.6.0 grammar, carried through unchanged), and the
+/// unreleased `tool_pools:`/`agent_pools:` sections — runs through `busbar --migrate-config` and the
+/// output (a) parses into the 1.6.0 `DeployCfg`, (b) `config::resolve` + `config_validate::validate`
+/// clean, and (c) contains NONE of the deprecated spellings. This migrate→validate round-trip on a
+/// full config is the only thing that proves the migrator is comprehensive: a code read of what it
+/// "thinks" it handles is not enough.
 #[test]
 fn end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling() {
     let raw = r#"
@@ -2591,7 +2606,7 @@ agent_pools:
     );
 
     // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
-    // `plugin:`/`at:`/rich member/tool_pools would fail HERE).
+    // `plugin:`/`at:`/tool_pools would fail HERE; the rich pool members are valid 1.6.0 grammar).
     let deploy: crate::config::DeployCfg = serde_yaml::from_str(&out.yaml).unwrap_or_else(|e| {
         panic!(
             "migrated config must boot-parse on 1.6.0: {e}\n{}",
