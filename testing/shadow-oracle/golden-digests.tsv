@@ -1,0 +1,10 @@
+# version	asset	sha256
+# Pinned from `gh release view v1.5.5 --repo GetBusbar/busbar --json assets` on 2026-09-04.
+# fetch-golden.sh refuses any download whose digest does not match this file byte for byte.
+1.5.5	busbar-aarch64-apple-darwin.tar.gz	93f8f02a018c0f476c36a84aceb3e851999bee09584114ba01e2a9bd309e3c1b
+1.5.5	busbar-aarch64-unknown-linux-gnu.tar.gz	6f8ab606b81ea8326813a991729fefe237d607c89bbcc433c1d5000a8257c8ac
+1.5.5	busbar-x86_64-apple-darwin.tar.gz	56438c6fcd3ece46bdaa17b49cdcf965697205331842eaeb0dec1d6a36fab9f9
+1.5.5	busbar-x86_64-unknown-linux-gnu.tar.gz	64f0eda182c803ebff691d91e71a2dae468d759d73d646b13a0b1b1df06ddd9d
+1.5.5	busbar-x86_64-pc-windows-msvc.zip	f8aaff4825bb909b9de9b5ce325b0cfbb4c4f4e5f76a45a5c12e9a82fbfd5376
+1.5.5	busbar-openapi-v1.5.5.json	1c1a60798156bf7ca9b99f38852fec36a08de1ad297af9832088fccd9f663c7d
+1.5.5	busbar-v1.5.5.cdx.json	b412f9520bce639220cba8580c1c031d7ce6f69ffbdcfa31e0fb069ed75ba558

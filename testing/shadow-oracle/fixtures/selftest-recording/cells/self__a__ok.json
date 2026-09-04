@@ -1,0 +1,1 @@
+{"applied":["hdr.date","id.wire"],"body":{"json":{"id":"msg_<ID>","ok":true,"usage":{"in":11,"out":7}}},"effects":{"audit":{"added":0},"metrics":{"busbar_requests_total{outcome=\"ok\"}":1},"usage":{"requests":1,"spend_micros":18}},"headers":{"content-type":"application/json"},"status":200}

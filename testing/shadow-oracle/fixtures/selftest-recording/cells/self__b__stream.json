@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"text":"data: {\"delta\":\"hi\"}\n\ndata: [DONE]\n\n"},"effects":{"audit":{"added":0},"metrics":{},"usage":{"requests":1}},"headers":{"content-type":"text/event-stream"},"status":200}
