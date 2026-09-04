@@ -23,6 +23,9 @@
 #                    section noun as a parse target (0 — Stage A landed).
 #   equality         scripts/capability-equality-summary.py reports 0 missing cells (LLM==MCP==A2A true).
 #   isomorphism      the crates/busbar/tests/plane_isomorphism.rs gate is present and green.
+#   parity           testing/shadow-oracle: this build vs the PUBLISHED 1.5.5 binary, 0 divergences
+#                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
+#                    failover, plugins); golden gaps are named, never passes.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -195,6 +198,29 @@ m = [c["capability"] + "/" + c["plane"] for c in d["cells"] if c["state"] == "mi
 print((str(len(m)) + " missing cell(s): " + ", ".join(m)) if m else "0 missing cells")
 sys.exit(1 if m else 0)
 '
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "PARITY — the shadow oracle: this build vs the published 1.5.5 binary (0 divergences)"
+# The user-observable contract: every cell recorded from the released 1.5.5 artifact (by digest)
+# is reproduced by the candidate byte for byte. The golden is recorded once per cells/normalizer
+# revision and cached; the candidate is recorded fresh. A cell the golden could not produce is a
+# NAMED gap in the report, never a pass. SHADOW_ORACLE_GOLDEN may point at an existing recording.
+if [ -x testing/shadow-oracle/replay.sh ]; then
+  step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
+  step "fetch-golden --check (1.5.5 by pinned digest)" bash testing/shadow-oracle/fetch-golden.sh --check
+  ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
+  GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
+  CAND="$ORACLE_DIR/recordings/candidate"
+  if [ ! -s "$GOLDEN/ledger.tsv" ]; then
+    step "record the golden (1.5.5)" bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
+  fi
+  rm -rf "$CAND"
+  step "record the candidate (target/release/busbar)" bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out "$CAND"
+  step "replay: candidate vs golden" bash testing/shadow-oracle/replay.sh --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
+else
+  absent_step "shadow oracle" "testing/shadow-oracle/replay.sh"
+fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

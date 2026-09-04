@@ -1325,6 +1325,82 @@ jobs:
   #
   # It reports ALL offenders (the loop never short-circuits), reads each need's own `result`
   # (never a pipe's exit), and fails once at the end with a count.
+  # SHADOW ORACLE — the parity gate. Records this build against the PUBLISHED 1.5.5 binary (fetched
+  # by pinned sha256, never built from the tag) over every recorded cell family and diffs cell by
+  # cell; any divergence on a 1.5.5-reachable surface is red. FAST tier: it runs on every push, because
+  # a regression that lands on a feature branch is cheapest there. The golden recording is cached by
+  # (asset digest, cells.json, normalizer, oracle config) so it is recorded once per revision of the
+  # oracle itself; the candidate is recorded fresh every run. The candidate is built with the release
+  # public key embedded, exactly as build-artifact.yml builds it — without it every first-party
+  # plugin signature is unverifiable and the plugins family reads red for the wrong reason.
+  shadow-oracle:
+    name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Oracle revision (keys the golden cache)
+        id: rev
+        run: |
+          set -euo pipefail
+          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
+          rev=$(cat testing/shadow-oracle/cells.json testing/shadow-oracle/normalize.py testing/shadow-oracle/capture.py testing/shadow-oracle/capture-exec.py testing/shadow-oracle/oracle-config.sh testing/shadow-oracle/mock-upstream.py testing/shadow-oracle/build-request.py testing/shadow-oracle/record.sh testing/shadow-oracle/scripts/*.sh testing/shadow-oracle/fixtures/*.json | sha256sum | cut -c1-16)
+          echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
+      - name: Cache the golden recording and the 1.5.5 artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/busbar-oracle
+            target/oracle/recordings/golden
+          key: ${{ steps.rev.outputs.key }}
+      - name: The differ can see a diff (replay selftest)
+        run: bash testing/shadow-oracle/replay-selftest.sh
+      - name: Fetch the published 1.5.5 binary and plugins by digest
+        run: |
+          set -euo pipefail
+          bash testing/shadow-oracle/fetch-golden.sh
+          for pl in store-sqlite headroom-hook webrequest-hook auth-oidc auth-ldap auth-github hashicorp-vault store-postgres store-mysql store-valkey; do
+            bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
+          done
+      - name: Build the candidate (release, with the release public key)
+        run: |
+          set -euo pipefail
+          [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
+          cargo build -p busbar --release --locked
+      - name: Both binaries accept the oracle config
+        run: bash testing/shadow-oracle/selftest.sh target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+      - name: Record the golden (once per oracle revision; cached)
+        run: |
+          set -euo pipefail
+          if [ -s target/oracle/recordings/golden/ledger.tsv ]; then echo "golden cached"; exit 0; fi
+          mkdir -p target/oracle/recordings/golden
+          bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out target/oracle/recordings/golden
+      - name: Record the candidate
+        run: |
+          set -euo pipefail
+          rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
+          bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      - name: Replay — candidate vs golden (0 divergences, gaps named)
+        run: bash testing/shadow-oracle/replay.sh --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-oracle-report
+          path: |
+            target/oracle/reports/ci/report.md
+            target/oracle/reports/ci/report.json
+            target/oracle/reports/ci/diverging.txt
+            target/oracle/reports/ci/owed-gaps.txt
+            target/oracle/reports/ci/ledger.tsv
+          if-no-files-found: warn
+
   ci-umbrella:
     name: ci umbrella
     if: always()
@@ -1344,6 +1420,7 @@ jobs:
       - timing
       - windows
       - perf-build-gate
+      - shadow-oracle
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -1359,6 +1436,7 @@ jobs:
         config-stability|fast|${{ needs.config-stability.result }}
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
         public-hygiene|fast|${{ needs.public-hygiene.result }}
+        shadow-oracle|fast|${{ needs.shadow-oracle.result }}
         openapi-schema|full|${{ needs.openapi-schema.result }}
         migration-corpus|full|${{ needs.migration-corpus.result }}
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
