@@ -995,12 +995,12 @@ pub(crate) async fn forward_once(
             // ONE registry-resolved factory, IDENTICAL to the hot `forward_with_pool` path (extracted
             // so the two cannot drift): cross-protocol SSE builds the reframing translator,
             // same-protocol SSE the verbatim same-proto translator (byte-exact re-emit + IR usage
-            // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough.
-            let translate = busbar_substrate::proto::new_stream_translator(
-                ingress_protocol,
-                egress_name,
-                is_sse,
-            );
+            // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough. Named directly
+            // from this crate rather than through the substrate's installable pointer, for the
+            // reason given at the hot-path site: an uninstalled pointer yields `None` and silently
+            // drops both the reframing and the stream-end metering.
+            let translate =
+                crate::proto_stream::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
                     busbar_substrate::proto::decl_for(ingress_protocol)

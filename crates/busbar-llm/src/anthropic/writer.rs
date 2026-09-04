@@ -458,13 +458,14 @@ impl ProtocolWriter for AnthropicWriter {
                 msg_obj.insert("id".to_string(), serde_json::json!(msg_id));
                 msg_obj.insert("type".to_string(), serde_json::json!("message"));
                 msg_obj.insert("role".to_string(), serde_json::json!(role_str));
-                // model: same conformance class as the non-stream `write_response` writer — an EMPTY
-                // string is never a valid model id, so rather than emit `"model": ""` when the
-                // cross-protocol source carried no model we OMIT the key. When a model IS present it
-                // is emitted verbatim to populate the assembled streaming Message.
-                if let Some(model_str) = model.as_deref() {
-                    msg_obj.insert("model".to_string(), serde_json::json!(model_str));
-                }
+                // model: same conformance class as the non-stream `write_response` writer — the SDK
+                // types `message_start.message.model` as a REQUIRED non-optional string and reads it to
+                // populate the assembled streaming Message. Emit it UNCONDITIONALLY (empty-string
+                // fallback when the cross-protocol source didn't carry a model), so the skeleton is
+                // structurally valid rather than dropping a mandatory field. This is the published
+                // wire shape and must stay byte-identical to it.
+                let model_str = model.as_deref().unwrap_or("");
+                msg_obj.insert("model".to_string(), serde_json::json!(model_str));
                 msg_obj.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
                 msg_obj.insert("stop_reason".to_string(), serde_json::Value::Null);
                 msg_obj.insert("stop_sequence".to_string(), serde_json::Value::Null);
@@ -805,17 +806,15 @@ impl ProtocolWriter for AnthropicWriter {
         obj.insert("type".to_string(), serde_json::json!("message"));
         obj.insert("role".to_string(), serde_json::json!("assistant"));
 
-        // model: the official SDKs type `Message.model` as a non-optional string, but an EMPTY
-        // string is never a valid model id — emitting `"model": ""` is both a lie and a proxy tell.
-        // On a cross-protocol path where the egress reader didn't populate `resp.model` (notably
-        // Bedrock/Gemini→Anthropic, whose `read_response` may not surface a model) we therefore OMIT
-        // the key rather than emit an empty placeholder. This round-trips cleanly: the Anthropic
-        // reader maps an absent model to `None` (same as it already maps `""` to `None`), and this
-        // writer runs ONLY on the cross-protocol translate path, so no same-protocol relay is
-        // affected. When the source DID carry a model it is emitted verbatim.
-        if let Some(model) = resp.model.as_deref() {
-            obj.insert("model".to_string(), serde_json::json!(model));
-        }
+        // model: the official SDKs type `Message.model` as a REQUIRED non-optional string, so a body
+        // that omits it fails to decode (Pydantic/Zod validation error). Emit it UNCONDITIONALLY,
+        // mirroring the `id` handling above. On a cross-protocol path where the egress reader didn't
+        // populate `resp.model` (notably Bedrock/Cohere→Anthropic, whose `read_response` may not
+        // surface a model), fall back to an empty string so the key is always present and
+        // structurally valid rather than dropping it — the published wire shape, kept
+        // byte-identical. Same-protocol passthrough preserves the upstream value verbatim.
+        let model = resp.model.as_deref().unwrap_or("");
+        obj.insert("model".to_string(), serde_json::json!(model));
 
         // content blocks
         let content_array: Vec<serde_json::Value> = resp.content.iter().map(write_block).collect();

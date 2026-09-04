@@ -1,1 +1,1 @@
-{"content":[{"text":"hello","type":"text"}],"id":"msg_01NORMALIZED","role":"assistant","stop_reason":"tool_use","stop_sequence":null,"type":"message","usage":{"input_tokens":10,"output_tokens":5}}
+{"content":[{"text":"hello","type":"text"}],"id":"msg_01NORMALIZED","model":"","role":"assistant","stop_reason":"tool_use","stop_sequence":null,"type":"message","usage":{"input_tokens":10,"output_tokens":5}}

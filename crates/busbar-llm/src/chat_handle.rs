@@ -367,15 +367,11 @@ impl IrHandle for ChatRespHandle {
     fn billing(&self) -> Option<Billing> {
         chat_usage(&self.0)
     }
-    fn fill_response_model_if_absent(&mut self, model: &str) {
-        // Fill-ONLY: the upstream 2xx body carried no model (e.g. a Gemini `generateContent`
-        // response with no `modelVersion`), so stamp the routed lane wire model the proxy KNOWS it
-        // served. NEVER override a model the upstream actually reported — only replace `None`, and
-        // never with an empty string (an empty lane model is treated as "nothing to fill").
-        if self.0.model.is_none() && !model.is_empty() {
-            self.0.model = Some(model.to_string());
-        }
-    }
+    // `fill_response_model_if_absent` is deliberately NOT overridden (the trait default is a no-op):
+    // a cross-protocol response whose upstream body carried no model reaches the ingress writer
+    // with `model = None`, and each writer renders its own native shape for that (anthropic `""`,
+    // openai/responses their default model name, cohere/gemini omit the key). Stamping the routed
+    // lane's config name here changed the client-visible body against the published wire.
     fn prepare_for_ingress(&mut self, ingress_protocol: &str, now_epoch: u64) {
         chat_prepare_for_ingress(&mut self.0, ingress_protocol, now_epoch);
     }

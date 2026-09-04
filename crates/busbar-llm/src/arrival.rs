@@ -423,35 +423,29 @@ async fn bedrock_invoke(
 // → `set_test_body_ingress`), the byte-identical successor to the pre-relocation in-core body arrival.
 
 /// Shared body-model arrival: resolve the operation for `proto` off the endpoint, then run the one
-/// engine. A body whose operation the dialect does not serve is the honest pre-routing 404 (accounted
-/// through `finish_rejected`, like every other pre-routing reject).
+/// engine. A path the dialect names NO operation for is not a request at all: it gets the plain
+/// path-shaped 404 the catch-all uses and is never accounted (1.5.5 did exactly this; the
+/// dialect-shaped "does not support that operation" reject is reserved for a RESOLVED operation
+/// the dialect holds no handler for, inside `operation_ingress`).
 async fn body_arrival(proto: &'static str, a: Arrival) -> Response {
     let Arrival {
         host,
         ctx,
-        path: _,
+        path,
         model_hint,
         uri,
         headers,
         body,
     } = a;
-    let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
     let Some(operation) =
         request_handler(proto).and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
-        return host.finish_rejected(
+        return host.fallback_not_found(
             &ctx,
-            proto,
-            POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            host.ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                host.kind_not_found(),
-                "This endpoint does not support that operation.",
-            ),
+            &path,
+            StatusCode::NOT_FOUND,
+            host.err_type_not_found(),
+            "the requested resource was not found",
         );
     };
     // `model_hint` carries the busbar convenience surfaces' PATH-borne routing name (`named`/`adhoc`);

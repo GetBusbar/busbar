@@ -2786,7 +2786,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
                 // bypass), cross-protocol builds the reframing translator, `!is_sse`/unknown-protocol
                 // yields `None` → legacy raw-chunk passthrough.
-                let translate = busbar_substrate::proto::new_stream_translator(
+                //
+                // Named DIRECTLY from this crate, not through the substrate's installable
+                // `new_stream_translator` pointer: that seam exists for consumers outside the dialect
+                // crate, and when nothing has installed it (a production composition root that never
+                // wires it) it silently returns `None`, which turns EVERY streaming response into a
+                // raw passthrough — no cross-protocol reframing, no usage tap, and therefore no
+                // stream-end metering. The engine lives beside the concrete translator, so it must
+                // never depend on that install having happened.
+                let translate = crate::proto_stream::new_stream_translator(
                     ingress_protocol,
                     egress_name_for_translate,
                     is_sse,

@@ -206,9 +206,6 @@ mod request_short_circuit_tests;
 #[path = "tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
 #[cfg(test)]
-#[path = "tests/response_model_fill_tests.rs"]
-mod response_model_fill_tests;
-#[cfg(test)]
 #[path = "tests/runtime_carry_tests.rs"]
 mod runtime_carry_tests;
 #[cfg(test)]
