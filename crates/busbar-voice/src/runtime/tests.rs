@@ -44,6 +44,7 @@ fn core_with_downlink(
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
         lease,
+        None,
         Arc::new(crate::runtime::tools::EchoToolExecutor),
         carrier,
         None,
@@ -459,6 +460,48 @@ fn session_scope_reattach_and_foreign_owner_refusal() {
     assert!(
         alice.get().is_none(),
         "closed session is gone from the working set"
+    );
+}
+
+#[test]
+fn session_scope_rtc_call_id_correlation_is_owner_gated_and_durable() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    let alice = SessionHandle::bind(Arc::clone(&engine), "alice", "call-1");
+    alice.open(1).expect("alice opens her session");
+    assert_eq!(
+        alice.get().and_then(|r| r.rtc_call_id),
+        None,
+        "no correlation key until the SDP broker sets it"
+    );
+
+    // The SDP broker stamps the provider's rtc_<call_id> preserved from the Location header.
+    alice
+        .set_rtc_call_id("rtc_abc123", 2)
+        .expect("owner stamps the correlation key");
+    assert_eq!(
+        alice.get().and_then(|r| r.rtc_call_id).as_deref(),
+        Some("rtc_abc123"),
+        "the correlation key is durable on the row"
+    );
+
+    // It survives a subsequent turn checkpoint (the mutate clones the live row).
+    alice.bump_turn(3).expect("owner bump");
+    let row = alice.get().expect("row present");
+    assert_eq!(row.turns, 1);
+    assert_eq!(
+        row.rtc_call_id.as_deref(),
+        Some("rtc_abc123"),
+        "a turn bump preserves the correlation key"
+    );
+
+    // A foreign owner cannot stamp a correlation key — the same indistinguishable refusal.
+    let mallory = SessionHandle::bind(Arc::clone(&engine), "mallory", "call-1");
+    assert!(
+        matches!(
+            mallory.set_rtc_call_id("rtc_evil", 4),
+            Err(ScopedMutateError::NotYours)
+        ),
+        "a foreign owner cannot forge the media correlation"
     );
 }
 

@@ -53,6 +53,15 @@ pub mod runtime;
 #[cfg(feature = "runtime")]
 pub mod topology;
 
+/// THE DATA-ROUTE MOUNT — the voice plane's `PLANE_DECL` `routes` / `claims` / `admission` / `build`
+/// hooks and the neutral handlers behind them (see [`mount`]). Behind the `runtime` feature because the
+/// route handlers open governed sessions through the T2 topologies (`crate::topology`, itself
+/// runtime-gated); the default feature-off build mounts nothing and keeps the byte-unchanged
+/// `PLANE_DECL` (the hooks stay empty/`None`, wired through the [`VOICE_CLAIMS`] / [`VOICE_ADMISSION`] /
+/// [`VOICE_BUILD`] / [`VOICE_ROUTES`] cfg-split consts, exactly as [`VOICE_BUILD_RUNTIME`] is).
+#[cfg(feature = "runtime")]
+pub mod mount;
+
 /// THE `PLANE_DECL.build_runtime` VALUE — wired to the real runtime constructor
 /// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` when the feature is off so the
 /// default `PLANE_DECL` is byte-unchanged. Split by `cfg` because the
@@ -77,6 +86,65 @@ const VOICE_BUILD_RUNTIME: Option<
     ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 > = None;
 
+// ── THE DATA-ROUTE MOUNT HOOKS — cfg-split exactly as `VOICE_BUILD_RUNTIME`, so the default
+// (feature-off) `PLANE_DECL` is BYTE-UNCHANGED (claims empty, admits no one, builds no slot, mounts no
+// route) and the `runtime` build wires the real neutral hooks in `crate::mount`. Route-mounting the
+// pump needs the T2 topologies (runtime-gated) to open governed sessions, so these arm in lock-step
+// with the runtime — a plane installed at boot (only under `plane-voice`, which turns on
+// `busbar-voice/runtime`) both mounts and admits, keeping the ratchet's "mounted ⇒ admitted" true.
+
+/// `PLANE_DECL.build` — construct the per-generation dispatch slot from `public_url` (the audience),
+/// `crate::mount::voice_build` with the feature on; `|_| None` (no slot) with it off.
+#[cfg(feature = "runtime")]
+const VOICE_BUILD: fn(
+    &busbar_substrate::plane::registry::BuildCtx,
+) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = mount::voice_build;
+#[cfg(not(feature = "runtime"))]
+const VOICE_BUILD: fn(
+    &busbar_substrate::plane::registry::BuildCtx,
+) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = |_ctx| None;
+
+/// `PLANE_DECL.claims` — the one audience-checked base the plane answers on, or nothing off-feature.
+#[cfg(feature = "runtime")]
+const VOICE_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = mount::voice_claims;
+#[cfg(not(feature = "runtime"))]
+const VOICE_CLAIMS: fn(&dyn std::any::Any) -> Vec<(String, &'static str)> = |_slot| Vec::new();
+
+/// `PLANE_DECL.admission` — the RFC 8707 audience bound from `public_url`, or `None` off-feature.
+#[cfg(feature = "runtime")]
+const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
+    mount::voice_admission;
+#[cfg(not(feature = "runtime"))]
+const VOICE_ADMISSION: fn(&dyn std::any::Any) -> Option<busbar_substrate::plane::PlaneAdmission> =
+    |_slot| None;
+
+/// `PLANE_DECL.routes` — the four neutral ingress routes, or `None` (no data path) off-feature.
+#[cfg(feature = "runtime")]
+#[allow(clippy::type_complexity)]
+const VOICE_ROUTES: Option<
+    fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>,
+> = Some(mount::voice_routes);
+#[cfg(not(feature = "runtime"))]
+#[allow(clippy::type_complexity)]
+const VOICE_ROUTES: Option<
+    fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>,
+> = None;
+
+/// `PLANE_DECL.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
+/// binds ([`mount::voice_hydrate`]); `None` off-feature so the default decl is byte-unchanged.
+#[cfg(feature = "runtime")]
+const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> =
+    Some(mount::voice_hydrate);
+#[cfg(not(feature = "runtime"))]
+const VOICE_HYDRATE: Option<busbar_substrate::plane::registry::BootHook> = None;
+
+/// `PLANE_DECL.start` — the post-listener boot step ([`mount::voice_start`]); `None` off-feature so the
+/// default decl is byte-unchanged.
+#[cfg(feature = "runtime")]
+const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = Some(mount::voice_start);
+#[cfg(not(feature = "runtime"))]
+const VOICE_START: Option<busbar_substrate::plane::registry::BootHook> = None;
+
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
 /// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_DECL`] wire formats.
 pub const OPENAI_REALTIME: &str = "openai_realtime";
@@ -91,13 +159,49 @@ pub const GEMINI_LIVE: &str = "gemini_live";
 /// the A2A discipline — a plane earns a superset at its SECOND wire format and not before.
 const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 
+/// THE VOICE PLANE'S PROVIDER-FACING BEARER — the ONE construction that plans the provider-facing
+/// `Authorization: Bearer <credential>` from the RESOLVED provider-credential string, and NEVER a
+/// caller/governance token passed through. Both [`voice_egress_auth_headers`] (the
+/// `egress_auth_headers` decl) and the LIVE one-shot serving passes ([`mount::serve_sdp`]) authenticate
+/// the provider hop through THIS function, so the lane-constant builder the `egress_tests` battery
+/// proves is the SAME code the live SDP broker runs — the tested builder IS the live credential path.
+/// It authenticates busbar's OWN authority to the provider (the real provider key on the broker hop),
+/// never the caller's inbound bearer (which the Auth plugin already consumed at the door).
+///
+/// NOTE — the SDP broker authenticates with the PROVIDER key (busbar brokers the call server-side).
+/// An `ek_`-RELAY model (forward the browser's ephemeral secret as the upstream credential) is a
+/// distinct protocol shape: it needs a resolved `ek_` source — the inbound `RouteAuth::Key`
+/// `Authorization` slot carries the caller's GOVERNANCE key (forwarding it upstream would leak
+/// busbar's own authority), so an `ek_` relay would have to arrive on a non-`Authorization` inbound
+/// slot or be minted+persisted server-side. That is a flagged protocol follow-on, not this hop.
+pub(crate) fn voice_provider_bearer(
+    key: &str,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    busbar_substrate::proto::bearer_auth_headers(OPENAI_REALTIME, key)
+}
+
+/// `ProtocolDecl::egress_auth_headers` — the plain-Bearer arm of `busbar-llm`'s OpenAI dialect (the
+/// Bedrock module hands in its SigV4 signer the same way). A pure function of the resolved credential
+/// string (it reads nothing off the [`SigningContext`]), so [`DECLS`] declares it LANE-CONSTANT.
+fn voice_egress_auth_headers(
+    key: &str,
+    _ctx: &busbar_substrate::proto::SigningContext,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    voice_provider_bearer(key)
+}
+
 /// THE VOICE PLANE'S DECLARATION — a `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). It declares the plane's identity
-/// (key, config section, audit kind, wire formats) and — at M5 — is INSTALLED at boot behind the
-/// `plane-voice` feature, with `build_runtime` wired to the real runtime constructor. The remaining
-/// boot-mounting hooks (`claims` / `admission` / `build` / `routes` / handler) still return EMPTY/`None`:
-/// route-mounting the feature-gated topology entry into the composition root is follow-on work. The
-/// neutral registry unions this without naming it (the MCP/A2A precedent).
+/// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-voice`
+/// feature with `build_runtime` wired to the real runtime constructor, and — behind the `runtime`
+/// feature (which `plane-voice` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
+/// `public_url`, `claims`/`admission` bind the plane's RFC 8707 audience, and `routes` mounts the four
+/// ingress doors (see [`mount`]), and the BOOT hooks `hydrate` / `start` rehydrate the durable session
+/// working-set before the listener and confirm readiness after. What stays `None` is the `ProtocolDecl`
+/// `handler`: a long-lived duplex SESSION is not a one-shot `RequestHandler` (whose `OperationHandler`
+/// cells are request→response codecs), so the session driver lives in the plane's own runtime
+/// (`crate::topology`) over the neutral pump, not on that field. The neutral registry unions this
+/// without naming it (the MCP/A2A precedent).
 pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
     busbar_substrate::plane::registry::PlaneDecl {
         key: "voice",
@@ -118,17 +222,23 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         audit_kind: "voice_session",
         // TWO dialects ⇒ superset IR, DERIVED from this list's length (see VOICE_WIRE_FORMATS).
         wire_format_names: || VOICE_WIRE_FORMATS,
-        // NOT YET MOUNTED: the runtime engine exists (`crate::runtime`, behind the `runtime` feature),
-        // but this decl still mounts nothing and admits no one at boot — route-mounting the pump /
-        // session-open through `run_gauntlet_session` is follow-on work (`plane4-duplex-session.md` §8).
-        claims: |_slot| Vec::new(),
-        admission: |_slot| None,
-        build: |_ctx| None,
-        routes: None,
+        // MOUNTED (behind `runtime`): the plane builds its dispatch slot from `public_url`, claims its
+        // one audience-checked base (`/v1/realtime`), binds that audience, and mounts the four ingress
+        // routes whose handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
+        // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
+        // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
+        // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
+        claims: VOICE_CLAIMS,
+        admission: VOICE_ADMISSION,
+        build: VOICE_BUILD,
+        routes: VOICE_ROUTES,
         admin_routes: None,
         openapi: None,
-        hydrate: None,
-        start: None,
+        // BOOT hooks — rehydrate the durable session working-set before the listener, then the
+        // post-listener readiness step. Wired behind `runtime` (see [`VOICE_HYDRATE`] / [`VOICE_START`]);
+        // `None` off-feature so the default decl is byte-unchanged.
+        hydrate: VOICE_HYDRATE,
+        start: VOICE_START,
         config_validate: None,
         card_signing_domain: None,
         card_kid_prefix: None,
@@ -148,9 +258,8 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         lower_endpoint: None,
         // RUNTIME HOOK — wired to the real per-generation runtime constructor behind the `runtime`
         // feature (see [`VOICE_BUILD_RUNTIME`]); `None` when the feature is off so the default build is
-        // byte-unchanged. The remaining boot-mounting hooks (`build` / `hydrate` / `start`) stay `None`:
-        // route-mounting the topology entry needs the host route/admission seam, follow-on work outside
-        // this crate's scope (see the T2 report).
+        // byte-unchanged. The DATA-plane hooks (`build` / `claims` / `admission` / `routes`) and the
+        // BOOT hooks (`hydrate` / `start`) are wired too (see [`mount`]) — all behind `runtime`.
         build_runtime: VOICE_BUILD_RUNTIME,
         viewer: None,
         retain_verify_gates: None,
@@ -190,8 +299,13 @@ pub static DECLS: busbar_substrate::proto::ProtocolDecl = busbar_substrate::prot
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
     ingress_auth: busbar_substrate::proto::IngressAuth::Bearer,
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
+    // THE ONE EGRESS CREDENTIAL MECHANISM: the provider bearer / WebRTC `ek_` / telephony carrier
+    // credential is planned onto the dial's headers HERE, never a caller token passed through (see
+    // [`voice_egress_auth_headers`]). LANE-CONSTANT: the builder is a pure function of the resolved
+    // credential string and reads nothing off the `SigningContext`, so the boot path may prebuild the
+    // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
+    egress_auth_headers: Some(voice_egress_auth_headers),
+    egress_auth_lane_constant: true,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
     // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`

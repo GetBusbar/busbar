@@ -207,3 +207,10 @@ fn build_runtime_with_metering(
 
 #[cfg(test)]
 mod tests;
+
+// THE VOICE D2 LEASE BILLING ORACLE — the voice money-path byte/scalar-pinned regression backstop, the
+// sibling of the LLM-plane money oracles. A single end-to-end reserve → settle → exhaust → hard-close
+// sequence with every nanodollar scalar pinned.
+#[cfg(test)]
+#[path = "voice_d2_billing_oracle.rs"]
+mod voice_d2_billing_oracle;

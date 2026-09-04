@@ -45,12 +45,14 @@ use std::path::{Path, PathBuf};
 
 /// The doctrine's plane list, verbatim: three protocols, and the two bidirectional ones counted in
 /// both directions. A matrix missing a plane is not a smaller matrix, it is a different claim.
-const PLANES: [&str; 5] = [
+const PLANES: [&str; 7] = [
     "llm",
     "mcp-client",
     "mcp-server",
     "a2a-client",
     "a2a-server",
+    "voice-client",
+    "voice-server",
 ];
 
 /// M0 TOTALITY CROSS-CHECK — a SEPARATE axis from the pinned directional `PLANES` above.
@@ -63,19 +65,16 @@ const PLANES: [&str; 5] = [
 /// carries maps to ZERO columns — a plane that reaches the workspace and then answers to nothing is
 /// tracked by no cell, the silent hole the whole file exists to refuse.
 ///
-/// `voice` (busbar-voice, Plane 4) is a skeleton crate not yet split into client/server directions;
-/// it is pinned here to its own pending [`VOICE_PENDING_COLUMN`] so the ledger already names it the
-/// day it lands. Every OTHER mapped column must be a real declared ledger plane.
+/// `voice` (busbar-voice, Plane 4) is armed: it answers to two REAL directional ledger columns —
+/// `voice-client` (the dialed provider WSS + telephony media egress) and `voice-server` (the inbound
+/// session-open front door: browser sideband WS + telephony media webhook) — exactly as the two
+/// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
 const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("llm", &["llm"]),
     ("mcp", &["mcp-client", "mcp-server"]),
     ("a2a", &["a2a-client", "a2a-server"]),
-    ("voice", &[VOICE_PENDING_COLUMN]),
+    ("voice", &["voice-client", "voice-server"]),
 ];
-
-/// Voice's column does not yet exist in the directional ledger (the crate is a skeleton); it is
-/// pinned as a pending identity so the totality check has a non-empty answer for voice today.
-const VOICE_PENDING_COLUMN: &str = "voice";
 
 /// Floor on the capability axis. Sized below today's real number (13) so an ordinary addition does
 /// not trip it, and well above zero so a file that quietly lost its rows cannot report equality of
@@ -318,10 +317,12 @@ fn the_gates_own_constants_are_the_doctrines() {
             "mcp-client",
             "mcp-server",
             "a2a-client",
-            "a2a-server"
+            "a2a-server",
+            "voice-client",
+            "voice-server"
         ],
-        "the plane list is the owner's ruling (LLM == MCP == A2A, both directions of the \
-         bidirectional two); changing it is a doctrine change, not a refactor"
+        "the plane list is the owner's ruling (LLM == MCP == A2A == VOICE, both directions of the \
+         bidirectional three); changing it is a doctrine change, not a refactor"
     );
     const {
         assert!(MIN_CAPABILITIES >= 12 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
@@ -380,12 +381,9 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
         );
         match map.get(key.as_str()) {
             Some(cols) if !cols.is_empty() => {
-                // Every mapped column must be a real ledger plane, EXCEPT voice's pending column
-                // (the crate is a skeleton; its directional identity is not yet in the ledger).
+                // Every mapped column must be a real declared ledger plane (voice is armed: its
+                // voice-client / voice-server columns are real ledger planes like the other two).
                 for &col in *cols {
-                    if col == VOICE_PENDING_COLUMN {
-                        continue;
-                    }
                     assert!(
                         ledger_columns.contains(col),
                         "plane crate busbar-{key} maps to column `{col}`, which is not a declared \

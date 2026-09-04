@@ -790,13 +790,21 @@ dependencies = [
  "axum",
  "busbar-api",
  "busbar-core",
+ "busbar-plugin",
+ "busbar-plugin-sign",
  "busbar-substrate",
  "bytes",
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "metrics",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

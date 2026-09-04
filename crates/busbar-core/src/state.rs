@@ -144,7 +144,7 @@ pub struct App {
     /// `agent_pools` field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its `<section>.pools:` set (member selection derives lanes from member position). Read
     /// on the plane's submission/route path through [`App::plane_pools`]. (The MCP `tool_pools:` set
-    /// keeps its own dedicated field + 3-tuple `tool_pool_members` seam, which also carries the pool's
+    /// keeps its own dedicated field + 3-tuple `pool_members_repeatable` seam, which also carries the pool's
     /// `repeatable:` list.)
     // Read on a plane's route/admission path; with `plane-a2a` off (and MCP on) it is never read.
     #[allow(dead_code)]

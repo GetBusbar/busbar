@@ -643,7 +643,7 @@ impl AuthMiddleware {
     /// deliberately does NOT read any `x-amz-*` / SigV4 `Authorization` header — a non-Bearer
     /// `Authorization` (AWS4-HMAC-SHA256 or Basic) falls through to the vendor carriers and otherwise
     /// yields `None` here. Inbound SigV4 is now handled SEPARATELY, under governance, by
-    /// `verify_bedrock_sigv4` (the MinIO/S3-compatible model: an AWS-style access-key-id + secret
+    /// `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style access-key-id + secret
     /// access key issued per virtual key, whose signature busbar verifies via `crate::sigv4`). On a
     /// successful verify the same `GovCtx` a bearer auth attaches is attached, so Bedrock ingress now
     /// receives full virtual-key governance under `token`/governance mode — it no longer requires
@@ -1627,13 +1627,13 @@ pub(crate) async fn auth_middleware(
         // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
         // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
         // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
-        // `verify_bedrock_sigv4` already does below (its own parse, and its own presence checks
+        // `verify_sigv4_ingress_credential` already does below (its own parse, and its own presence checks
         // on these same two headers) — a reordering, not a new check — so it removes the trivial
         // `AWS4-HMAC-SHA256 x` attacker (who reaches the buffer today) before a single body byte
         // is read. All three conditions are STRUCTURAL and attacker-known (the attacker can
         // trivially satisfy all three), so this is not an oracle: it never depends on whether an
         // AccessKeyId is valid — gating on that would leak validity through a read/no-read signal
-        // and reintroduce the enumeration oracle `verify_bedrock_sigv4` spends a dummy secret to
+        // and reintroduce the enumeration oracle `verify_sigv4_ingress_credential` spends a dummy secret to
         // avoid.
         let auth_value = req
             .headers()
@@ -1672,7 +1672,7 @@ pub(crate) async fn auth_middleware(
         // Governance is always constructed (RAM by default); if somehow absent there is no store
         // to resolve the SigV4 credential against → fail closed.
         match app.governance.as_deref() {
-            Some(gov) => match verify_bedrock_sigv4(gov, &req, &body_bytes) {
+            Some(gov) => match verify_sigv4_ingress_credential(gov, &req, &body_bytes) {
                 Ok(key) => ChainVerdict::Identified {
                     module: crate::config::KEYS_MODULE.to_string(),
                     principal: principal_from_vkey(&key),
@@ -1884,7 +1884,7 @@ fn canonical_query_string(query: Option<&str>) -> String {
 /// still run the full constant-time signature verification against a fixed DUMMY secret, so the
 /// unknown-key path and the wrong-signature path do the same work and reject identically. A DISABLED
 /// key likewise still verifies before rejecting, so "disabled" is not distinguishable from "bad sig".
-fn verify_bedrock_sigv4(
+fn verify_sigv4_ingress_credential(
     gov: &crate::governance::GovState,
     req: &Request<Body>,
     body: &[u8],

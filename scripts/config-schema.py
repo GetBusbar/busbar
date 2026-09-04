@@ -139,6 +139,14 @@ SOURCES = [
     # declaration that decides whether an operation with effects may be performed twice — would be
     # free to change without the additive-only gate noticing.
     f"{CORE}/failover/mod.rs",
+    # `streams:` — the voice plane's config grammar, the fourth plane noun beside `pools:` / `tools:` /
+    # `agents:`. Tracked at its home (`busbar-voice`) for the same reason as every entry above: the
+    # neutral `StreamsSection` FIELD on `DeployCfg` already appears in the snapshot, but without this
+    # line its per-key grammar — the three plane-imposed session CEILINGS (wall-clock, context window,
+    # per-response output tokens) that bound what a live-voice deployment may ever hold — would be an
+    # opaque string free to change without the additive-only gate noticing. Frozen exactly as `mcp/` and
+    # `a2a/` are.
+    "crates/busbar-voice/src/config.rs",
 ]
 
 

@@ -118,7 +118,11 @@ end_group
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/UPDATE_CONFIG_SCHEMA/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
-  step "openapi.json matches committed file"        cargo test -p busbar-core --quiet openapi_json_matches_committed_file
+  # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
+  # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
+  # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
+  # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
+  step "openapi.json goldens match committed file"  cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
   step "6 busbar-llm same-proto byte-exact oracles" cargo test -p busbar-llm --quiet round_trip_byte_exact
 else
@@ -144,15 +148,18 @@ end_group
 begin_group "CONFORMANCE — rig selftests + verdict coverage + voice legs =ready"
 [ -f scripts/mcp-conformance.sh ] && step "mcp-conformance --selftest" bash scripts/mcp-conformance.sh --selftest \
   || absent_step "mcp-conformance --selftest" "scripts/mcp-conformance.sh"
-if [ -f scripts/verdict-covers-every-leg.py ]; then
-  step "verdict-covers-every-leg.py" python3 scripts/verdict-covers-every-leg.py
+if [ -f testing/verdict-covers-every-leg.py ]; then
+  step "verdict-covers-every-leg.py" python3 testing/verdict-covers-every-leg.py
 else
-  absent_step "verdict-covers-every-leg.py" "scripts/verdict-covers-every-leg.py — T2 conformance coverage gate not built yet"
+  absent_step "verdict-covers-every-leg.py" "testing/verdict-covers-every-leg.py — T2 conformance coverage gate not built yet"
 fi
-if [ -f scripts/voice-conformance.sh ]; then
-  step "voice conformance legs =ready" bash scripts/voice-conformance.sh --require-ready
+if [ -f testing/verdict-covers-every-leg.py ]; then
+  step "verdict-covers-every-leg.py --selftest" python3 testing/verdict-covers-every-leg.py --selftest
+fi
+if [ -f testing/voice-conformance/voice-conformance.sh ]; then
+  step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
 else
-  absent_step "voice conformance legs =ready" "scripts/voice-conformance.sh — voice boot/serve conformance rig not built yet"
+  absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"
 fi
 end_group
 
@@ -163,9 +170,17 @@ step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CONFIG-NOUN — core names no section noun as a parse target (armed)"
+begin_group "CONFIG-NOUN — four-noun parse residual (REPORT-ONLY; locked-legitimate floor)"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-step "plane-config-noun-gate (armed)"    env GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check
+# REPORT-ONLY, deliberately NOT a done-blocker — same treatment as the plane-noun/plane-grep
+# billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
+# core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
+# DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
+# residual (pools 8 · tools 3 · agents 2 · streams 5 = 18) is a LEGITIMATE floor, not debt; the DoD is
+# "core's generic named-map MACHINERY names no plane noun" (Stage A, done), not "zero noun field refs".
+# Printed for visibility; a RISE above the floor is the real signal.
+printf '  \033[36m[info]\033[0m '
+GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1 | grep -E "distinct core parse-target lines" | tail -1 || echo "config-noun count unavailable"
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

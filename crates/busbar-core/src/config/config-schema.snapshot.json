@@ -2050,6 +2050,29 @@
       "kind": "struct",
       "transparent": false
     },
+    "StreamsCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "context_window_tokens": {
+          "optional": true,
+          "type": "u32"
+        },
+        "max_output_tokens": {
+          "optional": true,
+          "type": "u32"
+        },
+        "session": {
+          "optional": true,
+          "type": "SessionConfig"
+        },
+        "session_max_secs": {
+          "optional": true,
+          "type": "u32"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "TaskSupport": {
       "deny_unknown_fields": false,
       "kind": "enum",

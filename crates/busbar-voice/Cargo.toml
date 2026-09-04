@@ -82,6 +82,28 @@ serde_yaml = { workspace = true }
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optional = true }
+# THE NEUTRAL ROUTE-ENUM ABI (`RouteAuth`/`RouteMethod`) the plane names to describe its data routes as
+# `PlaneRouteSpec`s (`PLANE_DECL.routes`), the SAME crate busbar-a2a names for its own routes. OPTIONAL,
+# pulled only by `runtime`: the default feature-off build mounts no routes and names no route enum.
+busbar-plugin = { path = "../busbar-plugin", optional = true }
+# `url` — ONE reading of the deployment's `public_url` into the plane's RFC 8707 audience + metadata URL
+# (`crate::mount::absolute`, the A2A `serve::absolute` discipline). OPTIONAL, pulled only by `runtime`.
+url = { workspace = true, optional = true }
+# `tracing` — the boot `hydrate` / `start` hooks log the durable-session restore outcome (counts, and a
+# per-row unreadable warning) exactly as the A2A / MCP boot hooks do. OPTIONAL, pulled only by `runtime`
+# (the boot hooks arm with the live session runtime); the default feature-off build wires no boot hook.
+tracing = { workspace = true, optional = true }
+# The egress request/response vocabulary the concrete HTTPS token minter names to drive the substrate
+# egress engine: `http::Request`/`Response`, the `Full<Bytes>` request body, and the `Incoming` body
+# reader. OPTIONAL, pulled only by `runtime` (the minter compiles with the rest of the async topology).
+http = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+# The neutral telemetry recorder the front-door session-open counter emits into
+# (`busbar_plane_requests_total`, plane = voice) — the SAME `metrics` crate the substrate's
+# `upstream_attempt_on` emit names, so voice counts on the family without reaching into `busbar-core`.
+# OPTIONAL, pulled only by `runtime` (the mount that emits is runtime-gated).
+metrics = { workspace = true, optional = true }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
@@ -92,7 +114,7 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time"], optiona
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "busbar-substrate/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:busbar-plugin", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-substrate/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
@@ -101,4 +123,10 @@ openapi-schema = ["busbar-substrate/openapi-schema"]
 # Pulls busbar-core (the optional dep). The plane's future `&App`-typed test helpers / dual-compile
 # plane tests name `busbar_core::…`, so this feature is the one edge that puts busbar-core in the
 # closure — the default/prod build has none.
-test-support = ["dep:busbar-core"]
+test-support = ["dep:busbar-core", "busbar-core/test-support"]
+
+[dev-dependencies]
+# TEST MACHINERY ONLY: the hooks-gate / hooks-tap acceptance batteries name `busbar_plugin_sign::HookNeeds`
+# to load the hermetic `busbar-hook-test-plugin` cdylib through the real scan/trust/load pipeline (the
+# SAME harness the MCP/A2A hook batteries use). Absent from every shipped build.
+busbar-plugin-sign = { path = "../plugin-sign" }

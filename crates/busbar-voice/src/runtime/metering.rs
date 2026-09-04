@@ -24,9 +24,60 @@
 //! settle accrues exact increments, exhausted = `settled ≥ cap`, refuse-all cap denies at the door). The
 //! port abstraction ([`MeteringLease`] / [`MeteringPort`]) is the seam both share.
 
-use busbar_substrate::plane_host::{CostLeaseId, MeteringHost, SettleOutcome};
+use busbar_substrate::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// THE PRESENTING-KEY ATTRIBUTION a live session lands each turn's usage on — through the CORE METER
+/// SEAM (`host.meter_ledger` + `host.meter_series`), exactly as the LLM plane's `ledger_and_meter`.
+/// Voice has NO meter and NO budget of its own (the vetted doctrine: "no separate meter, no separate
+/// budget"); this routes each turn's token usage onto the ONE ledger, attributed to the presenting
+/// virtual key, so a voice session's spend shows up on `usage_for(key)` / the admin usage series just
+/// like a model call or a tool call. Built at the governed session-open (where the resolved key + the
+/// live host are both in hand) and `None` on an ungoverned deployment (no key ⇒ nothing to attribute).
+pub struct TurnMeter {
+    /// The live engine host — the one seam every plane meters through.
+    host: Arc<dyn EngineHost>,
+    /// The presenting virtual key the turn's spend is attributed to (owned; cloned at open).
+    key: busbar_api::VirtualKey,
+    /// The pool label for the metering series (the voice front-door pool).
+    pool: &'static str,
+    /// The provider label for the per-(key, model, provider) metering series.
+    provider: &'static str,
+}
+
+impl TurnMeter {
+    /// Bind the attribution over a live host + resolved key.
+    #[must_use]
+    pub(crate) fn new(
+        host: Arc<dyn EngineHost>,
+        key: busbar_api::VirtualKey,
+        pool: &'static str,
+        provider: &'static str,
+    ) -> Self {
+        TurnMeter {
+            host,
+            key,
+            pool,
+            provider,
+        }
+    }
+
+    /// Land ONE turn's usage on the principal's ledger + metering series through the core seam — the
+    /// voice twin of the LLM plane's `ledger_and_meter`. The budget-chain accrual (`meter_ledger`)
+    /// is the money signal `usage_for(key)` derives spend from; the raw series (`meter_series`) feeds
+    /// the admin usage report. No-ops when governance is off (the host mints no `GovHandle`).
+    pub(crate) fn record_turn(&self, model: &str, usage: &busbar_substrate::billing::Usage) {
+        if let Some(gov) = self.host.governance() {
+            let cost = self.host.cost();
+            let now = self.host.clock_now_secs();
+            self.host
+                .meter_ledger(&gov, &cost, &self.key, self.pool, model, usage, now);
+            self.host
+                .meter_series(&gov, &self.key.id, model, self.provider, None, now);
+        }
+    }
+}
 
 /// THE POST-SETTLE STATE the plane reads back to decide whether to hard-close — the mirror of the D2
 /// `CostSettleOut.exhausted` flag plus the `StatusClass::Refused`/`Fault` fail-closed cases folded in.
