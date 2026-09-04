@@ -103,11 +103,11 @@ impl From<CardError> for SignError {
 }
 
 /// BUSBAR'S AGENT-CARD SIGNER for one served card: the PUBLIC issuer key (`kid` + SPKI) this
-/// deployment publishes, plus the live [`App`](busbar_core::state::App) that is the seam to the host's
-/// `card_sign` capability.
+/// deployment publishes, plus the live host engine handle ([`busbar_substrate::plane_host::EngineHost`])
+/// that is the seam to the host's `card_sign` capability.
 ///
 /// The plane holds NO card-signing key. The subkey is derived and held host-side
-/// ([`busbar_core::governance::state::GovState::card_sign`], reached through the neutral
+/// (the host's governance state's `card_sign`, reached through the neutral
 /// [`busbar_substrate::plane_host::EngineHost::card_sign`] seam); this type carries only PUBLIC
 /// material and a `&dyn EngineHost`, and
 /// `sign_card` hands the framed signing input to the host and receives the 64 signature bytes back.
@@ -131,7 +131,7 @@ impl std::fmt::Debug for CardSigner<'_> {
 /// THE A2A PLANE'S CARD SIGNER for this deployment: the PUBLIC issuer key bound to the live app, so
 /// `sign_card` can reach the host card-signing capability. The issuer is read off the plane's OWN
 /// runtime slot ([`super::runtime`]'s [`crate::a2a::plane::A2aPlane::card_issuer`]), where the plane's
-/// `start` hook stashed the host-computed [`busbar_core::plane::registry::BootCtx::card_issuer`] — so this
+/// `start` hook stashed the host-computed [`busbar_substrate::plane::registry::PlaneBootCtx::card_issuer`] — so this
 /// plane names no `GovState`. `None` when no signing key is configured (the governance-off path) or
 /// before the start hook has run, matching the old typed accessor's own absence — the caller then
 /// serves an unsigned card.

@@ -959,7 +959,7 @@ impl TaskTestHarness {
 }
 
 /// TEST-ONLY NAMED-VOCABULARY STORE EXTENSION — the plane-side twin of the former neutral
-/// `busbar_core::plane::store::StoreNamedTestExt`, relocated here with the task subsystem. It exists
+/// `StoreNamedTestExt` core's plane store used to carry, relocated here with the task subsystem. It exists
 /// only so the plane's own batteries read/write the `task`/`task_event` streams through terse named
 /// methods (`put_task`/`get_task`/`list_task_events`) rather than restating the generic
 /// `PlaneRecord`-kind calls at every site, byte-identically to the neutral path. A test double that

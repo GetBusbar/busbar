@@ -15,7 +15,7 @@
 //! Everything the plane consumes from the engine comes through the neutral `busbar-substrate` surface
 //! (and `busbar-api`); nothing in `busbar-core` names this crate in production, and the `busbar` BINARY
 //! — the composition root — links it and hands [`PLANE_DECL`] to
-//! `busbar_core::plane::registry::install_planes` at boot.
+//! the host's plane installer at boot.
 //!
 //! A2A IS PLANE-ONLY. Unlike `busbar-mcp` (which also carries a `PROTO_DECL` on the LLM-style proto
 //! axis), A2A contributes ONLY a `PlaneDecl` — there is no separate protocol-codec declaration to

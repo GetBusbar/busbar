@@ -52,7 +52,7 @@
 //! enumeration protected, addressing not, which is the shape of an IDOR.
 //!
 //! So every lookup takes the PRINCIPAL, and the boundary it applies is not a second copy of the
-//! rule: it is [`busbar_core::plane::taskstore::TaskRegistry::get_scoped`], the one predicate that already owns
+//! rule: it is [`crate::taskstore::TaskRegistry::get_scoped`], the one predicate that already owns
 //! "may this caller see this task", asked here rather than re-derived. A caller that does not own an
 //! id gets no translation, so its request leaves with busbar's own id on it and the backend answers
 //! exactly what it answers for an id that never existed — A2A section 3.3.2's rule that a server

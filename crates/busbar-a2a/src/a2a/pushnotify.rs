@@ -31,7 +31,7 @@
 //!
 //! ## The address predicates are NOT re-implemented here
 //!
-//! The CGNAT, unique-local, link-local and alternate-encoding atoms live in [`busbar_core::net_guard`] and
+//! The CGNAT, unique-local, link-local and alternate-encoding atoms live in [`busbar_substrate::net_guard`] and
 //! are used from there. Duplicated security logic is the one kind of duplication that cannot be made
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
@@ -251,7 +251,7 @@ pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
 }
 
 /// THE PUSH-CALLBACK SSRF FLOOR — the resolver-free half of the guard, applied at the A2A CALLER
-/// boundary (`busbar_core::plane_host::EngineHostImpl::task_set_push_callback`) BEFORE the neutral task
+/// boundary (the host's push-callback entry into `taskstore::set_push_callback`) BEFORE the neutral task
 /// store is asked to persist the callback. A2A domain logic that moved OUT of the core engine at the
 /// D4 codec inversion so `taskstore::set_push_callback` makes no security decision and stores an
 /// already-cleared callback. A URL the structural guard refuses is DROPPED (returned `None`) rather

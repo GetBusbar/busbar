@@ -179,7 +179,7 @@ impl std::fmt::Display for ServeError {
 /// A card busbar serves points every interface at BUSBAR'S OWN ADDRESS, so the `protocolBinding` on
 /// that interface is a claim about what BUSBAR speaks, not about what the backend speaks. The set of
 /// protocols busbar speaks on this plane is already stated once, in the A2A plane's registry
-/// [`busbar_core::plane::wire_format_names`] — the same list that decides whether the plane has earned a superset IR and what its
+/// declaration ([`busbar_substrate::plane::registry::PlaneDecl::wire_format_names`]) — the same list that decides whether the plane has earned a superset IR and what its
 /// ingress metric label may say. Reading it here rather than restating it is what makes this
 /// function a RULE: when the HTTP+JSON and gRPC bindings land on the A2A plane, that list grows and
 /// these cards start advertising them, with nobody having to remember this function exists. Written
@@ -259,7 +259,7 @@ pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String,
 }
 
 /// THE PLANE'S MOUNT, the path prefix the A2A plane's HTTP bindings are served under. Every route
-/// this plane serves over HTTP is under it, and [`busbar_core::plane::PlaneDispatch`] matches on it at a
+/// this plane serves over HTTP is under it, and the host's plane dispatch (`PlaneDispatch`) matches on it at a
 /// segment boundary, so `/a2ax` is somebody else's path.
 pub const MOUNT_PATH: &str = "/a2a";
 
@@ -270,7 +270,7 @@ pub const MOUNT_PATH: &str = "/a2a";
 /// is given an AUTHORITY, never a path prefix, so there is no spelling of this that could live under
 /// [`MOUNT_PATH`]. Written as a constant beside the mount it is not under, because "the A2A plane
 /// answers here too" is a fact the mount table has to be told
-/// ([`busbar_core::plane::PlaneDispatch::mount`]) or this binding's tokens go unchecked for audience.
+/// (the host's `PlaneDispatch::mount`) or this binding's tokens go unchecked for audience.
 pub const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
@@ -545,7 +545,7 @@ pub(crate) fn rewrite_card(
 
 /// The RFC 7235 authentication scheme a caller presents on [`INBOUND_HEADER`]. Spelled exactly as
 /// the `WWW-Authenticate` challenge an unauthenticated caller receives spells it
-/// ([`busbar_core::auth::challenge`]), so the card and the challenge describe one mechanism rather than
+/// ([`busbar_substrate::auth::challenge`]), so the card and the challenge describe one mechanism rather than
 /// two.
 pub(crate) const INBOUND_AUTH_SCHEME: &str = "Bearer";
 

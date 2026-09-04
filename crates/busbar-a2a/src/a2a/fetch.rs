@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AGENT CARD FETCH: the card-shaped part of a guarded fetch, over the guard in
-//! [`busbar_core::net_guard`].
+//! [`busbar_substrate::net_guard`].
 //!
 //! Everything else on this plane decides. This is the one module that REACHES OUT, at a URL an
 //! operator wrote and following redirects a stranger controls, and it therefore carries the whole
@@ -11,7 +11,7 @@
 //! ## THE GUARD IS NOT HERE, and that is the point
 //!
 //! Resolve-then-pin, the address judgement, the metadata arm that sits ahead of `allow_private`, the
-//! hop bound and the body cap all live in [`busbar_core::net_guard`]. They were written twice — once here
+//! hop bound and the body cap all live in [`busbar_substrate::net_guard`]. They were written twice — once here
 //! and once for the MCP dispatch path — and the doc comments in each copy had already started
 //! citing the other's function names as the reason an ordering was correct. A security control that
 //! has to cite its twin to explain itself has two implementations and one of them will be the stale
@@ -276,7 +276,7 @@ impl std::fmt::Display for FetchRefusal {
 ///
 /// This is the neutral, host-owned [`busbar_substrate::egress::Response`], re-exported under this plane's
 /// historical name so the card-fetch and relay call sites read unchanged. It lives in
-/// [`busbar_core::egress`] rather than here because the same buffered round trip serves the MCP dispatch
+/// [`busbar_substrate::egress`] rather than here because the same buffered round trip serves the MCP dispatch
 /// path too, and a return type owned by one plane could not be returned to the other. Its
 /// `peer_spki` / `client_identity_offered` fields carry the exact per-hop observations this plane's
 /// verifier reads ([`super::verify`] refuses a `cert_spki`/`mtls` registration whose card did not

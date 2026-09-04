@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the
 // router that serves a plane verb has THIS crate's core copy's envelope, matching its recording
-// middleware's condition `Tag` type. The one `busbar_core::` name lives in this `tests/`-path file the
+// middleware's condition `Tag` type. The one core-implementation name lives in this `tests/`-path file the
 // neutral-purity lint excludes (the twin of core's `plane/tests/registry_tests.rs`).
 #[path = "a2a/tests/envelope_boot.rs"]
 mod envelope_boot;
@@ -38,7 +38,7 @@ pub fn install_test_seams() {
     );
     // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`), bound plane-side from
     // THIS crate's core copy through the `tests/`-path `envelope_boot` helper (the composition-root job
-    // `main` does in production) — so the plane's shipped source names no `busbar_core::` item.
+    // `main` does in production) — so the plane's shipped source names no core implementation item.
     envelope_boot::install();
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.

@@ -5,7 +5,7 @@
 //! learn.
 //!
 //! [`CardPin`] is this plane's [`busbar_substrate::trust::PinnedArtifact`]. Everything else about approval,
-//! drift, quarantine, suspension and the dispatch gate is [`busbar_core::trust`], unchanged and
+//! drift, quarantine, suspension and the dispatch gate is [`busbar_substrate::trust`], unchanged and
 //! un-forked. A2A supplies an artifact; it does not supply a second state machine.
 //!
 //! ## Why the pin is a sum type rather than a string

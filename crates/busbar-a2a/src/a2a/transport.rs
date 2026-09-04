@@ -223,8 +223,8 @@ pub(crate) fn resolve_client_identities(
     Ok(out)
 }
 
-/// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified core egress
-/// backend ([`busbar_core::egress`]) — pooled by the pinned address, so a repeated hop to an
+/// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified host egress
+/// backend behind [`busbar_substrate::egress::seam`] — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
     /// Body ceiling, mirrored from the policy so the read stops at the cap rather than buffering an
@@ -314,20 +314,13 @@ struct Hop<'a> {
 }
 
 /// TEST-ONLY: install the core-backed hostless-egress driver the composition root installs at boot.
-/// The plane's own test binary (which links `busbar_core` as a dev-dependency, the one place it is
-/// nameable) has no `main` to do it, so `hop_spec` calls this once, idempotently (`OnceLock`). It
-/// reaches `busbar_core::egress::seam::CoreHostlessEgress` — the driver's only production
-/// implementation — as the plane's OWN test dependency, so the name stays inside this `#[cfg(test)]`
-/// module (off the neutral-purity lint's reverse scan) and out of every shipped build. Mirrors the MCP
-/// leg's identical `test_egress_boot`.
+/// The plane's own test binary has no `main` to do it, so `hop_spec` calls this once, idempotently.
+/// The body — the one place this crate names core's driver type — lives in the `tests/`-path file
+/// `tests/egress_boot.rs` (the twin of `tests/envelope_boot.rs`), so no shipped source file of this
+/// plane spells a core implementation item. Mirrors the MCP leg's identical `test_egress_boot`.
 #[cfg(all(test, feature = "test-support"))]
-mod test_egress_boot {
-    pub(super) fn install() {
-        busbar_substrate::egress::seam::install_hostless_egress(
-            &busbar_core::egress::seam::CoreHostlessEgress,
-        );
-    }
-}
+#[path = "tests/egress_boot.rs"]
+mod test_egress_boot;
 
 impl ReqwestTransport {
     /// The neutral [`seam::PinnedHop`] for one hop, carrying the plane's ALREADY-JUDGED pinned address
@@ -646,7 +639,7 @@ mod transport_tests;
 // BYTE-IDENTITY CONFORMANCE of busbar-core's neutral egress SEAM against this plane's own direct
 // transport — relocated from busbar-core's `egress::seam_tests` when the dual-compile was removed, so
 // it lives on the plane whose transport it holds the seam to (it names `crate::a2a::{transport,fetch,
-// relay}` internals) and reaches core's `egress`/`proxy`/`plane_host` through `busbar_core::`.
+// relay}` internals) and reaches the host's egress/proxy/plane-host surface through the substrate seams.
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/egress_seam_tests.rs"]
 mod egress_seam_tests;
