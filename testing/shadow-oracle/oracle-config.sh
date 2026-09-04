@@ -101,11 +101,45 @@ EOF
     #                  and the walk fails over (max_hops 3, deadline 120) — the route.failover family
     #   oracle-fb      one member, on_exhausted -> fallback_pool oracle-fo (the cross-pool hop, PB-4/47)
     #   oracle-lb      least_bad terminal
+    if [ "${ORACLE_VARIANT:-}" = hooks ]; then
+      # The PUBLISHED 1.5.5-era hook plugins (by digest) loaded through the binary under test, and
+      # one gate instance of headroom attached to its own pool — the hooks / plugin admin surfaces.
+      mkdir -p "${work}/plugins"
+      local pl
+      for pl in headroom-hook webrequest-hook; do
+        cp "$(bash "$(dirname "${BASH_SOURCE[0]}")/fetch-plugin.sh" "$pl")" "${work}/plugins/" || return 1
+      done
+      cat <<EOF
+plugins:
+  enabled: true
+  dir: "${work}/plugins"
+hooks:
+  busbar-headroom:
+    module: busbar-headroom
+    kind: gate
+    prompt: rw
+    timeout_ms: 50
+    on_error: nothing
+    settings:
+      target_ratio: 0.5
+      min_savings_pct: 10
+EOF
+    fi
     cat <<EOF
 pools:
   oracle-unused:
     members:
       - model: m-openai-chat
+EOF
+    if [ "${ORACLE_VARIANT:-}" = hooks ]; then
+      cat <<EOF
+  oracle-hooked:
+    hooks: [busbar-headroom]
+    members:
+      - model: m-openai-chat
+EOF
+    fi
+    cat <<EOF
   oracle-fo:
     members:
       - { model: m-openai-chat, weight: 3 }
