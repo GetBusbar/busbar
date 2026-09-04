@@ -22,8 +22,20 @@ INVALID: manifest abi_version 2 is not supported for kind 'store' by this binary
   `crates/plugin-loader/src/registry.rs:41` keeps a single-point window `[ABI_VERSION, ABI_VERSION]`.
 - Rule it breaks: PB-11 / PB-37 / PB-93 (a 1.5.5 plugin loads through an in-tree ABI-2 adapter; the
   refusal literal and the printed range stay 1.5.5's `v2..=v2` for a genuinely out-of-window manifest).
-- Phase 1.0 ticket: ABI-2 store adapter in the loader (window `[2, 4]`, `call_with_legacy_default` for the
-  four ops, node-local shim for 1.6.0-only ops), then this cell family green on both binaries.
+- History on HEAD (`crates/busbar-plugin/src/cold/mod.rs:120-147`): v2 → v3 removed the fourteen
+  protocol-named durable variants (`PutTask`/`GetTask`/…) for the neutral `PlaneRecord` ones and RAISED
+  the floor to 3 "so a stale plugin fails loud"; v3 → v4 relocated the record types out of `busbar-api`
+  and raised the floor to 4. Both bumps reason about plugins built during the 1.6.0 line. A REAL 1.5.5
+  plugin never had any durable variant: it speaks the v2 base wire (keys, usage, metering, credentials,
+  audit, denylist), every one of which still exists on v4. Refusing it protects nothing.
+- Phase 1.0 ticket (the fix): `supported_abi("store")` → `[2, ABI_VERSION]`; the loader records the
+  plugin's manifest `abi_version` on the handle; every 1.6.0-only request variant (`UpsertPlaneRecord`
+  … `RedeemPlaneToken`, and the journal/keyset ops when they land) is routed to the node-local shim
+  when the handle is `< 3` and never sent over the wire (PB-93); `call_with_legacy_default` keeps its
+  four `Unsupported` defaults (PB-37); the refusal literal for a genuinely out-of-window manifest prints
+  the 1.5.5 range for its kind (PB-11). Proof: `plugins.load|store-*` and `plugins.store-persist|store-sqlite`
+  green on both binaries, and the plane conformance rigs green against the sqlite plugin (the shim
+  path), so a 1.5.5 store deployment gains mcp/a2a without touching its store.
 
 ### N-001 · hook / auth / secret plugins "SKIPPED: this build embeds no busbar release key" — MEASUREMENT ARTIFACT, RESOLVED
 
