@@ -151,10 +151,13 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
                 detail["effects.stderr"] = {"kind": "text", **(text_diff(ge[k], ce[k]) or {})}
             else:
                 detail[f"effects.{k}"] = {"paths": json_paths_diff(ge.get(k), ce.get(k))}
-    if sorted(g.get("applied", [])) != sorted(c.get("applied", [])):
+    # ORDER canonicalizations fire only when the input happened to be unsorted; whether a map came
+    # out sorted on one run is not a contract, so those rules never count as one-sided.
+    ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.pair-order", "keys.order"}
+    ga, ca = [r for r in g.get("applied", []) if r not in ORDER_RULES], [r for r in c.get("applied", []) if r not in ORDER_RULES]
+    if sorted(ga) != sorted(ca):
         classes.append("norm.rules")
-        detail["norm.rules"] = {"only_golden": sorted(set(g.get("applied", [])) - set(c.get("applied", []))),
-                                "only_candidate": sorted(set(c.get("applied", [])) - set(g.get("applied", [])))}
+        detail["norm.rules"] = {"only_golden": sorted(set(ga) - set(ca)), "only_candidate": sorted(set(ca) - set(ga))}
     classes.sort(key=CLASS_ORDER.index)
     return classes, detail
 

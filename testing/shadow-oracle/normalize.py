@@ -30,6 +30,10 @@ What is normalized (each rule is a named entry in `applied`):
   metrics.shape       a /metrics exposition body keeps its SHAPE (names, types, labels, counts):
                       latency samples (quantiles, _sum, _bucket, raw _seconds) are DROPPED, blank
                       separators dropped, and lines sorted (registry order is per-binary, not a contract)
+  hdr.length          Content-Length -> "<LEN>" whenever a body rule fired (the length is the
+                      shadow of a value that was just normalized, e.g. a latency or an id)
+  boot.pair-order     "(A vs B)" conflict pairs in validation messages come out in map order,
+                      nondeterministic on the SAME binary (measured on 1.5.5: 3/6 each way) -> sorted
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
 
@@ -69,6 +73,7 @@ TIMING_KEYS = {"latency_ms"}
 VERSION_RX = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 POOL_LINE = re.compile(r"^\s+pool /\S+ = ")
 ERROR_BULLET = re.compile(r"^  - ")
+PAIR = re.compile(r"\((\d+) vs (\d+)")
 EXPO_TIMING = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*(_seconds_sum|_seconds|_bucket)(\{|\s)|quantile=")
 
 
@@ -112,7 +117,7 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = ""):
                 applied.add("metrics.timing"); continue
             if k == "version" and isinstance(x, str) and VERSION_RX.match(x):
                 applied.add("ver.string"); out[k] = "<VERSION>"; continue
-            if k == "items" and isinstance(x, list) and x and all(isinstance(i, dict) and str(i.get("id", "")).startswith("vk_") and "name" in i for i in x):
+            if k in ("items", "by_key") and isinstance(x, list) and x and all(isinstance(i, dict) and str(i.get("id", "")).startswith("vk_") and "name" in i for i in x):
                 applied.add("keys.order"); x = sorted(x, key=lambda i: str(i["name"]))
             if parent_key == "metrics" and METRIC_TIMING.search(k):
                 # a latency SUM / quantile sample is a measurement, never a contract, and a summary
@@ -158,6 +163,13 @@ def sort_pool_lines(lines: list, applied: set) -> list:
 
 
 def norm_text(text: str, applied: set) -> str:
+    if PAIR.search(text):
+        def _sort_pair(m):
+            a, b = sorted((int(m.group(1)), int(m.group(2))))
+            return f"({a} vs {b}"
+        new = PAIR.sub(_sort_pair, text)
+        if new != text:
+            applied.add("boot.pair-order"); text = new
     lines = text.split("\n")
     if lines and lines[0].startswith(("# HELP ", "# TYPE ")):
         applied.add("metrics.shape")
@@ -194,10 +206,16 @@ def norm_body(body: str, applied: set, key_id: str | None):
 
 def normalize(cap: dict, key_id: str | None) -> dict:
     applied: set = set()
+    body_rules: set = set()
+    body = norm_body(cap.get("body", ""), body_rules, key_id)
+    applied |= body_rules
+    headers = norm_headers(cap.get("headers", {}), applied)
+    if body_rules and "content-length" in headers:
+        applied.add("hdr.length"); headers["content-length"] = "<LEN>"
     out = {
         "status": cap.get("status"),
-        "headers": norm_headers(cap.get("headers", {}), applied),
-        "body": norm_body(cap.get("body", ""), applied, key_id),
+        "headers": headers,
+        "body": body,
         "effects": norm_json(cap.get("effects", {}), applied, key_id),
     }
     if isinstance(out["effects"].get("stderr"), str):

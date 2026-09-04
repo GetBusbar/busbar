@@ -98,6 +98,28 @@
         "body"
       ],
       "rationale": "--help documents the new -c/--providers flags; --version prints a second build-profile line."
+    },
+    {
+      "id": "S-1 bedrock text blocks carry no contentBlockStart",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-2 responses stream lifecycle frames",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }
