@@ -1,0 +1,116 @@
+# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (scripts/construction-gate.sh).
+#
+# The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
+# tree is BUILT, measured against docs/design/ARCHITECTURE.md. Every rule below is a named invariant
+# with a plain-language reason, a current-state threshold, and the one knob the owner tightens as the
+# construction improves. Tightening is a one-line edit here; the gate script never restates a number.
+#
+# Every threshold is a ceiling: the rule fails when the measured value is ABOVE it. A rule at 0 is
+# fully enforced. A rule sitting at today's count is a ratchet: it stops regression while the debt
+# is paid down. Never loosen a value without saying why in the commit.
+
+[gate]
+# Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
+# (crates/busbar) is included on purpose because production installers live there.
+scan_roots = ["crates/*/src"]
+# The plane crates (the plugin side). Mirrors scripts/plane-keys.sh, spelled out here so each
+# crate can carry its own ceiling below.
+plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+# A file at one of these path fragments is TEST code (same rule the purity lint applies), in
+# addition to any `#[cfg(test)] mod … { … }` block inside a production file.
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs"]
+
+# ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
+[rules.one-attempt-seam]
+why = """Exactly one function in the workspace may send the egress request for a unit. Two twins \
+(the pooled hot path and the degraded walk path) mean every fix to the attempt — a timeout arm, a \
+breaker recording, a header rule — has to be made twice and is made once. The architecture's loop \
+has one ROUTE step and one dispatch; the code should have one too."""
+# The egress client's send verb: the call that turns an assembled request into an upstream
+# round trip. Every occurrence in non-test code outside `allowed_function` is a finding.
+send_verb = '\.client\(\)\.get\(\)\.request\('
+allowed_function = "forward_with_pool_parsed_inner"
+max_extra_sites = 0
+
+# ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
+[rules.request-path-fn-size]
+why = """A function on the request path that runs to four figures of lines cannot be read whole, \
+tested at its seams, or diffed with confidence. The loop is eight named steps; a function should \
+be one of them, not all of them."""
+files = [
+  "crates/busbar-llm/src/engine/pipeline.rs",
+  "crates/busbar-llm/src/engine/walk.rs",
+  "crates/busbar-llm/src/native_ingress.rs",
+  "crates/busbar-llm/src/arrival.rs",
+  "crates/busbar-core/src/ingress/mod.rs",
+  "crates/busbar-core/src/limits/admission.rs",
+]
+max_lines = 200
+# How many of the worst offenders the report lists.
+top = 10
+
+# ── 3. ports-only / ports-only-tests ─────────────────────────────────────────────────────────────
+[rules.ports-only]
+why = """A plane crate talks to the kernel through the substrate/api ABI only. Every `busbar_core::` \
+it names is a hole in that wall: the plane cannot be compiled out, cannot be replaced by a plugin, \
+and breaks whenever core moves. This is the production residue, counted per crate."""
+needle = "busbar_core::"
+[rules.ports-only.max_per_crate]
+busbar-llm = 0
+busbar-mcp = 0
+busbar-a2a = 0
+busbar-voice = 0
+
+[rules.ports-only-tests]
+why = """The same reach from test code. Tests that name core internals pin the plane to core's \
+private shape just as surely as production code does; they are reported separately so both \
+counts can trend to zero at their own pace."""
+[rules.ports-only-tests.max_per_crate]
+busbar-llm = 875
+busbar-mcp = 360
+busbar-a2a = 120
+busbar-voice = 47
+
+# ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
+[rules.no-uninstalled-seam]
+why = """An installable seam (a substrate `install_*` / `set_*_factory` that fills a process-wide \
+static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
+never fills — the stream-translator factory fault that made real streams pass through \
+untranslated while every test was green."""
+seam_root = "crates/busbar-substrate/src"
+seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
+# A file whose path contains one of these is NOT production and cannot count as an installer.
+non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
+max_uninstalled = 0
+
+# ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
+[rules.neutral-no-dialect]
+why = """The neutral crates (busbar-core, busbar-substrate, busbar-api) must not know a dialect or \
+a plane by name. This rule is a thin delegation to scripts/plane-purity-lint.sh, which owns the \
+scanner, the noun list and the frozen-wire allow-list; the construction gate only counts its \
+DIALECT and KEY rows so there is one policy, not two."""
+categories = ["DIALECT", "KEY"]
+max_hits = 0
+
+# ── 6. single-terminal ───────────────────────────────────────────────────────────────────────────
+[rules.single-terminal]
+why = """The request terminal is where a unit's end is sealed and posted once. Every extra caller \
+is a second place the money can be counted, or not counted. The named wrappers are the only \
+doors; anything else calling the terminal is a finding."""
+terminal = "finish_inner"
+allowed_callers = ["finish", "finish_admitted", "finish_rejected"]
+max_extra_sites = 0
+
+# ── 7. duplicate-dispatch (informational) ────────────────────────────────────────────────────────
+[rules.duplicate-dispatch]
+why = """How much of the two attempt twins is the same code. Informational (a WARN row, never a \
+FAIL) until the twins are merged; then it becomes moot and the rule can be retired."""
+informational = true
+twins = ["forward_with_pool_parsed_inner", "forward_once"]
+# A shared block must span at least this many source lines to be reported.
+min_block_lines = 40
+# Token-shingle width for the cheap similarity pass.
+shingle_tokens = 12
+top_pairs = 5
+# Ceiling on total duplicated lines. Informational: shown in --summary, never enforced.
+max_duplicated_lines = 0
