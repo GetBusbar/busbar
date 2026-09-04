@@ -66,8 +66,13 @@ wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream di
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
 oracle_env "$BIN" --validate >"$WORK/validate.log" 2>&1 || fail_setup "busbar rejected the oracle config (run selftest.sh)" "$(tail -c 400 "$WORK/validate.log")"
 
-BUSBAR_PID=""
-boot_busbar() {  # start busbar, wait for /healthz, mint the three keys, prime the BROKE key
+BUSBAR_PID="" CUR_VARIANT=""
+boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three keys, prime the BROKE key
+  local variant="${1:-}"
+  if [ "$variant" != "$CUR_VARIANT" ]; then
+    ORACLE_VARIANT="$variant" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 3
+    CUR_VARIANT="$variant"
+  fi
   oracle_env "$BIN" >>"$WORK/busbar.log" 2>&1 &
   BUSBAR_PID=$!; track_pid "$BUSBAR_PID"
   wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30 || return 1
@@ -181,17 +186,20 @@ settle_then_snapshot() {  # <dir> <key-id>
 subst_placeholders() {  # <cell-json> -> cell-json
   jq -c --arg ok "$ORACLE_KEY_OK" --arg broke "$ORACLE_KEY_BROKE" --arg noscope "$ORACLE_KEY_NOSCOPE" \
         --arg tmp "$WORK/tmp" --arg work "$WORK" --arg la "127.0.0.1:${LISTEN_PORT}" --arg aa "127.0.0.1:${ADMIN_PORT}" \
-        --arg mock "http://127.0.0.1:${MOCK_PORT}" '
+        --arg mock "http://127.0.0.1:${MOCK_PORT}" --arg triple "$ORACLE_TRIPLE" \
+        --arg b64_webrequest "$(base64 <"$(bash "${here}/fetch-plugin.sh" webrequest-hook)" | tr -d '\n')" '
     def sub: if type == "string" then
         gsub("\\{KEY_OK\\}"; $ok) | gsub("\\{KEY_BROKE\\}"; $broke) | gsub("\\{KEY_NOSCOPE\\}"; $noscope)
         | gsub("\\{TMP\\}"; $tmp) | gsub("\\{WORK\\}"; $work) | gsub("\\{LISTEN_ADDR\\}"; $la)
         | gsub("\\{ADMIN_LISTEN_ADDR\\}"; $aa) | gsub("\\{MOCK_URL\\}"; $mock)
+        | gsub("\\{TRIPLE\\}"; $triple) | gsub("\\{TARBALL_B64:webrequest-hook\\}"; $b64_webrequest)
       elif type == "array" then map(sub)
       elif type == "object" then with_entries(.value |= sub)
       else . end;
     sub' <<<"$1"
 }
 mkdir -p "$WORK/tmp"
+case "$(uname -sm)" in "Darwin arm64") ORACLE_TRIPLE=aarch64-apple-darwin ;; "Darwin x86_64") ORACLE_TRIPLE=x86_64-apple-darwin ;; "Linux aarch64"|"Linux arm64") ORACLE_TRIPLE=aarch64-unknown-linux-gnu ;; *) ORACLE_TRIPLE=x86_64-unknown-linux-gnu ;; esac
 
 run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> — unrecorded setup call
   local rq="$1" m pth lst tok port
@@ -214,12 +222,12 @@ while IFS= read -r cell; do
   outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
   # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
-  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ]; then
+  variant="$(jq -r '.config_variant // empty' <<<"$cell")"
+  if [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
     stop_busbar
-    boot_busbar || { record "$id" FAIL "fresh boot before cell failed" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
+    boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
   fi
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
-
   driver="$(jq -r '.driver // "llm"' <<<"$cell")"
   if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
     record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
@@ -229,6 +237,21 @@ while IFS= read -r cell; do
   esac
   if [ "$driver" = exec ]; then
     record_exec_cell "$id" "$cell" "$raw" "$safe"; continue
+  fi
+
+  if [ "$driver" = script ]; then
+    # A named script owns the whole cell (its own processes on spare ports) and writes captured.json.
+    sname="$(jq -r .script.name <<<"$cell")"
+    local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
+    stop_busbar   # a script cell never needs the recording busbar; free its ports and CPU
+    BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
+      bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
+    [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
+    python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
+      || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue; }
+    st="$(jq -r .status "$raw/captured.json")"
+    if [ "$st" = "-1" ]; then record "$id" SKIP "UNSUPPORTED: $(jq -r '.effects.error // "script could not run"' "$raw/captured.json")" "named gap"; continue; fi
+    record "$id" PASS "script ${sname}: status ${st}" ""; n=$((n + 1)); continue
   fi
 
   if [ "$driver" = http ]; then
@@ -268,6 +291,8 @@ PY
     [ -s "$raw/request.body" ] && hdr_args+=(-H "Content-Type: application/json")
     port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
     local_m=(-X "$method"); [ "$method" = HEAD ] && local_m=(--head)
+    mc="$(jq -c '.mock_control // empty' <<<"$cell")"
+    [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
     snapshot "$raw/before" "$kid"
     k=1
     while [ "$k" -le "$repeat" ]; do
@@ -276,14 +301,20 @@ PY
       k=$((k+1))
     done
   else
-  req="$(python3 "${here}/build-request.py" --cell "$cell")" || { record "$id" FAIL "build-request failed" "$req"; continue; }
+  case "$outcome" in
+    over_budget) sig_akid="$ORACLE_AWS_AKID_BROKE"; sig_secret="$ORACLE_AWS_SECRET_BROKE" ;;
+    out_of_scope) sig_akid="$ORACLE_AWS_AKID_NOSCOPE"; sig_secret="$ORACLE_AWS_SECRET_NOSCOPE" ;;
+    *) sig_akid="$ORACLE_AWS_AKID_OK"; sig_secret="$ORACLE_AWS_SECRET_OK" ;;
+  esac
+  req="$(ORACLE_AWS_AKID="$sig_akid" ORACLE_AWS_SECRET="$sig_secret" ORACLE_HOST="127.0.0.1:${LISTEN_PORT}" \
+        python3 "${here}/build-request.py" --cell "$cell")" || { record "$id" FAIL "build-request failed" "$req"; continue; }
   auth="$(jq -r .auth <<<"$req")"
-  if [ "$auth" != bearer ]; then
-    record "$id" SKIP "UNSUPPORTED: $(jq -r .note <<<"$req")" "recorded as a named gap, not a pass"
-    continue
-  fi
+  case "$auth" in
+    bearer|sigv4-signed) ;;
+    *) record "$id" SKIP "UNSUPPORTED: $(jq -r .note <<<"$req")" "recorded as a named gap, not a pass"; continue ;;
+  esac
   path="$(jq -r .path <<<"$req")"
-  jq -r .body <<<"$req" >"$raw/request.body"
+  jq -j .body <<<"$req" >"$raw/request.body"
 
   case "$outcome" in
     over_budget) token="$ORACLE_TOKEN_BROKE"; kid="$ORACLE_KEY_BROKE" ;;
@@ -294,7 +325,8 @@ PY
 
   hdr_args=()
   while IFS= read -r kv; do hdr_args+=(-H "$kv"); done < <(jq -r '.headers | to_entries[] | "\(.key): \(.value)"' <<<"$req")
-  [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
+  # a signed request already carries its Authorization (SigV4); a bearer cell gets the token here
+  [ "$auth" = sigv4-signed ] || [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
 
   [ "$outcome" != upstream_down ] || echo down >"$CONTROL"
   snapshot "$raw/before" "$kid"
